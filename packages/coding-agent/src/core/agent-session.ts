@@ -1482,6 +1482,109 @@ export class AgentSession {
 	}
 
 	/**
+	 * Sync agent state messages to the current session branch path.
+	 * Must be called after any operation that changes the active path
+	 * (branch, reroll, rewind, compaction, tree navigation, etc.),
+	 * otherwise the LLM context and session tree will diverge.
+	 */
+	private _syncAgentStateFromSession(): void {
+		const sessionContext = this.sessionManager.buildSessionContext();
+		this.agent.state.messages = sessionContext.messages;
+	}
+
+	/**
+	 * Run agent.continue() with lifecycle management.
+	 * Sets _isAgentRunActive (for Escape abort), runs the post-agent-run
+	 * loop (auto-retry, compaction, queued messages), and clears the flag.
+	 */
+	private async _runAgentContinue(): Promise<void> {
+		this._isAgentRunActive = true;
+		try {
+			await this.agent.continue();
+			while (await this._handlePostAgentRun()) {
+				await this.agent.continue();
+			}
+		} finally {
+			this._isAgentRunActive = false;
+		}
+	}
+
+	/**
+	 * Prepare a reroll: branch the session tree to the last user message
+	 * and sync agent state. Does NOT start the agent run.
+	 *
+	 * The caller must rebuild UI after this, then call startRerollRun()
+	 * to begin the agent loop.
+	 *
+	 * @returns true if a user message was found and branch performed
+	 */
+	async reroll(): Promise<boolean> {
+		if (!this.isIdle || this.isStreaming) {
+			return false;
+		}
+
+		const path = this.sessionManager.getBranch();
+		for (let i = path.length - 1; i >= 0; i--) {
+			const entry = path[i];
+			if (entry.type === "message" && entry.message.role === "user") {
+				this.sessionManager.branch(entry.id);
+				this._syncAgentStateFromSession();
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Start the agent run after reroll().
+	 * Handles _isAgentRunActive lifecycle and post-agent-run loop
+	 * (auto-retry, compaction, queued messages).
+	 */
+	async startRerollRun(): Promise<void> {
+		await this._runAgentContinue();
+	}
+
+	/**
+	 * Continue the session: make the agent generate regardless of the last
+	 * message's state. Cleans up trailing aborted/errored empty assistant
+	 * messages from agent state, injects an invisible "Continue." user message,
+	 * and runs the agent loop. The injected message is not persisted to the session.
+	 *
+	 * @returns true if the agent was started
+	 */
+	async continueSession(): Promise<boolean> {
+		if (!this.isIdle || this.isStreaming) {
+			return false;
+		}
+
+		const messages = this.agent.state.messages;
+
+		// Strip trailing aborted/errored empty assistant messages from agent state.
+		// The session entries are preserved in the tree; this only cleans the LLM context.
+		while (messages.length > 0) {
+			const last = messages[messages.length - 1];
+			if (
+				last.role === "assistant" &&
+				(last.stopReason === "aborted" || last.stopReason === "error") &&
+				contentText(last.content, "").trim() === ""
+			) {
+				messages.pop();
+			} else {
+				break;
+			}
+		}
+
+		// Inject an invisible "Continue." user message (not persisted to session).
+		messages.push({
+			role: "user",
+			content: [{ type: "text", text: "Continue." }],
+			timestamp: Date.now(),
+		});
+
+		await this._runAgentContinue();
+		return true;
+	}
+	/**
 	 * Clear all queued messages and return them.
 	 * Useful for restoring to editor when user aborts.
 	 * @returns Object with steering and followUp arrays
@@ -1845,9 +1948,8 @@ export class AgentSession {
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
+			this._syncAgentStateFromSession();
+			const estimatedTokensAfter = estimateMessagesTokens(this.agent.state.messages);
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -2124,9 +2226,8 @@ export class AgentSession {
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
+			this._syncAgentStateFromSession();
+			const estimatedTokensAfter = estimateMessagesTokens(this.agent.state.messages);
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -2986,8 +3087,7 @@ export class AgentSession {
 			}
 
 			// Update agent state
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
+			this._syncAgentStateFromSession();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({

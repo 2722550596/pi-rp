@@ -2722,6 +2722,16 @@ export class InteractiveMode {
 				await this.handleCompactCommand(customInstructions);
 				return;
 			}
+			if (text === "/continue") {
+				this.editor.setText("");
+				await this.handleContinueCommand();
+				return;
+			}
+			if (text === "/reroll") {
+				this.editor.setText("");
+				await this.handleRerollCommand();
+				return;
+			}
 			if (text === "/reload") {
 				this.editor.setText("");
 				await this.handleReloadCommand();
@@ -5263,6 +5273,41 @@ export class InteractiveMode {
 	// =========================================================================
 	// Command handlers
 	// =========================================================================
+
+	private async handleRerollCommand(): Promise<void> {
+		if (this.session.isStreaming || this.session.isCompacting) {
+			this.showWarning("Wait for the current response to finish before rerolling.");
+			return;
+		}
+
+		// Phase 1: branch session tree to the last user message
+		if (!(await this.session.reroll())) {
+			this.showStatus("Nothing to reroll — no user message found.");
+			return;
+		}
+
+		// Phase 2: clear old trace from chat display
+		this.chatContainer.clear();
+		this.rebuildChatFromMessages();
+		this.showStatus("Rerolling last response...");
+
+		// Phase 3: start agent run (continue from user message)
+		await this.session.startRerollRun();
+	}
+
+	private async handleContinueCommand(): Promise<void> {
+		if (this.session.isStreaming || this.session.isCompacting) {
+			this.showWarning("Wait for the current response to finish before continuing.");
+			return;
+		}
+
+		const started = await this.session.continueSession();
+		if (started) {
+			this.showStatus("Continuing...");
+		} else {
+			this.showStatus("Nothing to continue from.");
+		}
+	}
 
 	private async handleReloadCommand(): Promise<void> {
 		if (this.session.isStreaming) {
