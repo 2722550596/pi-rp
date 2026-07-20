@@ -1,5 +1,5 @@
 import { Agent } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, getModel, type Usage } from "@earendil-works/pi-ai/compat";
+import { type AssistantMessage, getModel, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -45,6 +45,18 @@ function createUserMessage(text: string, timestamp: number) {
 		role: "user" as const,
 		content: text,
 		timestamp,
+	};
+}
+
+function createToolResultMessage(usage: Usage): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId: "tool-call-1",
+		toolName: "test_tool",
+		content: [{ type: "text", text: "tool result" }],
+		usage,
+		isError: false,
+		timestamp: 1,
 	};
 }
 
@@ -138,6 +150,75 @@ describe("AgentSession.getSessionStats", () => {
 			expect(stats.contextUsage).toBeDefined();
 			expect(stats.contextUsage?.tokens).toBe(25_000);
 			expect(stats.contextUsage?.percent).toBe((25_000 / model.contextWindow) * 100);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("includes branch summary usage in session totals", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			sessionManager.branchWithSummary(null, "summary", undefined, false, {
+				input: 10,
+				output: 20,
+				cacheRead: 30,
+				cacheWrite: 40,
+				totalTokens: 100,
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.tokens).toEqual({ input: 10, output: 20, cacheRead: 30, cacheWrite: 40, total: 100 });
+			expect(stats.cost).toBe(1);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("includes compaction usage in session totals", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			const firstKeptEntryId = sessionManager.appendMessage(createUserMessage("hello", 1));
+			sessionManager.appendCompaction("summary", firstKeptEntryId, 100, undefined, false, {
+				input: 10,
+				output: 20,
+				cacheRead: 30,
+				cacheWrite: 40,
+				totalTokens: 100,
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.tokens).toEqual({ input: 10, output: 20, cacheRead: 30, cacheWrite: 40, total: 100 });
+			expect(stats.cost).toBe(1);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("includes tool result usage in session totals", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			sessionManager.appendMessage(
+				createToolResultMessage({
+					input: 10,
+					output: 20,
+					cacheRead: 30,
+					cacheWrite: 40,
+					totalTokens: 100,
+					cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+				}),
+			);
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.tokens).toEqual({ input: 10, output: 20, cacheRead: 30, cacheWrite: 40, total: 100 });
+			expect(stats.cost).toBe(1);
 		} finally {
 			session.dispose();
 		}

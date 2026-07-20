@@ -6,6 +6,7 @@ import {
 	fauxProvider,
 	type Message,
 	type Model,
+	type Models,
 	type Usage,
 } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -140,6 +141,17 @@ function createFauxModel(reasoning: boolean, maxTokens = 8192): { faux: FauxProv
 	});
 	models.setProvider(faux.provider);
 	return { faux, model: faux.getModel() };
+}
+
+function createModelsWithSimpleResponses(responses: AssistantMessage[]): Models {
+	const remaining = [...responses];
+	const stub = Object.create(models) as Models;
+	stub.completeSimple = async () => {
+		const response = remaining.shift();
+		if (!response) throw new Error("No faux completeSimple response queued");
+		return response;
+	};
+	return stub;
 }
 
 describe("harness compaction", () => {
@@ -501,7 +513,12 @@ describe("harness compaction", () => {
 			await generateSummary(messages, models, model, 2000, undefined, "focus", "old summary"),
 		);
 
-		expect(summary).toContain("Test summary");
+		expect(summary.text).toContain("Test summary");
+		expect(summary.usage.input).toBeGreaterThan(0);
+		expect(summary.usage.output).toBeGreaterThan(0);
+		expect(summary.usage.totalTokens).toBe(
+			summary.usage.input + summary.usage.output + summary.usage.cacheRead + summary.usage.cacheWrite,
+		);
 		expect(promptText).toContain("<previous-summary>\nold summary\n</previous-summary>");
 		expect(promptText).toContain("Additional focus: focus");
 	});
@@ -578,6 +595,30 @@ describe("harness compaction", () => {
 		expect(invalidResult).toMatchObject({ ok: false, error: { code: "invalid_session" } });
 	});
 
+	it("combines usage for split-turn compaction summaries", async () => {
+		const messages: AgentMessage[] = [createUserMessage("Summarize this.")];
+		const { model } = createFauxModel(false);
+		const historyUsage = createMockUsage(1, 2, 3, 4);
+		const turnPrefixUsage = createMockUsage(5, 6, 7, 8);
+		const usageModels = createModelsWithSimpleResponses([
+			{ ...fauxAssistantMessage("history summary"), usage: historyUsage },
+			{ ...fauxAssistantMessage("turn prefix summary"), usage: turnPrefixUsage },
+		]);
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: messages,
+			turnPrefixMessages: messages,
+			isSplitTurn: true,
+			tokensBefore: 100,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
+		};
+
+		const result = getOrThrow(await compact(preparation, usageModels, model));
+
+		expect(result.usage).toEqual(createMockUsage(6, 8, 10, 12));
+	});
+
 	it("passes reasoning through turn-prefix summaries when enabled", async () => {
 		const messages: AgentMessage[] = [createUserMessage("Summarize this.")];
 		const seenOptions: Array<Record<string, unknown> | undefined> = [];
@@ -646,6 +687,7 @@ describe("harness compaction", () => {
 		const result = getOrThrow(await compact(preparation!, models, model));
 		expect(result.summary.length).toBeGreaterThan(0);
 		expect(result.firstKeptEntryId).toBeTruthy();
+		expect(result.usage?.totalTokens).toBeGreaterThan(0);
 		expect(result.details).toBeDefined();
 	});
 });

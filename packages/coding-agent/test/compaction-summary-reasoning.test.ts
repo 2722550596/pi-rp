@@ -57,7 +57,7 @@ describe("generateSummary reasoning options", () => {
 	});
 
 	it("uses the provided thinking level for reasoning-capable models", async () => {
-		await generateSummary(
+		const result = await generateSummary(
 			messages,
 			createModel(true),
 			2000,
@@ -68,6 +68,9 @@ describe("generateSummary reasoning options", () => {
 			undefined,
 			"medium",
 		);
+
+		expect(result.text).toBe("## Goal\nTest summary");
+		expect(result.usage).toEqual(mockSummaryResponse.usage);
 
 		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 		expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({
@@ -127,8 +130,15 @@ describe("generateSummary reasoning options", () => {
 			settings: { enabled: true, reserveTokens: 500000, keepRecentTokens: 20000 },
 		};
 
-		await compact(preparation, createModel(false, 128000), "test-key");
+		const result = await compact(preparation, createModel(false, 128000), "test-key");
 
+		expect(result.usage).toEqual({
+			...mockSummaryResponse.usage,
+			input: 20,
+			output: 20,
+			totalTokens: 40,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		});
 		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
 	});
 });

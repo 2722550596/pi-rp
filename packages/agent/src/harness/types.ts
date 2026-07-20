@@ -1,4 +1,12 @@
-import type { ImageContent, Model, Models, SimpleStreamOptions, TextContent, Transport } from "@earendil-works/pi-ai";
+import type {
+	ImageContent,
+	Model,
+	Models,
+	SimpleStreamOptions,
+	TextContent,
+	Transport,
+	Usage,
+} from "@earendil-works/pi-ai";
 import type { AgentEvent, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../index.ts";
 import type { Session } from "./session/session.ts";
 
@@ -365,6 +373,7 @@ export interface CompactionEntry<T = unknown> extends SessionTreeEntryBase {
 	firstKeptEntryId: string;
 	tokensBefore: number;
 	details?: T;
+	usage?: Usage;
 	fromHook?: boolean;
 }
 
@@ -373,6 +382,7 @@ export interface BranchSummaryEntry<T = unknown> extends SessionTreeEntryBase {
 	fromId: string;
 	summary: string;
 	details?: T;
+	usage?: Usage;
 	fromHook?: boolean;
 }
 
@@ -572,6 +582,7 @@ export interface ToolResultEvent {
 	content: Array<TextContent | ImageContent>;
 	details: unknown;
 	isError: boolean;
+	usage?: Usage;
 }
 
 export interface SessionBeforeCompactEvent {
@@ -687,6 +698,7 @@ export interface ToolResultPatch {
 	content?: Array<TextContent | ImageContent>;
 	details?: unknown;
 	isError?: boolean;
+	usage?: Usage;
 	terminate?: boolean;
 }
 
@@ -697,7 +709,12 @@ export interface SessionBeforeCompactResult {
 
 export interface SessionBeforeTreeResult {
 	cancel?: boolean;
-	summary?: { summary: string; details?: unknown };
+	summary?: {
+		summary: string;
+		details?: unknown;
+		/** Usage from the LLM call that generated this summary, if available. */
+		usage?: Usage;
+	};
 	customInstructions?: string;
 	replaceInstructions?: boolean;
 	label?: string;
@@ -738,6 +755,8 @@ export interface CompactResult {
 	summary: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
+	/** Usage from the LLM call(s) that generated this summary, if available. */
+	usage?: Usage;
 	details?: unknown;
 }
 
@@ -793,6 +812,7 @@ export interface GenerateBranchSummaryOptions {
 
 export interface BranchSummaryResult {
 	summary: string;
+	usage?: Usage;
 	readFiles: string[];
 	modifiedFiles: string[];
 }

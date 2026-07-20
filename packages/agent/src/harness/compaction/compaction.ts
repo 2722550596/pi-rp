@@ -101,8 +101,33 @@ export interface CompactionResult<T = unknown> {
 	firstKeptEntryId: string;
 	/** Estimated context tokens before compaction. */
 	tokensBefore: number;
+	/** Usage from the LLM call(s) that generated this summary, if available. */
+	usage?: Usage;
 	/** Optional implementation-specific details stored with the compaction entry. */
 	details?: T;
+}
+
+function combineUsage(first: Usage, second: Usage): Usage {
+	return {
+		input: first.input + second.input,
+		output: first.output + second.output,
+		cacheRead: first.cacheRead + second.cacheRead,
+		cacheWrite: first.cacheWrite + second.cacheWrite,
+		...(first.cacheWrite1h !== undefined || second.cacheWrite1h !== undefined
+			? { cacheWrite1h: (first.cacheWrite1h ?? 0) + (second.cacheWrite1h ?? 0) }
+			: {}),
+		...(first.reasoning !== undefined || second.reasoning !== undefined
+			? { reasoning: (first.reasoning ?? 0) + (second.reasoning ?? 0) }
+			: {}),
+		totalTokens: first.totalTokens + second.totalTokens,
+		cost: {
+			input: first.cost.input + second.cost.input,
+			output: first.cost.output + second.cost.output,
+			cacheRead: first.cost.cacheRead + second.cost.cacheRead,
+			cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
+			total: first.cost.total + second.cost.total,
+		},
+	};
 }
 
 /** Compaction thresholds and retention settings. */
@@ -475,7 +500,7 @@ export async function generateSummary(
 	customInstructions?: string,
 	previousSummary?: string,
 	thinkingLevel?: ThinkingLevel,
-): Promise<Result<string, CompactionError>> {
+): Promise<Result<{ text: string; usage: Usage }, CompactionError>> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
@@ -524,7 +549,7 @@ export async function generateSummary(
 
 	const textContent = contentText(response.content);
 
-	return ok(textContent);
+	return ok({ text: textContent, usage: response.usage });
 }
 
 /** Prepared inputs for a compaction run. */
@@ -657,22 +682,26 @@ export async function compact(
 	}
 
 	let summary: string;
+	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		const historyResult =
-			messagesToSummarize.length > 0
-				? await generateSummary(
-						messagesToSummarize,
-						models,
-						model,
-						settings.reserveTokens,
-						signal,
-						customInstructions,
-						previousSummary,
-						thinkingLevel,
-					)
-				: ok<string, CompactionError>("No prior history.");
-		if (!historyResult.ok) return err(historyResult.error);
+		let historyText = "No prior history.";
+		let historyUsage: Usage | undefined;
+		if (messagesToSummarize.length > 0) {
+			const historyResult = await generateSummary(
+				messagesToSummarize,
+				models,
+				model,
+				settings.reserveTokens,
+				signal,
+				customInstructions,
+				previousSummary,
+				thinkingLevel,
+			);
+			if (!historyResult.ok) return err(historyResult.error);
+			historyText = historyResult.value.text;
+			historyUsage = historyResult.value.usage;
+		}
 		const turnPrefixResult = await generateTurnPrefixSummary(
 			turnPrefixMessages,
 			models,
@@ -682,7 +711,10 @@ export async function compact(
 			thinkingLevel,
 		);
 		if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
-		summary = `${historyResult.value}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value}`;
+		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value.text}`;
+		summaryUsage = historyUsage
+			? combineUsage(historyUsage, turnPrefixResult.value.usage)
+			: turnPrefixResult.value.usage;
 	} else {
 		const summaryResult = await generateSummary(
 			messagesToSummarize,
@@ -695,7 +727,8 @@ export async function compact(
 			thinkingLevel,
 		);
 		if (!summaryResult.ok) return err(summaryResult.error);
-		summary = summaryResult.value;
+		summary = summaryResult.value.text;
+		summaryUsage = summaryResult.value.usage;
 	}
 
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
@@ -705,6 +738,7 @@ export async function compact(
 		summary,
 		firstKeptEntryId,
 		tokensBefore,
+		usage: summaryUsage,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	});
 }
@@ -715,7 +749,7 @@ async function generateTurnPrefixSummary(
 	reserveTokens: number,
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
-): Promise<Result<string, CompactionError>> {
+): Promise<Result<{ text: string; usage: Usage }, CompactionError>> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
@@ -750,5 +784,8 @@ async function generateTurnPrefixSummary(
 		);
 	}
 
-	return ok(contentText(response.content));
+	return ok({
+		text: contentText(response.content),
+		usage: response.usage,
+	});
 }

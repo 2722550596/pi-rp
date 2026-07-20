@@ -412,6 +412,8 @@ export interface ToolResultMessage<TDetails = any> {
 	toolName: string;
 	content: (TextContent | ImageContent)[]; // Supports text and images
 	details?: TDetails;
+	/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
+	usage?: Usage;
 	/**
 	 * Names from `Context.tools` that became available after this result.
 	 * Providers with native deferred tool loading use this as the load point;

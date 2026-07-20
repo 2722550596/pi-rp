@@ -86,6 +86,49 @@ async function runSessionSuite(
 			expect(context.messages[1]?.role).toBe("branchSummary");
 		});
 
+		it("persists compaction usage", async () => {
+			const session = new Session(await createStorage());
+			const firstKeptEntryId = await session.appendMessage(createUserMessage("one"));
+			const usage = {
+				input: 1,
+				output: 2,
+				cacheRead: 3,
+				cacheWrite: 4,
+				totalTokens: 10,
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+			};
+
+			const compactionId = await session.appendCompaction(
+				"summary",
+				firstKeptEntryId,
+				1234,
+				undefined,
+				false,
+				usage,
+			);
+
+			const compactionEntry = await session.getEntry(compactionId);
+			expect(compactionEntry?.type === "compaction" ? compactionEntry.usage : undefined).toEqual(usage);
+		});
+
+		it("persists branch summary usage", async () => {
+			const session = new Session(await createStorage());
+			const user1 = await session.appendMessage(createUserMessage("one"));
+			const usage = {
+				input: 1,
+				output: 2,
+				cacheRead: 3,
+				cacheWrite: 4,
+				totalTokens: 10,
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+			};
+
+			const summaryId = await session.moveTo(user1, { summary: "summary text", usage });
+
+			const summaryEntry = await session.getEntry(summaryId!);
+			expect(summaryEntry?.type === "branch_summary" ? summaryEntry.usage : undefined).toEqual(usage);
+		});
+
 		it("supports custom message entries in context", async () => {
 			const session = new Session(await createStorage());
 			await session.appendMessage(createUserMessage("one"));

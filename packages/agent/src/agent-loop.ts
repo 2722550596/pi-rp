@@ -737,6 +737,7 @@ async function finalizeExecutedToolCall(
 					...result,
 					content: afterResult.content ?? result.content,
 					details: afterResult.details ?? result.details,
+					usage: afterResult.usage ?? result.usage,
 					terminate: afterResult.terminate ?? result.terminate,
 				};
 				isError = afterResult.isError ?? isError;
@@ -780,6 +781,7 @@ function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResul
 		// so the null never enters session history or provider payloads.
 		content: finalized.result.content ?? [],
 		details: finalized.result.details,
+		usage: finalized.result.usage,
 		...(finalized.result.addedToolNames?.length ? { addedToolNames: finalized.result.addedToolNames } : {}),
 		isError: finalized.isError,
 		timestamp: Date.now(),
