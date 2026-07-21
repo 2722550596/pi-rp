@@ -72,7 +72,7 @@ packages/coding-agent/src/
 ```
 
 ## 开发顺序
-1. ✅ 基础命令与实用扩展小功能（`/reroll`, `/continue`）
+1. ✅ 基础命令与实用扩展小功能（`/reroll`, `/continue`, 实时消息编辑）
 2. 知识库 + lookup
 3. 预设提示词系统（最核心，花最多心思）
 4. 状态管理
@@ -97,6 +97,15 @@ packages/coding-agent/src/
 ### 教训 3：识别可提取的辅助方法
 
 `_syncAgentStateFromSession()` 和 `_runAgentContinue()` 都是从多个调用点中提取出的共享逻辑。提取条件不是"行数太少"，而是"编码了不明显的契约，忘记了就是 bug"。
+
+### 教训 4：新增功能以非破坏性方式接入
+
+优先提取公共逻辑，不要在原有接口上动刀。
+
+- **不改现有方法签名** — TreeSelector 的 edit 回调走 `onCopy` 的 public property 模式，不破坏构造器签名。
+- **不改导入结构** — 需要的小工具函数 inline 而非加 import；新增文件时注意不改变已有模块的依赖图。
+- **不改核心类型** — 用 cast 或 type guard 适配，不改 package 间共享的类型定义。
+- **原有方法保留** — `showExtensionEditor` 不变，抽 `showEditorDialog` 出来让前者委托。下游扩展零改动。
 
 ## 与上游的关系
 
