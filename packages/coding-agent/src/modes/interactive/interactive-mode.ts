@@ -2297,34 +2297,39 @@ export class InteractiveMode {
 		this.ui.setFocus(this.editor);
 		this.ui.requestRender();
 	}
-
 	/**
-	 * Show a multi-line editor for extensions (with Ctrl+G support).
+	 * Show a multi-line editor dialog for editing message content.
+	 * Supports Enter to save, Escape to cancel, and Ctrl+G for external editor.
 	 */
-	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			this.extensionEditor = new ExtensionEditorComponent(
-				this.ui,
-				this.keybindings,
-				title,
-				prefill,
-				(value) => {
-					this.hideExtensionEditor();
-					resolve(value);
-				},
-				() => {
-					this.hideExtensionEditor();
-					resolve(undefined);
-				},
-				undefined,
-				this.settingsManager.getExternalEditorCommand(),
-			);
+	private showEditorDialog(title: string, prefill?: string): Promise<string | undefined> {
+		const { promise, resolve } = Promise.withResolvers<string | undefined>();
 
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionEditor);
-			this.ui.setFocus(this.extensionEditor);
-			this.ui.requestRender();
-		});
+		const editor = new ExtensionEditorComponent(
+			this.ui,
+			this.keybindings,
+			title,
+			prefill,
+			(value) => {
+				this.hideExtensionEditor();
+				resolve(value);
+			},
+			() => {
+				this.hideExtensionEditor();
+				resolve(undefined);
+			},
+			undefined,
+			this.settingsManager.getExternalEditorCommand(),
+		);
+
+		this.editorContainer.clear();
+		this.editorContainer.addChild(editor);
+		this.ui.setFocus(editor);
+		this.ui.requestRender();
+
+		return promise;
+	}
+	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
+		return this.showEditorDialog(title, prefill);
 	}
 
 	/**
@@ -4721,6 +4726,50 @@ export class InteractiveMode {
 				} catch (error) {
 					this.showError(error instanceof Error ? error.message : String(error));
 				}
+			};
+			selector.onEdit = async (entryId) => {
+				done(); // Close tree selector
+
+				// Get message content
+				const entry = this.sessionManager.getEntry(entryId);
+				if (!entry || (entry.type !== "message" && entry.type !== "custom_message")) {
+					this.showError("Selected entry is not editable");
+					return;
+				}
+
+				const extractText = (content: string | ReadonlyArray<{ type: string; text?: string }>): string =>
+					typeof content === "string"
+						? content
+						: content
+								.filter((c) => c.type === "text")
+								.map((c) => c.text ?? "")
+								.join("\n");
+
+				const text =
+					entry.type === "message"
+						? extractText((entry.message as Message).content)
+						: extractText(entry.content as string | ReadonlyArray<{ type: string; text?: string }>);
+				if (!text) {
+					this.showError("Selected entry has no text content to edit");
+					return;
+				}
+
+				const newText = await this.showEditorDialog("Edit Message", text);
+				if (newText === undefined) {
+					this.showStatus("Edit cancelled");
+					return;
+				}
+
+				const updated = this.session.editMessage(entryId, newText);
+				if (!updated) {
+					this.showError("Failed to update message");
+					return;
+				}
+
+				// Refresh chat if the edited entry is in the current branch
+				this.chatContainer.clear();
+				this.rebuildChatFromMessages();
+				this.showStatus("Message updated");
 			};
 			return { component: selector, focus: selector };
 		});

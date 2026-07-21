@@ -1199,8 +1199,27 @@ export class SessionManager {
 	}
 
 	/**
-	 * Get all direct children of an entry.
+	 * Update the text content of a message entry in place.
+	 * Mutates the in-memory entry and rewrites the session file.
+	 * Only supports SessionMessageEntry (user/assistant) and CustomMessageEntry.
+	 *
+	 * @returns true if the entry was found and updated; false if entry not found or not editable
 	 */
+	updateMessageContent(id: string, text: string): boolean {
+		const entry = this.byId.get(id);
+		if (!entry) return false;
+
+		if (entry.type === "message") {
+			(entry.message as Message).content = [{ type: "text", text }];
+		} else if (entry.type === "custom_message") {
+			entry.content = text;
+		} else {
+			return false;
+		}
+
+		this._rewriteFile();
+		return true;
+	}
 	getChildren(parentId: string): SessionEntry[] {
 		const children: SessionEntry[] = [];
 		for (const entry of this.byId.values()) {

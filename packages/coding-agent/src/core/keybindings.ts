@@ -35,6 +35,7 @@ export interface AppKeybindings {
 	"app.tree.unfoldOrDown": true;
 	"app.tree.editLabel": true;
 	"app.tree.toggleLabelTimestamp": true;
+	"app.tree.editMessage": true;
 	"app.session.togglePath": true;
 	"app.session.toggleSort": true;
 	"app.session.rename": true;
@@ -131,6 +132,10 @@ export const KEYBINDINGS = {
 	"app.tree.toggleLabelTimestamp": {
 		defaultKeys: "shift+t",
 		description: "Toggle tree label timestamps",
+	},
+	"app.tree.editMessage": {
+		defaultKeys: "e",
+		description: "Edit message content",
 	},
 	"app.session.togglePath": {
 		defaultKeys: "ctrl+p",
@@ -266,6 +271,7 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	renameSession: "app.session.rename",
 	deleteSession: "app.session.delete",
 	deleteSessionNoninvasive: "app.session.deleteNoninvasive",
+	treeEditMessage: "app.tree.editMessage",
 } as const satisfies Record<string, Keybinding>;
 
 function isLegacyKeybindingName(key: string): key is keyof typeof KEYBINDING_NAME_MIGRATIONS {

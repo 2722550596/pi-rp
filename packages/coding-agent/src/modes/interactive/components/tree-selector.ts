@@ -124,6 +124,7 @@ class TreeList implements Component {
 	public onCancel?: () => void;
 	public onCopy?: (text: string | undefined) => void;
 	public onLabelEdit?: (entryId: string, currentLabel: string | undefined) => void;
+	public onEdit?: (entryId: string) => void;
 
 	constructor(
 		tree: SessionTreeNode[],
@@ -1086,6 +1087,11 @@ class TreeList implements Component {
 			if (selected && this.onLabelEdit) {
 				this.onLabelEdit(selected.node.entry.id, selected.node.label);
 			}
+		} else if (kb.matches(keyData, "app.tree.editMessage")) {
+			const selected = this.filteredNodes[this.selectedIndex];
+			if (selected && this.onEdit) {
+				this.onEdit(selected.node.entry.id);
+			}
 		} else if (kb.matches(keyData, "app.tree.toggleLabelTimestamp")) {
 			this.showLabelTimestamps = !this.showLabelTimestamps;
 		} else {
@@ -1219,6 +1225,7 @@ const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: b
 	{ keys: ["tui.editor.cursorLeft", "tui.editor.cursorRight"], label: "page" },
 	{ keys: ["app.tree.foldOrUp", "app.tree.unfoldOrDown"], label: "branch" },
 	{ keys: ["app.message.copy"], label: "copy" },
+	{ keys: ["app.tree.editMessage"], label: "edit" },
 	{ keys: ["app.tree.editLabel"], label: "label" },
 	{ keys: ["app.tree.toggleLabelTimestamp"], label: "label time" },
 	{
@@ -1332,6 +1339,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 	private treeContainer: Container;
 	private onLabelChangeCallback?: (entryId: string, label: string | undefined) => void;
 	public onCopy?: (text: string | undefined) => void;
+	public onEdit?: (entryId: string) => void;
 
 	// Focusable implementation - propagate to labelInput when active for IME cursor positioning
 	private _focused = false;
@@ -1366,6 +1374,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.treeList.onCancel = onCancel;
 		this.treeList.onCopy = (text) => this.onCopy?.(text);
 		this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);
+		this.treeList.onEdit = (entryId) => this.onEdit?.(entryId);
 
 		this.treeContainer = new Container();
 		this.treeContainer.addChild(this.treeList);

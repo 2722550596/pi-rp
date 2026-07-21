@@ -1584,6 +1584,28 @@ export class AgentSession {
 		await this._runAgentContinue();
 		return true;
 	}
+
+	/**
+	 * Edit the text content of a session message entry in place.
+	 * Mutates the in-memory entry, rewrites the session file, and re-syncs
+	 * the agent state if the edited entry lies on the current branch path.
+	 *
+	 * @returns true if the entry was found and updated
+	 */
+	editMessage(entryId: string, text: string): boolean {
+		const updated = this.sessionManager.updateMessageContent(entryId, text);
+		if (!updated) return false;
+
+		// Check if the edited entry is on the current branch path.
+		// If so, re-sync agent state so the change takes effect immediately.
+		const path = this.sessionManager.getBranch();
+		const onCurrentPath = path.some((e) => e.id === entryId);
+		if (onCurrentPath) {
+			this._syncAgentStateFromSession();
+		}
+
+		return true;
+	}
 	/**
 	 * Clear all queued messages and return them.
 	 * Useful for restoring to editor when user aborts.
