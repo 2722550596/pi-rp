@@ -79,6 +79,7 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../tools/index.ts";
+import type { MacroDefinition, SlotDefinition } from "../prompt-preset/types.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -1397,6 +1398,12 @@ export interface ExtensionAPI {
 	 */
 	unregisterProvider(name: string): void;
 
+	/** Register a custom slot for prompt prompt rendering. */
+	registerSlot(definition: SlotDefinition): void;
+
+	/** Register a custom macro for prompt text expansion. */
+	registerMacro(definition: MacroDefinition): void;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
@@ -1574,6 +1581,8 @@ export interface ExtensionRuntimeState {
 	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
 	registerNativeProvider: (provider: Provider, extensionPath?: string) => void;
 	unregisterProvider: (name: string, extensionPath?: string) => void;
+	registerSlot: (definition: SlotDefinition) => void;
+	registerMacro: (definition: MacroDefinition) => void;
 }
 
 /**

@@ -11,6 +11,8 @@ import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
+import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -306,8 +308,9 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
+		this.runtime.registerSlot = (definition) => registerCustomSlot(definition, false);
+		this.runtime.registerMacro = (definition) => registerCustomMacro(definition, false);
 	}
-
 	bindCore(
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,

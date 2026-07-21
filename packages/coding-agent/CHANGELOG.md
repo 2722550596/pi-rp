@@ -6,8 +6,8 @@
 
 - Added built-in llama.cpp router support with `/login` connection setup and `/llama` Hugging Face model search and downloads, explicit loading, unloading, and live progress. See [llama.cpp](docs/llama-cpp.md).
 - Added extension registration for complete pi-ai providers, including native authentication, model refresh, filtering, and streaming behavior.
-
-### Fixed
+- **Prompt preset system** — built-in prompt stack compiler, slot/macro engine, and JSON preset files under `.pi/prompt-presets/`. Presets can replace, append to, or prepend the default system prompt and control message layout. Includes `/preset list`, `/preset use <id|none>`, `/preset reload`, and `/prompt` commands.
+- Added `ExtensionAPI.registerSlot()` and `ExtensionAPI.registerMacro()` for registering custom preset slots and macros from extensions.
 
 - Fixed persisted sessions being read and parsed twice when opened, reducing startup latency for large sessions ([#6793](https://github.com/earendil-works/pi/issues/6793)).
 - Fixed prompt-template defaults for all arguments (`${@:-default}` and `${ARGUMENTS:-default}`) ([#6695](https://github.com/earendil-works/pi/issues/6695)).

@@ -94,6 +94,9 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
+import { compileSystemPrompt } from "./prompt-preset/compiler.ts";
+import { defaultPreset, type PromptRuntime, type PromptPreset, type LoadedPromptPreset } from "./prompt-preset/index.ts";
+import { chooseDefaultPreset, isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
@@ -351,6 +354,9 @@ export class AgentSession {
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	private _activePreset: PromptPreset = defaultPreset;
+	private _loadedPresets: LoadedPromptPreset[] = [];
+
 	private _systemPromptOverride?: string;
 
 	constructor(config: AgentSessionConfig) {
@@ -998,19 +1004,21 @@ export class AgentSession {
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
+		// Load presets from disk on first call
+		if (this._loadedPresets.length === 0) {
+			this._loadedPresets = loadPromptPresets(this._cwd);
+			const chosen = chooseDefaultPreset(this._loadedPresets);
+			if (chosen) this._activePreset = chosen.preset;
+		}
+
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
 		for (const name of validToolNames) {
 			const snippet = this._toolPromptSnippets.get(name);
-			if (snippet) {
-				toolSnippets[name] = snippet;
-			}
-
+			if (snippet) toolSnippets[name] = snippet;
 			const toolGuidelines = this._toolPromptGuidelines.get(name);
-			if (toolGuidelines) {
-				promptGuidelines.push(...toolGuidelines);
-			}
+			if (toolGuidelines) promptGuidelines.push(...toolGuidelines);
 		}
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
@@ -1030,12 +1038,69 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 		};
-		return buildSystemPrompt(this._baseSystemPromptOptions);
+
+		if (loaderSystemPrompt) {
+			return buildSystemPrompt(this._baseSystemPromptOptions);
+		}
+
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: [],
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: loadedSkills,
+		};
+		const result = compileSystemPrompt(this._activePreset, runtime, "");
+		return result.systemPrompt;
 	}
 
 	// =========================================================================
-	// Prompting
+	// Prompt Preset Management
 	// =========================================================================
+
+	/** Get the currently active prompt preset. */
+	get activePreset(): PromptPreset {
+		return this._activePreset;
+	}
+
+	/** Get all loaded presets from disk. */
+	getAllPresets(): LoadedPromptPreset[] {
+		return this._loadedPresets;
+	}
+
+	/** Load presets from disk and choose one as active. */
+	reloadPresets(preferredId?: string): void {
+		this._loadedPresets = loadPromptPresets(this._cwd);
+		if (preferredId) {
+			const found = this._loadedPresets.find((p) => p.preset.id === preferredId);
+			if (found) this._activePreset = found.preset;
+		}
+		if (!preferredId || isDisabledPromptPresetId(preferredId)) {
+			const chosen = chooseDefaultPreset(this._loadedPresets);
+			this._activePreset = chosen?.preset ?? defaultPreset;
+		}
+	}
+
+	/** Set the active prompt preset by ID. Returns false if not found. */
+	setActivePreset(id: string): boolean {
+		if (isDisabledPromptPresetId(id)) {
+			this._activePreset = defaultPreset;
+			this._rebuildAndSyncPrompt();
+			return true;
+		}
+		const found = this._loadedPresets.find((p) => p.preset.id === id);
+		if (!found) return false;
+		this._activePreset = found.preset;
+		this._rebuildAndSyncPrompt();
+		return true;
+	}
+
+	private _rebuildAndSyncPrompt(): void {
+		const tools = this.getActiveToolNames();
+		this._baseSystemPrompt = this._rebuildSystemPrompt(tools);
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+	}
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._isAgentRunActive = true;
@@ -1063,12 +1128,7 @@ export class AgentSession {
 		}
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
-			this._emit({
-				type: "auto_retry_end",
-				success: false,
-				attempt: this._retryAttempt,
-				finalError: msg.errorMessage,
-			});
+			this._emit({ type: "auto_retry_end", success: false, attempt: this._retryAttempt, finalError: msg.errorMessage });
 			this._retryAttempt = 0;
 		}
 
@@ -1076,8 +1136,6 @@ export class AgentSession {
 			return true;
 		}
 
-		// The agent loop drains both queues before emitting agent_end. Any messages
-		// here were queued by agent_end extension handlers and need a continuation.
 		return this.agent.hasQueuedMessages();
 	}
 

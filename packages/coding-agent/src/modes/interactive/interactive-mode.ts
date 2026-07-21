@@ -2737,6 +2737,16 @@ export class InteractiveMode {
 				await this.handleRerollCommand();
 				return;
 			}
+			if (text.startsWith("/preset")) {
+				this.editor.setText("");
+				await this.handlePresetCommand(text);
+				return;
+			}
+			if (text.startsWith("/prompt")) {
+				this.editor.setText("");
+				this.handlePromptCommand();
+				return;
+			}
 			if (text === "/reload") {
 				this.editor.setText("");
 				await this.handleReloadCommand();
@@ -5342,6 +5352,64 @@ export class InteractiveMode {
 
 		// Phase 3: start agent run (continue from user message)
 		await this.session.startRerollRun();
+	}
+
+	private async handlePresetCommand(text: string): Promise<void> {
+		const parts = text.split(/\s+/);
+		const subcommand = parts[1];
+
+		if (!subcommand || subcommand === "list") {
+			const presets = this.session.getAllPresets();
+			if (presets.length === 0) {
+				this.showStatus("No prompt presets found. Create a .json file in .pi/prompt-presets/.");
+				return;
+			}
+			const lines = presets.map((p) => {
+				const active = p.preset.id === this.session.activePreset.id ? " (active)" : "";
+				const errors = p.diagnostics.filter((d) => d.level === "error").length;
+				const warnings = p.diagnostics.filter((d) => d.level === "warning").length;
+				const badge = errors ? ` [${errors}e/${warnings}w]` : warnings ? ` [0e/${warnings}w]` : "";
+				return `  ${p.preset.id}${badge}${active}`;
+			});
+			this.showStatus(`Prompt presets:\n${lines.join("\n")}`);
+			return;
+		}
+
+		if (subcommand === "use" && parts[2]) {
+			const id = parts[2];
+			if (this.session.setActivePreset(id)) {
+				this.showStatus(`Active prompt preset: ${id}`);
+			} else {
+				this.showError(`Prompt preset "${id}" not found. Use /preset list to see available presets.`);
+			}
+			return;
+		}
+
+		if (subcommand === "reload") {
+			this.session.reloadPresets();
+			this.showStatus("Prompt presets reloaded.");
+			return;
+		}
+
+		this.showStatus("Usage: /preset list | /preset use <id|none> | /preset reload");
+	}
+
+	private handlePromptCommand(): void {
+		const systemPrompt = this.session.systemPrompt;
+		if (!systemPrompt) {
+			this.showStatus("No system prompt is active.");
+			return;
+		}
+
+		this.chatContainer.addChild(new Spacer(1));
+		const component = new UserMessageComponent(
+			systemPrompt,
+			this.getMarkdownThemeWithSettings(),
+			this.outputPad,
+		);
+		this.chatContainer.addChild(component);
+		this.ui.requestRender();
+		this.showStatus("System prompt shown above.");
 	}
 
 	private async handleContinueCommand(): Promise<void> {

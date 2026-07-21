@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "id": "default",
+  "name": "Pi Default",
+  "description": "Mirrors Pi's built-in default prompt behavior. All sections are movable.",
+  "autoActivate": true,
+  "mode": "replace",
+  "items": [
+    {
+      "kind": "block",
+      "id": "role",
+      "name": "Role",
+      "role": "system",
+      "content": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
+    },
+    {
+      "kind": "slot",
+      "id": "tools",
+      "name": "Tools",
+      "role": "system",
+      "slot": "tools",
+      "options": { "onlyWithSnippets": true }
+    },
+    {
+      "kind": "block",
+      "id": "custom-tools-note",
+      "name": "Custom Tools Note",
+      "role": "system",
+      "content": "In addition to the tools above, you may have access to other custom tools depending on the project."
+    },
+    {
+      "kind": "slot",
+      "id": "guidelines",
+      "name": "Guidelines",
+      "role": "system",
+      "slot": "tool-guidelines",
+      "options": { "heading": "Guidelines:" }
+    },
+    {
+      "kind": "slot",
+      "id": "pi-docs",
+      "name": "Pi Documentation",
+      "role": "system",
+      "slot": "pi-docs"
+    },
+    {
+      "kind": "slot",
+      "id": "append",
+      "name": "User Append",
+      "role": "system",
+      "slot": "append-system-prompt"
+    },
+    {
+      "kind": "slot",
+      "id": "context",
+      "name": "Project Context",
+      "role": "system",
+      "slot": "project-context"
+    },
+    {
+      "kind": "slot",
+      "id": "skills",
+      "name": "Skills",
+      "role": "system",
+      "slot": "skills",
+      "options": { "requireReadTool": true }
+    },
+    {
+      "kind": "slot",
+      "id": "date-cwd",
+      "name": "Date and CWD",
+      "role": "system",
+      "slot": "date-cwd"
+    },
+    {
+      "kind": "slot",
+      "id": "chat",
+      "slot": "chat-history"
+    }
+  ]
+}

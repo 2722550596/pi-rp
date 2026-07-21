@@ -32,6 +32,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "clone", description: "Duplicate the current session at the current position" },
 	{ name: "tree", description: "Navigate session tree (switch branches)" },
 	{ name: "trust", description: "Save project trust decision for future sessions" },
+	{ name: "prompt", description: "Show the compiled system prompt" },
 	{ name: "login", description: "Configure provider authentication", argumentHint: "<provider>" },
 	{ name: "logout", description: "Remove provider authentication" },
 	{ name: "new", description: "Start a new session" },
@@ -40,5 +41,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files" },
 	{ name: "reroll", description: "Regenerate the last assistant response" },
 	{ name: "resume", description: "Resume a different session" },
+	{ name: "preset", description: "Manage prompt stacks: /preset list, /preset use <id|none>, /preset reload" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];
