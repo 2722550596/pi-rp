@@ -75,7 +75,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { createCompactionSummaryMessage } from "../../core/messages.ts";
+import { convertToLlm as convertToLlmFn, createCompactionSummaryMessage } from "../../core/messages.ts";
 import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
@@ -5402,14 +5402,62 @@ export class InteractiveMode {
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
+		const parts: string[] = [];
+		parts.push(`[system]\n${systemPrompt}`);
+
+		const compiled = this.session.compilePromptMessages();
+		const llmMessages = convertToLlmFn(compiled);
+
+		for (const msg of llmMessages) {
+			const lines: string[] = [];
+			const role = msg.role;
+			const content = msg.content;
+
+			if (typeof content === "string") {
+				if (!content.trim()) continue;
+				lines.push(content);
+			} else if (Array.isArray(content)) {
+				for (const block of content) {
+					if (!block || typeof block !== "object") continue;
+					const type = "type" in block ? String(block.type) : "";
+					switch (type) {
+						case "text":
+							if ("text" in block && typeof block.text === "string") {
+								lines.push(`[text] ${block.text}`);
+							}
+							break;
+						case "thinking":
+							lines.push(`[thinking] ${String("thinking" in block ? block.thinking : "")}`);
+							break;
+						case "toolCall":
+							if ("name" in block) {
+								const name = String(block.name ?? "");
+								const args = "arguments" in block ? JSON.stringify(block.arguments) : "";
+								lines.push(`[toolCall: ${name}] ${args}`);
+							}
+							break;
+						case "image":
+							lines.push(`[image]`);
+							break;
+						default:
+							lines.push(`[${type}] ${JSON.stringify(block)}`);
+							break;
+					}
+				}
+			}
+
+			if (lines.length === 0) continue;
+			parts.push(`\n[${role}]\n${lines.join("\n")}`);
+		}
+
 		const component = new UserMessageComponent(
-			systemPrompt,
+			parts.join("\n"),
 			this.getMarkdownThemeWithSettings(),
 			this.outputPad,
 		);
 		this.chatContainer.addChild(component);
 		this.ui.requestRender();
-		this.showStatus("System prompt shown above.");
+		this.showStatus("Full prompt shown above.");
 	}
 
 	private async handleContinueCommand(): Promise<void> {

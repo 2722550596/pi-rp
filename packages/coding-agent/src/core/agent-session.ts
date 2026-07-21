@@ -94,7 +94,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
-import { compileSystemPrompt } from "./prompt-preset/compiler.ts";
+import { compileSystemPrompt, compileMessages } from "./prompt-preset/compiler.ts";
 import { defaultPreset, type PromptRuntime, type PromptPreset, type LoadedPromptPreset } from "./prompt-preset/index.ts";
 import { chooseDefaultPreset, isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -1100,6 +1100,24 @@ export class AgentSession {
 		const tools = this.getActiveToolNames();
 		this._baseSystemPrompt = this._rebuildSystemPrompt(tools);
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+	}
+
+	/**
+	 * Compile the full message array including system prompt and chat-history
+	 * as the active preset positions them. Returns the messages that would be sent to the model.
+	 */
+	compilePromptMessages(): AgentMessage[] {
+		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: this.agent.state.messages,
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: loadedSkills,
+		};
+		const result = compileMessages(this._activePreset, runtime);
+		return result.messages;
 	}
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {

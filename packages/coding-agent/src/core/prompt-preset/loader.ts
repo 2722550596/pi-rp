@@ -252,6 +252,10 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 	if (typeof options.omitLatestUser === "boolean") result.omitLatestUser = options.omitLatestUser;
 	if (typeof options.maxMessages === "number") result.maxMessages = options.maxMessages;
 	if (typeof options.maxChars === "number") result.maxChars = options.maxChars;
+	if (options.stripAssistantThinking === true) result.stripAssistantThinking = true;
+	if (Array.isArray(options.roles)) result.roles = options.roles.filter((r): r is string => typeof r === "string");
+	if (options.toolMode === "drop") result.toolMode = "drop";
+	if (options.includeSummaries === false) result.includeSummaries = false;
 	return result;
 }
 

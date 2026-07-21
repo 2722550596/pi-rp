@@ -18,7 +18,6 @@ import type {
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./types.ts";
-
 // =========================================================================
 // Compile System Prompt
 // =========================================================================
@@ -80,21 +79,39 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 		const chatHistoryMessages = runtime.messages;
 		const options = (items[chatHistoryIndex] as PromptPresetSlotItem).options;
 
-		let limitedMessages = chatHistoryMessages;
-		const maxMessages = options?.maxMessages;
-		if (maxMessages && limitedMessages.length > maxMessages) {
-			limitedMessages = limitedMessages.slice(-maxMessages);
+		// Apply role filter
+		let filtered = chatHistoryMessages;
+		if (options?.roles && options.roles.length > 0) {
+			const allowed = new Set(options.roles);
+			filtered = filtered.filter((m) => allowed.has(m.role));
 		}
 
+		// Strip assistant thinking
+		if (options?.stripAssistantThinking === true) {
+			filtered = filtered.map(stripThinkingFromMessage);
+		}
+
+		// Apply history limits
+		let limited = filtered;
+		const maxMessages = options?.maxMessages;
+		if (maxMessages && limited.length > maxMessages) {
+			limited = limited.slice(-maxMessages);
+		}
+		const maxChars = options?.maxChars;
+		if (maxChars && limited.length > 0) {
+			limited = takeRecentMessagesWithinChars(limited, maxChars);
+		}
+
+		// Omit latest user message
 		const omitLatestUser = options?.omitLatestUser;
-		if (omitLatestUser && limitedMessages.length > 0) {
-			const lastUserIdx = findLastUserMessageIndex(limitedMessages);
+		if (omitLatestUser && limited.length > 0) {
+			const lastUserIdx = findLastUserMessageIndex(limited);
 			if (lastUserIdx !== -1) {
-				limitedMessages = limitedMessages.slice(0, lastUserIdx).concat(limitedMessages.slice(lastUserIdx + 1));
+				limited = limited.slice(0, lastUserIdx).concat(limited.slice(lastUserIdx + 1));
 			}
 		}
 
-		for (const msg of limitedMessages) {
+		for (const msg of limited) {
 			result.push(msg);
 			sources.push({ kind: "chat-history" });
 		}
@@ -128,13 +145,10 @@ function renderItemText(
 	} else {
 		raw = renderSlot(item as PromptPresetSlotItem, preset, runtime, diagnostics);
 	}
-
 	if (!raw) return "";
 
 	const policy = preset.defaults?.unresolvedMacroPolicy;
-	const expanded = expandMacros(raw, runtime, { unresolvedPolicy: policy });
-
-	return expanded;
+	return expandMacros(raw, runtime, { unresolvedPolicy: policy });
 }
 
 function addSyntheticMessage(
@@ -167,4 +181,39 @@ function findLastUserMessageIndex(messages: AgentMessage[]): number {
 		if (messages[i].role === "user") return i;
 	}
 	return -1;
+}
+
+function takeRecentMessagesWithinChars(messages: AgentMessage[], maxChars: number): AgentMessage[] {
+	const selected: AgentMessage[] = [];
+	let chars = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		const text = contentToText(msg);
+		if (selected.length > 0 && chars + text.length > maxChars) break;
+		selected.push(msg);
+		chars += text.length;
+	}
+	return selected.reverse();
+}
+
+function stripThinkingFromMessage(message: AgentMessage): AgentMessage {
+	if (message.role !== "assistant") return message;
+	const content = (message as { content?: unknown }).content;
+	if (!Array.isArray(content)) return message;
+	const stripped = content.filter((part: { type?: string }) => part?.type !== "thinking");
+	if (stripped.length === content.length) return message;
+	return { ...message, content: stripped } as AgentMessage;
+}
+
+function contentToText(message: AgentMessage): string {
+	if (message.role === "bashExecution") {
+		return String((message as { output?: string }).output ?? "");
+	}
+	const content = (message as { content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part: { type?: string; text?: string }) => part?.type === "text")
+		.map((part: { text?: string }) => part.text ?? "")
+		.join("\n");
 }

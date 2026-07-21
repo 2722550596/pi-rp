@@ -39,28 +39,6 @@ export interface PromptPresetBlockItem extends PromptPresetBaseItem {
 	content: string;
 }
 
-export interface VariablesSlotOptions {
-	includeStatic?: boolean;
-	includeSession?: boolean;
-	includeTurn?: boolean;
-}
-
-export interface PromptPresetSlotOptions {
-	format?: PromptPresetSlotFormat;
-	heading?: string;
-	includePiDefaultGuidelines?: boolean;
-	onlyWithSnippets?: boolean;
-	requireReadTool?: boolean;
-	includeTime?: boolean;
-	variables?: VariablesSlotOptions;
-	/** Chat-history: max recent messages to include. */
-	maxMessages?: number;
-	/** Chat-history: approximate max character count to include. */
-	maxChars?: number;
-	/** Chat-history: if true, skip the latest user message in history (for re-insertion via {{lastUserMessage}}). */
-	omitLatestUser?: boolean;
-}
-
 export interface PromptPresetSlotItem extends PromptPresetBaseItem {
 	kind: "slot";
 	slot: PromptPresetSlot | string;
@@ -69,6 +47,48 @@ export interface PromptPresetSlotItem extends PromptPresetBaseItem {
 
 export type PromptPresetItem = PromptPresetBlockItem | PromptPresetSlotItem;
 
+export interface VariablesSlotOptions {
+	includeStatic?: boolean;
+	includeSession?: boolean;
+	includeTurn?: boolean;
+}
+
+export interface PromptPresetSlotOptions {
+	// Shared: tools, tool-guidelines, skills, project-context, variables
+	format?: PromptPresetSlotFormat;
+
+	// tools slot
+	onlyWithSnippets?: boolean;
+
+	// tool-guidelines slot
+	heading?: string;
+	includePiDefaultGuidelines?: boolean;
+
+	// skills slot
+	requireReadTool?: boolean;
+
+	// date / date-cwd slot
+	includeTime?: boolean;
+
+	// variables slot
+	variables?: VariablesSlotOptions;
+
+	// chat-history slot
+	/** Keep only the most recent N messages (after other filtering). */
+	maxMessages?: number;
+	/** Keep only the most recent messages within an approximate character budget. */
+	maxChars?: number;
+	/** If true, skip the latest user message in history (for re-insertion via {{lastUserMessage}}). */
+	omitLatestUser?: boolean;
+	/** Remove assistant thinking content blocks from inserted history. */
+	stripAssistantThinking?: boolean;
+	/** Filter history to only these roles. */
+	roles?: string[];
+	/** Keep or drop prior tool call/result messages. */
+	toolMode?: "keep" | "drop";
+	/** Include Pi branch/compaction summary messages. */
+	includeSummaries?: boolean;
+}
 export interface PromptPresetDefaults {
 	syntheticMessagesVisible?: boolean;
 	unresolvedMacroPolicy?: "warn" | "keep" | "error";
