@@ -94,13 +94,15 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
-import {
-	defaultPreset,
-	type LoadedPromptPreset,
-	type PromptPreset,
-	type PromptRuntime,
+import { expandMacros } from "./prompt-preset/macro-engine.ts";
+import { defaultPreset } from "./prompt-preset/index.ts";
+import type {
+	LoadedPromptPreset,
+	PromptPreset,
+	PromptRuntime,
 } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
+import { getAgentDir } from "../config.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -357,11 +359,12 @@ export class AgentSession {
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
-	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
-	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	/** Compiled system prompt with {{macros}} left unexpanded. Expanded at agent-set time. */
+	private _baseSystemPromptTemplate = "";
 	private _activePreset: PromptPreset = defaultPreset;
 	private _loadedPresets: LoadedPromptPreset[] = [];
+	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
 	private _systemPromptOverride?: string;
 
@@ -931,7 +934,7 @@ export class AgentSession {
 
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		this._applyDynamicSystemPrompt();
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1013,7 +1016,7 @@ export class AgentSession {
 	}
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		if (this._loadedPresets.length === 0) {
-			this._loadedPresets = loadPromptPresets(this._cwd);
+			this._loadedPresets = loadPromptPresets(this._cwd, getAgentDir());
 
 			// Restore active preset: existing preset_change entry → settings default → built-in default
 			const entries = this.sessionManager.getEntries();
@@ -1068,7 +1071,23 @@ export class AgentSession {
 			return buildSystemPrompt(this._baseSystemPromptOptions);
 		}
 
-		const runtime: PromptRuntime = {
+		// First pass: compile without any macro expansion to get the raw template
+		const rawRuntime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: [],
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: loadedSkills,
+			skipMacroExpansion: true,
+		};
+		const rawTemplate = compileSystemPrompt(this._activePreset, rawRuntime, "").systemPrompt;
+
+		// Second pass: expand only static macros to produce the template for per-turn re-expansion
+		this._baseSystemPromptTemplate = expandMacros(rawTemplate, rawRuntime, { mode: "static" });
+
+		// Third pass: expand all macros for the initial cached value
+		const expandedRuntime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: [],
 			latestUserMessage: undefined,
@@ -1076,8 +1095,29 @@ export class AgentSession {
 			variables: {},
 			skills: loadedSkills,
 		};
-		const result = compileSystemPrompt(this._activePreset, runtime, "");
-		return result.systemPrompt;
+		return expandMacros(rawTemplate, expandedRuntime, { mode: "all" });
+	}
+
+	/**
+	 * Re-expand {{macros}} from the template and set agent.state.systemPrompt.
+	 * Called per-turn to give dynamic macros (e.g. {{roll:1d100}}) a fresh value.
+	 */
+	private _applyDynamicSystemPrompt(): void {
+		if (!this._baseSystemPromptTemplate) {
+			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+			return;
+		}
+		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: this.agent.state.messages,
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: loadedSkills,
+		};
+		const expanded = expandMacros(this._baseSystemPromptTemplate, runtime, { mode: "dynamic" });
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? expanded;
 	}
 
 	// =========================================================================
@@ -1096,16 +1136,21 @@ export class AgentSession {
 
 	/** Load presets from disk and re-resolve active preset. */
 	reloadPresets(preferredId?: string): void {
-		this._loadedPresets = loadPromptPresets(this._cwd);
-		if (preferredId && !isDisabledPromptPresetId(preferredId)) {
-			const found = this._loadedPresets.find((p) => p.preset.id === preferredId);
-			if (found) {
-				this._activePreset = found.preset;
-				this._syncActiveToolPolicy();
-				return;
-			}
+		const preferred = preferredId && !isDisabledPromptPresetId(preferredId) ? preferredId : undefined;
+		this._loadedPresets = loadPromptPresets(this._cwd, getAgentDir());
+
+		// Re-resolve active preset against the newly loaded list
+		const activeId = this._activePreset.id;
+		const match = preferred
+			? this._loadedPresets.find((p) => p.preset.id === preferred)
+			: this._loadedPresets.find((p) => p.preset.id === activeId);
+
+		if (match) {
+			this._activePreset = match.preset;
+			this._syncActiveToolPolicy();
+		} else {
+			this._toolPolicyBaseline = undefined;
 		}
-		this._toolPolicyBaseline = undefined;
 	}
 	/** Set the active prompt preset by ID. Persists to session. Returns false if not found. */
 	setActivePreset(id: string): boolean {
@@ -1144,14 +1189,6 @@ export class AgentSession {
 			this._toolPolicyBaseline = undefined;
 		}
 	}
-
-	private _rebuildAndSyncPrompt(): void {
-		const tools = this.getActiveToolNames();
-		this._baseSystemPrompt = this._rebuildSystemPrompt(tools);
-		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
-	}
-
-
 	/**
 	 * Compile the full message array including system prompt and chat-history
 	 * as the active preset positions them. Returns the messages that would be sent to the model.
@@ -1168,6 +1205,26 @@ export class AgentSession {
 		};
 		const result = compileMessages(this._activePreset, runtime);
 		return result.messages;
+	}
+
+	/**
+	 * Re-compile the system prompt from the active preset.
+	 * Unlike `systemPrompt` getter (which returns a cached value),
+	 * this always re-compiles: macros like {{roll:1d100}} get fresh values each call.
+	 */
+	compileSystemPrompt(): string {
+		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const validToolNames = this.getActiveToolNames();
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: this.agent.state.messages,
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: loadedSkills,
+		};
+		const result = compileSystemPrompt(this._activePreset, runtime, "");
+		return result.systemPrompt;
 	}
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
@@ -1359,7 +1416,7 @@ export class AgentSession {
 			} else {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
 				this._systemPromptOverride = undefined;
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
+				this._applyDynamicSystemPrompt();
 			}
 		} catch (error) {
 			preflightResult?.(false);
@@ -2498,7 +2555,7 @@ export class AgentSession {
 
 		this._resourceLoader.extendResources(extensionPaths);
 		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this._applyDynamicSystemPrompt();
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{

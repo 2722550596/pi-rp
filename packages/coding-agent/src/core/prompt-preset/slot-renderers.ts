@@ -110,9 +110,7 @@ registerSlot(
 			const tools = applyResourcePolicy(selectedTools ?? ["read", "bash", "edit", "write"], ctx.preset.tools);
 			const includeDefault = ctx.item.options?.includePiDefaultGuidelines !== false;
 			const heading = ctx.item.options?.heading ?? "Guidelines:";
-			const guidelines = includeDefault
-				? getToolGuidelines(tools, promptGuidelines)
-				: (promptGuidelines ?? []);
+			const guidelines = includeDefault ? getToolGuidelines(tools, promptGuidelines) : (promptGuidelines ?? []);
 			if (guidelines.length === 0) return "";
 			return `${heading}\n${guidelines.map((g) => `- ${g}`).join("\n")}`;
 		},

@@ -589,11 +589,16 @@ export class InteractiveMode {
 				if (presets.length === 0) return null;
 
 				const items = presets.map((p) => ({ id: p.preset.id, description: p.preset.description ?? "" }));
-				return createFuzzyAutocompleteItems(items, prefix, (p) => p.id, (p) => ({
-					value: p.id,
-					label: p.id,
-					description: p.description,
-				}));
+				return createFuzzyAutocompleteItems(
+					items,
+					prefix,
+					(p) => p.id,
+					(p) => ({
+						value: p.id,
+						label: p.id,
+						description: p.description,
+					}),
+				);
 			};
 		}
 		const promptCommand = slashCommands.find((command) => command.name === "prompt");
@@ -603,11 +608,16 @@ export class InteractiveMode {
 					{ id: "tools", description: "Show active tool definitions" },
 					{ id: "messages", description: "Show compiled prompt messages" },
 				];
-				return createFuzzyAutocompleteItems(items, prefix, (p) => p.id, (p) => ({
-					value: p.id,
-					label: p.id,
-					description: p.description,
-				}));
+				return createFuzzyAutocompleteItems(
+					items,
+					prefix,
+					(p) => p.id,
+					(p) => ({
+						value: p.id,
+						label: p.id,
+						description: p.description,
+					}),
+				);
 			};
 		}
 

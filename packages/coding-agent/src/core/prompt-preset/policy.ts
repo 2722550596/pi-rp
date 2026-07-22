@@ -22,10 +22,7 @@ export function matchesAnyPattern(name: string, patterns: string[]): boolean {
 export function resourcePatternMatches(name: string, pattern: string): boolean {
 	if (pattern === "*") return true;
 	if (!pattern.includes("*")) return name === pattern;
-	const escaped = pattern
-		.split("*")
-		.map(escapeRegExp)
-		.join(".*");
+	const escaped = pattern.split("*").map(escapeRegExp).join(".*");
 	return new RegExp(`^${escaped}$`).test(name);
 }
 

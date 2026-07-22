@@ -134,6 +134,8 @@ function renderItemText(
 	}
 	if (!raw) return "";
 
+	if (runtime.skipMacroExpansion) return raw;
+
 	const policy = preset.defaults?.unresolvedMacroPolicy;
 	return expandMacros(raw, runtime, { unresolvedPolicy: policy });
 }

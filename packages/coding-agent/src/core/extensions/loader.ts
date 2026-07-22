@@ -31,6 +31,8 @@ import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
+import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
+import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import type {
 	EntryRenderer,
 	Extension,
@@ -194,8 +196,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
-		registerSlot: (() => {}) as (definition: unknown) => void,
-		registerMacro: (() => {}) as (definition: unknown) => void,
+		registerSlot: (definition) => registerCustomSlot(definition, false),
+		registerMacro: (definition) => registerCustomMacro(definition, false),
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],

@@ -188,6 +188,32 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+// Prompt preset types
+export type {
+	CompileMessageSource,
+	CompileMessagesResult,
+	CompileSystemPromptResult,
+	ExpandMacrosOptions,
+	LoadedPromptPreset,
+	MacroDefinition,
+	MacroRenderContext,
+	MacroRenderer,
+	PromptPreset,
+	PromptPresetBlockItem,
+	PromptPresetDefaults,
+	PromptPresetDiagnostic,
+	PromptPresetDiagnosticLevel,
+	PromptPresetItem,
+	PromptPresetMode,
+	PromptPresetRole,
+	PromptPresetSlot,
+	PromptPresetSlotItem,
+	PromptPresetSlotOptions,
+	PromptRuntime,
+	SlotDefinition,
+	SlotRenderContext,
+	SlotRenderer,
+} from "./core/prompt-preset/index.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage

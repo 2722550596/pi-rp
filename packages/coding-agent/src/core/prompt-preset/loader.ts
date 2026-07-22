@@ -11,7 +11,7 @@ import type {
 	PromptResourcePolicy,
 } from "./types.ts";
 
-const PROMPT_PRESET_DIR = ".pi/prompt-presets";
+const PROMPT_PRESET_DIR = "prompt-presets";
 
 const VALID_ROLES = new Set(["system", "user", "assistant", "custom"]);
 
@@ -19,31 +19,39 @@ const VALID_ROLES = new Set(["system", "user", "assistant", "custom"]);
 // Public API
 // =========================================================================
 
-export function promptPresetsDir(cwd: string): string {
-	return join(cwd, PROMPT_PRESET_DIR);
+export function promptPresetsDir(parentDir: string): string {
+	return join(parentDir, PROMPT_PRESET_DIR);
 }
 
-export function loadPromptPresets(cwd: string): LoadedPromptPreset[] {
-	const dir = promptPresetsDir(cwd);
-	if (!existsSync(dir)) return [];
+export function promptPresetsProjectDir(cwd: string): string {
+	return join(cwd, ".pi", PROMPT_PRESET_DIR);
+}
 
-	const files = readdirSync(dir)
-		.filter((f) => f.endsWith(".json"))
-		.map((f) => join(dir, f));
+export function loadPromptPresets(cwd: string, agentDir?: string): LoadedPromptPreset[] {
+	const dirs: string[] = [];
+	if (agentDir) dirs.push(join(agentDir, PROMPT_PRESET_DIR));
+	dirs.push(join(cwd, ".pi", PROMPT_PRESET_DIR));
 
 	const presets: LoadedPromptPreset[] = [];
-	for (const filePath of files) {
-		const loaded = loadPromptPresetFile(filePath);
-		presets.push(loaded);
+	for (const dir of dirs) {
+		if (!existsSync(dir)) continue;
+		const files = readdirSync(dir)
+			.filter((f) => f.endsWith(".json"))
+			.map((f) => join(dir, f));
+		for (const filePath of files) {
+			const loaded = loadPromptPresetFile(filePath);
+			// Project presets override global ones with the same ID
+			const existing = presets.findIndex((p) => p.preset.id === loaded.preset.id);
+			if (existing !== -1) {
+				presets[existing] = loaded;
+			} else {
+				presets.push(loaded);
+			}
+		}
 	}
 
 	annotateDuplicatePresetIds(presets);
 	return presets;
-}
-
-export function loadPromptPreset(cwd: string, id: string): LoadedPromptPreset | undefined {
-	const presets = loadPromptPresets(cwd);
-	return presets.find((p) => p.preset.id === id);
 }
 
 export function chooseDefaultPreset(

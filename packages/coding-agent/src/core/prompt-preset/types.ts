@@ -28,10 +28,7 @@ export type PromptPresetSlot =
 // Resource Policy (tools/skills allow/deny)
 // =========================================================================
 
-export type PromptResourcePolicy =
-	| { allow?: string[]; deny?: never }
-	| { allow?: never; deny?: string[] };
-
+export type PromptResourcePolicy = { allow?: string[]; deny?: never } | { allow?: never; deny?: string[] };
 
 export type PromptPresetSlotFormat = "xml" | "json" | "plain";
 
@@ -134,6 +131,8 @@ export interface PromptRuntime {
 	now: Date;
 	variables: Record<string, string>;
 	skills: Skill[];
+	/** If true, {{macros}} are left unexpanded in the compiled output. */
+	skipMacroExpansion?: boolean;
 }
 
 // =========================================================================
@@ -196,6 +195,8 @@ export interface SlotDefinition {
 export interface MacroRenderContext {
 	runtime: PromptRuntime;
 	variables: Record<string, string>;
+	/** Optional parameter string from {{name:params}} syntax. */
+	params?: string;
 }
 
 export type MacroRenderer = (context: MacroRenderContext) => string;
@@ -204,4 +205,7 @@ export interface MacroDefinition {
 	name: string;
 	description: string;
 	render: MacroRenderer;
+	/** If true, expanded once at system-prompt build time and baked into the template.
+	 *  If false (default), the {{macro}} placeholder is preserved and re-expanded each turn. */
+	static?: boolean;
 }
