@@ -285,6 +285,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const sessionRef: { current?: AgentSession } = {};
 
 	agent = new Agent({
 		initialState: {
@@ -344,8 +345,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionId: sessionManager.getSessionId(),
 		transformContext: async (messages) => {
 			const runner = extensionRunnerRef.current;
-			if (!runner) return messages;
-			return runner.emitContext(messages);
+			let result = runner ? await runner.emitContext(messages) : messages;
+			// Inject preset items from the session (not stored in agent.state.messages)
+			if (sessionRef.current) {
+				const presetItems = sessionRef.current.getPresetInjectMessages();
+				if (presetItems.length > 0) {
+					result = [...presetItems, ...result];
+				}
+			}
+			return result;
 		},
 		steeringMode: settingsManager.getSteeringMode(),
 		followUpMode: settingsManager.getFollowUpMode(),
@@ -384,6 +392,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 	});
+	sessionRef.current = session;
 	const extensionsResult = resourceLoader.getExtensions();
 
 	return {

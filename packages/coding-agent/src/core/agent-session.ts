@@ -367,8 +367,6 @@ export class AgentSession {
 	private _baseSystemPromptTemplate = "";
 	private _activePreset: PromptPreset = defaultPreset;
 	private _loadedPresets: LoadedPromptPreset[] = [];
-	/** Whether compiled preset items have been injected into the first turn's messages. */
-	private _presetItemsInjected = false;
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
 	private _systemPromptOverride?: string;
@@ -1254,18 +1252,41 @@ export class AgentSession {
 		return result.systemPrompt;
 	}
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
-		this._isAgentRunActive = true;
-		try {
-			await this.agent.prompt(messages);
-			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
+	/**
+	 * Get compiled preset items (excluding chat-history) for injection into the LLM context.
+	 * Called from transformContext in sdk.ts — these items appear in the LLM payload
+	 * without being stored in agent.state.messages.
+	 */
+	getPresetInjectMessages(): AgentMessage[] {
+		if (this._loadedPresets.length === 0) return [];
+		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: [],
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: loadedSkills,
+		};
+		const items = this._activePreset.items.filter((item) => item.enabled !== false);
+		const result: AgentMessage[] = [];
+		for (const item of items) {
+			if (item.kind === "slot" && (item as PromptPresetSlotItem).slot === "chat-history") continue;
+			if (!item.role) continue;
+			let text: string;
+			if (item.kind === "block") {
+				text = (item as PromptPresetBlockItem).content;
+			} else {
+				continue;
 			}
-		} finally {
-			this._systemPromptOverride = undefined;
-			this._flushPendingBashMessages();
-			await this._emitAgentSettled();
+			if (!text) continue;
+			result.push({
+				role: item.role,
+				content: [{ type: "text" as const, text }],
+				timestamp: Date.now(),
+			} as AgentMessage);
 		}
+		return result;
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -1280,12 +1301,7 @@ export class AgentSession {
 		}
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
-			this._emit({
-				type: "auto_retry_end",
-				success: false,
-				attempt: this._retryAttempt,
-				finalError: msg.errorMessage,
-			});
+			this._emit({ type: "auto_retry_end", success: false, attempt: this._retryAttempt, finalError: msg.errorMessage });
 			this._retryAttempt = 0;
 		}
 
@@ -1294,6 +1310,20 @@ export class AgentSession {
 		}
 
 		return this.agent.hasQueuedMessages();
+	}
+
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		this._isAgentRunActive = true;
+		try {
+			await this.agent.prompt(messages);
+			while (await this._handlePostAgentRun()) {
+				await this.agent.continue();
+			}
+		} finally {
+			this._systemPromptOverride = undefined;
+			this._flushPendingBashMessages();
+			await this._emitAgentSettled();
+		}
 	}
 
 	/**
@@ -1460,15 +1490,6 @@ export class AgentSession {
 			return;
 		}
 		preflightResult?.(true);
-
-		// Inject compiled preset items into messages (only on first turn to avoid accumulation)
-		if (this._loadedPresets.length > 0 && !this._presetItemsInjected) {
-			const presetItems = this._compilePresetItems();
-			if (presetItems.length > 0) {
-				messages = [...presetItems, ...messages];
-				this._presetItemsInjected = true;
-			}
-		}
 
 		await this._runAgentPrompt(messages);
 	}
