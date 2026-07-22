@@ -1002,13 +1002,27 @@ export class AgentSession {
 		}
 		return Array.from(unique);
 	}
-
 	private _rebuildSystemPrompt(toolNames: string[]): string {
-		// Load presets from disk on first call
 		if (this._loadedPresets.length === 0) {
 			this._loadedPresets = loadPromptPresets(this._cwd);
-			const chosen = chooseDefaultPreset(this._loadedPresets);
-			if (chosen) this._activePreset = chosen.preset;
+
+			// Restore active preset: session custom entry → settings default → built-in default
+			const entries = this.sessionManager.getEntries();
+			let storedPresetId: string | undefined;
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const e = entries[i];
+				if (e.type === "custom" && e.customType === "preset_state" && e.data && typeof e.data === "object" && "presetId" in e.data) {
+					const val = (e.data as Record<string, unknown>).presetId;
+					if (typeof val === "string") { storedPresetId = val; break; }
+				}
+			}
+
+			const settingsPresetId = this.settingsManager.getDefaultPreset();
+			const restoreId = storedPresetId ?? settingsPresetId;
+			if (restoreId && restoreId !== "default") {
+				const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
+				if (found) this._activePreset = found.preset;
+			}
 		}
 
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
@@ -1023,8 +1037,7 @@ export class AgentSession {
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
-		const appendSystemPrompt =
-			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
+		const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
@@ -1059,6 +1072,7 @@ export class AgentSession {
 	// Prompt Preset Management
 	// =========================================================================
 
+
 	/** Get the currently active prompt preset. */
 	get activePreset(): PromptPreset {
 		return this._activePreset;
@@ -1069,29 +1083,31 @@ export class AgentSession {
 		return this._loadedPresets;
 	}
 
-	/** Load presets from disk and choose one as active. */
+	/** Load presets from disk and re-resolve active preset. */
 	reloadPresets(preferredId?: string): void {
 		this._loadedPresets = loadPromptPresets(this._cwd);
-		if (preferredId) {
+		if (preferredId && !isDisabledPromptPresetId(preferredId)) {
 			const found = this._loadedPresets.find((p) => p.preset.id === preferredId);
-			if (found) this._activePreset = found.preset;
-		}
-		if (!preferredId || isDisabledPromptPresetId(preferredId)) {
-			const chosen = chooseDefaultPreset(this._loadedPresets);
-			this._activePreset = chosen?.preset ?? defaultPreset;
+			if (found) {
+				this._activePreset = found.preset;
+				return;
+			}
 		}
 	}
 
-	/** Set the active prompt preset by ID. Returns false if not found. */
+	/** Set the active prompt preset by ID. Persists to session. Returns false if not found. */
 	setActivePreset(id: string): boolean {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
+			this.sessionManager.appendCustomEntry("preset_state", { presetId: "default" });
 			this._rebuildAndSyncPrompt();
 			return true;
 		}
 		const found = this._loadedPresets.find((p) => p.preset.id === id);
 		if (!found) return false;
 		this._activePreset = found.preset;
+		this.sessionManager.appendCustomEntry("preset_state", { presetId: id });
+		this.settingsManager.setDefaultPreset(id);
 		this._rebuildAndSyncPrompt();
 		return true;
 	}

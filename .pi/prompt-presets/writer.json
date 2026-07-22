@@ -3,8 +3,6 @@
   "id": "writer",
   "name": "Creative Writer",
   "description": "Turns Pi into a creative writing partner. Replaces the default prompt.",
-  "autoActivate": false,
-  "mode": "replace",
   "items": [
     {
       "kind": "block",

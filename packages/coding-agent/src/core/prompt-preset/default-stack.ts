@@ -11,7 +11,6 @@ export const defaultPreset: PromptPreset = {
 	name: "Pi Default Prompt",
 	description: "Built-in prompt stack that mirrors Pi's default system prompt behavior.",
 	autoActivate: true,
-	mode: "replace",
 	defaults: {
 		syntheticMessagesVisible: false,
 		unresolvedMacroPolicy: "keep",

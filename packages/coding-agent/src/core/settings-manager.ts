@@ -84,6 +84,7 @@ export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
+	defaultPreset?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
@@ -697,6 +698,16 @@ export class SettingsManager {
 		this.globalSettings.defaultModel = modelId;
 		this.markModified("defaultProvider");
 		this.markModified("defaultModel");
+		this.save();
+	}
+
+	getDefaultPreset(): string | undefined {
+		return this.settings.defaultPreset;
+	}
+
+	setDefaultPreset(presetId: string): void {
+		this.globalSettings.defaultPreset = presetId;
+		this.markModified("defaultPreset");
 		this.save();
 	}
 

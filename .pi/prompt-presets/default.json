@@ -3,8 +3,6 @@
   "id": "default",
   "name": "Pi Default",
   "description": "Mirrors Pi's built-in default prompt behavior. All sections are movable.",
-  "autoActivate": true,
-  "mode": "replace",
   "items": [
     {
       "kind": "block",

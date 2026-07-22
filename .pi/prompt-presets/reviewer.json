@@ -3,8 +3,6 @@
   "id": "reviewer",
   "name": "Strict Code Reviewer",
   "description": "Adds strict review instructions. Denies file-writing tools.",
-  "autoActivate": false,
-  "mode": "append",
   "tools": { "deny": ["edit", "write", "bash"] },
   "items": [
     {

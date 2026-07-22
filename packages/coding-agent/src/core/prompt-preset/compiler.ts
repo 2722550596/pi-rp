@@ -39,18 +39,7 @@ export function compileSystemPrompt(
 	}
 
 	const compiled = parts.join("\n\n");
-	const mode = preset.mode ?? "replace";
-
-	let systemPrompt: string;
-	if (mode === "append" && compiled) {
-		systemPrompt = `${baseSystemPrompt}\n\n${compiled}`;
-	} else if (mode === "prepend" && compiled) {
-		systemPrompt = `${compiled}\n\n${baseSystemPrompt}`;
-	} else {
-		systemPrompt = compiled || baseSystemPrompt;
-	}
-
-	return { systemPrompt, diagnostics };
+	return { systemPrompt: compiled || baseSystemPrompt, diagnostics };
 }
 
 // =========================================================================
