@@ -229,6 +229,14 @@ export const OPENROUTER_MODELS = values as {
 		id: "google/gemini-3.5-flash";
 		provider: "openrouter";
 	};
+	"google/gemini-3.5-flash-lite": Model<"openai-completions"> & {
+		id: "google/gemini-3.5-flash-lite";
+		provider: "openrouter";
+	};
+	"google/gemini-3.6-flash": Model<"openai-completions"> & {
+		id: "google/gemini-3.6-flash";
+		provider: "openrouter";
+	};
 	"google/gemma-3-12b-it": Model<"openai-completions"> & {
 		id: "google/gemma-3-12b-it";
 		provider: "openrouter";
@@ -283,6 +291,10 @@ export const OPENROUTER_MODELS = values as {
 	};
 	"kwaipilot/kat-coder-pro-v2.5": Model<"openai-completions"> & {
 		id: "kwaipilot/kat-coder-pro-v2.5";
+		provider: "openrouter";
+	};
+	"meituan/longcat-2.0": Model<"openai-completions"> & {
+		id: "meituan/longcat-2.0";
 		provider: "openrouter";
 	};
 	"meta-llama/llama-3.1-70b-instruct": Model<"openai-completions"> & {
@@ -549,6 +561,10 @@ export const OPENROUTER_MODELS = values as {
 		id: "openai/gpt-5-nano";
 		provider: "openrouter";
 	};
+	"openai/gpt-5-nano:batch": Model<"openai-completions"> & {
+		id: "openai/gpt-5-nano:batch";
+		provider: "openrouter";
+	};
 	"openai/gpt-5-pro": Model<"openai-completions"> & {
 		id: "openai/gpt-5-pro";
 		provider: "openrouter";
@@ -731,6 +747,14 @@ export const OPENROUTER_MODELS = values as {
 	};
 	"poolside/laguna-m.1:free": Model<"openai-completions"> & {
 		id: "poolside/laguna-m.1:free";
+		provider: "openrouter";
+	};
+	"poolside/laguna-s-2.1": Model<"openai-completions"> & {
+		id: "poolside/laguna-s-2.1";
+		provider: "openrouter";
+	};
+	"poolside/laguna-s-2.1:free": Model<"openai-completions"> & {
+		id: "poolside/laguna-s-2.1:free";
 		provider: "openrouter";
 	};
 	"poolside/laguna-xs-2.1": Model<"openai-completions"> & {
@@ -951,10 +975,6 @@ export const OPENROUTER_MODELS = values as {
 	};
 	"tencent/hy3-preview": Model<"openai-completions"> & {
 		id: "tencent/hy3-preview";
-		provider: "openrouter";
-	};
-	"tencent/hy3:free": Model<"openai-completions"> & {
-		id: "tencent/hy3:free";
 		provider: "openrouter";
 	};
 	"thedrummer/unslopnemo-12b": Model<"openai-completions"> & {

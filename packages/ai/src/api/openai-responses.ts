@@ -24,9 +24,9 @@ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copi
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
+import { splitSystemMessages } from "./transform-messages.ts";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
-// OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 
 function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
@@ -232,10 +232,10 @@ function createClient(
 
 function buildParams(model: Model<"openai-responses">, context: Context, options?: OpenAIResponsesOptions) {
 	const compat = getCompat(model);
+	const { systemPrompt, messages: cleanMessages } = splitSystemMessages(context.messages, context.systemPrompt);
+	context = { ...context, systemPrompt, messages: cleanMessages };
 	const toolPlacement = splitDeferredTools(context, compat.supportsToolSearch);
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
-		deferredTools: toolPlacement.deferred,
-	});
+	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {});
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 	const params: ResponseCreateParamsStreaming = {

@@ -60,7 +60,7 @@ import {
 	clampMaxTokensToContext,
 	clampReasoning,
 } from "./simple-options.ts";
-import { transformMessages } from "./transform-messages.ts";
+import { splitSystemMessages, transformMessages } from "./transform-messages.ts";
 
 export type BedrockThinkingDisplay = "summarized" | "omitted";
 
@@ -220,6 +220,12 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			}
 			const cacheRetention = resolveCacheRetention(options.cacheRetention, options.env);
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
+			const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
+				context.messages,
+				context.systemPrompt,
+			);
+			context = { ...context, systemPrompt: mergedSystemPrompt, messages: cleanMessages };
+
 			let commandInput = {
 				modelId: model.id,
 				messages: convertMessages(context, model, cacheRetention, options.env),

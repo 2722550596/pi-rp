@@ -4,10 +4,44 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	SystemMessage,
 	TextContent,
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
+
+/**
+ * Extract system messages from a message array into systemPrompt concatenation.
+ * For adapters that need system content as a string (Anthropic, Google, Bedrock).
+ * Returns the original messages minus system entries, plus the concatenated system text.
+ * If systemPrompt is already set (backward compat path), returns unchanged.
+ */
+export function splitSystemMessages(
+	messages: Message[],
+	systemPrompt?: string,
+): { systemPrompt: string; messages: Message[] } {
+	if (systemPrompt) {
+		return { systemPrompt, messages };
+	}
+	const systemMessages = messages.filter((m): m is SystemMessage => m.role === "system");
+	if (systemMessages.length === 0) {
+		return { systemPrompt: "", messages };
+	}
+	const systemText = systemMessages
+		.map((m) => {
+			if (typeof m.content === "string") return m.content;
+			// Array format from preset compiler: extract text blocks
+			return m.content
+				.filter((p): p is TextContent => p.type === "text")
+				.map((p) => p.text)
+				.join("\n");
+		})
+		.join("\n\n");
+	return {
+		systemPrompt: systemText,
+		messages: messages.filter((m) => m.role !== "system"),
+	};
+}
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";

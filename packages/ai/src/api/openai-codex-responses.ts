@@ -51,6 +51,8 @@ import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
+import { splitSystemMessages } from "./transform-messages.ts";
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -485,6 +487,12 @@ function buildRequestBody(
 	context: Context,
 	options?: OpenAICodexResponsesOptions,
 ): RequestBody {
+	const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
+		context.messages,
+		context.systemPrompt,
+	);
+	context = { ...context, systemPrompt: mergedSystemPrompt, messages: cleanMessages };
+
 	const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
 	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
 		includeSystemPrompt: false,

@@ -184,6 +184,9 @@ function messageToText(message: Message): string {
 	if (message.role === "assistant") {
 		return assistantContentToText(message.content);
 	}
+	if (message.role === "system") {
+		return typeof message.content === "string" ? message.content : contentToText(message.content);
+	}
 	return toolResultToText(message);
 }
 

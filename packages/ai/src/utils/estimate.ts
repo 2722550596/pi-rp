@@ -43,11 +43,14 @@ export function estimateTextAndImageContentTokens(content: string | Array<TextCo
 }
 
 export function estimateMessageTokens(message: Message): number {
-	let chars = 0;
-
 	if (message.role === "user") return estimateTextAndImageContentTokens(message.content);
 	if (message.role === "toolResult") return estimateTextAndImageContentTokens(message.content);
+	if (message.role === "system") {
+		return estimateTextAndImageContentTokens(message.content);
+	}
 
+	// assistant
+	let chars = 0;
 	for (const block of message.content) {
 		if (block.type === "text") {
 			chars += block.text.length;

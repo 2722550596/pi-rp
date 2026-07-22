@@ -41,7 +41,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { buildBaseOptions } from "./simple-options.ts";
-import { transformMessages } from "./transform-messages.ts";
+import { splitSystemMessages, transformMessages } from "./transform-messages.ts";
 
 /**
  * Check if conversation messages contain tool calls or tool results.
@@ -905,12 +905,13 @@ export function convertMessages(
 		return id;
 	};
 
-	const transformedMessages = transformMessages(context.messages, model, (id) => normalizeToolCallId(id));
+	const { systemPrompt, messages: cleanedMessages } = splitSystemMessages(context.messages, context.systemPrompt);
+	const transformedMessages = transformMessages(cleanedMessages, model, (id) => normalizeToolCallId(id));
 
-	if (context.systemPrompt) {
+	if (systemPrompt) {
 		const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole;
 		const role = useDeveloperRole ? "developer" : "system";
-		params.push({ role: role, content: sanitizeSurrogates(context.systemPrompt) });
+		params.push({ role: role, content: sanitizeSurrogates(systemPrompt) });
 	}
 
 	let lastRole: string | null = null;
@@ -1141,8 +1142,16 @@ export function convertMessages(
 				}
 			}
 			continue;
+		} else if (msg.role === "system") {
+			const text =
+				typeof msg.content === "string"
+					? msg.content
+					: msg.content
+							.filter((p): p is TextContent => p.type === "text")
+							.map((p) => p.text)
+							.join("\n");
+			params.push({ role: "system", content: sanitizeSurrogates(text) });
 		}
-
 		lastRole = msg.role;
 	}
 

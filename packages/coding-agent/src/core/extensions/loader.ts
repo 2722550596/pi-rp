@@ -29,10 +29,10 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
+import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
-import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
-import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import type {
 	EntryRenderer,
 	Extension,

@@ -379,6 +379,12 @@ export interface Usage {
 
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
+export interface SystemMessage {
+	role: "system";
+	content: string | (TextContent | ImageContent)[];
+	timestamp: number;
+}
+
 export interface UserMessage {
 	role: "user";
 	content: string | (TextContent | ImageContent)[];
@@ -416,7 +422,7 @@ export interface ToolResultMessage<TDetails = any> {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
-export type Message = UserMessage | AssistantMessage | ToolResultMessage;
+export type Message = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage;
 
 export type ImagesInputContent = TextContent | ImageContent;
 export type ImagesOutputContent = TextContent | ImageContent;

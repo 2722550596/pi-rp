@@ -181,14 +181,11 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						],
 						timestamp: m.timestamp,
 					};
+				case "system":
 				case "user":
 				case "assistant":
 				case "toolResult":
 					return m;
-				default:
-					// biome-ignore lint/correctness/noSwitchDeclarations: fine
-					const _exhaustiveCheck: never = m;
-					return undefined;
 			}
 		})
 		.filter((m) => m !== undefined);

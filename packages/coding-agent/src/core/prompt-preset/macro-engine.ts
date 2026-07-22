@@ -112,7 +112,6 @@ registerMacro(
 	true,
 );
 
-
 // =========================================================================
 // Macro Expansion
 // =========================================================================
@@ -162,7 +161,7 @@ export function expandMacros(text: string, runtime: PromptRuntime, _options?: Ex
 		// 3. Unresolved — return as-is
 		return _match;
 	});
-	}
+}
 
 /** Expand macros in a multi-item content value (string or content array). */
 export function expandContentMacros(

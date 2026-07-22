@@ -39,6 +39,7 @@ import {
 	retainThoughtSignature,
 } from "./google-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
+import { splitSystemMessages } from "./transform-messages.ts";
 
 export interface GoogleVertexOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "any";
@@ -444,6 +445,11 @@ function buildParams(
 	context: Context,
 	options: GoogleVertexOptions = {},
 ): GenerateContentParameters {
+	const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
+		context.messages,
+		context.systemPrompt,
+	);
+	context = { ...context, systemPrompt: mergedSystemPrompt, messages: cleanMessages };
 	const contents = convertMessages(model, context);
 
 	const generationConfig: GenerateContentConfig = {};

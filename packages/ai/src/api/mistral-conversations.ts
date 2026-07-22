@@ -26,7 +26,7 @@ import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { buildBaseOptions } from "./simple-options.ts";
-import { transformMessages } from "./transform-messages.ts";
+import { splitSystemMessages, transformMessages } from "./transform-messages.ts";
 
 const MISTRAL_TOOL_CALL_ID_LENGTH = 9;
 const MAX_MISTRAL_ERROR_BODY_CHARS = 4000;
@@ -243,24 +243,20 @@ function buildChatPayload(
 	messages: Message[],
 	options?: MistralOptions,
 ): ChatCompletionStreamRequest {
+	const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
+		messages,
+		context.systemPrompt,
+	);
 	const payload: ChatCompletionStreamRequest = {
 		model: model.id,
 		stream: true,
-		messages: toChatMessages(messages, model.input.includes("image")),
+		messages: toChatMessages(cleanMessages, model.input.includes("image")),
 	};
 
-	if (context.tools?.length) payload.tools = toFunctionTools(context.tools);
-	if (options?.temperature !== undefined) payload.temperature = options.temperature;
-	if (options?.maxTokens !== undefined) payload.maxTokens = options.maxTokens;
-	if (options?.toolChoice) payload.toolChoice = mapToolChoice(options.toolChoice);
-	if (options?.promptMode) payload.promptMode = options.promptMode;
-	if (options?.reasoningEffort) payload.reasoningEffort = options.reasoningEffort;
-	if (shouldUsePromptCaching(options)) payload.promptCacheKey = options.sessionId;
-
-	if (context.systemPrompt) {
+	if (mergedSystemPrompt) {
 		payload.messages.unshift({
 			role: "system",
-			content: sanitizeSurrogates(context.systemPrompt),
+			content: sanitizeSurrogates(mergedSystemPrompt),
 		});
 	}
 
@@ -567,6 +563,14 @@ function toChatMessages(messages: Message[], supportsImages: boolean): ChatCompl
 			if (contentParts.length > 0) assistantMessage.content = contentParts;
 			if (toolCalls.length > 0) assistantMessage.toolCalls = toolCalls;
 			if (contentParts.length > 0 || toolCalls.length > 0) result.push(assistantMessage);
+			continue;
+		}
+
+		if (msg.role === "system") {
+			result.push({
+				role: "system",
+				content: sanitizeSurrogates(typeof msg.content === "string" ? msg.content : ""),
+			});
 			continue;
 		}
 

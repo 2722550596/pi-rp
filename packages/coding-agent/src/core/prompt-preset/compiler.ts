@@ -49,7 +49,7 @@ export function compileSystemPrompt(
 export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): CompileMessagesResult {
 	const diagnostics: PromptPresetDiagnostic[] = [];
 	const sources: CompileMessageSource[] = [];
-	const result: AgentMessage[] = [];
+	let result: AgentMessage[] = [];
 	const items = enabledItems(preset);
 
 	const chatHistoryIndex = items.findIndex((item) => item.kind === "slot" && item.slot === "chat-history");
@@ -58,7 +58,6 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
 
 	for (const item of beforeItems) {
-		if (item.role === "system" || item.role === undefined) continue;
 		addSyntheticMessage(result, item, preset, runtime, sources, diagnostics);
 	}
 
@@ -105,13 +104,52 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	}
 
 	for (const item of afterItems) {
-		if (item.role === "system" || item.role === undefined) continue;
 		addSyntheticMessage(result, item, preset, runtime, sources, diagnostics);
 	}
+
+	// Squash consecutive same-role messages: merge adjacent messages with the same role
+	result = squashMessages(result);
 
 	return { messages: result, sources, diagnostics };
 }
 
+/**
+ * Merge consecutive messages with the same role.
+ * e.g. [system, system, user, system, system] → [system(merged), user, system(merged)]
+ */
+function squashMessages(messages: AgentMessage[]): AgentMessage[] {
+	if (messages.length < 2) return messages;
+
+	const squashed: AgentMessage[] = [];
+	let last: AgentMessage | undefined;
+	for (const msg of messages) {
+		if (!("content" in msg) || !msg.content) continue;
+		if (!last) {
+			last = msg;
+			continue;
+		}
+		if (last.role === msg.role && typeof last.content === "object" && typeof msg.content === "object") {
+			const lastArr = last.content as Array<{ type: string; text?: string }>;
+			const msgArr = msg.content as Array<{ type: string; text?: string }>;
+			const lastText = lastArr
+				.filter((p) => p.type === "text")
+				.map((p) => p.text ?? "")
+				.join("\n");
+			const msgText = msgArr
+				.filter((p) => p.type === "text")
+				.map((p) => p.text ?? "")
+				.join("\n");
+			if (lastText && msgText) {
+				last = { ...last, content: [{ type: "text" as const, text: lastText + "\n\n" + msgText }] } as AgentMessage;
+				continue;
+			}
+		}
+		squashed.push(last);
+		last = msg;
+	}
+	if (last) squashed.push(last);
+	return squashed;
+}
 // =========================================================================
 // Helpers
 // =========================================================================
@@ -151,7 +189,7 @@ function addSyntheticMessage(
 	const text = renderItemText(item, preset, runtime, diagnostics);
 	if (!text) return;
 
-	const role = item.role ?? "user";
+	const role = item.role ?? "system";
 	messages.push({
 		role,
 		content: [{ type: "text", text }],

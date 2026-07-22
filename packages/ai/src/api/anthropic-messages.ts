@@ -38,7 +38,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
-import { transformMessages } from "./transform-messages.ts";
+import { splitSystemMessages, transformMessages } from "./transform-messages.ts";
 
 /**
  * Resolve cache retention preference.
@@ -924,6 +924,12 @@ function buildParams(
 	options?: AnthropicOptions,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
+	const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
+		context.messages,
+		context.systemPrompt,
+	);
+	context = { ...context, systemPrompt: mergedSystemPrompt, messages: cleanMessages };
+
 	const compat = getAnthropicCompat(model);
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;

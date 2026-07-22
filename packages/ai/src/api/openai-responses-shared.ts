@@ -167,6 +167,18 @@ export function convertResponsesMessages<TApi extends Api>(
 					content,
 				});
 			}
+		} else if (msg.role === "system") {
+			messages.push({
+				role: "system",
+				content: sanitizeSurrogates(
+					typeof msg.content === "string"
+						? msg.content
+						: msg.content
+								.filter((c): c is TextContent => c.type === "text")
+								.map((c) => c.text)
+								.join("\n"),
+				),
+			});
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];
 			const assistantMsg = msg as AssistantMessage;

@@ -3329,12 +3329,11 @@ export class InteractiveMode {
 				this.chatContainer.addChild(assistantComponent);
 				break;
 			}
-			case "toolResult": {
-				// Tool results are rendered inline with tool calls, handled separately
+			case "toolResult":
+			case "system": {
+				// System messages are not rendered as visible chat messages
+				// (tool results are rendered inline with tool calls)
 				break;
-			}
-			default: {
-				const _exhaustive: never = message;
 			}
 		}
 	}
@@ -5428,17 +5427,15 @@ export class InteractiveMode {
 	}
 
 	private handlePromptCommand(): void {
-		const systemPrompt = this.session.systemPrompt;
-		if (!systemPrompt) {
-			this.showStatus("No system prompt is active.");
+		this.chatContainer.addChild(new Spacer(1));
+		const parts: string[] = [];
+
+		const compiled = this.session.compilePromptMessages();
+		if (compiled.length === 0) {
+			this.showStatus("No prompt is active.");
 			return;
 		}
 
-		this.chatContainer.addChild(new Spacer(1));
-		const parts: string[] = [];
-		parts.push(`[system]\n${systemPrompt}`);
-
-		const compiled = this.session.compilePromptMessages();
 		const llmMessages = convertToLlmFn(compiled);
 
 		for (const msg of llmMessages) {
@@ -5460,7 +5457,7 @@ export class InteractiveMode {
 							}
 							break;
 						case "thinking":
-							lines.push(`[thinking] ${String("thinking" in block ? block.thinking : "")}`);
+							if ("thinking" in block) lines.push(`[thinking] ${String(block.thinking)}`);
 							break;
 						case "toolCall":
 							if ("name" in block) {
@@ -5481,6 +5478,11 @@ export class InteractiveMode {
 
 			if (lines.length === 0) continue;
 			parts.push(`\n[${role}]\n${lines.join("\n")}`);
+		}
+
+		if (parts.length === 0) {
+			this.showStatus("No prompt is active.");
+			return;
 		}
 
 		const component = new UserMessageComponent(parts.join("\n"), this.getMarkdownThemeWithSettings(), this.outputPad);

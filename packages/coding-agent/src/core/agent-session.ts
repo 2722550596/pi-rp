@@ -43,6 +43,7 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
+import { getAgentDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -94,15 +95,17 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
-import { expandMacros } from "./prompt-preset/macro-engine.ts";
-import { defaultPreset } from "./prompt-preset/index.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
+	PromptPresetBlockItem,
+	PromptPresetItem,
+	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
+import { defaultPreset } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
-import { getAgentDir } from "../config.ts";
+import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -1098,28 +1101,6 @@ export class AgentSession {
 		return expandMacros(rawTemplate, expandedRuntime, { mode: "all" });
 	}
 
-	/**
-	 * Re-expand {{macros}} from the template and set agent.state.systemPrompt.
-	 * Called per-turn to give dynamic macros (e.g. {{roll:1d100}}) a fresh value.
-	 */
-	private _applyDynamicSystemPrompt(): void {
-		if (!this._baseSystemPromptTemplate) {
-			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
-			return;
-		}
-		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const runtime: PromptRuntime = {
-			options: this._baseSystemPromptOptions,
-			messages: this.agent.state.messages,
-			latestUserMessage: undefined,
-			now: new Date(),
-			variables: {},
-			skills: loadedSkills,
-		};
-		const expanded = expandMacros(this._baseSystemPromptTemplate, runtime, { mode: "dynamic" });
-		this.agent.state.systemPrompt = this._systemPromptOverride ?? expanded;
-	}
-
 	// =========================================================================
 	// Prompt Preset Management
 	// =========================================================================
@@ -1207,14 +1188,58 @@ export class AgentSession {
 		return result.messages;
 	}
 
+	/** Set agent.state.systemPrompt for backward compatibility. */
+	private _applyDynamicSystemPrompt(): void {
+		if (this._loadedPresets.length > 0) {
+			// Unified message array mode: system content is in messages, systemPrompt is empty
+			this.agent.state.systemPrompt = this._systemPromptOverride ?? "";
+		} else {
+			// No user presets configured: use the compiled base prompt (old behavior)
+			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		}
+	}
+
 	/**
-	 * Re-compile the system prompt from the active preset.
-	 * Unlike `systemPrompt` getter (which returns a cached value),
-	 * this always re-compiles: macros like {{roll:1d100}} get fresh values each call.
+	 * Compile preset items excluding chat-history expansion.
+	 * Only called when user-defined presets are loaded (_loadedPresets.length > 0).
+	 */
+	private _compilePresetItems(): AgentMessage[] {
+		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: [],
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: loadedSkills,
+		};
+		const items = this._activePreset.items.filter((item) => item.enabled !== false);
+		const result: AgentMessage[] = [];
+		for (const item of items) {
+			if (item.kind === "slot" && (item as PromptPresetSlotItem).slot === "chat-history") continue;
+			if (!item.role) continue;
+			let text: string;
+			if (item.kind === "block") {
+				text = (item as PromptPresetBlockItem).content;
+			} else {
+				// Slot items need runtime context; skip for now
+				continue;
+			}
+			if (!text) continue;
+			result.push({
+				role: item.role,
+				content: [{ type: "text" as const, text }],
+				timestamp: Date.now(),
+			} as AgentMessage);
+		}
+		return result;
+	}
+
+	/**
+	 * Re-compile the system prompt from the active preset (for /prompt display).
 	 */
 	compileSystemPrompt(): string {
 		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const validToolNames = this.getActiveToolNames();
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
@@ -1417,6 +1442,12 @@ export class AgentSession {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
 				this._systemPromptOverride = undefined;
 				this._applyDynamicSystemPrompt();
+			}
+			// Inject compiled preset items (excluding chat-history, which is managed by the agent)
+			// into the message array. System messages from presets replace the empty systemPrompt.
+			const presetItems = this._compilePresetItems();
+			if (presetItems.length > 0) {
+				messages = [...presetItems, ...messages];
 			}
 		} catch (error) {
 			preflightResult?.(false);
