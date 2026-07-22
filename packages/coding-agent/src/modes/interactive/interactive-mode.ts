@@ -582,6 +582,21 @@ export class InteractiveMode {
 			};
 		}
 
+		const presetCommand = slashCommands.find((command) => command.name === "preset");
+		if (presetCommand) {
+			presetCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const presets = this.session.getAllPresets();
+				if (presets.length === 0) return null;
+
+				const items = presets.map((p) => ({ id: p.preset.id, description: p.preset.description ?? "" }));
+				return createFuzzyAutocompleteItems(items, prefix, (p) => p.id, (p) => ({
+					value: p.id,
+					label: p.id,
+					description: p.description,
+				}));
+			};
+		}
+
 		// Convert prompt templates to SlashCommand format for autocomplete
 		const templateCommands: SlashCommand[] = this.session.promptTemplates.map((cmd) => ({
 			name: cmd.name,
@@ -5362,9 +5377,9 @@ export class InteractiveMode {
 
 	private async handlePresetCommand(text: string): Promise<void> {
 		const parts = text.split(/\s+/);
-		const subcommand = parts[1];
+		const arg = parts[1];
 
-		if (!subcommand || subcommand === "list") {
+		if (!arg || arg === "list") {
 			const presets = this.session.getAllPresets();
 			if (presets.length === 0) {
 				this.showStatus("No prompt presets found. Create a .json file in .pi/prompt-presets/.");
@@ -5381,23 +5396,11 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (subcommand === "use" && parts[2]) {
-			const id = parts[2];
-			if (this.session.setActivePreset(id)) {
-				this.showStatus(`Active prompt preset: ${id}`);
-			} else {
-				this.showError(`Prompt preset "${id}" not found. Use /preset list to see available presets.`);
-			}
-			return;
+		if (this.session.setActivePreset(arg)) {
+			this.showStatus(`Active prompt preset: ${arg}`);
+		} else {
+			this.showError(`Prompt preset "${arg}" not found. Use /preset list to see available presets.`);
 		}
-
-		if (subcommand === "reload") {
-			this.session.reloadPresets();
-			this.showStatus("Prompt presets reloaded.");
-			return;
-		}
-
-		this.showStatus("Usage: /preset list | /preset use <id|none> | /preset reload");
 	}
 
 	private handlePromptCommand(): void {
