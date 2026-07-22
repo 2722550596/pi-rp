@@ -8,6 +8,7 @@ import type {
 	PromptPresetItem,
 	PromptPresetRole,
 	PromptPresetSlot,
+	PromptResourcePolicy,
 } from "./types.ts";
 
 const PROMPT_PRESET_DIR = ".pi/prompt-presets";
@@ -163,6 +164,14 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 		}
 	}
 
+	// Normalize tools and skills resource policies
+	if (obj.tools !== undefined) {
+		preset.tools = normalizeResourcePolicy(obj.tools, "tools", diagnostics);
+	}
+	if (obj.skills !== undefined) {
+		preset.skills = normalizeResourcePolicy(obj.skills, "skills", diagnostics);
+	}
+
 	return preset;
 }
 
@@ -293,4 +302,47 @@ function normalizeStringRecord(value: unknown): Record<string, string> | undefin
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeResourcePolicy(
+	value: unknown,
+	label: string,
+	diagnostics: PromptPresetDiagnostic[],
+): PromptResourcePolicy | undefined {
+	if (value === undefined) return undefined;
+	if (!isPlainObject(value)) {
+		diagnostics.push({ level: "error", message: `${label} policy must be an object when provided.` });
+		return undefined;
+	}
+	const objValue = value as Record<string, unknown>;
+	const allow = normalizePolicyPatterns(objValue.allow, `${label}.allow`, diagnostics);
+	const deny = normalizePolicyPatterns(objValue.deny, `${label}.deny`, diagnostics);
+	if (allow && deny) {
+		diagnostics.push({ level: "error", message: `${label} policy must use either allow or deny, not both.` });
+		return { allow };
+	}
+	if (allow) return { allow };
+	if (deny) return { deny };
+	return {};
+}
+
+function normalizePolicyPatterns(
+	value: unknown,
+	label: string,
+	diagnostics: PromptPresetDiagnostic[],
+): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		diagnostics.push({ level: "error", message: `${label} must be an array of strings when provided.` });
+		return undefined;
+	}
+	const patterns: string[] = [];
+	for (const [index, item] of value.entries()) {
+		if (typeof item !== "string" || !item.trim()) {
+			diagnostics.push({ level: "error", message: `${label}[${index}] must be a non-empty string.` });
+			continue;
+		}
+		patterns.push(item.trim());
+	}
+	return patterns.length > 0 ? patterns : undefined;
 }

@@ -2744,7 +2744,13 @@ export class InteractiveMode {
 			}
 			if (text.startsWith("/prompt")) {
 				this.editor.setText("");
-				this.handlePromptCommand();
+				const parts = text.split(/\s+/);
+				const sub = parts[1];
+				if (sub === "tools") {
+					this.handlePromptToolsCommand();
+				} else {
+					this.handlePromptCommand();
+				}
 				return;
 			}
 			if (text === "/reload") {
@@ -5454,6 +5460,37 @@ export class InteractiveMode {
 		this.chatContainer.addChild(component);
 		this.ui.requestRender();
 		this.showStatus("Full prompt shown above.");
+	}
+
+	private handlePromptToolsCommand(): void {
+		const tools = this.session.agent.state.tools;
+		if (!tools || tools.length === 0) {
+			this.showStatus("No tools are active.");
+			return;
+		}
+
+		this.chatContainer.addChild(new Spacer(1));
+		const parts: string[] = [];
+
+		for (const tool of tools) {
+			parts.push(`## ${tool.name}`);
+			if (tool.description) {
+				parts.push(`\n${tool.description}`);
+			}
+			if (tool.parameters) {
+				parts.push(`\n\`\`\`json\n${JSON.stringify(tool.parameters, null, 2)}\n\`\`\``);
+			}
+			parts.push("");
+		}
+		parts.push(`---\nAvailable: ${tools.map((t) => t.name).join(", ")}`);
+
+		const component = new UserMessageComponent(
+			parts.join("\n").trim(),
+			this.getMarkdownThemeWithSettings(),
+			this.outputPad,
+		);
+		this.chatContainer.addChild(component);
+		this.ui.requestRender();
 	}
 
 	private async handleContinueCommand(): Promise<void> {

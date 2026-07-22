@@ -24,6 +24,15 @@ export type PromptPresetSlot =
 	| "pi-docs"
 	| "variables";
 
+// =========================================================================
+// Resource Policy (tools/skills allow/deny)
+// =========================================================================
+
+export type PromptResourcePolicy =
+	| { allow?: string[]; deny?: never }
+	| { allow?: never; deny?: string[] };
+
+
 export type PromptPresetSlotFormat = "xml" | "json" | "plain";
 
 export interface PromptPresetBaseItem {
@@ -89,8 +98,13 @@ export interface PromptPresetSlotOptions {
 	/** Include Pi branch/compaction summary messages. */
 	includeSummaries?: boolean;
 }
+
 export interface PromptPresetDefaults {
+	/** Default format for slot items. */
+	slotFormat?: string;
+	/** Whether synthetic messages (branch/continue) are visible in chat-history. */
 	syntheticMessagesVisible?: boolean;
+	/** How to handle unresolved macros. */
 	unresolvedMacroPolicy?: "warn" | "keep" | "error";
 }
 
@@ -103,6 +117,8 @@ export interface PromptPreset {
 	autoActivate?: boolean;
 	mode?: PromptPresetMode;
 	defaults?: PromptPresetDefaults;
+	tools?: PromptResourcePolicy;
+	skills?: PromptResourcePolicy;
 	variables?: Record<string, string>;
 	items: PromptPresetItem[];
 }

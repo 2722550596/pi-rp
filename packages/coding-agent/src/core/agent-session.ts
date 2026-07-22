@@ -101,6 +101,7 @@ import {
 	type PromptRuntime,
 } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
+import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -363,6 +364,9 @@ export class AgentSession {
 	private _loadedPresets: LoadedPromptPreset[] = [];
 
 	private _systemPromptOverride?: string;
+
+	// Baseline tool set before the active preset's tools policy was applied
+	private _toolPolicyBaseline?: string[];
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -1097,26 +1101,48 @@ export class AgentSession {
 			const found = this._loadedPresets.find((p) => p.preset.id === preferredId);
 			if (found) {
 				this._activePreset = found.preset;
+				this._syncActiveToolPolicy();
 				return;
 			}
 		}
+		this._toolPolicyBaseline = undefined;
 	}
-
 	/** Set the active prompt preset by ID. Persists to session. Returns false if not found. */
 	setActivePreset(id: string): boolean {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
+			this._restoreToolPolicy();
 			this.sessionManager.appendPresetChange("default");
-			this._rebuildAndSyncPrompt();
+			// _restoreToolPolicy calls setActiveToolsByName which rebuilds the prompt
 			return true;
 		}
 		const found = this._loadedPresets.find((p) => p.preset.id === id);
 		if (!found) return false;
 		this._activePreset = found.preset;
+		this._syncActiveToolPolicy();
 		this.sessionManager.appendPresetChange(id);
 		this.settingsManager.setDefaultPreset(id);
-		this._rebuildAndSyncPrompt();
+		// _syncActiveToolPolicy calls setActiveToolsByName which rebuilds the prompt
 		return true;
+	}
+
+	private _syncActiveToolPolicy(): void {
+		const policy = this._activePreset.tools;
+		if (!hasResourcePolicy(policy)) {
+			this._restoreToolPolicy();
+			return;
+		}
+		const baseline = this._toolPolicyBaseline ?? this.getActiveToolNames();
+		this._toolPolicyBaseline ??= [...baseline];
+		const filtered = applyResourcePolicy(baseline, policy);
+		this.setActiveToolsByName(filtered);
+	}
+
+	private _restoreToolPolicy(): void {
+		if (this._toolPolicyBaseline) {
+			this.setActiveToolsByName(this._toolPolicyBaseline);
+			this._toolPolicyBaseline = undefined;
+		}
 	}
 
 	private _rebuildAndSyncPrompt(): void {
@@ -1124,6 +1150,7 @@ export class AgentSession {
 		this._baseSystemPrompt = this._rebuildSystemPrompt(tools);
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 	}
+
 
 	/**
 	 * Compile the full message array including system prompt and chat-history

@@ -1,5 +1,6 @@
 import { getDocsPath, getExamplesPath, getReadmePath } from "../../config.ts";
 import { formatSkillsForPrompt } from "../skills.ts";
+import { applyResourcePolicy } from "./policy.ts";
 import type {
 	PromptPreset,
 	PromptPresetDiagnostic,
@@ -89,7 +90,7 @@ registerSlot(
 		description: "Available tools with snippets.",
 		render: (ctx: SlotRenderContext): string => {
 			const { selectedTools, toolSnippets } = ctx.runtime.options;
-			const tools = selectedTools ?? ["read", "bash", "edit", "write"];
+			const tools = applyResourcePolicy(selectedTools ?? ["read", "bash", "edit", "write"], ctx.preset.tools);
 			const onlyWithSnippets = ctx.item.options?.onlyWithSnippets !== false;
 			const visibleTools = onlyWithSnippets ? tools.filter((name) => !!toolSnippets?.[name]) : tools;
 			return visibleTools.length > 0
@@ -106,10 +107,11 @@ registerSlot(
 		description: "Guidelines for tool usage.",
 		render: (ctx: SlotRenderContext): string => {
 			const { selectedTools, promptGuidelines } = ctx.runtime.options;
+			const tools = applyResourcePolicy(selectedTools ?? ["read", "bash", "edit", "write"], ctx.preset.tools);
 			const includeDefault = ctx.item.options?.includePiDefaultGuidelines !== false;
 			const heading = ctx.item.options?.heading ?? "Guidelines:";
 			const guidelines = includeDefault
-				? getToolGuidelines(selectedTools, promptGuidelines)
+				? getToolGuidelines(tools, promptGuidelines)
 				: (promptGuidelines ?? []);
 			if (guidelines.length === 0) return "";
 			return `${heading}\n${guidelines.map((g) => `- ${g}`).join("\n")}`;
@@ -178,7 +180,10 @@ registerSlot(
 			const requireRead = ctx.item.options?.requireReadTool !== false;
 			const hasRead = !selectedTools || selectedTools.includes("read");
 			if (requireRead && !hasRead) return "";
-			return formatSkillsForPrompt(skills ?? []);
+			const filteredSkills = (skills ?? [])
+				.filter((s) => !s.disableModelInvocation)
+				.filter((s) => applyResourcePolicy([s.name], ctx.preset.skills).length > 0);
+			return formatSkillsForPrompt(filteredSkills);
 		},
 	},
 	true,
