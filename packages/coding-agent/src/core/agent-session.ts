@@ -367,6 +367,8 @@ export class AgentSession {
 	private _baseSystemPromptTemplate = "";
 	private _activePreset: PromptPreset = defaultPreset;
 	private _loadedPresets: LoadedPromptPreset[] = [];
+	/** Whether compiled preset items have been injected into the first turn's messages. */
+	private _presetItemsInjected = false;
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
 	private _systemPromptOverride?: string;
@@ -1457,8 +1459,17 @@ export class AgentSession {
 		if (!messages) {
 			return;
 		}
-
 		preflightResult?.(true);
+
+		// Inject compiled preset items into messages (only on first turn to avoid accumulation)
+		if (this._loadedPresets.length > 0 && !this._presetItemsInjected) {
+			const presetItems = this._compilePresetItems();
+			if (presetItems.length > 0) {
+				messages = [...presetItems, ...messages];
+				this._presetItemsInjected = true;
+			}
+		}
+
 		await this._runAgentPrompt(messages);
 	}
 
