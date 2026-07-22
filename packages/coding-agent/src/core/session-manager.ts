@@ -66,6 +66,11 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	modelId: string;
 }
 
+export interface PresetChangeEntry extends SessionEntryBase {
+	type: "preset_change";
+	presetId: string;
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -141,13 +146,13 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
+	| PresetChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
 	| SessionInfoEntry;
-
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
@@ -1070,6 +1075,19 @@ export class SessionManager {
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			thinkingLevel,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a preset change as child of current leaf, then advance leaf. Returns entry id. */
+	appendPresetChange(presetId: string): string {
+		const entry: PresetChangeEntry = {
+			type: "preset_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			presetId,
 		};
 		this._appendEntry(entry);
 		return entry.id;

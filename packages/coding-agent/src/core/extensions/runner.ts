@@ -9,10 +9,10 @@ import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
+import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
-import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
-import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,

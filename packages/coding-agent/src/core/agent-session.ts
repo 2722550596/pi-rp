@@ -93,10 +93,15 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
+import {
+	defaultPreset,
+	type LoadedPromptPreset,
+	type PromptPreset,
+	type PromptRuntime,
+} from "./prompt-preset/index.ts";
+import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
-import { compileSystemPrompt, compileMessages } from "./prompt-preset/compiler.ts";
-import { defaultPreset, type PromptRuntime, type PromptPreset, type LoadedPromptPreset } from "./prompt-preset/index.ts";
-import { chooseDefaultPreset, isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
@@ -1006,14 +1011,14 @@ export class AgentSession {
 		if (this._loadedPresets.length === 0) {
 			this._loadedPresets = loadPromptPresets(this._cwd);
 
-			// Restore active preset: session custom entry → settings default → built-in default
+			// Restore active preset: existing preset_change entry → settings default → built-in default
 			const entries = this.sessionManager.getEntries();
 			let storedPresetId: string | undefined;
 			for (let i = entries.length - 1; i >= 0; i--) {
 				const e = entries[i];
-				if (e.type === "custom" && e.customType === "preset_state" && e.data && typeof e.data === "object" && "presetId" in e.data) {
-					const val = (e.data as Record<string, unknown>).presetId;
-					if (typeof val === "string") { storedPresetId = val; break; }
+				if (e.type === "preset_change") {
+					storedPresetId = e.presetId;
+					break;
 				}
 			}
 
@@ -1023,6 +1028,8 @@ export class AgentSession {
 				const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
 				if (found) this._activePreset = found.preset;
 			}
+
+			// No initial write needed — sdk.ts handles that for new sessions
 		}
 
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
@@ -1037,7 +1044,8 @@ export class AgentSession {
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
-		const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
+		const appendSystemPrompt =
+			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
@@ -1072,7 +1080,6 @@ export class AgentSession {
 	// Prompt Preset Management
 	// =========================================================================
 
-
 	/** Get the currently active prompt preset. */
 	get activePreset(): PromptPreset {
 		return this._activePreset;
@@ -1099,14 +1106,14 @@ export class AgentSession {
 	setActivePreset(id: string): boolean {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
-			this.sessionManager.appendCustomEntry("preset_state", { presetId: "default" });
+			this.sessionManager.appendPresetChange("default");
 			this._rebuildAndSyncPrompt();
 			return true;
 		}
 		const found = this._loadedPresets.find((p) => p.preset.id === id);
 		if (!found) return false;
 		this._activePreset = found.preset;
-		this.sessionManager.appendCustomEntry("preset_state", { presetId: id });
+		this.sessionManager.appendPresetChange(id);
 		this.settingsManager.setDefaultPreset(id);
 		this._rebuildAndSyncPrompt();
 		return true;
@@ -1162,7 +1169,12 @@ export class AgentSession {
 		}
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
-			this._emit({ type: "auto_retry_end", success: false, attempt: this._retryAttempt, finalError: msg.errorMessage });
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt: this._retryAttempt,
+				finalError: msg.errorMessage,
+			});
 			this._retryAttempt = 0;
 		}
 

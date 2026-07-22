@@ -52,9 +52,7 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	const result: AgentMessage[] = [];
 	const items = enabledItems(preset);
 
-	const chatHistoryIndex = items.findIndex(
-		(item) => item.kind === "slot" && item.slot === "chat-history",
-	);
+	const chatHistoryIndex = items.findIndex((item) => item.kind === "slot" && item.slot === "chat-history");
 
 	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
 	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);

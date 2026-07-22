@@ -1,11 +1,10 @@
 /**
  * System prompt construction and project context loading
  */
-import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
-import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 import { compileSystemPrompt } from "./prompt-preset/compiler.ts";
 import { defaultPreset } from "./prompt-preset/default-stack.ts";
 import type { PromptRuntime } from "./prompt-preset/types.ts";
+import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
@@ -30,10 +29,8 @@ export interface BuildSystemPromptOptions {
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const {
 		customPrompt,
-		selectedTools,
-		toolSnippets,
-		promptGuidelines,
 		appendSystemPrompt,
+		selectedTools,
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,

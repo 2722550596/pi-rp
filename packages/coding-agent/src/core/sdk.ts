@@ -361,11 +361,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
 	} else {
-		// Save initial model and thinking level for new sessions so they can be restored on resume
+		// Save initial model, thinking level, and preset for new sessions
 		if (model) {
 			sessionManager.appendModelChange(model.provider, model.id);
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
+		sessionManager.appendPresetChange(settingsManager.getDefaultPreset() ?? "default");
 	}
 
 	const session = new AgentSession({

@@ -112,6 +112,16 @@ packages/coding-agent/src/
 - **不改核心类型** — 用 cast 或 type guard 适配，不改 package 间共享的类型定义。
 - **原有方法保留** — `showExtensionEditor` 不变，抽 `showEditorDialog` 出来让前者委托。下游扩展零改动。
 
+### 教训 5：Session State Entry 必须对齐初始化流程
+
+每个新增的 entry type（`model_change`、`preset_change` 等）必须走统一的三步流程，缺一不可：
+
+1. **init 写入** — `sdk.ts` 中，在新会话路径下同步调用 `append*Change(defaultValue)`
+2. **分支恢复** — `getSessionContextSettings()` 或等效位置，扫描 path 中的对应 type 恢复状态
+3. **切换持久化** — 状态变更时同时写入 entry + 更新 settings.json（`setDefault*`）
+
+这三步必须一起实现。只写了 entry 类型和 append 方法但没有 init 写入，分支恢复就会丢失上下文；只写了 init 但没有切换持久化，跨会话就无法保持选择。
+
 ## 与上游的关系
 
 - 上游 pi 持续关注，但不主动合入

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SUPPORTED_SLOTS } from "./slot-renderers.ts";
 import type {
@@ -101,7 +101,11 @@ function loadPromptPresetFile(filePath: string): LoadedPromptPreset {
 }
 
 function fallbackPreset(filePath: string): PromptPreset {
-	const id = filePath.replace(/\.json$/, "").split("/").pop() ?? "unknown";
+	const id =
+		filePath
+			.replace(/\.json$/, "")
+			.split("/")
+			.pop() ?? "unknown";
 	return { schemaVersion: 1, id, items: [] };
 }
 
@@ -176,7 +180,11 @@ function normalizeItems(raw: unknown, diagnostics: PromptPresetDiagnostic[]): Pr
 	return items;
 }
 
-function normalizeItem(raw: unknown, index: number, diagnostics: PromptPresetDiagnostic[]): PromptPresetItem | undefined {
+function normalizeItem(
+	raw: unknown,
+	index: number,
+	diagnostics: PromptPresetDiagnostic[],
+): PromptPresetItem | undefined {
 	if (!isPlainObject(raw)) {
 		diagnostics.push({ level: "error", message: `Item at index ${index} must be a JSON object.` });
 		return undefined;

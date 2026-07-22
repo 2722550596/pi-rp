@@ -52,6 +52,7 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { MacroDefinition, SlotDefinition } from "../prompt-preset/types.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -79,7 +80,6 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../tools/index.ts";
-import type { MacroDefinition, SlotDefinition } from "../prompt-preset/types.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions } from "../system-prompt.ts";

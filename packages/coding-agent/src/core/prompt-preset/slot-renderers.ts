@@ -49,10 +49,7 @@ export const SUPPORTED_SLOTS = new Set<string>([
 // Render Helpers
 // =========================================================================
 
-function getToolGuidelines(
-	selectedTools: string[] | undefined,
-	customGuidelines: string[] | undefined,
-): string[] {
+function getToolGuidelines(selectedTools: string[] | undefined, customGuidelines: string[] | undefined): string[] {
 	const guidelinesList: string[] = [];
 	const guidelinesSet = new Set<string>();
 	const addGuideline = (guideline: string): void => {
@@ -86,45 +83,50 @@ function getToolGuidelines(
 // Built-in Slot Renderers
 // =========================================================================
 
-registerSlot({
-	name: "tools",
-	description: "Available tools with snippets.",
-	render: (ctx: SlotRenderContext): string => {
-		const { selectedTools, toolSnippets } = ctx.runtime.options;
-		const tools = selectedTools ?? ["read", "bash", "edit", "write"];
-		const onlyWithSnippets = ctx.item.options?.onlyWithSnippets !== false;
-		const visibleTools = onlyWithSnippets
-			? tools.filter((name) => !!toolSnippets?.[name])
-			: tools;
-		return visibleTools.length > 0
-			? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n")
-			: "(none)";
+registerSlot(
+	{
+		name: "tools",
+		description: "Available tools with snippets.",
+		render: (ctx: SlotRenderContext): string => {
+			const { selectedTools, toolSnippets } = ctx.runtime.options;
+			const tools = selectedTools ?? ["read", "bash", "edit", "write"];
+			const onlyWithSnippets = ctx.item.options?.onlyWithSnippets !== false;
+			const visibleTools = onlyWithSnippets ? tools.filter((name) => !!toolSnippets?.[name]) : tools;
+			return visibleTools.length > 0
+				? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n")
+				: "(none)";
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "tool-guidelines",
-	description: "Guidelines for tool usage.",
-	render: (ctx: SlotRenderContext): string => {
-		const { selectedTools, promptGuidelines } = ctx.runtime.options;
-		const includeDefault = ctx.item.options?.includePiDefaultGuidelines !== false;
-		const heading = ctx.item.options?.heading ?? "Guidelines:";
-		const guidelines = includeDefault
-			? getToolGuidelines(selectedTools, promptGuidelines)
-			: (promptGuidelines ?? []);
-		if (guidelines.length === 0) return "";
-		return `${heading}\n${guidelines.map((g) => `- ${g}`).join("\n")}`;
+registerSlot(
+	{
+		name: "tool-guidelines",
+		description: "Guidelines for tool usage.",
+		render: (ctx: SlotRenderContext): string => {
+			const { selectedTools, promptGuidelines } = ctx.runtime.options;
+			const includeDefault = ctx.item.options?.includePiDefaultGuidelines !== false;
+			const heading = ctx.item.options?.heading ?? "Guidelines:";
+			const guidelines = includeDefault
+				? getToolGuidelines(selectedTools, promptGuidelines)
+				: (promptGuidelines ?? []);
+			if (guidelines.length === 0) return "";
+			return `${heading}\n${guidelines.map((g) => `- ${g}`).join("\n")}`;
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "pi-docs",
-	description: "Pi documentation guidance.",
-	render: (_ctx: SlotRenderContext): string => {
-		const readmePath = getReadmePath();
-		const docsPath = getDocsPath();
-		const examplesPath = getExamplesPath();
-		return `Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
+registerSlot(
+	{
+		name: "pi-docs",
+		description: "Pi documentation guidance.",
+		render: (_ctx: SlotRenderContext): string => {
+			const readmePath = getReadmePath();
+			const docsPath = getDocsPath();
+			const examplesPath = getExamplesPath();
+			return `Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}
 - Additional docs: ${docsPath}
 - Examples: ${examplesPath} (extensions, custom tools, SDK)
@@ -132,107 +134,136 @@ registerSlot({
 - When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
 - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
 - Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "append-system-prompt",
-	description: "User appended system prompt text.",
-	render: (ctx: SlotRenderContext): string => {
-		return ctx.runtime.options.appendSystemPrompt ?? "";
+registerSlot(
+	{
+		name: "append-system-prompt",
+		description: "User appended system prompt text.",
+		render: (ctx: SlotRenderContext): string => {
+			return ctx.runtime.options.appendSystemPrompt ?? "";
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "project-context",
-	description: "Project context files.",
-	render: (ctx: SlotRenderContext): string => {
-		const contextFiles = ctx.runtime.options.contextFiles ?? [];
-		if (contextFiles.length === 0) return "";
-		const parts: string[] = ["<project_context>\n"];
-		parts.push("Project-specific instructions and guidelines:\n");
-		for (const { path: filePath, content } of contextFiles) {
-			parts.push(`<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n`);
-		}
-		parts.push("</project_context>");
-		return parts.join("\n");
+registerSlot(
+	{
+		name: "project-context",
+		description: "Project context files.",
+		render: (ctx: SlotRenderContext): string => {
+			const contextFiles = ctx.runtime.options.contextFiles ?? [];
+			if (contextFiles.length === 0) return "";
+			const parts: string[] = ["<project_context>\n"];
+			parts.push("Project-specific instructions and guidelines:\n");
+			for (const { path: filePath, content } of contextFiles) {
+				parts.push(`<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n`);
+			}
+			parts.push("</project_context>");
+			return parts.join("\n");
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "skills",
-	description: "Available skills.",
-	render: (ctx: SlotRenderContext): string => {
-		const { selectedTools, skills } = ctx.runtime.options;
-		const requireRead = ctx.item.options?.requireReadTool !== false;
-		const hasRead = !selectedTools || selectedTools.includes("read");
-		if (requireRead && !hasRead) return "";
-		return formatSkillsForPrompt(skills ?? []);
+registerSlot(
+	{
+		name: "skills",
+		description: "Available skills.",
+		render: (ctx: SlotRenderContext): string => {
+			const { selectedTools, skills } = ctx.runtime.options;
+			const requireRead = ctx.item.options?.requireReadTool !== false;
+			const hasRead = !selectedTools || selectedTools.includes("read");
+			if (requireRead && !hasRead) return "";
+			return formatSkillsForPrompt(skills ?? []);
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "date-cwd",
-	description: "Current date and working directory.",
-	render: (ctx: SlotRenderContext): string => {
-		const cwd = ctx.runtime.options.cwd.replace(/\\/g, "/");
-		return `Current working directory: ${cwd}`;
+registerSlot(
+	{
+		name: "date-cwd",
+		description: "Current date and working directory.",
+		render: (ctx: SlotRenderContext): string => {
+			const cwd = ctx.runtime.options.cwd.replace(/\\/g, "/");
+			return `Current working directory: ${cwd}`;
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "date",
-	description: "Current date.",
-	render: (ctx: SlotRenderContext): string => {
-		const now = ctx.runtime.now;
-		const y = now.getFullYear();
-		const m = String(now.getMonth() + 1).padStart(2, "0");
-		const d = String(now.getDate()).padStart(2, "0");
-		let text = `Current date: ${y}-${m}-${d}`;
-		if (ctx.item.options?.includeTime) {
-			const h = String(now.getHours()).padStart(2, "0");
-			const min = String(now.getMinutes()).padStart(2, "0");
-			const s = String(now.getSeconds()).padStart(2, "0");
-			text += `\nCurrent time: ${h}:${min}:${s}`;
-		}
-		return text;
+registerSlot(
+	{
+		name: "date",
+		description: "Current date.",
+		render: (ctx: SlotRenderContext): string => {
+			const now = ctx.runtime.now;
+			const y = now.getFullYear();
+			const m = String(now.getMonth() + 1).padStart(2, "0");
+			const d = String(now.getDate()).padStart(2, "0");
+			let text = `Current date: ${y}-${m}-${d}`;
+			if (ctx.item.options?.includeTime) {
+				const h = String(now.getHours()).padStart(2, "0");
+				const min = String(now.getMinutes()).padStart(2, "0");
+				const s = String(now.getSeconds()).padStart(2, "0");
+				text += `\nCurrent time: ${h}:${min}:${s}`;
+			}
+			return text;
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "cwd",
-	description: "Current working directory.",
-	render: (ctx: SlotRenderContext): string => {
-		return `Current working directory: ${ctx.runtime.options.cwd.replace(/\\/g, "/")}`;
+registerSlot(
+	{
+		name: "cwd",
+		description: "Current working directory.",
+		render: (ctx: SlotRenderContext): string => {
+			return `Current working directory: ${ctx.runtime.options.cwd.replace(/\\/g, "/")}`;
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "active-model",
-	description: "Current model provider/id.",
-	render: (_ctx: SlotRenderContext): string => {
-		return ""; // TODO: wire actual model info when available
+registerSlot(
+	{
+		name: "active-model",
+		description: "Current model provider/id.",
+		render: (_ctx: SlotRenderContext): string => {
+			return ""; // TODO: wire actual model info when available
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "chat-history",
-	description: "Conversation history insertion point.",
-	render: (_ctx: SlotRenderContext): string => {
-		return "";
+registerSlot(
+	{
+		name: "chat-history",
+		description: "Conversation history insertion point.",
+		render: (_ctx: SlotRenderContext): string => {
+			return "";
+		},
 	},
-}, true);
+	true,
+);
 
-registerSlot({
-	name: "variables",
-	description: "Template variables.",
-	render: (ctx: SlotRenderContext): string => {
-		const variables = ctx.runtime.variables ?? {};
-		const keys = Object.keys(variables);
-		if (keys.length === 0) return "";
-		return keys.map((key) => `${key}: ${variables[key]}`).join("\n");
+registerSlot(
+	{
+		name: "variables",
+		description: "Template variables.",
+		render: (ctx: SlotRenderContext): string => {
+			const variables = ctx.runtime.variables ?? {};
+			const keys = Object.keys(variables);
+			if (keys.length === 0) return "";
+			return keys.map((key) => `${key}: ${variables[key]}`).join("\n");
+		},
 	},
-}, true);
+	true,
+);
 
 // =========================================================================
 // Slot Rendering

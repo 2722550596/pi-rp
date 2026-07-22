@@ -5450,11 +5450,7 @@ export class InteractiveMode {
 			parts.push(`\n[${role}]\n${lines.join("\n")}`);
 		}
 
-		const component = new UserMessageComponent(
-			parts.join("\n"),
-			this.getMarkdownThemeWithSettings(),
-			this.outputPad,
-		);
+		const component = new UserMessageComponent(parts.join("\n"), this.getMarkdownThemeWithSettings(), this.outputPad);
 		this.chatContainer.addChild(component);
 		this.ui.requestRender();
 		this.showStatus("Full prompt shown above.");
