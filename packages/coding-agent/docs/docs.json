@@ -61,6 +61,10 @@
           "path": "prompt-templates.md"
         },
         {
+          "title": "Prompt Presets",
+          "path": "prompt-presets.md"
+        },
+        {
           "title": "Themes",
           "path": "themes.md"
         },
