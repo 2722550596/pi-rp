@@ -5430,30 +5430,31 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		const parts: string[] = [];
 
-		// Always compile fresh — dynamic macros like {{roll}} get new values each time
-		const messages = this.session.compilePromptMessages();
+		// Show captured system prompt (extension-modified or empty)
 		const sysPrompt = this.session.lastCompiledSystemPrompt;
-
-		if (messages.length === 0) {
-			// No preset active — show the extension-modified system prompt
-			if (sysPrompt) {
-				parts.push(`[system]\n${sysPrompt}`);
-			} else {
-				this.showStatus("No prompt is active.");
-				return;
-			}
+		if (sysPrompt) {
+			parts.push(`[system]\n${sysPrompt}`);
 		}
 
-		let llmMessages = convertToLlmFn(messages as AgentMessage[]);
+		// Show captured messages from the last agent run (post context event / preset injection)
+		let messages: readonly AgentMessage[] = this.session.lastTransformedMessages;
+		if (messages.length === 0) {
+			// Before any message is sent, show the theoretical initial payload from preset
+			messages = this.session.compilePromptMessages();
+		}
 
-		// Merge adjacent messages with the same role
+		if (!sysPrompt && messages.length === 0) {
+			this.showStatus("No prompt is active.");
+			return;
+		}
+
+		const llmMessages = convertToLlmFn(messages as AgentMessage[]);
+
+		// Merge adjacent messages with the same role for cleaner display
 		const merged: typeof llmMessages = [];
 		const extractText = (c: string | readonly { type: string; text?: string }[]): string => {
 			if (typeof c === "string") return c;
-			return c
-				.filter((b) => b.type === "text")
-				.map((b) => b.text ?? "")
-				.join("\n");
+			return c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
 		};
 		for (const msg of llmMessages) {
 			const last = merged[merged.length - 1];
@@ -5461,13 +5462,13 @@ export class InteractiveMode {
 				const t1 = extractText(last.content);
 				const t2 = extractText(msg.content);
 				last.content = t1 ? (t2 ? t1 + "\n\n" + t2 : t1) : t2;
-				continue;
+			} else {
+				merged.push(msg);
 			}
-			merged.push({ ...msg });
 		}
-		llmMessages = merged;
+		const displayMessages = merged.length > 0 ? merged : llmMessages;
 
-		for (const msg of llmMessages) {
+		for (const msg of displayMessages) {
 			const lines: string[] = [];
 			const role = msg.role;
 			const content = msg.content;
