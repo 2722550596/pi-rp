@@ -360,6 +360,7 @@ class TreeList implements Component {
 				entry.type === "label" ||
 				entry.type === "custom" ||
 				entry.type === "model_change" ||
+				entry.type === "preset_change" ||
 				entry.type === "thinking_level_change" ||
 				entry.type === "session_info";
 
