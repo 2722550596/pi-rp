@@ -246,6 +246,38 @@ Macros use a depth-tracking parser (not regex) so nested macros work safely:
 ```
 {{setvar::lang::{{user}}的语言}}  → inner {{user}} expanded first → {{setvar::lang::Mingyue的语言}}
 ```
+
+### Custom Macros via Extension
+
+Extensions can register custom macros with `pi.registerMacro()`:
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerMacro({
+    name: "roll",
+    description: "Roll dice in NdM format. Usage: {{roll:2d6}}",
+    render: (ctx) => {
+      const params = ctx.params ?? "1d6";
+      const [count, sides] = params.split("d").map(Number);
+      let total = 0;
+      for (let i = 0; i < Math.min(count, 100); i++) {
+        total += Math.floor(Math.random() * sides) + 1;
+      }
+      return String(total);
+    },
+  });
+}
+```
+
+Macros registered without `static: true` (the default) are re-expanded each turn, giving a fresh value each time.
+
+**Slot render context** — custom macros receive a `MacroRenderContext` with:
+- `runtime` — the full `PromptRuntime` (options, messages, skills, variables)
+- `variables` — `Record<string, string>` of session variables
+- `params` — the string after `:` in `{{name:params}}`, or `undefined`
+
 ## Custom Slots via Extension
 
 Extensions can register custom slots with `pi.registerSlot()`:
