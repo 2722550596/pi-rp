@@ -118,7 +118,8 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
  * Calculate total context tokens from usage.
  * Uses the native totalTokens field when available, falls back to computing from components.
  */
-export function calculateContextTokens(usage: Usage): number {
+export function calculateContextTokens(usage: Usage | undefined): number {
+	if (!usage) return 0;
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 

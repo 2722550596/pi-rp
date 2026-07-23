@@ -5431,7 +5431,7 @@ export class InteractiveMode {
 		const parts: string[] = [];
 
 		// Always compile fresh — dynamic macros like {{roll}} get new values each time
-		let messages = this.session.compilePromptMessages();
+		const messages = this.session.compilePromptMessages();
 		const sysPrompt = this.session.lastCompiledSystemPrompt;
 
 		if (messages.length === 0) {
@@ -5450,7 +5450,10 @@ export class InteractiveMode {
 		const merged: typeof llmMessages = [];
 		const extractText = (c: string | readonly { type: string; text?: string }[]): string => {
 			if (typeof c === "string") return c;
-			return c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+			return c
+				.filter((b) => b.type === "text")
+				.map((b) => b.text ?? "")
+				.join("\n");
 		};
 		for (const msg of llmMessages) {
 			const last = merged[merged.length - 1];

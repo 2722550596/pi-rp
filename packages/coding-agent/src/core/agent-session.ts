@@ -1225,7 +1225,7 @@ export class AgentSession {
 			messages: this.agent.state.messages,
 			latestUserMessage: undefined,
 			now: new Date(),
-			variables: {},
+			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
 		};
 		const result = compileMessages(this._activePreset, runtime);

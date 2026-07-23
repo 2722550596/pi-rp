@@ -31,7 +31,8 @@ function hasPatterns(value: string[] | undefined): value is string[] {
 }
 
 function hasEffectiveAllowPolicy(value: string[] | undefined): value is string[] {
-	return hasPatterns(value) && value.some((pattern) => pattern !== "*");
+	// empty allow = explicit "allow nothing" (effective deny-all); non-empty with only "*" = no-op
+	return Array.isArray(value) && (!hasPatterns(value) || value.some((pattern) => pattern !== "*"));
 }
 
 function escapeRegExp(value: string): string {

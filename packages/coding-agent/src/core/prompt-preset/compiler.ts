@@ -64,12 +64,19 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	if (chatHistoryIndex !== -1) {
 		const chatHistoryMessages = runtime.messages;
 		const options = (items[chatHistoryIndex] as PromptPresetSlotItem).options;
+		let shouldRepairToolPairs = false;
 
 		// Apply role filter
 		let filtered = chatHistoryMessages;
 		if (options?.roles && options.roles.length > 0) {
 			const allowed = new Set(options.roles);
 			filtered = filtered.filter((m) => allowed.has(m.role));
+			shouldRepairToolPairs = true;
+		}
+
+		// Filter summaries
+		if (options?.includeSummaries === false) {
+			filtered = filtered.filter((m) => !isSummaryMessage(m));
 		}
 
 		// Strip assistant thinking
@@ -77,15 +84,22 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 			filtered = filtered.map(stripThinkingFromMessage);
 		}
 
+		// Drop tool history
+		if (options?.toolMode === "drop") {
+			filtered = dropToolHistory(filtered);
+		}
+
 		// Apply history limits
 		let limited = filtered;
 		const maxMessages = options?.maxMessages;
 		if (maxMessages && limited.length > maxMessages) {
 			limited = limited.slice(-maxMessages);
+			shouldRepairToolPairs = true;
 		}
 		const maxChars = options?.maxChars;
 		if (maxChars && limited.length > 0) {
 			limited = takeRecentMessagesWithinChars(limited, maxChars);
+			shouldRepairToolPairs = true;
 		}
 
 		// Omit latest user message
@@ -94,7 +108,13 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 			const lastUserIdx = findLastUserMessageIndex(limited);
 			if (lastUserIdx !== -1) {
 				limited = limited.slice(0, lastUserIdx).concat(limited.slice(lastUserIdx + 1));
+				shouldRepairToolPairs = true;
 			}
+		}
+
+		// Repair dangling tool pairs after filtering
+		if (shouldRepairToolPairs && options?.toolMode !== "drop") {
+			limited = repairToolPairs(limited);
 		}
 
 		for (const msg of limited) {
@@ -243,4 +263,90 @@ function contentToText(message: AgentMessage): string {
 		.filter((part: { type?: string; text?: string }) => part?.type === "text")
 		.map((part: { text?: string }) => part.text ?? "")
 		.join("\n");
+}
+const SUMMARY_ROLES = new Set(["branchSummary", "compactionSummary"]);
+
+function isSummaryMessage(message: AgentMessage): boolean {
+	return SUMMARY_ROLES.has(message.role as string);
+}
+
+function isToolResultMessage(message: AgentMessage): boolean {
+	return message.role === "toolResult";
+}
+
+function hasToolCallParts(message: AgentMessage): boolean {
+	if (message.role !== "assistant") return false;
+	const content = (message as { content?: unknown }).content;
+	if (!Array.isArray(content)) return false;
+	return content.some((part: { type?: string }) => part?.type === "toolCall");
+}
+
+function stripToolCallParts(message: AgentMessage): { message: AgentMessage | null; removedCalls: number } {
+	if (message.role !== "assistant") return { message, removedCalls: 0 };
+	const content = (message as { content?: unknown }).content;
+	if (!Array.isArray(content)) return { message, removedCalls: 0 };
+	const kept = content.filter((part: { type?: string }) => part?.type !== "toolCall");
+	const removed = content.length - kept.length;
+	if (removed === 0) return { message, removedCalls: 0 };
+	if (kept.length === 0) return { message: null, removedCalls: removed };
+	return { message: { ...message, content: kept } as AgentMessage, removedCalls: removed };
+}
+
+function dropToolHistory(messages: AgentMessage[]): AgentMessage[] {
+	const result: AgentMessage[] = [];
+	for (const msg of messages) {
+		if (isToolResultMessage(msg)) continue;
+		const stripped = stripToolCallParts(msg);
+		if (!stripped.message) continue;
+		result.push(stripped.message);
+	}
+	return result;
+}
+
+/**
+ * After chat-history filtering (role filters, limits), remove dangling tool pairs.
+ * A tool call without a matching result (or vice versa) is removed.
+ */
+function repairToolPairs(messages: AgentMessage[]): AgentMessage[] {
+	const toolCallIds = new Set<string>();
+	const result: AgentMessage[] = [];
+	for (const msg of messages) {
+		if (isToolResultMessage(msg)) {
+			const id = (msg as { toolCallId?: string }).toolCallId;
+			if (id && toolCallIds.has(id)) {
+				result.push(msg);
+				toolCallIds.delete(id);
+			}
+			// Orphan tool result — drop it
+			continue;
+		}
+		if (msg.role === "assistant") {
+			const content = (msg as { content?: unknown }).content;
+			if (Array.isArray(content)) {
+				for (const part of content) {
+					if (part?.type === "toolCall" && (part as { id?: string }).id) {
+						toolCallIds.add((part as { id: string }).id);
+					}
+				}
+			}
+		}
+		result.push(msg);
+	}
+	// Remove dangling tool calls (tool calls whose result was filtered out)
+	if (toolCallIds.size > 0) {
+		return result.filter((msg) => {
+			if (msg.role !== "assistant") return true;
+			const content = (msg as { content?: unknown }).content;
+			if (!Array.isArray(content)) return true;
+			const kept = content.filter((part: { type?: string; id?: string }) => {
+				if (part?.type !== "toolCall") return true;
+				return !toolCallIds.has(part.id ?? "");
+			});
+			if (kept.length === content.length) return true;
+			if (kept.length === 0) return false;
+			(msg as { content: unknown }).content = kept;
+			return true;
+		});
+	}
+	return result;
 }
