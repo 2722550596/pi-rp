@@ -127,6 +127,7 @@ export interface Settings {
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
+	userName?: string;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -703,6 +704,10 @@ export class SettingsManager {
 
 	getDefaultPreset(): string | undefined {
 		return this.settings.defaultPreset;
+	}
+
+	getUserName(): string {
+		return this.settings.userName ?? "user";
 	}
 
 	setDefaultPreset(presetId: string): void {

@@ -1210,7 +1210,7 @@ export class AgentSession {
 			messages: [],
 			latestUserMessage: undefined,
 			now: new Date(),
-			variables: {},
+			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
 		};
 		const items = this._activePreset.items.filter((item) => item.enabled !== false);
@@ -1222,9 +1222,11 @@ export class AgentSession {
 			if (item.kind === "block") {
 				text = (item as PromptPresetBlockItem).content;
 			} else {
-				// Slot items need runtime context; skip for now
 				continue;
 			}
+			if (!text) continue;
+			// Expand macros so {{user}}, {{setvar}} etc. work in real agent flow
+			text = expandMacros(text, runtime);
 			if (!text) continue;
 			result.push({
 				role: item.role,
@@ -1265,7 +1267,7 @@ export class AgentSession {
 			messages: [],
 			latestUserMessage: undefined,
 			now: new Date(),
-			variables: {},
+			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
 		};
 		const items = this._activePreset.items.filter((item) => item.enabled !== false);
@@ -1279,6 +1281,8 @@ export class AgentSession {
 			} else {
 				continue;
 			}
+			if (!text) continue;
+			text = expandMacros(text, runtime);
 			if (!text) continue;
 			result.push({
 				role: item.role,
