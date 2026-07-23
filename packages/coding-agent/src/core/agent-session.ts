@@ -1301,7 +1301,12 @@ export class AgentSession {
 		}
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
-			this._emit({ type: "auto_retry_end", success: false, attempt: this._retryAttempt, finalError: msg.errorMessage });
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt: this._retryAttempt,
+				finalError: msg.errorMessage,
+			});
 			this._retryAttempt = 0;
 		}
 

@@ -610,6 +610,9 @@ class TreeList implements Component {
 			case "label":
 				parts.push("label", entry.label ?? "");
 				break;
+			case "preset_change":
+				parts.push("preset", entry.presetId);
+				break;
 		}
 
 		return parts.join(" ");
@@ -830,6 +833,11 @@ class TreeList implements Component {
 				break;
 			case "model_change":
 				result = theme.fg("dim", `[model: ${entry.modelId}]`);
+			case "model_change":
+				result = theme.fg("dim", `[model: ${entry.modelId}]`);
+				break;
+			case "preset_change":
+				result = theme.fg("dim", `[preset: ${entry.presetId}]`);
 				break;
 			case "thinking_level_change":
 				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel}]`);
@@ -917,6 +925,10 @@ class TreeList implements Component {
 				break;
 			case "branch_summary":
 				text = entry.summary;
+			case "compaction":
+				text = entry.summary;
+				break;
+			case "preset_change":
 				break;
 		}
 
