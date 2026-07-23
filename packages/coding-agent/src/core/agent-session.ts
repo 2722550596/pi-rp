@@ -3515,7 +3515,7 @@ export class AgentSession {
 				if (entry.type === "message" && entry.message.role === "assistant") {
 					const assistant = entry.message;
 					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
-						const contextTokens = calculateContextTokens(assistant.usage);
+						const contextTokens = assistant.usage ? calculateContextTokens(assistant.usage) : 0;
 						if (contextTokens > 0) {
 							hasPostCompactionUsage = true;
 							break;
