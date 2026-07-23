@@ -838,6 +838,9 @@ class TreeList implements Component {
 			case "preset_change":
 				result = theme.fg("dim", `[preset: ${entry.presetId}]`);
 				break;
+			case "thinking_level_change":
+				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel}]`);
+				break;
 			case "session_info":
 				result = entry.name
 					? [theme.fg("dim", "[title: "), theme.fg("dim", entry.name), theme.fg("dim", "]")].join("")
@@ -917,6 +920,7 @@ class TreeList implements Component {
 				text = entry.summary;
 				break;
 			case "preset_change":
+			case "thinking_level_change":
 				break;
 		}
 

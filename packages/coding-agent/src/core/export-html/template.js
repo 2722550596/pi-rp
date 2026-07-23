@@ -694,6 +694,8 @@
           }
           case 'model_change':
             return labelHtml + `<span class="tree-muted">[model: ${escapeHtml(entry.modelId)}]</span>`;
+          case 'preset_change':
+            return labelHtml + `<span class="tree-muted">[preset: ${escapeHtml(entry.presetId)}]</span>`;
           case 'thinking_level_change':
             return labelHtml + `<span class="tree-muted">[thinking: ${escapeHtml(entry.thinkingLevel)}]</span>`;
           default:
