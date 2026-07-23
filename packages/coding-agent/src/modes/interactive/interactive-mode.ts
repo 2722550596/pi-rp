@@ -5430,13 +5430,25 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		const parts: string[] = [];
 
-		const compiled = this.session.compilePromptMessages();
-		if (compiled.length === 0) {
+		// Show captured system prompt (extension-modified or preset-compiled)
+		const sysPrompt = this.session.lastCompiledSystemPrompt;
+		if (sysPrompt) {
+			parts.push(`[system]\n${sysPrompt}`);
+		}
+
+		// Show captured messages from the last agent run
+		let messages = this.session.lastTransformedMessages;
+		if (messages.length === 0) {
+			// Before any message is sent, show the theoretical initial payload
+			messages = this.session.compilePromptMessages();
+		}
+
+		if (!sysPrompt && messages.length === 0) {
 			this.showStatus("No prompt is active.");
 			return;
 		}
 
-		const llmMessages = convertToLlmFn(compiled);
+		const llmMessages = convertToLlmFn(messages as AgentMessage[]);
 
 		for (const msg of llmMessages) {
 			const lines: string[] = [];

@@ -294,6 +294,8 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	/** Captured messages after context event processing, for /prompt inspection. */
+	lastContextMessages: readonly AgentMessage[] = [];
 
 	constructor(
 		extensions: Extension[],
@@ -990,7 +992,7 @@ export class ExtensionRunner {
 				}
 			}
 		}
-
+		this.lastContextMessages = currentMessages;
 		return currentMessages;
 	}
 

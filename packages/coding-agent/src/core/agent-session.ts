@@ -106,6 +106,7 @@ import { defaultPreset } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
+import { renderSlot } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -345,17 +346,14 @@ export class AgentSession {
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
-	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionAbortHandler?: () => void;
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
-
 	private _modelRuntime: ModelRuntime;
-
-	// Tool registry for extension getTools/setTools
+	private _extensionUIContext?: ExtensionUIContext;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
@@ -370,7 +368,13 @@ export class AgentSession {
 
 	// Baseline tool set before the active preset's tools policy was applied
 	private _toolPolicyBaseline?: string[];
+	/** Captured messages from the last agent run, for /prompt inspection. */
+	private _lastCompiledMessages: AgentMessage[] = [];
+	/** Captured system prompt from the last agent run. */
+	private _lastCompiledSystemPrompt = "";
 
+	/** Final messages after transformContext (extensions + preset injection). */
+	lastTransformedMessages: AgentMessage[] = [];
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -898,8 +902,20 @@ export class AgentSession {
 	}
 
 	/**
+	 * Messages captured from the last agent run, for /prompt inspection.
+	 * Includes preset items, extension custom messages, and the user message.
+	 */
+	get lastCompiledMessages(): readonly AgentMessage[] {
+		return this._lastCompiledMessages;
+	}
+
+	get lastCompiledSystemPrompt(): string {
+		return this._lastCompiledSystemPrompt;
+	}
+	/**
 	 * Get all configured tools with name, description, parameter schema, prompt guidelines, and source metadata.
 	 */
+
 	getAllTools(): ToolInfo[] {
 		return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
 			name: definition.name,
@@ -1184,13 +1200,16 @@ export class AgentSession {
 		return result.messages;
 	}
 
-	/** Set agent.state.systemPrompt for backward compatibility. */
+	/**
+	 * Set agent.state.systemPrompt.
+	 * - When a user-defined preset is active: systemPrompt = "" (content in messages array).
+	 * - Otherwise (built-in defaultPreset or no preset): fall back to _baseSystemPrompt.
+	 */
 	private _applyDynamicSystemPrompt(): void {
-		if (this._loadedPresets.length > 0) {
-			// Unified message array mode: system content is in messages, systemPrompt is empty
+		const hasActiveUserPreset = this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default";
+		if (hasActiveUserPreset) {
 			this.agent.state.systemPrompt = this._systemPromptOverride ?? "";
 		} else {
-			// No user presets configured: use the compiled base prompt (old behavior)
 			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 		}
 	}
@@ -1203,7 +1222,7 @@ export class AgentSession {
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
-			messages: [],
+			messages: this.agent.state.messages,
 			latestUserMessage: undefined,
 			now: new Date(),
 			variables: { user: this.settingsManager.getUserName() },
@@ -1218,15 +1237,15 @@ export class AgentSession {
 			if (item.kind === "block") {
 				text = (item as PromptPresetBlockItem).content;
 			} else {
-				continue;
+				text = renderSlot(item as PromptPresetSlotItem, this._activePreset, runtime, []);
 			}
 			if (!text) continue;
-			// Expand macros so {{user}}, {{setvar}} etc. work in real agent flow
+			// Expand macros so {{user}}, {{lastUserMessage}} etc. work in real agent flow
 			text = expandMacros(text, runtime);
 			if (!text) continue;
 			result.push({
 				role: item.role,
-				content: [{ type: "text" as const, text }],
+				content: [{ type: "text", text }],
 				timestamp: Date.now(),
 			} as AgentMessage);
 		}
@@ -1256,11 +1275,14 @@ export class AgentSession {
 	 * without being stored in agent.state.messages.
 	 */
 	getPresetInjectMessages(): AgentMessage[] {
+		// Only inject if a user-defined preset is active (not the built-in pi-default)
+		if (this._activePreset === defaultPreset) return [];
+		if (this._activePreset.id === "pi-default") return [];
 		if (this._loadedPresets.length === 0) return [];
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
-			messages: [],
+			messages: this.agent.state.messages,
 			latestUserMessage: undefined,
 			now: new Date(),
 			variables: { user: this.settingsManager.getUserName() },
@@ -1275,7 +1297,7 @@ export class AgentSession {
 			if (item.kind === "block") {
 				text = (item as PromptPresetBlockItem).content;
 			} else {
-				continue;
+				text = renderSlot(item as PromptPresetSlotItem, this._activePreset, runtime, []);
 			}
 			if (!text) continue;
 			text = expandMacros(text, runtime);
@@ -1292,13 +1314,9 @@ export class AgentSession {
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
-		if (!msg) {
-			return false;
-		}
+		if (!msg) return false;
 
-		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
-			return true;
-		}
+		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) return true;
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
 			this._emit({
@@ -1310,9 +1328,7 @@ export class AgentSession {
 			this._retryAttempt = 0;
 		}
 
-		if (await this._checkCompaction(msg)) {
-			return true;
-		}
+		if (await this._checkCompaction(msg)) return true;
 
 		return this.agent.hasQueuedMessages();
 	}
@@ -1480,12 +1496,10 @@ export class AgentSession {
 				this._systemPromptOverride = undefined;
 				this._applyDynamicSystemPrompt();
 			}
-			// Inject compiled preset items (excluding chat-history, which is managed by the agent)
-			// into the message array. System messages from presets replace the empty systemPrompt.
-			const presetItems = this._compilePresetItems();
-			if (presetItems.length > 0) {
-				messages = [...presetItems, ...messages];
-			}
+			// Inject compiled preset items — only when a user-defined preset is active
+			const presetItems = (this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default")
+				? this._compilePresetItems()
+				: [];
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
@@ -1497,6 +1511,10 @@ export class AgentSession {
 		preflightResult?.(true);
 
 		await this._runAgentPrompt(messages);
+
+		// Capture the actual messages sent to the LLM (post context event / preset injection)
+		this._lastCompiledMessages = [...this._extensionRunner.lastContextMessages];
+		this._lastCompiledSystemPrompt = this.agent.state.systemPrompt;
 	}
 
 	/**

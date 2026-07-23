@@ -199,8 +199,8 @@ export interface ExpandMacrosOptions {
  * Built-in macros take precedence, then stack variables, then registered custom macros.
  * Supports {{name:params}} syntax — params is passed to the macro's render context.
  * SillyTavern-style {{//comments}} are stripped.
- * 
- * Note: Uses a depth-tracking state machine for inside-out recursive parsing 
+ *
+ * Note: Uses a depth-tracking state machine for inside-out recursive parsing
  * to safely handle deeply nested macros (e.g., {{setvar::key::{{user}}}}).
  */
 export function expandMacros(text: string, runtime: PromptRuntime, _options?: ExpandMacrosOptions): string {
@@ -210,12 +210,12 @@ export function expandMacros(text: string, runtime: PromptRuntime, _options?: Ex
 	function processText(input: string): string {
 		let result = "";
 		let i = 0;
-		
+
 		while (i < input.length) {
 			if (input.startsWith("{{", i)) {
 				let depth = 1;
 				let j = i + 2;
-				
+
 				while (j < input.length && depth > 0) {
 					if (input.startsWith("{{", j)) {
 						depth++;
@@ -250,7 +250,7 @@ export function expandMacros(text: string, runtime: PromptRuntime, _options?: Ex
 								options.mode === "all" ||
 								(options.mode === "static" && isStatic) ||
 								(options.mode === "dynamic" && !isStatic);
-                                
+
 							if (shouldExpand) {
 								result += macro.render({ runtime, variables, params });
 							} else {

@@ -353,6 +353,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					result = [...presetItems, ...result];
 				}
 			}
+			// Capture final payload for /prompt inspection
+			if (sessionRef.current) {
+				sessionRef.current.lastTransformedMessages = result;
+			}
 			return result;
 		},
 		steeringMode: settingsManager.getSteeringMode(),
