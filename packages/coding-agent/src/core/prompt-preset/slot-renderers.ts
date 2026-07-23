@@ -192,8 +192,12 @@ registerSlot(
 		name: "date-cwd",
 		description: "Current date and working directory.",
 		render: (ctx: SlotRenderContext): string => {
+			const now = ctx.runtime.now;
+			const y = now.getFullYear();
+			const m = String(now.getMonth() + 1).padStart(2, "0");
+			const d = String(now.getDate()).padStart(2, "0");
 			const cwd = ctx.runtime.options.cwd.replace(/\\/g, "/");
-			return `Current working directory: ${cwd}`;
+			return `Current date: ${y}-${m}-${d}\nCurrent working directory: ${cwd}`;
 		},
 	},
 	true,

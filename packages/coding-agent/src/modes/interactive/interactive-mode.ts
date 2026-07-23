@@ -5430,25 +5430,39 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		const parts: string[] = [];
 
-		// Show captured system prompt (extension-modified or preset-compiled)
+		// Always compile fresh — dynamic macros like {{roll}} get new values each time
+		let messages = this.session.compilePromptMessages();
 		const sysPrompt = this.session.lastCompiledSystemPrompt;
-		if (sysPrompt) {
-			parts.push(`[system]\n${sysPrompt}`);
-		}
 
-		// Show captured messages from the last agent run
-		let messages = this.session.lastTransformedMessages;
 		if (messages.length === 0) {
-			// Before any message is sent, show the theoretical initial payload
-			messages = this.session.compilePromptMessages();
+			// No preset active — show the extension-modified system prompt
+			if (sysPrompt) {
+				parts.push(`[system]\n${sysPrompt}`);
+			} else {
+				this.showStatus("No prompt is active.");
+				return;
+			}
 		}
 
-		if (!sysPrompt && messages.length === 0) {
-			this.showStatus("No prompt is active.");
-			return;
-		}
+		let llmMessages = convertToLlmFn(messages as AgentMessage[]);
 
-		const llmMessages = convertToLlmFn(messages as AgentMessage[]);
+		// Merge adjacent messages with the same role
+		const merged: typeof llmMessages = [];
+		const extractText = (c: string | readonly { type: string; text?: string }[]): string => {
+			if (typeof c === "string") return c;
+			return c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+		};
+		for (const msg of llmMessages) {
+			const last = merged[merged.length - 1];
+			if (last && last.role === msg.role) {
+				const t1 = extractText(last.content);
+				const t2 = extractText(msg.content);
+				last.content = t1 ? (t2 ? t1 + "\n\n" + t2 : t1) : t2;
+				continue;
+			}
+			merged.push({ ...msg });
+		}
+		llmMessages = merged;
 
 		for (const msg of llmMessages) {
 			const lines: string[] = [];

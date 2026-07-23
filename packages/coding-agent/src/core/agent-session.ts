@@ -369,6 +369,8 @@ export class AgentSession {
 	// Baseline tool set before the active preset's tools policy was applied
 	private _toolPolicyBaseline?: string[];
 	/** Captured messages from the last agent run, for /prompt inspection. */
+	/** Preset item templates (static macros frozen, {{dynamic}} placeholders), rebuilt on preset/tool change. */
+	private _lastPresetTemplateMessages: AgentMessage[] = [];
 	private _lastCompiledMessages: AgentMessage[] = [];
 	/** Captured system prompt from the last agent run. */
 	private _lastCompiledSystemPrompt = "";
@@ -1087,22 +1089,8 @@ export class AgentSession {
 			return buildSystemPrompt(this._baseSystemPromptOptions);
 		}
 
-		// First pass: compile without any macro expansion to get the raw template
-		const rawRuntime: PromptRuntime = {
-			options: this._baseSystemPromptOptions,
-			messages: [],
-			latestUserMessage: undefined,
-			now: new Date(),
-			variables: {},
-			skills: loadedSkills,
-			skipMacroExpansion: true,
-		};
-		const rawTemplate = compileSystemPrompt(this._activePreset, rawRuntime, "").systemPrompt;
-
-		// Second pass: expand only static macros to produce the template for per-turn re-expansion
-
-		// Third pass: expand all macros for the initial cached value
-		const expandedRuntime: PromptRuntime = {
+		// Compile system prompt with static macros frozen, dynamic macros as {{...}} placeholders
+		const staticRuntime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: [],
 			latestUserMessage: undefined,
@@ -1110,10 +1098,54 @@ export class AgentSession {
 			variables: {},
 			skills: loadedSkills,
 		};
-		return expandMacros(rawTemplate, expandedRuntime, { mode: "all" });
+		const systemResult = compileSystemPrompt(this._activePreset, staticRuntime, "");
+		this._rebuildPresetTemplates();
+		return expandMacros(systemResult.systemPrompt, staticRuntime, { mode: "static" });
+	}
+
+	/** Rebuild preset item templates (static macros expanded, dynamic macros kept as {{...}}). */
+	private _rebuildPresetTemplates(): void {
+		if (this._activePreset === defaultPreset || this._activePreset.id === "pi-default") {
+			this._lastPresetTemplateMessages = [];
+			return;
+		}
+		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: this.agent.state.messages,
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: { user: this.settingsManager.getUserName() },
+			skills: loadedSkills,
+		};
+		const items = this._activePreset.items.filter((item) => item.enabled !== false);
+		const result: AgentMessage[] = [];
+		for (const item of items) {
+			if (item.kind === "slot" && (item as PromptPresetSlotItem).slot === "chat-history") continue;
+			if (!item.role) continue;
+			let text: string;
+			if (item.kind === "block") {
+				text = (item as PromptPresetBlockItem).content;
+			} else {
+				text = renderSlot(item as PromptPresetSlotItem, this._activePreset, runtime, []);
+			}
+			if (!text) continue;
+			// Expand only static macros; leave {{dynamic}} as placeholders for per-turn expansion
+			text = expandMacros(text, runtime, { mode: "static" });
+			if (!text) continue;
+			result.push({
+				role: item.role,
+				content: [{ type: "text" as const, text }],
+				timestamp: Date.now(),
+			} as AgentMessage);
+		}
+		this._lastPresetTemplateMessages = result;
 	}
 
 	// =========================================================================
+	// Prompt Preset Management
+	// =========================================================================
+
 	// Prompt Preset Management
 	// =========================================================================
 
@@ -1214,11 +1246,8 @@ export class AgentSession {
 		}
 	}
 
-	/**
-	 * Compile preset items excluding chat-history expansion.
-	 * Only called when user-defined presets are loaded (_loadedPresets.length > 0).
-	 */
 	private _compilePresetItems(): AgentMessage[] {
+		if (this._lastPresetTemplateMessages.length === 0) return [];
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
@@ -1228,24 +1257,43 @@ export class AgentSession {
 			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
 		};
-		const items = this._activePreset.items.filter((item) => item.enabled !== false);
 		const result: AgentMessage[] = [];
-		for (const item of items) {
-			if (item.kind === "slot" && (item as PromptPresetSlotItem).slot === "chat-history") continue;
-			if (!item.role) continue;
-			let text: string;
-			if (item.kind === "block") {
-				text = (item as PromptPresetBlockItem).content;
-			} else {
-				text = renderSlot(item as PromptPresetSlotItem, this._activePreset, runtime, []);
-			}
-			if (!text) continue;
-			// Expand macros so {{user}}, {{lastUserMessage}} etc. work in real agent flow
-			text = expandMacros(text, runtime);
-			if (!text) continue;
+		for (const tmpl of this._lastPresetTemplateMessages) {
+			if (!("content" in tmpl)) continue;
+			const raw = tmpl.content as unknown as { text: string }[];
+			const text = raw[0]?.text ?? "";
+			const expanded = expandMacros(text, runtime, { mode: "dynamic" });
+			if (!expanded) continue;
 			result.push({
-				role: item.role,
-				content: [{ type: "text", text }],
+				role: tmpl.role,
+				content: [{ type: "text" as const, text: expanded }],
+				timestamp: Date.now(),
+			} as AgentMessage);
+		}
+		return result;
+	}
+
+	getPresetInjectMessages(): AgentMessage[] {
+		if (this._lastPresetTemplateMessages.length === 0) return [];
+		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const runtime: PromptRuntime = {
+			options: this._baseSystemPromptOptions,
+			messages: this.agent.state.messages,
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: { user: this.settingsManager.getUserName() },
+			skills: loadedSkills,
+		};
+		const result: AgentMessage[] = [];
+		for (const tmpl of this._lastPresetTemplateMessages) {
+			if (!("content" in tmpl)) continue;
+			const raw = tmpl.content as unknown as { text: string }[];
+			const text = raw[0]?.text ?? "";
+			const expanded = expandMacros(text, runtime, { mode: "dynamic" });
+			if (!expanded) continue;
+			result.push({
+				role: tmpl.role,
+				content: [{ type: "text" as const, text: expanded }],
 				timestamp: Date.now(),
 			} as AgentMessage);
 		}
@@ -1267,48 +1315,6 @@ export class AgentSession {
 		};
 		const result = compileSystemPrompt(this._activePreset, runtime, "");
 		return result.systemPrompt;
-	}
-
-	/**
-	 * Get compiled preset items (excluding chat-history) for injection into the LLM context.
-	 * Called from transformContext in sdk.ts — these items appear in the LLM payload
-	 * without being stored in agent.state.messages.
-	 */
-	getPresetInjectMessages(): AgentMessage[] {
-		// Only inject if a user-defined preset is active (not the built-in pi-default)
-		if (this._activePreset === defaultPreset) return [];
-		if (this._activePreset.id === "pi-default") return [];
-		if (this._loadedPresets.length === 0) return [];
-		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const runtime: PromptRuntime = {
-			options: this._baseSystemPromptOptions,
-			messages: this.agent.state.messages,
-			latestUserMessage: undefined,
-			now: new Date(),
-			variables: { user: this.settingsManager.getUserName() },
-			skills: loadedSkills,
-		};
-		const items = this._activePreset.items.filter((item) => item.enabled !== false);
-		const result: AgentMessage[] = [];
-		for (const item of items) {
-			if (item.kind === "slot" && (item as PromptPresetSlotItem).slot === "chat-history") continue;
-			if (!item.role) continue;
-			let text: string;
-			if (item.kind === "block") {
-				text = (item as PromptPresetBlockItem).content;
-			} else {
-				text = renderSlot(item as PromptPresetSlotItem, this._activePreset, runtime, []);
-			}
-			if (!text) continue;
-			text = expandMacros(text, runtime);
-			if (!text) continue;
-			result.push({
-				role: item.role,
-				content: [{ type: "text" as const, text }],
-				timestamp: Date.now(),
-			} as AgentMessage);
-		}
-		return result;
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -1497,9 +1503,10 @@ export class AgentSession {
 				this._applyDynamicSystemPrompt();
 			}
 			// Inject compiled preset items — only when a user-defined preset is active
-			const presetItems = (this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default")
-				? this._compilePresetItems()
-				: [];
+			const presetItems =
+				this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default"
+					? this._compilePresetItems()
+					: [];
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
