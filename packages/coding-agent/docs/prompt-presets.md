@@ -195,47 +195,57 @@ In block `content` fields, wrap a macro name in `{{}}` to expand it at compile t
 | `{{lastUserMessage}}` | The user's most recent message content. | yes |
 | `{{tools}}` / `{{selectedTools}}` | Comma-separated active tool names. | yes |
 | `{{activeModel}}` | Reserved. | yes |
+| `{{user}}` | User display name (from `settings.json` `userName`). | no |
+| `{{setvar::key::value}}` | Set a session variable. | no |
+| `{{addvar::key::value}}` | Append text to a session variable. | no |
+| `{{getvar::key}}` | Read a session variable. | no |
+| `{{trim}}` | Remove surrounding whitespace from adjacent text. | no |
+| `{{//…}}` | Comment — stripped entirely from output. | — |
 
-**Static vs Dynamic**: A `static` macro is expanded once when the preset is compiled and its value is baked into the template. A dynamic macro (one without `static: true`) is re-expanded each turn. This matters for macros like `{{roll:1d100}}` (see custom macros below) that should produce a fresh value on every LLM call.
+**Static vs Dynamic**: A `static` macro is expanded once when the preset is compiled. A dynamic macro (default, no `static: true`) is re-expanded each turn. This matters for macros like `{{roll:1d100}}` that should produce a fresh value on every LLM call.
 
-User-defined variables from the preset's `variables` field are also available as `{{name}}`.
-
-### Parameterized Macros: `{{name:params}}`
-
-Macros support an optional `:params` suffix. The full text after `:` is passed to the macro's render function as `ctx.params`:
+### Variable Macros (SillyTavern-style)
 
 ```
-{{roll:1d100}}    → params = "1d100"
-{{roll:2d6}}     → params = "2d6"
-{{myMacro:a,b,c}} → params = "a,b,c"
+{{setvar::name::value}}     → sets variable "name" to "value", renders empty
+{{addvar::name::text}}      → appends "text" to variable "name", renders empty
+{{getvar::name}}            → renders the current value of "name"
 ```
 
-### Custom Macros via Extension
+These work together to build dynamic prompts:
 
-Extensions can register custom macros with `pi.registerMacro()`:
-
-```ts
-import type { ExtensionAPI, MacroDefinition } from "@earendil-works/pi-coding-agent";
-
-export default function (pi: ExtensionAPI) {
-  pi.registerMacro({
-    name: "roll",
-    description: "Roll dice in NdM format. Usage: {{roll:2d6}}",
-    render: (ctx) => {
-      const params = ctx.params ?? "1d6";  // from {{roll:1d100}}
-      const [count, sides] = params.split("d").map(Number);
-      let total = 0;
-      for (let i = 0; i < Math.min(count, 100); i++) {
-        total += Math.floor(Math.random() * sides) + 1;
-      }
-      return String(total);
-    },
-  });
-}
+```
+{{setvar::lang::法语}}{{setvar::min::1500}}{{setvar::max::2000}}
+请使用{{getvar::lang}}，字数{{getvar::min}}-{{getvar::max}}
 ```
 
-Macros registered without `static: true` are re-expanded each turn, giving a fresh random value each time.
+Variables are scoped to the current `PromptRuntime` (one per turn). `{{setvar}}` and `{{addvar}}` render empty so they can be placed anywhere in the prompt without producing visible output.
 
+### User Name
+
+`{{user}}` reads from `settings.json`:
+
+```json
+{ "userName": "Mingyue" }
+```
+
+Default value is `"user"`. Set it globally at `~/.pi/agent/settings.json` or per-project at `.pi/settings.json`.
+
+### Comments
+
+Anything inside `{{//…}}` is stripped from the output entirely:
+
+```
+{{//这个prompt用于创作}}{{trim}}
+```
+
+### Nesting
+
+Macros use a depth-tracking parser (not regex) so nested macros work safely:
+
+```
+{{setvar::lang::{{user}}的语言}}  → inner {{user}} expanded first → {{setvar::lang::Mingyue的语言}}
+```
 ## Custom Slots via Extension
 
 Extensions can register custom slots with `pi.registerSlot()`:
