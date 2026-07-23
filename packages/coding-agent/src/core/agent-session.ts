@@ -95,14 +95,15 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
+import { defaultPreset } from "./prompt-preset/index.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
 	PromptPresetBlockItem,
+	PromptPresetItem,
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
-import { defaultPreset } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
@@ -369,10 +370,7 @@ export class AgentSession {
 	// Baseline tool set before the active preset's tools policy was applied
 	private _toolPolicyBaseline?: string[];
 	/** Captured messages from the last agent run, for /prompt inspection. */
-	/** Preset item templates (static macros frozen, {{dynamic}} placeholders), rebuilt on preset/tool change. */
-	private _lastPresetTemplateMessages: AgentMessage[] = [];
 	private _lastCompiledMessages: AgentMessage[] = [];
-	/** Captured system prompt from the last agent run. */
 	private _lastCompiledSystemPrompt = "";
 
 	/** Final messages after transformContext (extensions + preset injection). */
@@ -1103,44 +1101,8 @@ export class AgentSession {
 		return expandMacros(systemResult.systemPrompt, staticRuntime, { mode: "static" });
 	}
 
-	/** Rebuild preset item templates (static macros expanded, dynamic macros kept as {{...}}). */
-	private _rebuildPresetTemplates(): void {
-		if (this._activePreset === defaultPreset || this._activePreset.id === "pi-default") {
-			this._lastPresetTemplateMessages = [];
-			return;
-		}
-		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const runtime: PromptRuntime = {
-			options: this._baseSystemPromptOptions,
-			messages: this.agent.state.messages,
-			latestUserMessage: undefined,
-			now: new Date(),
-			variables: { user: this.settingsManager.getUserName() },
-			skills: loadedSkills,
-		};
-		const items = this._activePreset.items.filter((item) => item.enabled !== false);
-		const result: AgentMessage[] = [];
-		for (const item of items) {
-			if (item.kind === "slot" && (item as PromptPresetSlotItem).slot === "chat-history") continue;
-			if (!item.role) continue;
-			let text: string;
-			if (item.kind === "block") {
-				text = (item as PromptPresetBlockItem).content;
-			} else {
-				text = renderSlot(item as PromptPresetSlotItem, this._activePreset, runtime, []);
-			}
-			if (!text) continue;
-			// Expand only static macros; leave {{dynamic}} as placeholders for per-turn expansion
-			text = expandMacros(text, runtime, { mode: "static" });
-			if (!text) continue;
-			result.push({
-				role: item.role,
-				content: [{ type: "text" as const, text }],
-				timestamp: Date.now(),
-			} as AgentMessage);
-		}
-		this._lastPresetTemplateMessages = result;
-	}
+	/** No-op — template caching removed; getPresetInjectMessages uses compileMessages directly. */
+	private _rebuildPresetTemplates(): void {}
 
 	// =========================================================================
 	// Prompt Preset Management
@@ -1245,36 +1207,12 @@ export class AgentSession {
 			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 		}
 	}
-
-	private _compilePresetItems(): AgentMessage[] {
-		if (this._lastPresetTemplateMessages.length === 0) return [];
-		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const runtime: PromptRuntime = {
-			options: this._baseSystemPromptOptions,
-			messages: this.agent.state.messages,
-			latestUserMessage: undefined,
-			now: new Date(),
-			variables: { user: this.settingsManager.getUserName() },
-			skills: loadedSkills,
-		};
-		const result: AgentMessage[] = [];
-		for (const tmpl of this._lastPresetTemplateMessages) {
-			if (!("content" in tmpl)) continue;
-			const raw = tmpl.content as unknown as { text: string }[];
-			const text = raw[0]?.text ?? "";
-			const expanded = expandMacros(text, runtime, { mode: "dynamic" });
-			if (!expanded) continue;
-			result.push({
-				role: tmpl.role,
-				content: [{ type: "text" as const, text: expanded }],
-				timestamp: Date.now(),
-			} as AgentMessage);
-		}
-		return result;
-	}
-
+	/**
+	 * Get compiled preset messages for injection into the LLM context.
+	 * Uses compileMessages() which correctly handles chat-history slot positioning.
+	 */
 	getPresetInjectMessages(): AgentMessage[] {
-		if (this._lastPresetTemplateMessages.length === 0) return [];
+		if (this._activePreset === defaultPreset || this._activePreset.id === "pi-default") return [];
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
@@ -1284,22 +1222,8 @@ export class AgentSession {
 			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
 		};
-		const result: AgentMessage[] = [];
-		for (const tmpl of this._lastPresetTemplateMessages) {
-			if (!("content" in tmpl)) continue;
-			const raw = tmpl.content as unknown as { text: string }[];
-			const text = raw[0]?.text ?? "";
-			const expanded = expandMacros(text, runtime, { mode: "dynamic" });
-			if (!expanded) continue;
-			result.push({
-				role: tmpl.role,
-				content: [{ type: "text" as const, text: expanded }],
-				timestamp: Date.now(),
-			} as AgentMessage);
-		}
-		return result;
+		return compileMessages(this._activePreset, runtime).messages;
 	}
-
 	/**
 	 * Re-compile the system prompt from the active preset (for /prompt display).
 	 */
@@ -1502,11 +1426,6 @@ export class AgentSession {
 				this._systemPromptOverride = undefined;
 				this._applyDynamicSystemPrompt();
 			}
-			// Inject compiled preset items — only when a user-defined preset is active
-			const presetItems =
-				this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default"
-					? this._compilePresetItems()
-					: [];
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
