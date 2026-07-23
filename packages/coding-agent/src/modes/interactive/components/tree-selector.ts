@@ -833,20 +833,9 @@ class TreeList implements Component {
 				break;
 			case "model_change":
 				result = theme.fg("dim", `[model: ${entry.modelId}]`);
-			case "model_change":
-				result = theme.fg("dim", `[model: ${entry.modelId}]`);
 				break;
 			case "preset_change":
 				result = theme.fg("dim", `[preset: ${entry.presetId}]`);
-				break;
-			case "thinking_level_change":
-				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel}]`);
-				break;
-			case "custom":
-				result = theme.fg("dim", `[custom: ${entry.customType}]`);
-				break;
-			case "label":
-				result = theme.fg("dim", `[label: ${entry.label ?? "(cleared)"}]`);
 				break;
 			case "session_info":
 				result = entry.name
@@ -920,11 +909,9 @@ class TreeList implements Component {
 			case "custom_message":
 				text = this.extractFullContent(entry.content);
 				break;
-			case "compaction":
-				text = entry.summary;
-				break;
 			case "branch_summary":
 				text = entry.summary;
+				break;
 			case "compaction":
 				text = entry.summary;
 				break;

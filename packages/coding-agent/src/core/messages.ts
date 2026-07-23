@@ -186,6 +186,8 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 				case "assistant":
 				case "toolResult":
 					return m;
+				default:
+					return undefined;
 			}
 		})
 		.filter((m) => m !== undefined);
