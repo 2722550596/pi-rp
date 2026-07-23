@@ -281,6 +281,30 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 	if (Array.isArray(options.roles)) result.roles = options.roles.filter((r): r is string => typeof r === "string");
 	if (options.toolMode === "drop") result.toolMode = "drop";
 	if (options.includeSummaries === false) result.includeSummaries = false;
+
+	// Pass through unknown keys so custom slots (registered by extensions) can
+	// receive their own options without modifying the built-in normalize function.
+	const knownKeys = new Set<string>([
+		"format",
+		"heading",
+		"includePiDefaultGuidelines",
+		"onlyWithSnippets",
+		"requireReadTool",
+		"includeTime",
+		"omitLatestUser",
+		"maxMessages",
+		"maxChars",
+		"stripAssistantThinking",
+		"roles",
+		"toolMode",
+		"includeSummaries",
+	]);
+	for (const key of Object.keys(options)) {
+		if (!knownKeys.has(key)) {
+			result[key] = options[key];
+		}
+	}
+
 	return result;
 }
 
@@ -352,5 +376,5 @@ function normalizePolicyPatterns(
 		}
 		patterns.push(item.trim());
 	}
-	return patterns.length > 0 ? patterns : undefined;
+	return patterns.length > 0 ? patterns : Array.isArray(value) && value.length === 0 ? [] : undefined;
 }

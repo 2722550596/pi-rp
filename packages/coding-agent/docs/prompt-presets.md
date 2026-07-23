@@ -300,13 +300,29 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Then use it in a preset:
-
 ```json
 { "kind": "slot", "id": "my-block", "slot": "my-slot", "options": { "key": "value" } }
 ```
 
 The slot's render function receives `ctx.item.options` for the options passed in the preset.
+
+**Custom options passthrough** — Options not in the built-in whitelist (`heading`, `format`, `onlyWithSnippets`, etc.) are no longer silently dropped. Any unknown key in `options` is passed through to the render function as-is. This lets extension-defined slots use arbitrary options:
+
+```json
+{
+  "kind": "slot",
+  "id": "filtered",
+  "slot": "lore-filtered",
+  "options": {
+    "heading": "Key Lore",
+    "maxItems": 2,
+    "tag": "mechanics"
+  }
+}
+```
+
+The render function reads them directly from `ctx.item.options.heading`, `ctx.item.options.maxItems`, etc. No changes to pi's core are needed to support new slot-specific options.
+
 
 ## Resource Policies
 
@@ -322,6 +338,8 @@ The `tools` and `skills` top-level fields filter visibility using glob patterns:
 - `allow` — only matching resources are visible.
 - `deny` — matching resources are hidden.
 - Values are glob patterns: `"bash*"`, `"*"`, `"read"`.
+
+**Applies to actual tool registration, not just prompt text.** When a preset with a tools policy is active, denied tools are removed from `agent.state.tools` — the model cannot call them. This applies to all tools: built-in (`edit`, `write`, `bash`), extension-registered (`quick_edit`, `code-search`, `github`), and custom tools from the SDK. The policy is re-applied after every tool registry refresh (including `/reload` and extension reloads).
 
 ## Defaults
 
@@ -407,6 +425,21 @@ A custom slot that reads markdown files from disk, strips frontmatter, and wraps
 
 ```json
 { "kind": "slot", "id": "lore", "slot": "lore" }
+```
+
+A filtered variant uses custom options from the preset JSON to control output:
+
+```json
+{
+  "kind": "slot",
+  "id": "lore-filtered",
+  "slot": "lore-filtered",
+  "options": {
+    "heading": "Key Lore",
+    "maxItems": 2,
+    "tag": "mechanics"
+  }
+}
 ```
 
 See the `lore` extension for implementation.

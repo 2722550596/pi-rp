@@ -99,7 +99,6 @@ import type {
 	LoadedPromptPreset,
 	PromptPreset,
 	PromptPresetBlockItem,
-	PromptPresetItem,
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
@@ -363,8 +362,6 @@ export class AgentSession {
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
 	private _baseSystemPrompt = "";
-	/** Compiled system prompt with {{macros}} left unexpanded. Expanded at agent-set time. */
-	private _baseSystemPromptTemplate = "";
 	private _activePreset: PromptPreset = defaultPreset;
 	private _loadedPresets: LoadedPromptPreset[] = [];
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
@@ -1087,7 +1084,6 @@ export class AgentSession {
 		const rawTemplate = compileSystemPrompt(this._activePreset, rawRuntime, "").systemPrompt;
 
 		// Second pass: expand only static macros to produce the template for per-turn re-expansion
-		this._baseSystemPromptTemplate = expandMacros(rawTemplate, rawRuntime, { mode: "static" });
 
 		// Third pass: expand all macros for the initial cached value
 		const expandedRuntime: PromptRuntime = {
@@ -2950,6 +2946,10 @@ export class AgentSession {
 			activeToolNames: baseActiveToolNames,
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
+
+		// Apply the restored/active preset's tools policy after re-registering tools,
+		// so extension tools added by includeAllExtensionTools are also filtered.
+		this._syncActiveToolPolicy();
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
@@ -2977,7 +2977,6 @@ export class AgentSession {
 			await this.extendResourcesFromExtensions("reload");
 		}
 	}
-
 	// =========================================================================
 	// Auto-Retry
 	// =========================================================================
