@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { contentText } from "@earendil-works/pi-ai";
+import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "../messages.ts";
@@ -553,17 +553,24 @@ function createSummarizationOptions(
 	return options;
 }
 
-async function completeSummarization(
+/**
+ * Shared choke point for every compaction/branch-summary summarization call. Wraps the
+ * single LLM call in {@link retryAssistantCall} so transient stream drops (e.g.
+ * `terminated`, socket close) honor the configured retry policy instead of failing
+ * the whole compaction on the first attempt. Deterministic errors and aborts return
+ * immediately (see {@link retryAssistantCall}).
+ */
+export async function completeSummarization(
 	model: Model<any>,
 	context: Context,
 	options: SimpleStreamOptions,
 	streamFn?: StreamFn,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
 ): Promise<AssistantMessage> {
-	if (!streamFn) {
-		return completeSimple(model, context, options);
-	}
-	const stream = await streamFn(model, context, options);
-	return stream.result();
+	const produce = async (): Promise<AssistantMessage> =>
+		streamFn ? (await streamFn(model, context, options)).result() : completeSimple(model, context, options);
+	return retryAssistantCall(produce, retry, options.signal, callbacks);
 }
 
 /**
@@ -582,6 +589,43 @@ export async function generateSummary(
 	thinkingLevel?: ThinkingLevel,
 	streamFn?: StreamFn,
 	env?: Record<string, string>,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
+): Promise<string> {
+	return (
+		await generateSummaryWithUsage(
+			currentMessages,
+			model,
+			reserveTokens,
+			apiKey,
+			headers,
+			signal,
+			customInstructions,
+			previousSummary,
+			thinkingLevel,
+			streamFn,
+			env,
+			retry,
+			callbacks,
+		)
+	).text;
+}
+
+/** Generate or update a conversation summary and return its provider usage. */
+export async function generateSummaryWithUsage(
+	currentMessages: AgentMessage[],
+	model: Model<any>,
+	reserveTokens: number,
+	apiKey: string | undefined,
+	headers?: Record<string, string>,
+	signal?: AbortSignal,
+	customInstructions?: string,
+	previousSummary?: string,
+	thinkingLevel?: ThinkingLevel,
+	streamFn?: StreamFn,
+	env?: Record<string, string>,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -621,6 +665,8 @@ export async function generateSummary(
 		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
 		completionOptions,
 		streamFn,
+		retry,
+		callbacks,
 	);
 
 	if (response.stopReason === "error") {
@@ -771,6 +817,8 @@ export async function compact(
 	thinkingLevel?: ThinkingLevel,
 	streamFn?: StreamFn,
 	env?: Record<string, string>,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -803,6 +851,8 @@ export async function compact(
 				thinkingLevel,
 				streamFn,
 				env,
+				retry,
+				callbacks,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -817,6 +867,8 @@ export async function compact(
 			signal,
 			thinkingLevel,
 			streamFn,
+			retry,
+			callbacks,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -835,6 +887,8 @@ export async function compact(
 			thinkingLevel,
 			streamFn,
 			env,
+			retry,
+			callbacks,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -870,6 +924,8 @@ async function generateTurnPrefixSummary(
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
 	streamFn?: StreamFn,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -891,6 +947,8 @@ async function generateTurnPrefixSummary(
 		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
 		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
 		streamFn,
+		retry,
+		callbacks,
 	);
 
 	if (response.stopReason === "error") {
