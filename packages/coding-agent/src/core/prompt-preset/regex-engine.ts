@@ -358,7 +358,11 @@ function regexRulesFor(
 		if (!isPlainObject(rawRule)) continue;
 		if (rawRule.enabled === false) continue;
 		const ruleEffect = rawRule.effect ?? "outgoing";
-		if (ruleEffect !== effect && ruleEffect !== "both") continue;
+		if (effect === "finalize") {
+			if (ruleEffect !== "finalize") continue;
+		} else {
+			if (ruleEffect !== effect && ruleEffect !== "both") continue;
+		}
 		if (rawRule.stage !== stage) continue;
 		if (stage === "compiled" && Array.isArray(rawRule.targets) && !rawRule.targets.includes(target)) continue;
 

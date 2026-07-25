@@ -396,6 +396,10 @@ export class AgentSession {
 	private _lastCompiledMessages: AgentMessage[] = [];
 	private _lastCompiledSystemPrompt = "";
 
+	get modelRuntime(): ModelRuntime {
+		return this._modelRuntime;
+	}
+
 	/** Final messages after transformContext (extensions + preset injection). */
 	lastTransformedMessages: AgentMessage[] = [];
 	constructor(config: AgentSessionConfig) {
@@ -1142,6 +1146,10 @@ export class AgentSession {
 	// =========================================================================
 
 	/** Get the currently active prompt preset. */
+	get activePreset(): PromptPreset {
+		return this._activePreset;
+	}
+
 	/** Get all loaded presets from disk. */
 	getAllPresets(): LoadedPromptPreset[] {
 		return this._loadedPresets;
