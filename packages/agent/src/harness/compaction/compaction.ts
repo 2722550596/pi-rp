@@ -1,9 +1,14 @@
 import {
 	type AssistantMessage,
+	type Context,
 	contentText,
 	type ImageContent,
 	type Model,
 	type Models,
+	type RetryCallbacks,
+	type RetryPolicy,
+	retryAssistantCall,
+	type SimpleStreamOptions,
 	type TextContent,
 	type Usage,
 } from "@earendil-works/pi-ai";
@@ -105,6 +110,17 @@ export interface CompactionResult<T = unknown> {
 	usage?: Usage;
 	/** Optional implementation-specific details stored with the compaction entry. */
 	details?: T;
+}
+
+export async function completeSimpleWithRetries(
+	models: Models,
+	model: Model<any>,
+	context: Context,
+	options: SimpleStreamOptions,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
+): Promise<AssistantMessage> {
+	return retryAssistantCall(() => models.completeSimple(model, context, options), retry, options.signal, callbacks);
 }
 
 function combineUsage(first: Usage, second: Usage): Usage {
@@ -500,6 +516,36 @@ export async function generateSummary(
 	customInstructions?: string,
 	previousSummary?: string,
 	thinkingLevel?: ThinkingLevel,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
+): Promise<Result<string, CompactionError>> {
+	const result = await generateSummaryWithUsage(
+		currentMessages,
+		models,
+		model,
+		reserveTokens,
+		signal,
+		customInstructions,
+		previousSummary,
+		thinkingLevel,
+		retry,
+		callbacks,
+	);
+	return result.ok ? ok(result.value.text) : err(result.error);
+}
+
+/** Generate or update a conversation summary and return its provider usage. */
+export async function generateSummaryWithUsage(
+	currentMessages: AgentMessage[],
+	models: Models,
+	model: Model<any>,
+	reserveTokens: number,
+	signal?: AbortSignal,
+	customInstructions?: string,
+	previousSummary?: string,
+	thinkingLevel?: ThinkingLevel,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
 ): Promise<Result<{ text: string; usage: Usage }, CompactionError>> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -530,10 +576,13 @@ export async function generateSummary(
 			? { maxTokens, signal, reasoning: thinkingLevel }
 			: { maxTokens, signal };
 
-	const response = await models.completeSimple(
+	const response = await completeSimpleWithRetries(
+		models,
 		model,
 		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
 		completionOptions,
+		retry,
+		callbacks,
 	);
 	if (response.stopReason === "aborted") {
 		return err(new CompactionError("aborted", response.errorMessage || "Summarization aborted"));
@@ -665,6 +714,8 @@ export async function compact(
 	customInstructions?: string,
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
 ): Promise<Result<CompactionResult, CompactionError>> {
 	const {
 		firstKeptEntryId,
@@ -697,6 +748,8 @@ export async function compact(
 				customInstructions,
 				previousSummary,
 				thinkingLevel,
+				retry,
+				callbacks,
 			);
 			if (!historyResult.ok) return err(historyResult.error);
 			historyText = historyResult.value.text;
@@ -709,6 +762,8 @@ export async function compact(
 			settings.reserveTokens,
 			signal,
 			thinkingLevel,
+			retry,
+			callbacks,
 		);
 		if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value.text}`;
@@ -725,6 +780,8 @@ export async function compact(
 			customInstructions,
 			previousSummary,
 			thinkingLevel,
+			retry,
+			callbacks,
 		);
 		if (!summaryResult.ok) return err(summaryResult.error);
 		summary = summaryResult.value.text;
@@ -749,6 +806,8 @@ async function generateTurnPrefixSummary(
 	reserveTokens: number,
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
 ): Promise<Result<{ text: string; usage: Usage }, CompactionError>> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -765,12 +824,17 @@ async function generateTurnPrefixSummary(
 		},
 	];
 
-	const response = await models.completeSimple(
-		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+	const completionOptions =
 		model.reasoning && thinkingLevel && thinkingLevel !== "off"
 			? { maxTokens, signal, reasoning: thinkingLevel }
-			: { maxTokens, signal },
+			: { maxTokens, signal };
+	const response = await completeSimpleWithRetries(
+		models,
+		model,
+		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+		completionOptions,
+		retry,
+		callbacks,
 	);
 	if (response.stopReason === "aborted") {
 		return err(new CompactionError("aborted", response.errorMessage || "Turn prefix summarization aborted"));
