@@ -96,7 +96,6 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
-import { defaultPreset } from "./prompt-preset/index.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
@@ -105,6 +104,7 @@ import type {
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
+import { defaultPreset } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";

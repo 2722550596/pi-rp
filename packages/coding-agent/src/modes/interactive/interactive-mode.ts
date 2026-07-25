@@ -5418,7 +5418,10 @@ export class InteractiveMode {
 		const merged: typeof llmMessages = [];
 		const extractText = (c: string | readonly { type: string; text?: string }[]): string => {
 			if (typeof c === "string") return c;
-			return c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+			return c
+				.filter((b) => b.type === "text")
+				.map((b) => b.text ?? "")
+				.join("\n");
 		};
 		for (const msg of llmMessages) {
 			const last = merged[merged.length - 1];
