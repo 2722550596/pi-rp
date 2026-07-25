@@ -344,15 +344,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		sessionId: sessionManager.getSessionId(),
 		transformContext: async (messages) => {
-			const runner = extensionRunnerRef.current;
-			let result = runner ? await runner.emitContext(messages) : messages;
-			// Inject preset items from the session (not stored in agent.state.messages)
+			let result: AgentMessage[] = messages;
+			// When a user preset is active, use preset-compiled messages directly.
+			// getPresetInjectMessages() already embeds agent.state.messages at chat-history position,
+			// so appending raw messages would duplicate the conversation.
 			if (sessionRef.current) {
 				const presetItems = sessionRef.current.getPresetInjectMessages();
 				if (presetItems.length > 0) {
-					result = [...presetItems, ...result];
+					result = presetItems;
 				}
 			}
+			// Run extensions on the full context (preset + conversation)
+			const runner = extensionRunnerRef.current;
+			result = runner ? await runner.emitContext(result) : result;
 			// Capture final payload for /prompt inspection
 			if (sessionRef.current) {
 				sessionRef.current.lastTransformedMessages = result;
