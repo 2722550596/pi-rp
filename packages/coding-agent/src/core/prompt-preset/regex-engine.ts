@@ -149,7 +149,11 @@ export function applyDisplayRegexToString(
 	text: string,
 	diagnostics: PromptPresetDiagnostic[],
 ): string {
-	return applyRegexRulesToString(preset, text, "compiled", "messages", "display", diagnostics);
+	let result = text;
+	for (const stage of ["history" as const, "compiled" as const]) {
+		result = applyRegexRulesToString(preset, result, stage, "messages", "display", diagnostics);
+	}
+	return result;
 }
 
 /** Apply both outgoing and display effects to a message array. */

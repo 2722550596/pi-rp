@@ -2958,7 +2958,7 @@ export class InteractiveMode {
 						this.hiddenThinkingLabel,
 						this.outputPad,
 					);
-					this.streamingMessage = event.message;
+					this.streamingMessage = this._filterMessageForDisplay(event.message) as AssistantMessage;
 					this.chatContainer.addChild(this.streamingComponent);
 					this.streamingComponent.updateContent(this.streamingMessage);
 					this.ui.requestRender();
@@ -2967,7 +2967,7 @@ export class InteractiveMode {
 
 			case "message_update":
 				if (this.streamingComponent && event.message.role === "assistant") {
-					this.streamingMessage = event.message;
+					this.streamingMessage = this._filterMessageForDisplay(event.message) as AssistantMessage;
 					this.streamingComponent.updateContent(this.streamingMessage);
 
 					for (const content of this.streamingMessage.content) {
@@ -3003,7 +3003,7 @@ export class InteractiveMode {
 			case "message_end":
 				if (event.message.role === "user") break;
 				if (this.streamingComponent && event.message.role === "assistant") {
-					this.streamingMessage = event.message;
+					this.streamingMessage = this._filterMessageForDisplay(event.message) as AssistantMessage;
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
 						const retryAttempt = this.session.retryAttempt;

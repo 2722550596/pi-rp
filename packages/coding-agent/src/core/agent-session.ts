@@ -689,6 +689,12 @@ export class AgentSession {
 				}
 			}
 		}
+
+		// Update /prompt capture on agent end with final state
+		if (event.type === "agent_end") {
+			this.lastTransformedMessages = this.compilePromptMessages();
+			this._lastCompiledSystemPrompt = this.agent.state.systemPrompt;
+		}
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {

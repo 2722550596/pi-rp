@@ -359,6 +359,141 @@ The `tools` and `skills` top-level fields filter visibility using glob patterns:
 | `syntheticMessagesVisible` | `false` | Whether Pi's internal branch/continue messages appear in chat-history. |
 | `unresolvedMacroPolicy` | `"keep"` | `"keep"` — leave as text, `"warn"` — add diagnostic, `"error"` — fail compile. |
 
+
+## Regex Rules
+
+Presets can define regex-based text transformations that run at different stages of the prompt lifecycle. This is useful for stripping markup, unwrapping content tags, or hiding metadata from the LLM or the user.
+
+```json
+{
+  "regex": {
+    "rules": [
+      {
+        "id": "strip-comments",
+        "enabled": true,
+        "stage": "compiled",
+        "effect": "finalize",
+        "pattern": "<!--[\\s\\S]*?-->",
+        "replace": "",
+        "flags": "g"
+      },
+      {
+        "id": "unfold-content",
+        "enabled": true,
+        "stage": "compiled",
+        "effect": "outgoing",
+        "pattern": "<content>([\\s\\S]*?)</content>",
+        "replace": "$1",
+        "flags": "g"
+      }
+    ]
+  }
+}
+```
+
+### Rule Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Unique identifier within the preset. |
+| `enabled` | boolean | no | Set to `false` to skip. Default `true`. |
+| `stage` | `"history"`, `"compiled"` | yes | When the rule runs (see [Stages](#stages)). |
+| `effect` | `"outgoing"`, `"display"`, `"both"`, `"finalize"` | no | Which pipeline(s) to apply to (see [Effects](#effects)). Default `"outgoing"`. |
+| `pattern` | string | yes | JavaScript regex pattern. |
+| `flags` | string | no | Regex flags (`g`, `i`, `m`, `s`, `u`). **Multi-occurrence patterns should include `g`** to transform all matches. |
+| `replace` | string | no | Replacement string. Supports `$&` (full match), `$1`-`$n` (capture groups), `$<name>` (named groups), `` $` `` (pre-match), `$'` (post-match), `$$` (literal `$`). Default `""` (empty). |
+| `trimStrings` | string[] | no | Remove these substrings from captures before insertion. Works with `$0`/`$&` and `$<name>`. |
+| `roles` | string[] | no | Only transform messages with these roles (e.g. `["assistant"]`). |
+| `targets` | `("system"|"messages")[]` | no | Only for `stage: "compiled"`. `"messages"` transforms message content; `"system"` transforms the system prompt. Default affects both. |
+| `maxMessages` | number | no | Only transform the last N eligible messages. |
+| `maxChars` | number | no | Only transform the last N characters of each eligible message. |
+| `minDepth` | number | no | Minimum message depth from the end (0 = most recent). |
+| `maxDepth` | number | no | Maximum message depth from the end. |
+
+### Stages
+
+| Stage | Description |
+|---|---|
+| `history` | Runs on the raw chat-history messages, **before** they are inserted into the compiled prompt. Useful for cleaning up old assistant output before it re-enters context. |
+| `compiled` | Runs on the **final compiled message array**, after all items and chat-history have been assembled. This is the most common stage for content transformations. |
+
+### Effects
+
+The `effect` field controls which pipeline the rule applies to. Rules can target different pipelines independently, or combine them:
+
+| Effect | Payload (LLM sees) | Display (TUI shows) | Storage (JSONL saves) |
+|---|---|---|---|
+| `outgoing` | transformed | original | original |
+| `display` | original | transformed | original |
+| `both` | transformed | transformed | original |
+| `finalize` | original | original | transformed |
+
+**Pipeline order**: `outgoing` + `display` run at compile time, before sending to the LLM. `finalize` runs after the LLM responds, before the message is saved to the session.
+
+- **`outgoing`** — transforms what the LLM receives. Use for tags the model should see instructions from but not include in its response context, like `<sidestory>` blocks.
+- **`display`** — transforms what the user sees in the TUI, without affecting the stored data or the LLM payload. Use for hiding internal markup from the player while keeping it in context.
+- **`both`** — applies to both outgoing and display pipelines. The stored JSONL retains the original content.
+- **`finalize`** — destructively rewrites the assistant's response before it is persisted. The LLM's raw output is replaced in the stored transcript. Use with caution.
+
+### Targeting System vs Messages
+
+By default, compiled-stage rules apply to both `system` and `messages` targets. Use `targets` to restrict:
+
+```json
+{
+  "id": "system-only",
+  "stage": "compiled",
+  "effect": "outgoing",
+  "targets": ["system"],
+  "pattern": "TODO",
+  "replace": ""
+}
+```
+
+### Limiting Scope
+
+Use `roles`, `maxMessages`, `maxChars`, `minDepth`, and `maxDepth` to control which messages a rule affects:
+
+```json
+{
+  "id": "recent-assistant-notes",
+  "stage": "compiled",
+  "effect": "display",
+  "roles": ["assistant"],
+  "maxMessages": 5,
+  "minDepth": 0,
+  "maxDepth": 10,
+  "pattern": "<note>[\\s\\S]*?</note>",
+  "replace": ""
+}
+```
+
+This strips `<note>` tags from the last 5 assistant messages between depth 0-10, only in the TUI display.
+
+### Replacement Syntax
+
+Beyond standard JavaScript replacement patterns, the engine supports:
+
+| Token | Description |
+|---|---|
+| `$&` | Full match |
+| `$0` | Full match (custom alias) |
+| `$1`–`$99` | Capture group |
+| `$<name>` | Named capture group |
+| `` $` `` | Text before the match |
+| `$'` | Text after the match |
+| `$$` | Literal `$` |
+
+When `trimStrings` is set, the engine uses a custom replacement path that trims the specified substrings from captured values before insertion:
+
+```json
+{
+  "pattern": "<div class=\"secret\">([\\s\\S]*?)</div>",
+  "replace": "$1",
+  "trimStrings": ["\n  ", "\n"]
+}
+```
+
 ## Examples
 
 ### Full Replacement: Writer
