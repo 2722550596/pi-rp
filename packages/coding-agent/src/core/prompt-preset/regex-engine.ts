@@ -1,0 +1,643 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type {
+	PromptPreset,
+	PromptPresetDiagnostic,
+	PromptPresetRegexConfig,
+	PromptPresetRegexRule,
+	PromptRegexEffect,
+	PromptRegexStage,
+	PromptRegexTarget,
+} from "./types.ts";
+
+const ALLOWED_REGEX_FLAGS: Record<string, true> = { g: true, i: true, m: true, s: true, u: true };
+const VALID_STAGES: Record<string, true> = { history: true, compiled: true };
+const VALID_EFFECTS: Record<string, true> = { outgoing: true, display: true, both: true, finalize: true };
+const VALID_TARGETS: Record<string, true> = { system: true, messages: true };
+
+interface CompiledRegexRule {
+	id: string;
+	stage: PromptRegexStage;
+	effect: PromptRegexEffect;
+	targets?: PromptRegexTarget[];
+	roles?: string[];
+	maxMessages?: number;
+	maxChars?: number;
+	minDepth?: number;
+	maxDepth?: number;
+	regexp: RegExp;
+	replace: string;
+	trimStrings?: string[];
+}
+
+interface StringTransformResult {
+	text: string;
+	matches: number;
+	changed: boolean;
+}
+
+interface RegexStats {
+	matches: number;
+	changedSegments: number;
+}
+
+// =========================================================================
+
+function messageRole(message: AgentMessage): string {
+	return String(
+		typeof message === "object" && message !== null
+			? ((message as unknown as Record<string, unknown>).role ?? "")
+			: "",
+	);
+}
+
+function messageContent(message: AgentMessage): unknown {
+	if (typeof message !== "object" || message === null) return undefined;
+	return (message as unknown as Record<string, unknown>).content;
+}
+
+// Public API
+// =========================================================================
+
+export function validateRegexConfig(config: unknown): PromptPresetDiagnostic[] {
+	const diagnostics: PromptPresetDiagnostic[] = [];
+	if (config === undefined) return diagnostics;
+	if (!isPlainObject(config)) {
+		diagnostics.push({ level: "warning", message: "regex must be an object when provided." });
+		return diagnostics;
+	}
+
+	if (config.schemaVersion !== undefined && config.schemaVersion !== 1) {
+		diagnostics.push({ level: "warning", message: "Missing or unsupported regex.schemaVersion; assuming 1." });
+	}
+
+	const rawRules = config.rules;
+	if (rawRules === undefined) return diagnostics;
+	if (!Array.isArray(rawRules)) {
+		diagnostics.push({ level: "error", message: "regex.rules must be an array when provided." });
+		return diagnostics;
+	}
+
+	const seenIds = new Set<string>();
+	for (const [index, rawRule] of rawRules.entries()) {
+		validateRule(rawRule, index, seenIds, diagnostics);
+	}
+	return diagnostics;
+}
+
+export function applyRegexRulesToString(
+	preset: PromptPreset,
+	text: string,
+	stage: PromptRegexStage,
+	target: PromptRegexTarget,
+	effect: PromptRegexEffect,
+	diagnostics: PromptPresetDiagnostic[],
+): string {
+	let result = text;
+	for (const rule of regexRulesFor(preset, stage, target, effect, diagnostics)) {
+		const transformed = transformString(result, rule);
+		result = transformed.text;
+		addRuleStats(diagnostics, rule, stage, target, {
+			matches: transformed.matches,
+			changedSegments: transformed.changed ? 1 : 0,
+		});
+	}
+	return result;
+}
+
+export function applyRegexRulesToMessages(
+	preset: PromptPreset,
+	messages: AgentMessage[],
+	stage: PromptRegexStage,
+	effect: PromptRegexEffect,
+	diagnostics: PromptPresetDiagnostic[],
+): AgentMessage[] {
+	let result = messages;
+	for (const rule of regexRulesFor(preset, stage, "messages", effect, diagnostics)) {
+		const stats: RegexStats = { matches: 0, changedSegments: 0 };
+		result = transformMessages(result, rule, stats);
+		addRuleStats(diagnostics, rule, stage, "messages", stats);
+	}
+	return result;
+}
+
+export function applyFinalizeRegexRulesToMessage(
+	preset: PromptPreset,
+	message: AgentMessage,
+	diagnostics: PromptPresetDiagnostic[],
+): AgentMessage | undefined {
+	if (messageRole(message) !== "assistant") return undefined;
+
+	let result = message;
+	for (const rule of regexRulesFor(preset, "compiled", "messages", "finalize", diagnostics)) {
+		const stats: RegexStats = { matches: 0, changedSegments: 0 };
+		const [next = result] = transformMessages([result], rule, stats);
+		result = next;
+		addRuleStats(diagnostics, rule, "finalize", "messages", stats);
+	}
+
+	if (result === message) return undefined;
+	diagnostics.push({
+		level: "warning",
+		message:
+			"Finalize regex replaced finalized assistant message content; original model output is not preserved in the stored transcript.",
+	});
+	return result;
+}
+
+export function applyDisplayRegexToString(
+	preset: PromptPreset,
+	text: string,
+	diagnostics: PromptPresetDiagnostic[],
+): string {
+	return applyRegexRulesToString(preset, text, "compiled", "messages", "display", diagnostics);
+}
+
+/** Apply both outgoing and display effects to a message array. */
+export function applyAllRegexEffects(
+	preset: PromptPreset,
+	messages: AgentMessage[],
+	stage: PromptRegexStage,
+	diagnostics: PromptPresetDiagnostic[],
+): AgentMessage[] {
+	let result = messages;
+	for (const rule of regexRulesFor(preset, stage, "messages", "outgoing", diagnostics)) {
+		const stats: RegexStats = { matches: 0, changedSegments: 0 };
+		result = transformMessages(result, rule, stats);
+		addRuleStats(diagnostics, rule, stage, "messages", stats);
+	}
+	for (const rule of regexRulesFor(preset, stage, "messages", "display", diagnostics)) {
+		const stats: RegexStats = { matches: 0, changedSegments: 0 };
+		result = transformMessages(result, rule, stats);
+		addRuleStats(diagnostics, rule, stage, "messages", stats);
+	}
+	return result;
+}
+
+// =========================================================================
+// Internal: Validation
+// =========================================================================
+
+function validateRule(
+	rawRule: unknown,
+	index: number,
+	seenIds: Set<string>,
+	diagnostics: PromptPresetDiagnostic[],
+): void {
+	const label = `regex rule ${index + 1}`;
+	if (!isPlainObject(rawRule)) {
+		diagnostics.push({ level: "error", message: `${label} must be an object.` });
+		return;
+	}
+
+	const id = typeof rawRule.id === "string" ? rawRule.id.trim() : "";
+	if (!id) {
+		diagnostics.push({ level: "error", message: `${label} must have a non-empty id.` });
+	} else if (seenIds.has(id)) {
+		diagnostics.push({ level: "error", message: `Duplicate regex rule id: ${id}.` });
+	} else {
+		seenIds.add(id);
+	}
+
+	if (rawRule.enabled !== undefined && typeof rawRule.enabled !== "boolean") {
+		diagnostics.push({
+			level: "warning",
+			message: `${regexRuleLabel(id, index)} enabled must be a boolean when provided.`,
+		});
+	}
+
+	if (!VALID_STAGES[rawRule.stage as string]) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} stage must be "history" or "compiled".`,
+		});
+	}
+
+	const effect = typeof rawRule.effect === "string" ? rawRule.effect : undefined;
+	if (rawRule.effect !== undefined) {
+		if (!VALID_EFFECTS[rawRule.effect as string]) {
+			diagnostics.push({
+				level: "error",
+				message: `${regexRuleLabel(id, index)} effect must be "outgoing", "display", "both", or "finalize".`,
+			});
+		} else if (effect === "finalize") {
+			diagnostics.push({
+				level: "warning",
+				message: `${regexRuleLabel(id, index)} effect "finalize" rewrites finalized assistant messages and replaces the original model output in the stored transcript.`,
+			});
+		}
+	}
+	if (effect === "finalize" && rawRule.stage !== "compiled") {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} effect "finalize" requires stage "compiled".`,
+		});
+	}
+
+	if (typeof rawRule.pattern !== "string" || rawRule.pattern.length === 0) {
+		diagnostics.push({ level: "error", message: `${regexRuleLabel(id, index)} pattern must be a non-empty string.` });
+	} else {
+		const flagsError = validateRegexFlags(rawRule.flags, id, index);
+		if (flagsError) diagnostics.push({ level: "error", message: flagsError });
+		else {
+			try {
+				new RegExp(rawRule.pattern, typeof rawRule.flags === "string" ? rawRule.flags : "");
+			} catch (error) {
+				diagnostics.push({
+					level: "error",
+					message: `${regexRuleLabel(id, index)} pattern failed to compile: ${error instanceof Error ? error.message : String(error)}`,
+				});
+			}
+		}
+	}
+
+	if (rawRule.replace !== undefined && typeof rawRule.replace !== "string") {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} replace must be a string when provided.`,
+		});
+	} else if (typeof rawRule.replace === "string") {
+		if (/\{\{\s*match\s*\}\}/i.test(rawRule.replace)) {
+			diagnostics.push({
+				level: "warning",
+				message: `${regexRuleLabel(id, index)} replacement contains SillyTavern {{match}}; use JavaScript $& or re-import the SillyTavern preset to convert it.`,
+			});
+		}
+	}
+	if (rawRule.trimStrings !== undefined && !isStringArray(rawRule.trimStrings)) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} trimStrings must be an array of strings when provided.`,
+		});
+	}
+	if (rawRule.roles !== undefined && !isStringArray(rawRule.roles)) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} roles must be an array of strings when provided.`,
+		});
+	}
+	if (rawRule.targets !== undefined) {
+		if (!isStringArray(rawRule.targets)) {
+			diagnostics.push({
+				level: "error",
+				message: `${regexRuleLabel(id, index)} targets must be an array of strings when provided.`,
+			});
+		} else {
+			for (const target of rawRule.targets) {
+				if (!VALID_TARGETS[target]) {
+					diagnostics.push({
+						level: "error",
+						message: `${regexRuleLabel(id, index)} target must be "system" or "messages": ${target}.`,
+					});
+				} else if (effect === "finalize" && target !== "messages") {
+					diagnostics.push({
+						level: "error",
+						message: `${regexRuleLabel(id, index)} effect "finalize" only supports target "messages": ${target}.`,
+					});
+				}
+			}
+		}
+	}
+	if (effect === "finalize" && isStringArray(rawRule.roles) && !rawRule.roles.includes("assistant")) {
+		diagnostics.push({
+			level: "warning",
+			message: `${regexRuleLabel(id, index)} effect "finalize" only runs for finalized assistant messages, but roles does not include "assistant".`,
+		});
+	}
+	if (rawRule.maxMessages !== undefined && !isPositiveInteger(rawRule.maxMessages)) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} maxMessages must be a positive integer when provided.`,
+		});
+	}
+	if (rawRule.maxChars !== undefined && !isPositiveInteger(rawRule.maxChars)) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} maxChars must be a positive integer when provided.`,
+		});
+	}
+	if (rawRule.minDepth !== undefined && !isNonNegativeInteger(rawRule.minDepth)) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} minDepth must be a non-negative integer when provided.`,
+		});
+	}
+	if (rawRule.maxDepth !== undefined && !isNonNegativeInteger(rawRule.maxDepth)) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} maxDepth must be a non-negative integer when provided.`,
+		});
+	}
+	if (
+		isNonNegativeInteger(rawRule.minDepth) &&
+		isNonNegativeInteger(rawRule.maxDepth) &&
+		rawRule.maxDepth < rawRule.minDepth
+	) {
+		diagnostics.push({
+			level: "error",
+			message: `${regexRuleLabel(id, index)} maxDepth must be greater than or equal to minDepth.`,
+		});
+	}
+}
+
+// =========================================================================
+// Internal: Rule filtering & compilation
+// =========================================================================
+
+function regexRulesFor(
+	preset: PromptPreset,
+	stage: PromptRegexStage,
+	target: PromptRegexTarget,
+	effect: PromptRegexEffect,
+	diagnostics: PromptPresetDiagnostic[],
+): CompiledRegexRule[] {
+	const config = preset.regex as PromptPresetRegexConfig | undefined;
+	const rules = Array.isArray(config?.rules) ? config.rules : [];
+	const compiled: CompiledRegexRule[] = [];
+
+	for (const rawRule of rules) {
+		if (!isPlainObject(rawRule)) continue;
+		if (rawRule.enabled === false) continue;
+		const ruleEffect = rawRule.effect ?? "outgoing";
+		if (ruleEffect !== effect && ruleEffect !== "both") continue;
+		if (rawRule.stage !== stage) continue;
+		if (stage === "compiled" && Array.isArray(rawRule.targets) && !rawRule.targets.includes(target)) continue;
+
+		const rule = compileRuntimeRule(rawRule as unknown as PromptPresetRegexRule, diagnostics);
+		if (rule) compiled.push(rule);
+	}
+
+	return compiled;
+}
+
+function compileRuntimeRule(
+	rule: PromptPresetRegexRule,
+	diagnostics: PromptPresetDiagnostic[],
+): CompiledRegexRule | undefined {
+	if (typeof rule.id !== "string" || !rule.id.trim()) return undefined;
+	if (rule.stage !== "history" && rule.stage !== "compiled") return undefined;
+	const effect = rule.effect ?? "outgoing";
+	if (!VALID_EFFECTS[effect]) return undefined;
+	if (typeof rule.pattern !== "string" || rule.pattern.length === 0) return undefined;
+	const flags = typeof rule.flags === "string" ? rule.flags : "";
+	const flagsError = validateRegexFlags(flags, rule.id, -1);
+	if (flagsError) return undefined;
+	try {
+		return {
+			id: rule.id.trim(),
+			stage: rule.stage,
+			effect,
+			targets: normalizeTargets(rule.targets),
+			roles: isStringArray(rule.roles) ? rule.roles : undefined,
+			maxMessages: isPositiveInteger(rule.maxMessages) ? Math.floor(rule.maxMessages) : undefined,
+			maxChars: isPositiveInteger(rule.maxChars) ? Math.floor(rule.maxChars) : undefined,
+			minDepth: isNonNegativeInteger(rule.minDepth) ? Math.floor(rule.minDepth) : undefined,
+			maxDepth: isNonNegativeInteger(rule.maxDepth) ? Math.floor(rule.maxDepth) : undefined,
+			regexp: new RegExp(rule.pattern, flags),
+			replace: typeof rule.replace === "string" ? rule.replace : "",
+			trimStrings: isStringArray(rule.trimStrings) ? rule.trimStrings : undefined,
+		};
+	} catch (error) {
+		diagnostics.push({
+			level: "error",
+			message: `Regex rule ${rule.id} failed to compile: ${error instanceof Error ? error.message : String(error)}`,
+		});
+		return undefined;
+	}
+}
+
+// =========================================================================
+// Internal: Transformation
+// =========================================================================
+
+function transformMessages(messages: AgentMessage[], rule: CompiledRegexRule, stats: RegexStats): AgentMessage[] {
+	const eligible = eligibleMessageIndexes(messages, rule);
+	const eligibleSet = new Set(rule.maxMessages ? eligible.slice(-rule.maxMessages) : eligible);
+	let changed = false;
+
+	const transformed = messages.map((message, index) => {
+		if (!eligibleSet.has(index)) return message;
+		const next = transformMessage(message, rule, stats);
+		if (next !== message) changed = true;
+		return next;
+	});
+
+	return changed ? transformed : messages;
+}
+
+function eligibleMessageIndexes(messages: AgentMessage[], rule: CompiledRegexRule): number[] {
+	const indexes: number[] = [];
+	for (const [index, message] of messages.entries()) {
+		if (rule.roles && !rule.roles.includes(messageRole(message))) continue;
+		const depth = messages.length - 1 - index;
+		if (rule.minDepth !== undefined && depth < rule.minDepth) continue;
+		if (rule.maxDepth !== undefined && depth > rule.maxDepth) continue;
+		indexes.push(index);
+	}
+	return indexes;
+}
+
+function transformMessage(message: AgentMessage, rule: CompiledRegexRule, stats: RegexStats): AgentMessage {
+	const content = messageContent(message);
+	if (typeof content === "string") {
+		const result = transformString(content, rule);
+		mergeStringStats(stats, result);
+		return result.changed ? ({ ...message, content: result.text } as AgentMessage) : message;
+	}
+
+	if (!Array.isArray(content)) return message;
+	let changed = false;
+	const nextContent = content.map((part) => {
+		if (!isPlainObject(part) || part.type !== "text" || typeof part.text !== "string") return part;
+		const result = transformString(part.text, rule);
+		mergeStringStats(stats, result);
+		if (!result.changed) return part;
+		changed = true;
+		return { ...part, text: result.text };
+	});
+
+	return changed ? ({ ...message, content: nextContent } as AgentMessage) : message;
+}
+
+function transformString(text: string, rule: CompiledRegexRule): StringTransformResult {
+	const headLength = rule.maxChars && text.length > rule.maxChars ? text.length - rule.maxChars : 0;
+	const head = headLength > 0 ? text.slice(0, headLength) : "";
+	const body = headLength > 0 ? text.slice(headLength) : text;
+	const matches = countReplacementMatches(body, rule.regexp);
+	const replaced =
+		rule.trimStrings && rule.trimStrings.length > 0
+			? replaceWithTrimStrings(body, rule)
+			: body.replace(rule.regexp, convertDollarZeroToFullMatch(rule.replace));
+	const result = head + replaced;
+	return {
+		text: result,
+		matches,
+		changed: result !== text,
+	};
+}
+
+// =========================================================================
+// Internal: Replacement helpers
+// =========================================================================
+
+/**
+ * Normalizes a JavaScript replacement string so that `$0` (not followed by another
+ * digit) behaves as the full match, matching the custom trimStrings expander and
+ * SillyTavern conventions. `$$0` stays a literal `$0`. This keeps `$0` consistent
+ * across the native and trimStrings replacement paths.
+ */
+function convertDollarZeroToFullMatch(replace: string): string {
+	let result = "";
+	for (let i = 0; i < replace.length; ) {
+		const ch = replace[i];
+		if (ch !== undefined && ch !== "$") {
+			result += ch;
+			i++;
+			continue;
+		}
+		const next = replace[i + 1];
+		if (next === "$") {
+			result += "$$";
+			i += 2;
+			continue;
+		}
+		if (next === "0" && !isDigitCode(replace.charCodeAt(i + 2))) {
+			result += "$&";
+			i += 2;
+			continue;
+		}
+		result += "$";
+		i++;
+	}
+	return result;
+}
+
+function isDigitCode(code: number): boolean {
+	return code >= 48 && code <= 57;
+}
+
+function replaceWithTrimStrings(text: string, rule: CompiledRegexRule): string {
+	return text.replace(rule.regexp, (...args: unknown[]) => {
+		const groups = isPlainObject(args.at(-1)) ? (args.pop() as Record<string, unknown>) : undefined;
+		const input = String(args.pop() ?? "");
+		const offset = Number(args.pop() ?? 0);
+		const [match = "", ...captures] = args.map((arg) => (typeof arg === "string" ? arg : ""));
+		return expandReplacementTemplate(rule.replace, {
+			match,
+			captures,
+			offset,
+			input,
+			groups,
+			trimStrings: rule.trimStrings ?? [],
+		});
+	});
+}
+
+function expandReplacementTemplate(
+	template: string,
+	context: {
+		match: string;
+		captures: string[];
+		offset: number;
+		input: string;
+		groups?: Record<string, unknown>;
+		trimStrings: string[];
+	},
+): string {
+	return template.replace(/\$([$&`']|0(?!\d)|[1-9]\d?|<[^>]+>)/g, (token) => {
+		if (token === "$$") return "$";
+		if (token === "$&" || token === "$0") return trimMatchedValue(context.match, context.trimStrings);
+		if (token === "$`") return context.input.slice(0, context.offset);
+		if (token === "$'") return context.input.slice(context.offset + context.match.length);
+		if (token.startsWith("$<")) {
+			const name = token.slice(2, -1);
+			const value = context.groups?.[name];
+			return typeof value === "string" ? trimMatchedValue(value, context.trimStrings) : "";
+		}
+		const captureIndex = Number(token.slice(1)) - 1;
+		const capture = context.captures[captureIndex];
+		return capture === undefined ? "" : trimMatchedValue(capture, context.trimStrings);
+	});
+}
+
+function trimMatchedValue(value: string, trimStrings: string[]): string {
+	let result = value;
+	for (const trimString of trimStrings) {
+		if (!trimString) continue;
+		result = result.split(trimString).join("");
+	}
+	return result;
+}
+
+function countReplacementMatches(text: string, regexp: RegExp): number {
+	if (!regexp.global) return new RegExp(regexp.source, regexp.flags.replace("g", "")).test(text) ? 1 : 0;
+
+	const matcher = new RegExp(regexp.source, regexp.flags);
+	let count = 0;
+	let match: RegExpExecArray | null = matcher.exec(text);
+	while (match !== null) {
+		count++;
+		if (match[0] === "") matcher.lastIndex++;
+		match = matcher.exec(text);
+	}
+	return count;
+}
+
+// =========================================================================
+// Internal: Stats & helpers
+// =========================================================================
+
+function mergeStringStats(stats: RegexStats, result: StringTransformResult): void {
+	stats.matches += result.matches;
+	if (result.changed) stats.changedSegments++;
+}
+
+function addRuleStats(
+	diagnostics: PromptPresetDiagnostic[],
+	rule: CompiledRegexRule,
+	stage: string,
+	target: PromptRegexTarget,
+	stats: RegexStats,
+): void {
+	if (stats.matches === 0) return;
+	diagnostics.push({
+		level: "info",
+		message: `Regex rule ${rule.id} matched ${stats.matches} time(s) and changed ${stats.changedSegments} text segment(s) in ${stage}/${target}.`,
+	});
+}
+
+function validateRegexFlags(value: unknown, id: string, index: number): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") return `${regexRuleLabel(id, index)} flags must be a string when provided.`;
+	const seen = new Set<string>();
+	for (const flag of value) {
+		if (!ALLOWED_REGEX_FLAGS[flag]) return `${regexRuleLabel(id, index)} has unsupported regex flag: ${flag}.`;
+		if (seen.has(flag)) return `${regexRuleLabel(id, index)} has duplicate regex flag: ${flag}.`;
+		seen.add(flag);
+	}
+	return undefined;
+}
+
+function normalizeTargets(value: unknown): PromptRegexTarget[] | undefined {
+	if (!isStringArray(value)) return undefined;
+	return value.filter((target): target is PromptRegexTarget => target === "system" || target === "messages");
+}
+
+function regexRuleLabel(id: string, index: number): string {
+	return id ? `Regex rule ${id}` : `regex rule ${index + 1}`;
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isPositiveInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}

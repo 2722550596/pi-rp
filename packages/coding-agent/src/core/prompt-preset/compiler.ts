@@ -6,6 +6,7 @@ export type {
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { expandMacros } from "./macro-engine.ts";
+import { applyRegexRulesToMessages, applyRegexRulesToString } from "./regex-engine.ts";
 import { renderSlot } from "./slot-renderers.ts";
 import type {
 	CompileMessageSource,
@@ -18,10 +19,6 @@ import type {
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./types.ts";
-// =========================================================================
-// Compile System Prompt
-// =========================================================================
-
 export function compileSystemPrompt(
 	preset: PromptPreset,
 	runtime: PromptRuntime,
@@ -39,7 +36,8 @@ export function compileSystemPrompt(
 	}
 
 	const compiled = parts.join("\n\n");
-	return { systemPrompt: compiled || baseSystemPrompt, diagnostics };
+	const systemPrompt = applyRegexRulesToString(preset, compiled, "compiled", "system", "outgoing", diagnostics);
+	return { systemPrompt: systemPrompt || baseSystemPrompt, diagnostics };
 }
 
 // =========================================================================
@@ -117,6 +115,9 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 			limited = repairToolPairs(limited);
 		}
 
+		// Apply history-stage regex to chat-history messages
+		limited = applyRegexRulesToMessages(preset, limited, "history", "outgoing", diagnostics);
+
 		for (const msg of limited) {
 			result.push(msg);
 			sources.push({ kind: "chat-history" });
@@ -129,6 +130,9 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 
 	// Squash consecutive same-role messages: merge adjacent messages with the same role
 	result = squashMessages(result);
+
+	// Apply compiled-stage regex to the full message array (outgoing + display effects)
+	result = applyRegexRulesToMessages(preset, result, "compiled", "outgoing", diagnostics);
 
 	return { messages: result, sources, diagnostics };
 }

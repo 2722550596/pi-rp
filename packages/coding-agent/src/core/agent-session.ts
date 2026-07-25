@@ -13,6 +13,12 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+export type {
+	CompileMessageSource,
+	CompileMessagesResult,
+	CompileSystemPromptResult,
+} from "./prompt-preset/compiler.ts";
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -97,11 +103,21 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
-import type { LoadedPromptPreset, PromptPreset, PromptRuntime } from "./prompt-preset/index.ts";
+import type {
+	LoadedPromptPreset,
+	PromptPreset,
+	PromptPresetBlockItem,
+	PromptPresetDiagnostic,
+	PromptPresetItem,
+	PromptPresetSlotItem,
+	PromptRuntime,
+} from "./prompt-preset/index.ts";
 import { defaultPreset } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
+import { applyFinalizeRegexRulesToMessage } from "./prompt-preset/regex-engine.ts";
+import { renderSlot } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -114,9 +130,6 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts"
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
-
-// ============================================================================
-// Skill Block Parsing
 // ============================================================================
 
 /** Parsed skill block from a user message */
@@ -372,6 +385,7 @@ export class AgentSession {
 	private _baseSystemPrompt = "";
 	private _activePreset: PromptPreset = defaultPreset;
 	private _loadedPresets: LoadedPromptPreset[] = [];
+
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
 	private _systemPromptOverride?: string;
@@ -412,8 +426,23 @@ export class AgentSession {
 		});
 	}
 
-	get modelRuntime(): ModelRuntime {
-		return this._modelRuntime;
+	private async _getSummarizationRequestAuth(model: Model<any>): Promise<{
+		apiKey?: string;
+		headers?: Record<string, string>;
+		env?: Record<string, string>;
+	}> {
+		if (this.agent.streamFn === streamSimple) {
+			return this._getRequiredRequestAuth(model);
+		}
+
+		try {
+			const result = await this._modelRuntime.getAuth(model);
+			return result
+				? { apiKey: result.auth.apiKey, headers: withoutDeletedHeaders(result.auth.headers), env: result.env }
+				: {};
+		} catch {
+			return {};
+		}
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -448,25 +477,6 @@ export class AgentSession {
 			);
 		}
 		throw new Error(formatNoApiKeyFoundMessage(model.provider));
-	}
-
-	private async _getSummarizationRequestAuth(model: Model<any>): Promise<{
-		apiKey?: string;
-		headers?: Record<string, string>;
-		env?: Record<string, string>;
-	}> {
-		if (this.agent.streamFn === streamSimple) {
-			return this._getRequiredRequestAuth(model);
-		}
-
-		try {
-			const result = await this._modelRuntime.getAuth(model);
-			return result
-				? { apiKey: result.auth.apiKey, headers: withoutDeletedHeaders(result.auth.headers), env: result.env }
-				: {};
-		} catch {
-			return {};
-		}
 	}
 
 	/**
@@ -762,17 +772,26 @@ export class AgentSession {
 				message: event.message,
 			};
 			const replacement = await this._extensionRunner.emitMessageEnd(extensionEvent);
-			if (replacement) {
-				// Untyped extension handlers can return messages with null/missing content;
-				// normalize so it never enters agent state or session history.
-				const normalized =
-					(replacement.role === "user" ||
-						replacement.role === "assistant" ||
-						replacement.role === "toolResult" ||
-						replacement.role === "custom") &&
-					replacement.content == null
-						? ({ ...replacement, content: [] } as AgentMessage)
-						: replacement;
+			const finalMessage = replacement ?? event.message;
+			// Normalize: untyped extension handlers can return messages with null/missing content
+			const normalized =
+				(finalMessage.role === "user" ||
+					finalMessage.role === "assistant" ||
+					finalMessage.role === "toolResult" ||
+					finalMessage.role === "custom") &&
+				finalMessage.content == null
+					? ({ ...finalMessage, content: [] } as AgentMessage)
+					: finalMessage;
+			// Apply finalize regex from active preset
+			if (this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default") {
+				const finalizeDiags: PromptPresetDiagnostic[] = [];
+				const finalizeResult = applyFinalizeRegexRulesToMessage(this._activePreset, normalized, finalizeDiags);
+				if (finalizeResult) {
+					this._replaceMessageInPlace(event.message, finalizeResult);
+				} else {
+					this._replaceMessageInPlace(event.message, normalized);
+				}
+			} else {
 				this._replaceMessageInPlace(event.message, normalized);
 			}
 		} else if (event.type === "tool_execution_start") {
@@ -1123,10 +1142,6 @@ export class AgentSession {
 	// =========================================================================
 
 	/** Get the currently active prompt preset. */
-	get activePreset(): PromptPreset {
-		return this._activePreset;
-	}
-
 	/** Get all loaded presets from disk. */
 	getAllPresets(): LoadedPromptPreset[] {
 		return this._loadedPresets;
@@ -1180,7 +1195,6 @@ export class AgentSession {
 		const filtered = applyResourcePolicy(baseline, policy);
 		this.setActiveToolsByName(filtered);
 	}
-
 	private _restoreToolPolicy(): void {
 		if (this._toolPolicyBaseline) {
 			this.setActiveToolsByName(this._toolPolicyBaseline);

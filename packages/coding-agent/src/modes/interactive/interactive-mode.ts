@@ -78,6 +78,7 @@ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.t
 import { convertToLlm as convertToLlmFn, createCompactionSummaryMessage } from "../../core/messages.ts";
 import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
+import { applyDisplayRegexToString } from "../../core/prompt-preset/regex-engine.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -3264,11 +3265,34 @@ export class InteractiveMode {
 				return;
 			}
 		}
+	}
 
-		this.chatContainer.addChild(component);
+	private _filterMessageForDisplay(message: AgentMessage): AgentMessage {
+		const preset = this.session.activePreset;
+		if (!preset.regex?.rules?.length) return message;
+		if (!("content" in message) || !Array.isArray(message.content)) return message;
+		let changed = false;
+		const content = message.content.map((part) => {
+			if (
+				part &&
+				typeof part === "object" &&
+				"type" in part &&
+				part.type === "text" &&
+				typeof part.text === "string"
+			) {
+				const filtered = applyDisplayRegexToString(preset, part.text, []);
+				if (filtered !== part.text) changed = true;
+				return { ...part, text: filtered };
+			}
+			return part;
+		});
+		return changed ? ({ ...message, content } as AgentMessage) : message;
 	}
 
 	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
+		// Apply display-effect regex before rendering
+		message = this._filterMessageForDisplay(message);
+
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -3315,14 +3339,12 @@ export class InteractiveMode {
 					}
 					const skillBlock = parseSkillBlock(textContent);
 					if (skillBlock) {
-						// Render skill block (collapsible)
 						const component = new SkillInvocationMessageComponent(
 							skillBlock,
 							this.getMarkdownThemeWithSettings(),
 						);
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
-						// Render user message separately if present
 						if (skillBlock.userMessage) {
 							this.chatContainer.addChild(new Spacer(1));
 							const userComponent = new UserMessageComponent(
@@ -3359,21 +3381,23 @@ export class InteractiveMode {
 			}
 			case "toolResult":
 			case "system": {
-				// System messages are not rendered as visible chat messages
-				// (tool results are rendered inline with tool calls)
 				break;
 			}
 		}
 	}
 
+	/**
+	 * Render session entries to chat. Used for initial load and rebuild after compaction.
+	 * @param entries Compaction-aware session entries to render
+	 * @param options.updateFooter Update footer state
+	 * @param options.populateHistory Add user messages to editor history
+	 */
 	private renderSessionItems(
 		items: readonly RenderSessionItem[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
-		// Cache-miss notices are not persisted; re-derive them from the full entry
-		// list and re-inject them after the assistant messages that paid for them.
 		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
 			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
 			: new Map<AssistantMessage, CacheMiss>();
@@ -3390,10 +3414,8 @@ export class InteractiveMode {
 			}
 
 			const message = item;
-			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				this.addMessageToChat(message);
-				// Render tool call components
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
 						const component = new ToolExecutionComponent(
@@ -3433,14 +3455,12 @@ export class InteractiveMode {
 					if (miss) this.addCacheMissNotice(miss);
 				}
 			} else if (message.role === "toolResult") {
-				// Match tool results to pending tool components
 				const component = renderedPendingTools.get(message.toolCallId);
 				if (component) {
 					component.updateResult(message);
 					renderedPendingTools.delete(message.toolCallId);
 				}
 			} else {
-				// All other messages use standard rendering
 				this.addMessageToChat(message, options);
 			}
 		}
@@ -3451,12 +3471,6 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/**
-	 * Render session entries to chat. Used for initial load and rebuild after compaction.
-	 * @param entries Compaction-aware session entries to render
-	 * @param options.updateFooter Update footer state
-	 * @param options.populateHistory Add user messages to editor history
-	 */
 	private renderSessionEntries(
 		entries: SessionEntry[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},

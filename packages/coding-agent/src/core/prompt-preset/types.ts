@@ -104,6 +104,42 @@ export interface PromptPresetDefaults {
 	/** How to handle unresolved macros. */
 	unresolvedMacroPolicy?: "warn" | "keep" | "error";
 }
+// =========================================================================
+// Regex Rules
+// =========================================================================
+
+export type PromptRegexStage = "history" | "compiled";
+
+export type PromptRegexEffect = "outgoing" | "display" | "both" | "finalize";
+
+export type PromptRegexTarget = "system" | "messages";
+
+export interface PromptPresetRegexRule {
+	id: string;
+	name?: string;
+	enabled?: boolean;
+	stage: PromptRegexStage;
+	effect?: PromptRegexEffect;
+	pattern: string;
+	flags?: string;
+	replace?: string;
+	trimStrings?: string[];
+	roles?: string[];
+	targets?: PromptRegexTarget[];
+	maxMessages?: number;
+	maxChars?: number;
+	minDepth?: number;
+	maxDepth?: number;
+}
+
+export interface PromptPresetRegexConfig {
+	schemaVersion?: 1;
+	rules: PromptPresetRegexRule[];
+}
+
+// =========================================================================
+// Runtime
+// =========================================================================
 
 export interface PromptPreset {
 	schemaVersion: 1;
@@ -116,6 +152,7 @@ export interface PromptPreset {
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;
+	regex?: PromptPresetRegexConfig;
 	variables?: Record<string, string>;
 	items: PromptPresetItem[];
 }

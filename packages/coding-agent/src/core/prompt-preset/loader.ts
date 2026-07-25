@@ -1,11 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { validateRegexConfig } from "./regex-engine.ts";
 import { SUPPORTED_SLOTS } from "./slot-renderers.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
 	PromptPresetDiagnostic,
 	PromptPresetItem,
+	PromptPresetRegexConfig,
 	PromptPresetRole,
 	PromptPresetSlot,
 	PromptResourcePolicy,
@@ -178,6 +180,13 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 	}
 	if (obj.skills !== undefined) {
 		preset.skills = normalizeResourcePolicy(obj.skills, "skills", diagnostics);
+	}
+
+	// Validate and copy regex config
+	if (obj.regex !== undefined) {
+		const regexDiags = validateRegexConfig(obj.regex);
+		diagnostics.push(...regexDiags);
+		preset.regex = obj.regex as PromptPresetRegexConfig;
 	}
 
 	return preset;
