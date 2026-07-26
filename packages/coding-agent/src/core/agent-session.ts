@@ -59,6 +59,7 @@ import { sleep } from "../utils/sleep.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
+	type CompactionPreparation,
 	type CompactionPromptOverrides,
 	type CompactionResult,
 	calculateContextTokens,
@@ -117,7 +118,7 @@ import { defaultPreset } from "./prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
-import { applyFinalizeRegexRulesToMessage } from "./prompt-preset/regex-engine.ts";
+import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
 import { renderSlot } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -2181,6 +2182,10 @@ export class AgentSession {
 			let usage: Usage | undefined;
 			let details: unknown;
 
+			// Apply preset regex to compaction messages so the summarizer sees
+			// the same filtered content as the main model
+			const filteredPrep = this._applyPresetToCompactionPreparation(preparation);
+
 			if (extensionCompaction) {
 				// Extension provided compaction content
 				summary = extensionCompaction.summary;
@@ -2191,7 +2196,7 @@ export class AgentSession {
 			} else {
 				// Generate compaction result
 				const result = await compact(
-					preparation,
+					filteredPrep,
 					this.model,
 					apiKey,
 					headers,
@@ -2275,6 +2280,48 @@ export class AgentSession {
 	abortCompaction(): void {
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
+	}
+
+	/** Apply the active preset's outgoing regex and stripAssistantThinking to compaction messages. */
+	private _applyPresetToCompactionPreparation(preparation: CompactionPreparation): CompactionPreparation {
+		const preset = this._activePreset;
+		if (preset === defaultPreset || preset.id === "pi-default") return preparation;
+
+		const diags: PromptPresetDiagnostic[] = [];
+		const messagesToSummarize = applyRegexRulesToMessages(
+			preset,
+			preparation.messagesToSummarize,
+			"history",
+			"outgoing",
+			diags,
+		);
+		const turnPrefixMessages = applyRegexRulesToMessages(
+			preset,
+			preparation.turnPrefixMessages,
+			"history",
+			"outgoing",
+			diags,
+		);
+
+		// Check for stripAssistantThinking on the chat-history slot
+		const chatHistoryItem = preset.items.find(
+			(item): item is PromptPresetSlotItem => item.kind === "slot" && item.slot === "chat-history",
+		);
+		if (chatHistoryItem?.options?.stripAssistantThinking) {
+			const stripThinking = (msg: AgentMessage): AgentMessage => {
+				if (typeof msg !== "object" || msg === null || !("content" in msg)) return msg;
+				const content = msg.content;
+				if (!Array.isArray(content)) return msg;
+				return { ...msg, content: content.filter((x) => x.type !== "thinking") } as AgentMessage;
+			};
+			return {
+				...preparation,
+				messagesToSummarize: messagesToSummarize.map(stripThinking),
+				turnPrefixMessages: turnPrefixMessages.map(stripThinking),
+			};
+		}
+
+		return { ...preparation, messagesToSummarize, turnPrefixMessages };
 	}
 
 	/**
@@ -2459,6 +2506,9 @@ export class AgentSession {
 			let usage: Usage | undefined;
 			let details: unknown;
 
+			// Apply preset regex to compaction messages for consistency
+			const filteredPrep = this._applyPresetToCompactionPreparation(preparation);
+
 			if (extensionCompaction) {
 				// Extension provided compaction content
 				summary = extensionCompaction.summary;
@@ -2469,7 +2519,7 @@ export class AgentSession {
 			} else {
 				// Generate compaction result
 				const compactResult = await compact(
-					preparation,
+					filteredPrep,
 					this.model,
 					apiKey,
 					headers,
