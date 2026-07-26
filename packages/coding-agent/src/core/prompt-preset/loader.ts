@@ -6,6 +6,7 @@ import type {
 	LoadedPromptPreset,
 	PromptPreset,
 	PromptPresetDiagnostic,
+	PromptPresetHiddenOverrides,
 	PromptPresetItem,
 	PromptPresetRegexConfig,
 	PromptPresetRole,
@@ -187,6 +188,27 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 		const regexDiags = validateRegexConfig(obj.regex);
 		diagnostics.push(...regexDiags);
 		preset.regex = obj.regex as PromptPresetRegexConfig;
+	}
+
+	// Copy hidden prompt overrides
+	if (isPlainObject(obj.hiddenOverrides)) {
+		const ho = obj.hiddenOverrides as Record<string, unknown>;
+		const overrides: PromptPreset["hiddenOverrides"] = {};
+		if (typeof ho.continueText === "string") {
+			overrides.continueText = ho.continueText;
+		}
+		if (isPlainObject(ho.compaction)) {
+			const c = ho.compaction as Record<string, unknown>;
+			const compaction: NonNullable<typeof overrides.compaction> = {};
+			if (typeof c.systemPrompt === "string") compaction.systemPrompt = c.systemPrompt;
+			if (typeof c.initialPrompt === "string") compaction.initialPrompt = c.initialPrompt;
+			if (typeof c.updatePrompt === "string") compaction.updatePrompt = c.updatePrompt;
+			if (typeof c.turnPrefixPrompt === "string") compaction.turnPrefixPrompt = c.turnPrefixPrompt;
+			if (Object.keys(compaction).length > 0) overrides.compaction = compaction;
+		}
+		if (Object.keys(overrides).length > 0) {
+			preset.hiddenOverrides = overrides as PromptPresetHiddenOverrides;
+		}
 	}
 
 	return preset;
