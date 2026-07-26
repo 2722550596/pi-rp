@@ -37,6 +37,10 @@ export const OPENCODE_MODELS = values as {
 		id: "claude-opus-4-8";
 		provider: "opencode";
 	};
+	"claude-opus-5": Model<"anthropic-messages"> & {
+		id: "claude-opus-5";
+		provider: "opencode";
+	};
 	"claude-sonnet-4": Model<"anthropic-messages"> & {
 		id: "claude-sonnet-4";
 		provider: "opencode";
@@ -195,6 +199,10 @@ export const OPENCODE_MODELS = values as {
 	};
 	"laguna-s-2.1-free": Model<"openai-completions"> & {
 		id: "laguna-s-2.1-free";
+		provider: "opencode";
+	};
+	"ling-3.0-flash-free": Model<"openai-completions"> & {
+		id: "ling-3.0-flash-free";
 		provider: "opencode";
 	};
 	"mimo-v2.5-free": Model<"openai-completions"> & {

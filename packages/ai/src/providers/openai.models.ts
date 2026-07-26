@@ -53,10 +53,6 @@ export const OPENAI_MODELS = values as {
 		id: "gpt-5-chat-latest";
 		provider: "openai";
 	};
-	"gpt-5-codex": Model<"openai-responses"> & {
-		id: "gpt-5-codex";
-		provider: "openai";
-	};
 	"gpt-5-mini": Model<"openai-responses"> & {
 		id: "gpt-5-mini";
 		provider: "openai";
@@ -73,32 +69,12 @@ export const OPENAI_MODELS = values as {
 		id: "gpt-5.1";
 		provider: "openai";
 	};
-	"gpt-5.1-chat-latest": Model<"openai-responses"> & {
-		id: "gpt-5.1-chat-latest";
-		provider: "openai";
-	};
-	"gpt-5.1-codex": Model<"openai-responses"> & {
-		id: "gpt-5.1-codex";
-		provider: "openai";
-	};
-	"gpt-5.1-codex-max": Model<"openai-responses"> & {
-		id: "gpt-5.1-codex-max";
-		provider: "openai";
-	};
-	"gpt-5.1-codex-mini": Model<"openai-responses"> & {
-		id: "gpt-5.1-codex-mini";
-		provider: "openai";
-	};
 	"gpt-5.2": Model<"openai-responses"> & {
 		id: "gpt-5.2";
 		provider: "openai";
 	};
 	"gpt-5.2-chat-latest": Model<"openai-responses"> & {
 		id: "gpt-5.2-chat-latest";
-		provider: "openai";
-	};
-	"gpt-5.2-codex": Model<"openai-responses"> & {
-		id: "gpt-5.2-codex";
 		provider: "openai";
 	};
 	"gpt-5.2-pro": Model<"openai-responses"> & {
@@ -169,10 +145,6 @@ export const OPENAI_MODELS = values as {
 		id: "o3";
 		provider: "openai";
 	};
-	"o3-deep-research": Model<"openai-responses"> & {
-		id: "o3-deep-research";
-		provider: "openai";
-	};
 	"o3-mini": Model<"openai-responses"> & {
 		id: "o3-mini";
 		provider: "openai";
@@ -183,10 +155,6 @@ export const OPENAI_MODELS = values as {
 	};
 	"o4-mini": Model<"openai-responses"> & {
 		id: "o4-mini";
-		provider: "openai";
-	};
-	"o4-mini-deep-research": Model<"openai-responses"> & {
-		id: "o4-mini-deep-research";
 		provider: "openai";
 	};
 };

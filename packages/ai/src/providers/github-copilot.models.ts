@@ -29,6 +29,10 @@ export const GITHUB_COPILOT_MODELS = values as {
 		id: "claude-opus-4.8";
 		provider: "github-copilot";
 	};
+	"claude-opus-5": Model<"anthropic-messages"> & {
+		id: "claude-opus-5";
+		provider: "github-copilot";
+	};
 	"claude-sonnet-4": Model<"anthropic-messages"> & {
 		id: "claude-sonnet-4";
 		provider: "github-copilot";

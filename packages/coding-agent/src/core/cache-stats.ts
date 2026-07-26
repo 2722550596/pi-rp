@@ -92,7 +92,6 @@ function detectMiss(
 	};
 }
 
-
 function asPreviousRequest(message: AssistantMessage, reportedCache: boolean): PreviousRequest | undefined {
 	const usage = message.usage;
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;

@@ -53,10 +53,6 @@ export const AZURE_OPENAI_RESPONSES_MODELS = values as {
 		id: "gpt-5-chat-latest";
 		provider: "azure-openai-responses";
 	};
-	"gpt-5-codex": Model<"azure-openai-responses"> & {
-		id: "gpt-5-codex";
-		provider: "azure-openai-responses";
-	};
 	"gpt-5-mini": Model<"azure-openai-responses"> & {
 		id: "gpt-5-mini";
 		provider: "azure-openai-responses";
@@ -73,32 +69,12 @@ export const AZURE_OPENAI_RESPONSES_MODELS = values as {
 		id: "gpt-5.1";
 		provider: "azure-openai-responses";
 	};
-	"gpt-5.1-chat-latest": Model<"azure-openai-responses"> & {
-		id: "gpt-5.1-chat-latest";
-		provider: "azure-openai-responses";
-	};
-	"gpt-5.1-codex": Model<"azure-openai-responses"> & {
-		id: "gpt-5.1-codex";
-		provider: "azure-openai-responses";
-	};
-	"gpt-5.1-codex-max": Model<"azure-openai-responses"> & {
-		id: "gpt-5.1-codex-max";
-		provider: "azure-openai-responses";
-	};
-	"gpt-5.1-codex-mini": Model<"azure-openai-responses"> & {
-		id: "gpt-5.1-codex-mini";
-		provider: "azure-openai-responses";
-	};
 	"gpt-5.2": Model<"azure-openai-responses"> & {
 		id: "gpt-5.2";
 		provider: "azure-openai-responses";
 	};
 	"gpt-5.2-chat-latest": Model<"azure-openai-responses"> & {
 		id: "gpt-5.2-chat-latest";
-		provider: "azure-openai-responses";
-	};
-	"gpt-5.2-codex": Model<"azure-openai-responses"> & {
-		id: "gpt-5.2-codex";
 		provider: "azure-openai-responses";
 	};
 	"gpt-5.2-pro": Model<"azure-openai-responses"> & {
@@ -169,10 +145,6 @@ export const AZURE_OPENAI_RESPONSES_MODELS = values as {
 		id: "o3";
 		provider: "azure-openai-responses";
 	};
-	"o3-deep-research": Model<"azure-openai-responses"> & {
-		id: "o3-deep-research";
-		provider: "azure-openai-responses";
-	};
 	"o3-mini": Model<"azure-openai-responses"> & {
 		id: "o3-mini";
 		provider: "azure-openai-responses";
@@ -183,10 +155,6 @@ export const AZURE_OPENAI_RESPONSES_MODELS = values as {
 	};
 	"o4-mini": Model<"azure-openai-responses"> & {
 		id: "o4-mini";
-		provider: "azure-openai-responses";
-	};
-	"o4-mini-deep-research": Model<"azure-openai-responses"> & {
-		id: "o4-mini-deep-research";
 		provider: "azure-openai-responses";
 	};
 };

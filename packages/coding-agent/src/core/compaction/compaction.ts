@@ -839,7 +839,7 @@ export async function compact(
 		let historyText = "No prior history.";
 		let historyUsage: Usage | undefined;
 		if (messagesToSummarize.length > 0) {
-			const historyResult = await generateSummary(
+			const historyResult = await generateSummaryWithUsage(
 				messagesToSummarize,
 				model,
 				settings.reserveTokens,
@@ -875,7 +875,7 @@ export async function compact(
 		summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
 	} else {
 		// Just generate history summary
-		const result = await generateSummary(
+		const result = await generateSummaryWithUsage(
 			messagesToSummarize,
 			model,
 			settings.reserveTokens,

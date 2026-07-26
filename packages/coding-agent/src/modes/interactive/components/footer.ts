@@ -95,8 +95,7 @@ export class FooterComponent implements Component {
 				const u = entry.message.usage;
 				if (u) {
 					const latestPromptTokens = u.input + u.cacheRead + u.cacheWrite;
-					latestCacheHitRate =
-						latestPromptTokens > 0 ? (u.cacheRead / latestPromptTokens) * 100 : undefined;
+					latestCacheHitRate = latestPromptTokens > 0 ? (u.cacheRead / latestPromptTokens) * 100 : undefined;
 				}
 			} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
 				addUsageToTotals(usageTotals, entry.message.usage);

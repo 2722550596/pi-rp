@@ -9,6 +9,10 @@ export const KIMI_CODING_MODELS = values as {
 		id: "k3";
 		provider: "kimi-coding";
 	};
+	"k3-256k": Model<"anthropic-messages"> & {
+		id: "k3-256k";
+		provider: "kimi-coding";
+	};
 	"kimi-for-coding": Model<"anthropic-messages"> & {
 		id: "kimi-for-coding";
 		provider: "kimi-coding";
