@@ -87,6 +87,8 @@ export interface GenerateBranchSummaryOptions {
 	retry?: RetryPolicy;
 	/** Optional callbacks for retry reporting (e.g. TUI retry indicators). */
 	callbacks?: RetryCallbacks;
+	/** Optional override for the default branch summary prompt. Contains {conversation} placeholder. */
+	promptOverride?: string;
 }
 
 // ============================================================================
@@ -255,7 +257,11 @@ Summary of that exploration:
 
 `;
 
-const BRANCH_SUMMARY_PROMPT = `Create a structured summary of this conversation branch for context when returning later.
+const BRANCH_SUMMARY_PROMPT = `<conversation>
+{conversation}
+</conversation>
+
+Create a structured summary of this conversation branch for context when returning later.
 
 Use this EXACT format:
 
@@ -323,16 +329,17 @@ export async function generateBranchSummary(
 	const llmMessages = convertToLlm(messages);
 	const conversationText = serializeConversation(llmMessages);
 
-	// Build prompt
+	// Build prompt — use override if provided, otherwise default
+	const basePrompt = options.promptOverride ?? BRANCH_SUMMARY_PROMPT;
 	let instructions: string;
 	if (replaceInstructions && customInstructions) {
 		instructions = customInstructions;
 	} else if (customInstructions) {
-		instructions = `${BRANCH_SUMMARY_PROMPT}\n\nAdditional focus: ${customInstructions}`;
+		instructions = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	} else {
-		instructions = BRANCH_SUMMARY_PROMPT;
+		instructions = basePrompt;
 	}
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
+	const promptText = instructions.replace(/\{conversation\}/g, conversationText);
 
 	const summarizationMessages = [
 		{

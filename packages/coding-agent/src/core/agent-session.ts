@@ -3390,6 +3390,8 @@ export class AgentSession {
 					streamFn: this.agent.streamFn,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
+					promptOverride: (this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined)
+						?.branchSummaryPrompt,
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };

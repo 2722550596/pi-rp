@@ -31,6 +31,7 @@ export interface CompactionPromptOverrides {
 	initialPrompt?: string;
 	updatePrompt?: string;
 	turnPrefixPrompt?: string;
+	branchSummaryPrompt?: string;
 }
 // ============================================================================
 // File Operation Tracking

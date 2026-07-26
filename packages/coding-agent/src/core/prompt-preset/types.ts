@@ -116,6 +116,7 @@ export interface PromptPresetHiddenOverrides {
 		initialPrompt?: string;
 		updatePrompt?: string;
 		turnPrefixPrompt?: string;
+		branchSummaryPrompt?: string;
 	};
 }
 // =========================================================================
