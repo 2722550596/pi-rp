@@ -374,7 +374,9 @@ function getSessionContextSettings(path: SessionEntry[]): Pick<SessionContext, "
 		} else if (entry.type === "model_change") {
 			model = { provider: entry.provider, modelId: entry.modelId };
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			model = { provider: entry.message.provider, modelId: entry.message.model };
+			model = entry.message.provider && entry.message.model
+				? { provider: entry.message.provider, modelId: entry.message.model }
+				: model;
 		}
 	}
 

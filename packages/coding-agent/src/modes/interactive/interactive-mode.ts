@@ -5912,6 +5912,7 @@ export class InteractiveMode {
 		for (const entry of entries) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 			const message = entry.message;
+			if (!message.usage || !message.provider) continue;
 			const usage = message.usage;
 			const key = `${message.provider}/${message.responseModel ?? message.model}`;
 			let bucket = perModelMap.get(key);

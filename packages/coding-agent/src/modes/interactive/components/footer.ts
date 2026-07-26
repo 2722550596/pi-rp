@@ -90,12 +90,14 @@ export class FooterComponent implements Component {
 
 		for (const entry of this.session.sessionManager.getEntries()) {
 			if (entry.type === "message" && entry.message.role === "assistant") {
-				addUsageToTotals(usageTotals, entry.message.usage);
+				if (entry.message.usage) addUsageToTotals(usageTotals, entry.message.usage);
 
-				const latestPromptTokens =
-					entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
-				latestCacheHitRate =
-					latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
+				const u = entry.message.usage;
+				if (u) {
+					const latestPromptTokens = u.input + u.cacheRead + u.cacheWrite;
+					latestCacheHitRate =
+						latestPromptTokens > 0 ? (u.cacheRead / latestPromptTokens) * 100 : undefined;
+				}
 			} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
 				addUsageToTotals(usageTotals, entry.message.usage);
 			} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {

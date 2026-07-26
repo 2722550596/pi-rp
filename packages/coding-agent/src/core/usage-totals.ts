@@ -18,7 +18,8 @@ export function createUsageTotals(): UsageTotals {
 	};
 }
 
-export function addUsageToTotals(totals: UsageTotals, usage: Usage): void {
+export function addUsageToTotals(totals: UsageTotals, usage: Usage | undefined): void {
+	if (!usage) return;
 	totals.input += usage.input;
 	totals.output += usage.output;
 	totals.cacheRead += usage.cacheRead;

@@ -59,6 +59,7 @@ function detectMiss(
 	models: ModelPriceSource,
 ): CacheMiss | undefined {
 	const usage = message.usage;
+	if (!usage) return undefined;
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 	// A zero-cache turn only counts when cache activity was reported before:
 	// on cache-read-only providers that is a total miss, while on providers
@@ -79,15 +80,18 @@ function detectMiss(
 	const readPerToken =
 		usage.cacheRead > 0
 			? usage.cost.cacheRead / usage.cacheRead
-			: (models.getModel(message.provider, message.model)?.cost.cacheRead ?? 0) / 1_000_000;
+			: message.provider && message.model
+				? (models.getModel(message.provider, message.model)?.cost.cacheRead ?? 0) / 1_000_000
+				: 0;
 
 	return {
 		missedTokens,
 		missedCost: missedTokens * Math.max(0, paidPerToken - readPerToken),
 		idleMs: Math.max(0, message.timestamp - prev.timestamp),
-		modelChanged: `${message.provider}/${message.model}` !== prev.modelKey,
+		modelChanged: !!(message.provider && message.model && `${message.provider}/${message.model}` !== prev.modelKey),
 	};
 }
+
 
 function asPreviousRequest(message: AssistantMessage, reportedCache: boolean): PreviousRequest | undefined {
 	const usage = message.usage;
