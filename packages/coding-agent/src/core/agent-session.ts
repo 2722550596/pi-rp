@@ -2288,20 +2288,23 @@ export class AgentSession {
 		if (preset === defaultPreset || preset.id === "pi-default") return preparation;
 
 		const diags: PromptPresetDiagnostic[] = [];
-		const messagesToSummarize = applyRegexRulesToMessages(
+		// Mirror compileMessages: apply history stage first, then compiled stage
+		let messagesToSummarize = applyRegexRulesToMessages(
 			preset,
 			preparation.messagesToSummarize,
 			"history",
 			"outgoing",
 			diags,
 		);
-		const turnPrefixMessages = applyRegexRulesToMessages(
+		messagesToSummarize = applyRegexRulesToMessages(preset, messagesToSummarize, "compiled", "outgoing", diags);
+		let turnPrefixMessages = applyRegexRulesToMessages(
 			preset,
 			preparation.turnPrefixMessages,
 			"history",
 			"outgoing",
 			diags,
 		);
+		turnPrefixMessages = applyRegexRulesToMessages(preset, turnPrefixMessages, "compiled", "outgoing", diags);
 
 		// Check for stripAssistantThinking on the chat-history slot
 		const chatHistoryItem = preset.items.find(
