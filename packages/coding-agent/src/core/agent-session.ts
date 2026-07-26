@@ -59,6 +59,7 @@ import { sleep } from "../utils/sleep.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
+	type CompactionPromptOverrides,
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -1813,10 +1814,11 @@ export class AgentSession {
 			}
 		}
 
-		// Inject an invisible "Continue." user message (not persisted to session).
+		// Inject an invisible continue message (not persisted to session).
+		const continueText = this._activePreset.hiddenOverrides?.continueText ?? "Continue.";
 		messages.push({
 			role: "user",
-			content: [{ type: "text", text: "Continue." }],
+			content: [{ type: "text", text: continueText }],
 			timestamp: Date.now(),
 		});
 
@@ -2200,6 +2202,7 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
+					this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined,
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
@@ -2477,6 +2480,7 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
+					this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined,
 				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;

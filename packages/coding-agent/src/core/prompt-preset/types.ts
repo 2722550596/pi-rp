@@ -104,6 +104,20 @@ export interface PromptPresetDefaults {
 	/** How to handle unresolved macros. */
 	unresolvedMacroPolicy?: "warn" | "keep" | "error";
 }
+
+// =========================================================================
+// Hidden Prompt Overrides
+// =========================================================================
+
+export interface PromptPresetHiddenOverrides {
+	continueText?: string;
+	compaction?: {
+		systemPrompt?: string;
+		initialPrompt?: string;
+		updatePrompt?: string;
+		turnPrefixPrompt?: string;
+	};
+}
 // =========================================================================
 // Regex Rules
 // =========================================================================
@@ -153,6 +167,7 @@ export interface PromptPreset {
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;
 	regex?: PromptPresetRegexConfig;
+	hiddenOverrides?: PromptPresetHiddenOverrides;
 	variables?: Record<string, string>;
 	items: PromptPresetItem[];
 }

@@ -21,6 +21,7 @@ export type {
 	PromptPresetDefaults,
 	PromptPresetDiagnostic,
 	PromptPresetDiagnosticLevel,
+	PromptPresetHiddenOverrides,
 	PromptPresetItem,
 	PromptPresetMode,
 	PromptPresetRegexConfig,

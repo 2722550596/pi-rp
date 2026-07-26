@@ -26,6 +26,12 @@ import {
 	serializeConversation,
 } from "./utils.ts";
 
+export interface CompactionPromptOverrides {
+	systemPrompt?: string;
+	initialPrompt?: string;
+	updatePrompt?: string;
+	turnPrefixPrompt?: string;
+}
 // ============================================================================
 // File Operation Tracking
 // ============================================================================
@@ -465,7 +471,11 @@ export function findCutPoint(
 // Summarization
 // ============================================================================
 
-const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+const SUMMARIZATION_PROMPT = `<conversation>
+{conversation}
+</conversation>
+
+The conversation above needs to be summarized. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
 
@@ -498,8 +508,15 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+const UPDATE_SUMMARIZATION_PROMPT = `<conversation>
+{conversation}
+</conversation>
 
+<previous-summary>
+{previous_summary}
+</previous-summary>
+
+The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
 - ADD new progress, decisions, and context from the new messages
@@ -610,8 +627,6 @@ export async function generateSummary(
 		)
 	).text;
 }
-
-/** Generate or update a conversation summary and return its provider usage. */
 export async function generateSummaryWithUsage(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
@@ -626,14 +641,16 @@ export async function generateSummaryWithUsage(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	overrides?: CompactionPromptOverrides,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	);
 
-	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+	let basePrompt = previousSummary
+		? (overrides?.updatePrompt ?? UPDATE_SUMMARIZATION_PROMPT)
+		: (overrides?.initialPrompt ?? SUMMARIZATION_PROMPT);
 	if (customInstructions) {
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	}
@@ -643,12 +660,13 @@ export async function generateSummaryWithUsage(
 	const llmMessages = convertToLlm(currentMessages);
 	const conversationText = serializeConversation(llmMessages);
 
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
+	// Build the prompt with placeholder substitution
+	let promptText = basePrompt.replace(/\{conversation\}/g, conversationText);
 	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
+		promptText = promptText.replace(/\{previous_summary\}/g, previousSummary);
+	} else {
+		promptText = promptText.replace(/\{previous_summary\}/g, "");
 	}
-	promptText += basePrompt;
 
 	const summarizationMessages = [
 		{
@@ -662,7 +680,7 @@ export async function generateSummaryWithUsage(
 
 	const response = await completeSummarization(
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+		{ systemPrompt: overrides?.systemPrompt ?? SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
 		completionOptions,
 		streamFn,
 		retry,
@@ -785,7 +803,11 @@ export function prepareCompaction(
 // Main compaction function
 // ============================================================================
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+const TURN_PREFIX_SUMMARIZATION_PROMPT = `<conversation>
+{conversation}
+</conversation>
+
+This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
 Summarize the prefix to provide context for the retained suffix:
 
@@ -800,13 +822,6 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.`;
 
-/**
- * Generate summaries for compaction using prepared data.
- * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
- *
- * @param preparation - Pre-calculated preparation from prepareCompaction()
- * @param customInstructions - Optional custom focus for the summary
- */
 export async function compact(
 	preparation: CompactionPreparation,
 	model: Model<any>,
@@ -819,6 +834,7 @@ export async function compact(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	overrides?: CompactionPromptOverrides,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -853,6 +869,7 @@ export async function compact(
 				env,
 				retry,
 				callbacks,
+				overrides,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -869,6 +886,7 @@ export async function compact(
 			streamFn,
 			retry,
 			callbacks,
+			overrides,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -889,6 +907,7 @@ export async function compact(
 			env,
 			retry,
 			callbacks,
+			overrides,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -911,9 +930,6 @@ export async function compact(
 	};
 }
 
-/**
- * Generate a summary for a turn prefix (when splitting a turn).
- */
 async function generateTurnPrefixSummary(
 	messages: AgentMessage[],
 	model: Model<any>,
@@ -926,6 +942,7 @@ async function generateTurnPrefixSummary(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	overrides?: CompactionPromptOverrides,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -933,7 +950,10 @@ async function generateTurnPrefixSummary(
 	); // Smaller budget for turn prefix
 	const llmMessages = convertToLlm(messages);
 	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const promptText = (overrides?.turnPrefixPrompt ?? TURN_PREFIX_SUMMARIZATION_PROMPT).replace(
+		/\{conversation\}/g,
+		conversationText,
+	);
 	const summarizationMessages = [
 		{
 			role: "user" as const,
@@ -944,7 +964,7 @@ async function generateTurnPrefixSummary(
 
 	const response = await completeSummarization(
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+		{ systemPrompt: overrides?.systemPrompt ?? SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
 		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
 		streamFn,
 		retry,
