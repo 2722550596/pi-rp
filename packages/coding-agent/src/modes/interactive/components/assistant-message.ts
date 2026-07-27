@@ -86,7 +86,10 @@ export class AssistantMessageComponent extends Container {
 		// Clear content container
 		this.contentContainer.clear();
 
-		const hasVisibleContent = message.content.some(
+		const content = message.content;
+		if (!Array.isArray(content)) return;
+
+		const hasVisibleContent = content.some(
 			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
 		);
 
@@ -95,16 +98,16 @@ export class AssistantMessageComponent extends Container {
 		}
 
 		// Render content in order
-		for (let i = 0; i < message.content.length; i++) {
-			const content = message.content[i];
-			if (content.type === "text" && content.text.trim()) {
+		for (let i = 0; i < content.length; i++) {
+			const part = content[i];
+			if (part.type === "text" && part.text.trim()) {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.contentContainer.addChild(new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme));
-			} else if (content.type === "thinking") {
+				this.contentContainer.addChild(new Markdown(part.text.trim(), this.outputPad, 0, this.markdownTheme));
+			} else if (part.type === "thinking") {
 				const thinkingBlocks: string[] = [];
-				for (; i < message.content.length; i++) {
-					const thinkingContent = message.content[i];
+				for (; i < content.length; i++) {
+					const thinkingContent = content[i];
 					if (thinkingContent.type !== "thinking") {
 						break;
 					}
@@ -121,7 +124,7 @@ export class AssistantMessageComponent extends Container {
 
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
-				const hasVisibleContentAfter = message.content
+				const hasVisibleContentAfter = content
 					.slice(i + 1)
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
@@ -148,7 +151,7 @@ export class AssistantMessageComponent extends Container {
 		// Check if incomplete/failed - show after partial content.
 		// For aborted/error tool calls, tool execution components show the error.
 		// Length stops can happen before a tool call is complete, so surface them here too.
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		const hasToolCalls = content.some((c) => c.type === "toolCall");
 		this.hasToolCalls = hasToolCalls;
 		if (message.stopReason === "length") {
 			this.contentContainer.addChild(new Spacer(1));

@@ -3681,14 +3681,16 @@ export class AgentSession {
 				if (m.role !== "assistant") return false;
 				const msg = m as AssistantMessage;
 				// Skip aborted messages with no content
-				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
+				if (msg.stopReason === "aborted" && (!msg.content || msg.content.length === 0)) return false;
 				return true;
 			});
 
 		if (!lastAssistant) return undefined;
 
 		let text = "";
-		for (const content of (lastAssistant as AssistantMessage).content) {
+		const lastMsg = lastAssistant as AssistantMessage;
+		if (!Array.isArray(lastMsg.content)) return undefined;
+		for (const content of lastMsg.content) {
 			if (content.type === "text") {
 				text += content.text;
 			}
