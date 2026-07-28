@@ -31,6 +31,8 @@ pi-rp 是 [pi-coding-agent](https://github.com/earendil-works/pi) 的一个深�
 - ✅ **`/preset list/use/reload`** — 切换和管理 prompt preset
 - ✅ **`/prompt`** — 显示编译后的完整 provider 负载（system prompt + messages），过滤空消息
 - ✅ **ExtensionAPI 集成** — `registerSlot()` / `registerMacro()` 可自定义 slot 和宏
+- ✅ **正则规则** — `PromptPreset.regex.rules`，支持 outgoing/display/both/finalize 效果，history/compiled 阶段，system/messages 目标，以及 scope 过滤（roles/maxMessages/深度等）
+- ✅ **隐形提示词覆盖** — `PromptPreset.hiddenOverrides`，支持覆盖 continueText（/continue 的提示词）和 compaction 的四个提示词（systemPrompt/initialPrompt/updatePrompt/turnPrefixPrompt）及 branchSummaryPrompt，所有 compaction 提示词支持 `{conversation}` 和 `{previous_summary}` 占位符
 
 ### 知识库 (`.knowledge/`)
 

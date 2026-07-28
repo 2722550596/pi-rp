@@ -692,11 +692,7 @@ export class AgentSession {
 			}
 		}
 
-		// Update /prompt capture on agent end with final state
-		if (event.type === "agent_end") {
-			this.lastTransformedMessages = this.compilePromptMessages();
-			this._lastCompiledSystemPrompt = this.agent.state.systemPrompt;
-		}
+
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
@@ -1223,6 +1219,12 @@ export class AgentSession {
 	 */
 	compilePromptMessages(): AgentMessage[] {
 		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const hasActiveUserPreset = this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default";
+		if (!hasActiveUserPreset) {
+			const sysText = this._systemPromptOverride ?? this._baseSystemPrompt;
+			if (!sysText) return this.agent.state.messages;
+			return [{ role: "system", content: [{ type: "text", text: sysText }] } as AgentMessage, ...this.agent.state.messages];
+		}
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,

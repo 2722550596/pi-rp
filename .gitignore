@@ -22,6 +22,7 @@ packages/ai/src/providers/data/
 *.swp
 *.swo
 *~
+.mcp.json
 
 # Package specific
 .npm/
