@@ -1219,12 +1219,6 @@ export class AgentSession {
 	 */
 	compilePromptMessages(): AgentMessage[] {
 		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const hasActiveUserPreset = this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default";
-		if (!hasActiveUserPreset) {
-			const sysText = this._systemPromptOverride ?? this._baseSystemPrompt;
-			if (!sysText) return this.agent.state.messages;
-			return [{ role: "system", content: [{ type: "text", text: sysText }] } as AgentMessage, ...this.agent.state.messages];
-		}
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
@@ -1235,6 +1229,20 @@ export class AgentSession {
 		};
 		const result = compileMessages(this._activePreset, runtime);
 		return result.messages;
+	}
+
+	/**
+	 * Run the real prompt-building pipeline (preset injection + extensions) without sending to LLM.
+	 * Captures result in lastTransformedMessages for /prompt inspection.
+	 */
+	async previewPrompt(): Promise<AgentMessage[]> {
+		const presetItems = this.getPresetInjectMessages();
+		let result: AgentMessage[] = presetItems.length > 0
+			? presetItems
+			: [...this.agent.state.messages];
+		result = await this._extensionRunner.emitContext(result);
+		this.lastTransformedMessages = result;
+		return result;
 	}
 
 	/**
