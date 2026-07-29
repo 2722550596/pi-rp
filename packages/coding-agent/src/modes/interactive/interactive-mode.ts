@@ -5441,12 +5441,7 @@ export class InteractiveMode {
 			parts.push(`[system]\n${sysPrompt}`);
 		}
 
-		// Show captured messages from the last agent run (post context event / preset injection)
-		let messages: readonly AgentMessage[] = this.session.lastTransformedMessages;
-		if (messages.length === 0) {
-			// Before any message is sent, run the real pipeline to get the theoretical payload
-			messages = await this.session.previewPrompt();
-		}
+		const messages = await this.session.previewPrompt();
 
 		if (!sysPrompt && messages.length === 0) {
 			this.showStatus("No prompt is active.");

@@ -1241,7 +1241,7 @@ export class AgentSession {
 			? presetItems
 			: [...this.agent.state.messages];
 		result = await this._extensionRunner.emitContext(result);
-		this.lastTransformedMessages = result;
+
 		return result;
 	}
 
