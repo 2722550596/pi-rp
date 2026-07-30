@@ -691,8 +691,6 @@ export class AgentSession {
 				}
 			}
 		}
-
-
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
@@ -1237,9 +1235,7 @@ export class AgentSession {
 	 */
 	async previewPrompt(): Promise<AgentMessage[]> {
 		const presetItems = this.getPresetInjectMessages();
-		let result: AgentMessage[] = presetItems.length > 0
-			? presetItems
-			: [...this.agent.state.messages];
+		let result: AgentMessage[] = presetItems.length > 0 ? presetItems : [...this.agent.state.messages];
 		result = await this._extensionRunner.emitContext(result);
 
 		return result;

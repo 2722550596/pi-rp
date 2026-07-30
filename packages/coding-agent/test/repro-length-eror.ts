@@ -10,7 +10,12 @@ function buildSessionMessages(): AgentMessage[] {
 
 	// Basic conversation
 	messages.push({ role: "user", content: [{ type: "text", text: "Hello" }], timestamp: ts });
-	messages.push({ role: "assistant", content: [{ type: "text", text: "Hi!" }], stopReason: "stop", timestamp: ts + 1000 } as AgentMessage);
+	messages.push({
+		role: "assistant",
+		content: [{ type: "text", text: "Hi!" }],
+		stopReason: "stop",
+		timestamp: ts + 1000,
+	} as AgentMessage);
 
 	// Tool call conversation
 	messages.push({ role: "user", content: [{ type: "text", text: "Read file" }], timestamp: ts + 2000 });
@@ -23,13 +28,36 @@ function buildSessionMessages(): AgentMessage[] {
 		stopReason: "toolUse",
 		timestamp: ts + 3000,
 	} as AgentMessage);
-	messages.push({ role: "toolResult", toolCallId: "tc1", toolName: "read", content: [{ type: "text", text: "content" }], isError: false, timestamp: ts + 4000 } as AgentMessage);
-	messages.push({ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop", timestamp: ts + 5000 } as AgentMessage);
+	messages.push({
+		role: "toolResult",
+		toolCallId: "tc1",
+		toolName: "read",
+		content: [{ type: "text", text: "content" }],
+		isError: false,
+		timestamp: ts + 4000,
+	} as AgentMessage);
+	messages.push({
+		role: "assistant",
+		content: [{ type: "text", text: "Done." }],
+		stopReason: "stop",
+		timestamp: ts + 5000,
+	} as AgentMessage);
 
 	// bash execution
-	messages.push({ role: "bashExecution", command: "ls", output: "file.ts", exitCode: 0, timestamp: ts + 6000 } as AgentMessage);
+	messages.push({
+		role: "bashExecution",
+		command: "ls",
+		output: "file.ts",
+		exitCode: 0,
+		timestamp: ts + 6000,
+	} as AgentMessage);
 	messages.push({ role: "user", content: [{ type: "text", text: "Run ls" }], timestamp: ts + 6500 });
-	messages.push({ role: "assistant", content: [{ type: "text", text: "Listed." }], stopReason: "stop", timestamp: ts + 7000 } as AgentMessage);
+	messages.push({
+		role: "assistant",
+		content: [{ type: "text", text: "Listed." }],
+		stopReason: "stop",
+		timestamp: ts + 7000,
+	} as AgentMessage);
 
 	// Compaction summary (has summary instead of content)
 	messages.push({
@@ -41,7 +69,12 @@ function buildSessionMessages(): AgentMessage[] {
 
 	// More messages after compaction
 	messages.push({ role: "user", content: [{ type: "text", text: "Continue" }], timestamp: ts + 9000 });
-	messages.push({ role: "assistant", content: [{ type: "text", text: "OK continuing..." }], stopReason: "stop", timestamp: ts + 10000 } as AgentMessage);
+	messages.push({
+		role: "assistant",
+		content: [{ type: "text", text: "OK continuing..." }],
+		stopReason: "stop",
+		timestamp: ts + 10000,
+	} as AgentMessage);
 
 	// Branch summary
 	messages.push({
@@ -53,7 +86,12 @@ function buildSessionMessages(): AgentMessage[] {
 
 	// Assistant message with content as string (older format)
 	messages.push({ role: "user", content: "Legacy message format" as unknown as any[], timestamp: ts + 12000 });
-	messages.push({ role: "assistant", content: "Legacy response" as unknown as any[], stopReason: "stop", timestamp: ts + 13000 } as AgentMessage);
+	messages.push({
+		role: "assistant",
+		content: "Legacy response" as unknown as any[],
+		stopReason: "stop",
+		timestamp: ts + 13000,
+	} as AgentMessage);
 
 	return messages;
 }
