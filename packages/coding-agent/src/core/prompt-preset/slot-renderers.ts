@@ -272,6 +272,47 @@ registerSlot(
 	true,
 );
 
+registerSlot(
+	{
+		name: "state",
+		description: "Current conversation state.",
+		render: (ctx: SlotRenderContext): string => {
+			const state = ctx.runtime.state;
+			if (!state || Object.keys(state).length === 0) return "";
+			const format = ctx.item.options?.format ?? "key-value";
+			if (format === "json") return JSON.stringify(state, null, 2);
+			return formatStateKeyValue(state);
+		},
+	},
+	true,
+);
+
+/** Recursively format state as indented key-value text. */
+function formatStateKeyValue(obj: Record<string, unknown>, prefix = "", depth = 0, maxDepth = 5): string {
+	if (depth >= maxDepth) return `${prefix}: [max depth]`;
+	const lines: string[] = [];
+	for (const [key, value] of Object.entries(obj)) {
+		const fullKey = prefix ? `${prefix}.${key}` : key;
+		if (value === null || value === undefined) {
+			lines.push(`${fullKey}: null`);
+		} else if (typeof value === "object" && !Array.isArray(value)) {
+			lines.push(formatStateKeyValue(value as Record<string, unknown>, fullKey, depth + 1, maxDepth));
+		} else if (Array.isArray(value)) {
+			if (value.length === 0) {
+				lines.push(`${fullKey}: []`);
+			} else {
+				lines.push(`${fullKey}:`);
+				for (const item of value) {
+					lines.push(`  - ${JSON.stringify(item)}`);
+				}
+			}
+		} else {
+			lines.push(`${fullKey}: ${JSON.stringify(value)}`);
+		}
+	}
+	return lines.join("\n");
+}
+
 // =========================================================================
 // Slot Rendering
 // =========================================================================

@@ -22,7 +22,8 @@ export type PromptPresetSlot =
 	| "date-cwd"
 	| "active-model"
 	| "pi-docs"
-	| "variables";
+	| "variables"
+	| "state";
 
 // =========================================================================
 // Resource Policy (tools/skills allow/deny)
@@ -184,6 +185,8 @@ export interface PromptRuntime {
 	now: Date;
 	variables: Record<string, string>;
 	skills: Skill[];
+	/** Current conversation state (game stats, inventory, flags) */
+	state?: Record<string, unknown>;
 	/** If true, {{macros}} are left unexpanded in the compiled output. */
 	skipMacroExpansion?: boolean;
 }

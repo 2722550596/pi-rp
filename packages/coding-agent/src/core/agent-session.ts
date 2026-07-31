@@ -53,6 +53,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
+import { StateManager } from "../state/state-manager.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
@@ -130,6 +131,7 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
+import { createStateUpdateToolDefinition } from "./tools/state-update.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 // ============================================================================
@@ -363,6 +365,7 @@ export class AgentSession {
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
+	private _stateManager: StateManager;
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
@@ -402,6 +405,10 @@ export class AgentSession {
 		return this._modelRuntime;
 	}
 
+	get stateManager(): StateManager {
+		return this._stateManager;
+	}
+
 	/** Final messages after transformContext (extensions + preset injection). */
 	lastTransformedMessages: AgentMessage[] = [];
 	constructor(config: AgentSessionConfig) {
@@ -411,6 +418,7 @@ export class AgentSession {
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
+		this._stateManager = new StateManager();
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
 		this._extensionRunnerRef = config.extensionRunnerRef;
@@ -1089,6 +1097,15 @@ export class AgentSession {
 			}
 
 			// No initial write needed — sdk.ts handles that for new sessions
+
+			// Restore state from session entries
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const e = entries[i];
+				if (e.type === "state") {
+					this._stateManager.load(e.state);
+					break;
+				}
+			}
 		}
 
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
@@ -1224,6 +1241,7 @@ export class AgentSession {
 			now: new Date(),
 			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
+			state: this._stateManager.snapshot(),
 		};
 		const result = compileMessages(this._activePreset, runtime);
 		return result.messages;
@@ -1268,6 +1286,7 @@ export class AgentSession {
 			now: new Date(),
 			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
+			state: this._stateManager.snapshot(),
 		};
 		return compileMessages(this._activePreset, runtime).messages;
 	}
@@ -1283,6 +1302,7 @@ export class AgentSession {
 			now: new Date(),
 			variables: {},
 			skills: loadedSkills,
+			state: this._stateManager.snapshot(),
 		};
 		const result = compileSystemPrompt(this._activePreset, runtime, "");
 		return result.systemPrompt;
@@ -2974,6 +2994,12 @@ export class AgentSession {
 
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
+		);
+
+		// Add state_update tool
+		this._baseToolDefinitions.set(
+			"state_update",
+			createStateUpdateToolDefinition(this.sessionManager, this._stateManager),
 		);
 
 		const extensionsResult = this._resourceLoader.getExtensions();

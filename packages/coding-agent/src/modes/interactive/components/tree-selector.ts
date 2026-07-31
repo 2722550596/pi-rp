@@ -362,7 +362,8 @@ class TreeList implements Component {
 				entry.type === "model_change" ||
 				entry.type === "preset_change" ||
 				entry.type === "thinking_level_change" ||
-				entry.type === "session_info";
+				entry.type === "session_info" ||
+				entry.type === "state";
 
 			switch (this.filterMode) {
 				case "user-only":

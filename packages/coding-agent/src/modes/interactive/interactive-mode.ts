@@ -2784,6 +2784,11 @@ export class InteractiveMode {
 				await this.handlePresetCommand(text);
 				return;
 			}
+			if (text === "/state" || text.startsWith("/state ")) {
+				this.editor.setText("");
+				await this.handleStateCommand(text);
+				return;
+			}
 			if (text.startsWith("/prompt")) {
 				this.editor.setText("");
 				const parts = text.split(/\s+/);
@@ -5429,6 +5434,19 @@ export class InteractiveMode {
 		} else {
 			this.showError(`Prompt preset "${arg}" not found. Use /preset list to see available presets.`);
 		}
+	}
+
+	private async handleStateCommand(text: string): Promise<void> {
+		const parts = text.split(/\s+/);
+		const path = parts[1]; // optional
+		let value: unknown;
+		if (path) {
+			value = this.session.stateManager.get(path);
+		} else {
+			value = this.session.stateManager.snapshot();
+		}
+		const formatted = JSON.stringify(value, null, 2);
+		this.showStatus(`State${path ? ` (${path})` : ""}:\n${formatted}`);
 	}
 
 	private async handlePromptCommand(): Promise<void> {

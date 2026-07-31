@@ -71,6 +71,11 @@ export interface PresetChangeEntry extends SessionEntryBase {
 	presetId: string;
 }
 
+export interface StateEntry extends SessionEntryBase {
+	type: "state";
+	state: Record<string, unknown>;
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -156,7 +161,8 @@ export type SessionEntry =
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	| StateEntry;
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
@@ -1109,6 +1115,19 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			provider,
 			modelId,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a state snapshot as child of current leaf, then advance leaf. Returns entry id. */
+	appendState(state: Record<string, unknown>, ts?: string): string {
+		const entry: StateEntry = {
+			type: "state",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: ts ?? new Date().toISOString(),
+			state,
 		};
 		this._appendEntry(entry);
 		return entry.id;
