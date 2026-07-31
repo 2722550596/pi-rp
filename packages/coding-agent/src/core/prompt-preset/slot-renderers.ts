@@ -44,6 +44,7 @@ export const SUPPORTED_SLOTS = new Set<string>([
 	"active-model",
 	"pi-docs",
 	"variables",
+	"state",
 ]);
 
 // =========================================================================
