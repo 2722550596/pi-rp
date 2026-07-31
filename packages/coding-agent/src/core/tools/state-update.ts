@@ -53,13 +53,43 @@ export function createStateUpdateToolDefinition(
 			let result: StateDiffResult;
 			const p = params as StateUpdateParams;
 			if (p.op === "merge") {
-				result = stateManager.apply("", "merge", p.value as JsonValue);
+				result = stateManager.apply({ op: "merge", value: p.value as JsonValue });
 			} else {
 				result = stateManager.apply(p.path, p.op, p.value as JsonValue);
 			}
 			// Write full-state snapshot to session
 			sessionManager.appendState(stateManager.snapshot());
 			const text = `state: ${result.path} -> ${JSON.stringify(result.newValue)}`;
+			return { content: [{ type: "text", text }], details: undefined };
+		},
+	};
+}
+
+// Schema for get_state — no parameters, just returns full state
+const GetStateParameters = Type.Object({});
+
+type GetStateParams = Static<typeof GetStateParameters>;
+
+export function createGetStateToolDefinition(
+	stateManager: StateManager,
+): ToolDefinition<typeof GetStateParameters> {
+	return {
+		name: "get_state",
+		label: "Get State",
+		description:
+			"Read the full current conversation state (game stats, inventory, flags, etc.). " +
+			"Returns a JSON object representing all stored variables and their current values. " +
+			"Use this to inspect state before making changes with state_update.",
+		parameters: GetStateParameters,
+		promptSnippet: "get_state: read full conversation state as JSON",
+		promptGuidelines: [
+			"Use get_state to inspect the full current state before making changes",
+			"Returns all stored variables as a JSON object",
+			"Use state_update to modify state after inspection",
+		],
+		execute: async (): Promise<AgentToolResult<undefined>> => {
+			const state = stateManager.snapshot();
+			const text = JSON.stringify(state, null, 2);
 			return { content: [{ type: "text", text }], details: undefined };
 		},
 	};

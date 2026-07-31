@@ -131,7 +131,7 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
-import { createStateUpdateToolDefinition } from "./tools/state-update.ts";
+import { createGetStateToolDefinition, createStateUpdateToolDefinition } from "./tools/state-update.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 // ============================================================================
@@ -2996,10 +2996,14 @@ export class AgentSession {
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
 		);
 
-		// Add state_update tool
+		// Add state_update and get_state tools
 		this._baseToolDefinitions.set(
 			"state_update",
 			createStateUpdateToolDefinition(this.sessionManager, this._stateManager),
+		);
+		this._baseToolDefinitions.set(
+			"get_state",
+			createGetStateToolDefinition(this._stateManager),
 		);
 
 		const extensionsResult = this._resourceLoader.getExtensions();

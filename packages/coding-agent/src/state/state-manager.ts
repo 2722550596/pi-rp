@@ -140,6 +140,10 @@ export class StateManager {
 				return { op, path, oldValue, newValue: value };
 			}
 
+			case "merge": {
+				return this._applyMerge(value);
+			}
+
 			default:
 				return { op, path, oldValue: undefined, newValue: undefined };
 		}
