@@ -70,21 +70,26 @@ function getPath(root: Record<string, JsonValue>, path: string): JsonValue | und
 
 export class StateManager {
 	private _data: Record<string, JsonValue> = {};
+	private _subscribers = new Set<(snapshot: Record<string, unknown>) => void>();
 
 	/** Apply one state mutation. Path supports dot notation and JSON Pointer. */
 	apply(pathOrOp: string, op?: StateOp, val?: JsonValue): StateDiffResult;
 	/** Sugar: apply({op, path, value}) or apply({op: "merge", value}) */
 	apply(input: ApplyCallArg): StateDiffResult;
 	apply(pathOrOp: string | ApplyCallArg, op?: StateOp, val?: JsonValue): StateDiffResult {
+		let result: StateDiffResult;
 		if (typeof pathOrOp === "object") {
 			const input = pathOrOp;
 			if (input.op === "merge") {
-				return this._applyMerge(input.value);
+				result = this._applyMerge(input.value);
+			} else {
+				result = this._applyOp(input.op, input.path ?? "", input.value);
 			}
-			return this._applyOp(input.op, input.path ?? "", input.value);
+		} else {
+			result = this._applyOp(op as StateOp, pathOrOp, val);
 		}
-
-		return this._applyOp(op as StateOp, pathOrOp, val);
+		this._notify();
+		return result;
 	}
 
 	private _applyOp(op: StateOp, path: string, value: JsonValue | undefined): StateDiffResult {
@@ -198,6 +203,22 @@ export class StateManager {
 
 	snapshot(): Record<string, unknown> {
 		return structuredClone(this._data);
+	}
+
+	/** Subscribe to state changes. Returns unsubscribe function. */
+	subscribe(handler: (snapshot: Record<string, unknown>) => void): () => void {
+		this._subscribers.add(handler);
+		return () => {
+			this._subscribers.delete(handler);
+		};
+	}
+
+	private _notify(): void {
+		if (this._subscribers.size === 0) return;
+		const snap = this.snapshot();
+		for (const handler of this._subscribers) {
+			handler(snap);
+		}
 	}
 
 	load(data: Record<string, unknown>): void {

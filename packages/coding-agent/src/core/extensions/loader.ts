@@ -196,6 +196,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
+		getState: notInitialized,
+		subscribeState: notInitialized,
 		registerSlot: (definition) => registerCustomSlot(definition, false),
 		registerMacro: (definition) => registerCustomMacro(definition, false),
 		flagValues: new Map(),
@@ -383,6 +385,16 @@ function createExtensionAPI(
 		registerMacro(definition) {
 			runtime.assertActive();
 			runtime.registerMacro(definition);
+		},
+
+		getState() {
+			runtime.assertActive();
+			return runtime.getState();
+		},
+
+		onStateChange(handler) {
+			runtime.assertActive();
+			return runtime.subscribeState(handler);
 		},
 
 		registerProvider(providerOrName: Provider | string, config?: ProviderConfig) {

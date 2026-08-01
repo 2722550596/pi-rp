@@ -2884,6 +2884,8 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				getState: () => this._stateManager.snapshot(),
+				subscribeState: (handler) => this._stateManager.subscribe(handler),
 			},
 			{
 				getModel: () => this.model,

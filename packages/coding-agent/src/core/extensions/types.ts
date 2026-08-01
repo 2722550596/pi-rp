@@ -1303,6 +1303,19 @@ export interface ExtensionAPI {
 	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
 	setLabel(entryId: string, label: string | undefined): void;
 
+	// =========================================================================
+	// State Access
+	// =========================================================================
+
+	/** Get the full current state snapshot (deep-cloned). */
+	getState(): Record<string, unknown>;
+
+	/**
+	 * Subscribe to state changes. The handler receives the full state snapshot
+	 * after every mutation. Returns an unsubscribe function.
+	 */
+	onStateChange(handler: (state: Record<string, unknown>) => void): () => void;
+
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 
@@ -1565,6 +1578,10 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
+export type GetStateHandler = () => Record<string, unknown>;
+
+export type SubscribeStateHandler = (handler: (snapshot: Record<string, unknown>) => void) => () => void;
+
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
@@ -1590,6 +1607,13 @@ export interface ExtensionRuntimeState {
 	unregisterProvider: (name: string, extensionPath?: string) => void;
 	registerSlot: (definition: SlotDefinition) => void;
 	registerMacro: (definition: MacroDefinition) => void;
+	refreshTools: RefreshToolsHandler;
+	getCommands: GetCommandsHandler;
+	setModel: SetModelHandler;
+	getThinkingLevel: GetThinkingLevelHandler;
+	setThinkingLevel: SetThinkingLevelHandler;
+	getState: GetStateHandler;
+	subscribeState: SubscribeStateHandler;
 }
 
 /**
@@ -1611,6 +1635,8 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	getState: GetStateHandler;
+	subscribeState: SubscribeStateHandler;
 }
 
 /**
