@@ -65,8 +65,8 @@
           "path": "prompt-presets.md"
         },
         {
-          "title": "Themes",
-          "path": "themes.md"
+          "title": "State Schemas",
+          "path": "state-schemas.md"
         },
         {
           "title": "Pi Packages",

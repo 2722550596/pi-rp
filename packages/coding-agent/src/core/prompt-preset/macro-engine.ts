@@ -178,7 +178,7 @@ registerMacro(
 	{
 		name: "user",
 		description: "The user's display name (from settings.userName).",
-		render: (ctx) => ctx.variables["user"] ?? "user",
+		render: (ctx) => ctx.variables.user ?? "user",
 	},
 	true,
 );

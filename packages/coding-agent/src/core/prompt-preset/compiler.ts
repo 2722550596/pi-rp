@@ -164,7 +164,7 @@ function squashMessages(messages: AgentMessage[]): AgentMessage[] {
 				.map((p) => p.text ?? "")
 				.join("\n");
 			if (lastText && msgText) {
-				last = { ...last, content: [{ type: "text" as const, text: lastText + "\n\n" + msgText }] } as AgentMessage;
+				last = { ...last, content: [{ type: "text" as const, text: `${lastText}\n\n${msgText}` }] } as AgentMessage;
 				continue;
 			}
 		}
@@ -278,7 +278,7 @@ function isToolResultMessage(message: AgentMessage): boolean {
 	return message.role === "toolResult";
 }
 
-function hasToolCallParts(message: AgentMessage): boolean {
+function _hasToolCallParts(message: AgentMessage): boolean {
 	if (message.role !== "assistant") return false;
 	const content = (message as { content?: unknown }).content;
 	if (!Array.isArray(content)) return false;

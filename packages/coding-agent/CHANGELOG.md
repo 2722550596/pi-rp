@@ -8,7 +8,7 @@
 - Added built-in llama.cpp router support with `/login` connection setup and `/llama` Hugging Face model search and downloads, explicit loading, unloading, and live progress. See [llama.cpp](docs/llama-cpp.md).
 - Added extension registration for complete pi-ai providers, including native authentication, model refresh, filtering, and streaming behavior.
 - **Prompt preset system** — built-in prompt stack compiler, slot/macro engine, and JSON preset files under `.pi/prompt-presets/`. Presets can replace, append to, or prepend the default system prompt and control message layout. Includes `/preset list`, `/preset use <id|none>`, `/preset reload`, and `/prompt` commands.
-- Added `ExtensionAPI.registerSlot()` and `ExtensionAPI.registerMacro()` for registering custom preset slots and macros from extensions.
+- **State validation system** — schema-based structural constraints (TypeBox/JSON Schema) and custom validators (`.ts` files) for conversation state. Schemas are loadable/unloadable runtime constraints using namespaces, recorded as `schema_change` session entries. Includes `/schema list`, `/schema load <id>`, `/schema unload <ns>`, `/schema strict [off]` commands. Schema files in `.pi/schemas/` or `~/.pi/agent/schemas/`; custom validators in `.pi/validators/` or `~/.pi/agent/validators/`.
 
 - Fixed persisted sessions being read and parsed twice when opened, reducing startup latency for large sessions ([#6793](https://github.com/earendil-works/pi/issues/6793)).
 - Fixed slow Ctrl+G external-editor startup when the system temporary directory contains many entries ([#6774](https://github.com/earendil-works/pi/issues/6774)).

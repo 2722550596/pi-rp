@@ -76,6 +76,13 @@ export interface StateEntry extends SessionEntryBase {
 	state: Record<string, unknown>;
 }
 
+export interface SchemaChangeEntry extends SessionEntryBase {
+	type: "schema_change";
+	action: "load" | "unload";
+	schemaId: string;
+	namespace: string;
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -162,7 +169,8 @@ export type SessionEntry =
 	| CustomMessageEntry
 	| LabelEntry
 	| SessionInfoEntry
-	| StateEntry;
+	| StateEntry
+	| SchemaChangeEntry;
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
@@ -1128,6 +1136,21 @@ export class SessionManager {
 			parentId: this.leafId,
 			timestamp: ts ?? new Date().toISOString(),
 			state,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a schema change (load/unload) as child of current leaf, then advance leaf. Returns entry id. */
+	appendSchemaChange(action: "load" | "unload", schemaId: string, namespace: string): string {
+		const entry: SchemaChangeEntry = {
+			type: "schema_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			action,
+			schemaId,
+			namespace,
 		};
 		this._appendEntry(entry);
 		return entry.id;

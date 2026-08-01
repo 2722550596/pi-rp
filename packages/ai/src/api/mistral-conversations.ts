@@ -241,7 +241,7 @@ function buildChatPayload(
 	model: Model<"mistral-conversations">,
 	context: Context,
 	messages: Message[],
-	options?: MistralOptions,
+	_options?: MistralOptions,
 ): ChatCompletionStreamRequest {
 	const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
 		messages,
@@ -478,7 +478,7 @@ async function consumeChatStream(
 	}
 }
 
-function toFunctionTools(tools: Tool[]): Array<FunctionTool & { type: "function" }> {
+function _toFunctionTools(tools: Tool[]): Array<FunctionTool & { type: "function" }> {
 	return tools.map((tool) => ({
 		type: "function",
 		function: {
@@ -637,7 +637,7 @@ function mapReasoningEffort(
 	return (model.thinkingLevelMap?.[level] ?? "high") as MistralReasoningEffort;
 }
 
-function mapToolChoice(
+function _mapToolChoice(
 	choice: MistralOptions["toolChoice"],
 ): "auto" | "none" | "any" | "required" | { type: "function"; function: { name: string } } | undefined {
 	if (!choice) return undefined;

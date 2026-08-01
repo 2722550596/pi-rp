@@ -2789,6 +2789,11 @@ export class InteractiveMode {
 				await this.handleStateCommand(text);
 				return;
 			}
+			if (text === "/schema" || text.startsWith("/schema ")) {
+				this.editor.setText("");
+				await this.handleSchemaCommand(text);
+				return;
+			}
 			if (text.startsWith("/prompt")) {
 				this.editor.setText("");
 				const parts = text.split(/\s+/);
@@ -5410,7 +5415,7 @@ export class InteractiveMode {
 
 	private async handlePresetCommand(text: string): Promise<void> {
 		const parts = text.split(/\s+/);
-		const arg = parts[1];
+		let arg = parts[1];
 
 		if (!arg || arg === "list") {
 			const presets = this.session.getAllPresets();
@@ -5427,6 +5432,20 @@ export class InteractiveMode {
 			});
 			this.showStatus(`Prompt presets:\n${lines.join("\n")}`);
 			return;
+		}
+
+		if (arg === "reload") {
+			this.session.reloadPresets();
+			this.showStatus("Prompt presets reloaded.");
+			return;
+		}
+
+		if (arg === "use") {
+			arg = parts[2];
+			if (!arg) {
+				this.showError("Usage: /preset use <id|none>");
+				return;
+			}
 		}
 
 		if (this.session.setActivePreset(arg)) {
@@ -5447,6 +5466,67 @@ export class InteractiveMode {
 		}
 		const formatted = JSON.stringify(value, null, 2);
 		this.showStatus(`State${path ? ` (${path})` : ""}:\n${formatted}`);
+	}
+
+	private async handleSchemaCommand(text: string): Promise<void> {
+		const parts = text.split(/\s+/);
+		const sub = parts[1];
+
+		if (!sub || sub === "list") {
+			const namespaces = this.session.schemaValidator.getActiveNamespaces();
+			if (namespaces.length === 0) {
+				this.showStatus("No schemas loaded. Use /schema load <id> to load a schema.");
+				return;
+			}
+			const strict = this.session.schemaValidator.isStrict() ? " [strict]" : "";
+			this.showStatus(`Active schemas${strict}:\n${namespaces.map((n) => `  ${n}`).join("\n")}`);
+			return;
+		}
+
+		if (sub === "load") {
+			const schemaId = parts[2];
+			if (!schemaId) {
+				// List available schemas
+				const defs = this.session.getLoadedSchemaDefs();
+				if (defs.length === 0) {
+					this.showStatus(
+						"No schema files found. Create a .ts or .json file in .pi/schemas/ or ~/.pi/agent/schemas/.",
+					);
+					return;
+				}
+				this.showStatus(
+					`Available schemas:\n${defs.map((d) => `  ${d.schemaId} (ns: ${d.namespace})`).join("\n")}`,
+				);
+				return;
+			}
+			const result = this.session.loadSchema(schemaId);
+			if (result.ok) {
+				this.showStatus(`Schema "${schemaId}" loaded into namespace "${result.namespace}".`);
+			} else {
+				this.showError(result.error ?? `Schema "${schemaId}" not found.`);
+			}
+			return;
+		}
+
+		if (sub === "unload") {
+			const namespace = parts[2];
+			if (!namespace) {
+				this.showError("Usage: /schema unload <namespace>");
+				return;
+			}
+			this.session.unloadSchema(namespace);
+			this.showStatus(`Schema unloaded from namespace "${namespace}".`);
+			return;
+		}
+
+		if (sub === "strict") {
+			const enabled = parts[2] !== "off";
+			this.session.setStrictMode(enabled);
+			this.showStatus(`Strict mode ${enabled ? "enabled" : "disabled"}.`);
+			return;
+		}
+
+		this.showError("Usage: /schema [list|load <id>|unload <ns>|strict [off]]");
 	}
 
 	private async handlePromptCommand(): Promise<void> {
@@ -5482,7 +5562,7 @@ export class InteractiveMode {
 			if (last && last.role === msg.role) {
 				const t1 = extractText(last.content);
 				const t2 = extractText(msg.content);
-				last.content = t1 ? (t2 ? t1 + "\n\n" + t2 : t1) : t2;
+				last.content = t1 ? (t2 ? `${t1}\n\n${t2}` : t1) : t2;
 			} else {
 				merged.push(msg);
 			}

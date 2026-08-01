@@ -1,5 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
+import type { SchemaValidator } from "../../state/schema-validator.ts";
 import type { JsonValue, StateDiffResult, StateManager } from "../../state/state-manager.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -23,6 +24,7 @@ type StateUpdateParams = Static<typeof StateUpdateParameters>;
 export function createStateUpdateToolDefinition(
 	sessionManager: SessionManager,
 	stateManager: StateManager,
+	schemaValidator: SchemaValidator,
 ): ToolDefinition<typeof StateUpdateParameters> {
 	return {
 		name: "state_update",
@@ -52,10 +54,32 @@ export function createStateUpdateToolDefinition(
 		): Promise<AgentToolResult<undefined>> => {
 			let result: StateDiffResult;
 			const p = params as StateUpdateParams;
+
+			// Determine the full path for validation
+			const fullPath = p.op === "merge" ? "" : p.path;
+
+			// Validate against schema + custom validators
+			const validation = schemaValidator.validate(
+				fullPath,
+				p.op,
+				p.value as JsonValue,
+				stateManager.snapshot() as Record<string, JsonValue>,
+			);
+
+			if (!validation.ok) {
+				return {
+					content: [{ type: "text", text: `state_update rejected: ${validation.reason}` }],
+					details: undefined,
+				};
+			}
+
+			// Use corrected value if a custom validator modified it
+			const effectiveValue = validation.correctedValue ?? p.value;
+
 			if (p.op === "merge") {
-				result = stateManager.apply({ op: "merge", value: p.value as JsonValue });
+				result = stateManager.apply({ op: "merge", value: effectiveValue as JsonValue });
 			} else {
-				result = stateManager.apply(p.path, p.op, p.value as JsonValue);
+				result = stateManager.apply(p.path, p.op, effectiveValue as JsonValue);
 			}
 			// Write full-state snapshot to session
 			sessionManager.appendState(stateManager.snapshot());
@@ -68,16 +92,11 @@ export function createStateUpdateToolDefinition(
 // Schema for get_state — no parameters, just returns full state
 const GetStateParameters = Type.Object({});
 
-type GetStateParams = Static<typeof GetStateParameters>;
-
-export function createGetStateToolDefinition(
-	stateManager: StateManager,
-): ToolDefinition<typeof GetStateParameters> {
+export function createGetStateToolDefinition(stateManager: StateManager): ToolDefinition<typeof GetStateParameters> {
 	return {
 		name: "get_state",
 		label: "Get State",
 		description:
-			"Read the full current conversation state (game stats, inventory, flags, etc.). " +
 			"Returns a JSON object representing all stored variables and their current values. " +
 			"Use this to inspect state before making changes with state_update.",
 		parameters: GetStateParameters,
@@ -95,7 +114,11 @@ export function createGetStateToolDefinition(
 	};
 }
 
-export function createStateUpdateTool(sessionManager: SessionManager, stateManager: StateManager) {
-	const definition = createStateUpdateToolDefinition(sessionManager, stateManager);
+export function createStateUpdateTool(
+	sessionManager: SessionManager,
+	stateManager: StateManager,
+	schemaValidator: SchemaValidator,
+) {
+	const definition = createStateUpdateToolDefinition(sessionManager, stateManager, schemaValidator);
 	return wrapToolDefinition(definition);
 }

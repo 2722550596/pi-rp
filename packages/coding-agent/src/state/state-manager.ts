@@ -41,7 +41,7 @@ function resolvePath(
 	return { parent: current, key, current: current[key] };
 }
 
-function isObject(val: JsonValue | undefined): val is Record<string, JsonValue> {
+export function isObject(val: JsonValue | undefined): val is Record<string, JsonValue> {
 	return typeof val === "object" && val !== null && !Array.isArray(val);
 }
 
@@ -49,7 +49,7 @@ function isObject(val: JsonValue | undefined): val is Record<string, JsonValue> 
  * Deep merge `src` into `target` (RFC 7396). If a value in `src` is null, the
  * key is deleted from `target`.
  */
-function deepMerge(target: Record<string, JsonValue>, src: Record<string, JsonValue>): void {
+export function deepMerge(target: Record<string, JsonValue>, src: Record<string, JsonValue>): void {
 	for (const key of Object.keys(src)) {
 		const sv = src[key];
 		if (sv === null) {

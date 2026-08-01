@@ -53,6 +53,8 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
+import { type LoadedSchemaDef, loadCustomValidators, loadSchemaDefs } from "../state/schema-loader.ts";
+import { type CustomValidator, SchemaValidator } from "../state/schema-validator.ts";
 import { StateManager } from "../state/state-manager.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -109,9 +111,7 @@ import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.t
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
-	PromptPresetBlockItem,
 	PromptPresetDiagnostic,
-	PromptPresetItem,
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
@@ -120,7 +120,6 @@ import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loa
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
-import { renderSlot } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -366,6 +365,9 @@ export class AgentSession {
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
 	private _stateManager: StateManager;
+	private _schemaValidator: SchemaValidator;
+	private _loadedSchemaDefs: LoadedSchemaDef[] = [];
+	private _loadedCustomValidators: CustomValidator[] = [];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
@@ -409,6 +411,10 @@ export class AgentSession {
 		return this._stateManager;
 	}
 
+	get schemaValidator(): SchemaValidator {
+		return this._schemaValidator;
+	}
+
 	/** Final messages after transformContext (extensions + preset injection). */
 	lastTransformedMessages: AgentMessage[] = [];
 	constructor(config: AgentSessionConfig) {
@@ -419,6 +425,7 @@ export class AgentSession {
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._stateManager = new StateManager();
+		this._schemaValidator = new SchemaValidator();
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
 		this._extensionRunnerRef = config.extensionRunnerRef;
@@ -1091,7 +1098,7 @@ export class AgentSession {
 
 			const settingsPresetId = this.settingsManager.getDefaultPreset();
 			const restoreId = storedPresetId ?? settingsPresetId;
-			if (restoreId && restoreId !== "default") {
+			if (restoreId && !isDisabledPromptPresetId(restoreId) && restoreId !== "default") {
 				const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
 				if (found) this._activePreset = found.preset;
 			}
@@ -1104,6 +1111,27 @@ export class AgentSession {
 				if (e.type === "state") {
 					this._stateManager.load(e.state);
 					break;
+				}
+			}
+
+			// Restore schemas from session entries
+			// Walk backward collecting the latest action per namespace
+			const schemaActions: Array<{ action: "load" | "unload"; schemaId: string; namespace: string }> = [];
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const e = entries[i];
+				if (e.type === "schema_change") {
+					if (!schemaActions.some((a) => a.namespace === e.namespace)) {
+						schemaActions.push({ action: e.action, schemaId: e.schemaId, namespace: e.namespace });
+					}
+				}
+			}
+			// Apply load actions (skip unloads — they mean the namespace has no schema)
+			for (const a of schemaActions) {
+				if (a.action === "load") {
+					const def = this._loadedSchemaDefs.find((s) => s.schemaId === a.schemaId);
+					if (def) {
+						this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
+					}
 				}
 			}
 		}
@@ -1192,12 +1220,38 @@ export class AgentSession {
 			this._toolPolicyBaseline = undefined;
 		}
 	}
+
+	/** Schema definitions loaded from disk (for /schema list). */
+	getLoadedSchemaDefs(): LoadedSchemaDef[] {
+		return this._loadedSchemaDefs;
+	}
+
+	/** Load a schema by ID and record it as a session entry. */
+	loadSchema(schemaId: string): { ok: boolean; namespace?: string; error?: string } {
+		const def = this._loadedSchemaDefs.find((s) => s.schemaId === schemaId);
+		if (!def) return { ok: false, error: `Schema "${schemaId}" not found` };
+		this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
+		this.sessionManager.appendSchemaChange("load", def.schemaId, def.namespace);
+		return { ok: true, namespace: def.namespace };
+	}
+
+	/** Unload a schema by namespace and record it as a session entry. */
+	unloadSchema(namespace: string): void {
+		this._schemaValidator.unloadSchema(namespace);
+		this.sessionManager.appendSchemaChange("unload", namespace, namespace);
+	}
+
+	/** Toggle strict mode. */
+	setStrictMode(enabled: boolean): void {
+		this._schemaValidator.setStrict(enabled);
+	}
 	/** Set the active prompt preset by ID. Persists to session. Returns false if not found. */
 	setActivePreset(id: string): boolean {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
 			this._restoreToolPolicy();
-			this.sessionManager.appendPresetChange("default");
+			this.sessionManager.appendPresetChange(id);
+			this.settingsManager.setDefaultPreset(id);
 			// _restoreToolPolicy calls setActiveToolsByName which rebuilds the prompt
 			return true;
 		}
@@ -2996,15 +3050,18 @@ export class AgentSession {
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
 		);
 
+		// Load schema definitions and custom validators (sync — jiti supports sync import)
+		const schemaResult = loadSchemaDefs(this._cwd, getAgentDir());
+		this._loadedSchemaDefs = schemaResult.schemas;
+		this._loadedCustomValidators = loadCustomValidators(this._cwd, getAgentDir());
+		this._schemaValidator.setCustomValidators(this._loadedCustomValidators);
+
 		// Add state_update and get_state tools
 		this._baseToolDefinitions.set(
 			"state_update",
-			createStateUpdateToolDefinition(this.sessionManager, this._stateManager),
+			createStateUpdateToolDefinition(this.sessionManager, this._stateManager, this._schemaValidator),
 		);
-		this._baseToolDefinitions.set(
-			"get_state",
-			createGetStateToolDefinition(this._stateManager),
-		);
+		this._baseToolDefinitions.set("get_state", createGetStateToolDefinition(this._stateManager));
 
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {

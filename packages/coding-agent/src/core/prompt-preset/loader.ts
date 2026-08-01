@@ -81,7 +81,7 @@ export function isUsablePromptPreset(loaded: LoadedPromptPreset): boolean {
 }
 
 export function isDisabledPromptPresetId(id: string | undefined): boolean {
-	return id === "none" || id === "off";
+	return id === "none" || id === "off" || id === "default";
 }
 
 // =========================================================================

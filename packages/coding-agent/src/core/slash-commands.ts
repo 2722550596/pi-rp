@@ -27,6 +27,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "name", description: "Set session display name" },
 	{ name: "session", description: "Show session info and stats" },
 	{ name: "state", description: "Show conversation state (game stats, inventory, flags)", argumentHint: "<path>" },
+	{ name: "schema", description: "Manage state schemas: /schema [list|load <id>|unload <ns>|strict [off]]" },
 	{ name: "changelog", description: "Show changelog entries" },
 	{ name: "hotkeys", description: "Show all keyboard shortcuts" },
 	{ name: "fork", description: "Create a new fork from a previous user message" },
