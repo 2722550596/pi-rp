@@ -570,11 +570,15 @@ export class AgentSession {
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 			const previousContext = previousSnapshot?.context ?? turn.context;
 
+			const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
+			const sysPrompt = hasCustomPrompt
+				? (this._systemPromptOverride ?? this._baseSystemPrompt)
+				: (this._systemPromptOverride ?? "");
 			return {
 				...previousSnapshot,
 				context: {
 					...previousContext,
-					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+					systemPrompt: sysPrompt,
 					tools: this.agent.state.tools.slice(),
 				},
 				model: this.agent.state.model,
@@ -1315,23 +1319,25 @@ export class AgentSession {
 
 	/**
 	 * Set agent.state.systemPrompt.
-	 * - When a user-defined preset is active: systemPrompt = "" (content in messages array).
-	 * - Otherwise (built-in defaultPreset or no preset): fall back to _baseSystemPrompt.
+	 * - When a custom prompt exists (loaderSystemPrompt): use _baseSystemPrompt (legacy path).
+	 * - Otherwise: use "" (system content comes from preset-compiled messages array).
 	 */
 	private _applyDynamicSystemPrompt(): void {
-		const hasActiveUserPreset = this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default";
-		if (hasActiveUserPreset) {
-			this.agent.state.systemPrompt = this._systemPromptOverride ?? "";
-		} else {
+		const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
+		if (hasCustomPrompt) {
 			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		} else {
+			this.agent.state.systemPrompt = this._systemPromptOverride ?? "";
 		}
 	}
 	/**
 	 * Get compiled preset messages for injection into the LLM context.
 	 * Uses compileMessages() which correctly handles chat-history slot positioning.
+	 * Returns [] when a custom prompt exists (system is in systemPrompt field).
 	 */
 	getPresetInjectMessages(): AgentMessage[] {
-		if (this._activePreset === defaultPreset || this._activePreset.id === "pi-default") return [];
+		const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
+		if (hasCustomPrompt) return [];
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
