@@ -588,9 +588,10 @@ export class InteractiveMode {
 		if (presetCommand) {
 			presetCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
 				const presets = this.session.getAllPresets();
-				if (presets.length === 0) return null;
-
-				const items = presets.map((p) => ({ id: p.preset.id, description: p.preset.description ?? "" }));
+				const items = [
+					{ id: "none", description: "Disable prompt preset" },
+					...presets.map((p) => ({ id: p.preset.id, description: p.preset.description ?? "" })),
+				];
 				return createFuzzyAutocompleteItems(
 					items,
 					prefix,
@@ -601,6 +602,112 @@ export class InteractiveMode {
 						description: p.description,
 					}),
 				);
+			};
+		}
+
+		const schemaCommand = slashCommands.find((command) => command.name === "schema");
+		if (schemaCommand) {
+			schemaCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				if (!prefix.includes(" ")) {
+					const subs = [
+						{ id: "list", description: "Show active schemas" },
+						{ id: "load", description: "Load a schema by ID" },
+						{ id: "unload", description: "Unload a schema by namespace" },
+						{ id: "strict", description: "Toggle strict mode" },
+					];
+					return createFuzzyAutocompleteItems(
+						subs,
+						prefix,
+						(s) => s.id,
+						(s) => ({
+							value: s.id,
+							label: s.id,
+							description: s.description,
+						}),
+					);
+				}
+				const spaceIdx = prefix.indexOf(" ");
+				const sub = prefix.slice(0, spaceIdx);
+				const argPrefix = prefix.slice(spaceIdx + 1);
+				if (sub === "load") {
+					const defs = this.session.getLoadedSchemaDefs();
+					if (defs.length === 0) return null;
+					const items = defs.map((d) => ({ id: d.schemaId, description: `ns: ${d.namespace}` }));
+					return createFuzzyAutocompleteItems(
+						items,
+						argPrefix,
+						(d) => d.id,
+						(d) => ({
+							value: `${sub} ${d.id}`,
+							label: d.id,
+							description: d.description,
+						}),
+					);
+				}
+				if (sub === "unload") {
+					const namespaces = this.session.schemaValidator.getActiveNamespaces();
+					if (namespaces.length === 0) return null;
+					const items = namespaces.map((n) => ({ id: n, description: "" }));
+					return createFuzzyAutocompleteItems(
+						items,
+						argPrefix,
+						(d) => d.id,
+						(d) => ({
+							value: `${sub} ${d.id}`,
+							label: d.id,
+						}),
+					);
+				}
+				if (sub === "strict") {
+					const items = [{ id: "off", description: "Disable strict mode" }];
+					return createFuzzyAutocompleteItems(
+						items,
+						argPrefix,
+						(d) => d.id,
+						(d) => ({
+							value: `${sub} ${d.id}`,
+							label: d.id,
+							description: d.description,
+						}),
+					);
+				}
+				return null;
+			};
+		}
+
+		const stateCommand = slashCommands.find((command) => command.name === "state");
+		if (stateCommand) {
+			stateCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const snapshot = this.session.stateManager.snapshot();
+				if (typeof snapshot !== "object" || snapshot === null) return null;
+				const parts = prefix.split(/[./]/);
+				const lastPart = parts[parts.length - 1];
+				const pathParts = parts.slice(0, -1);
+				let current: unknown = snapshot;
+				for (const p of pathParts) {
+					if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
+					current = (current as Record<string, unknown>)[p];
+					if (current === undefined) return null;
+				}
+				if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
+				const basePath = pathParts.join(".");
+				const obj = current as Record<string, unknown>;
+				const keys = Object.keys(obj).filter((k) => k.toLowerCase().startsWith(lastPart.toLowerCase()));
+				if (keys.length === 0) return null;
+				return keys.map((key) => {
+					const val = obj[key];
+					const fullKey = basePath ? `${basePath}.${key}` : key;
+					const isObj = typeof val === "object" && val !== null && !Array.isArray(val);
+					const isArray = Array.isArray(val);
+					let desc: string;
+					if (isObj) desc = "{...}";
+					else if (isArray) desc = `[${val.length}]`;
+					else {
+						const s = JSON.stringify(val);
+						desc = s !== undefined && s.length > 30 ? `${s.slice(0, 27)}...` : (s ?? "");
+					}
+					return { value: fullKey, label: key, description: desc };
+				});
 			};
 		}
 		const promptCommand = slashCommands.find((command) => command.name === "prompt");
@@ -5415,9 +5522,9 @@ export class InteractiveMode {
 
 	private async handlePresetCommand(text: string): Promise<void> {
 		const parts = text.split(/\s+/);
-		let arg = parts[1];
+		const arg = parts[1];
 
-		if (!arg || arg === "list") {
+		if (!arg) {
 			const presets = this.session.getAllPresets();
 			if (presets.length === 0) {
 				this.showStatus("No prompt presets found. Create a .json file in .pi/prompt-presets/.");
@@ -5434,24 +5541,10 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (arg === "reload") {
-			this.session.reloadPresets();
-			this.showStatus("Prompt presets reloaded.");
-			return;
-		}
-
-		if (arg === "use") {
-			arg = parts[2];
-			if (!arg) {
-				this.showError("Usage: /preset use <id|none>");
-				return;
-			}
-		}
-
 		if (this.session.setActivePreset(arg)) {
 			this.showStatus(`Active prompt preset: ${arg}`);
 		} else {
-			this.showError(`Prompt preset "${arg}" not found. Use /preset list to see available presets.`);
+			this.showError(`Prompt preset "${arg}" not found. Use /preset to see available presets.`);
 		}
 	}
 
@@ -5489,9 +5582,7 @@ export class InteractiveMode {
 				// List available schemas
 				const defs = this.session.getLoadedSchemaDefs();
 				if (defs.length === 0) {
-					this.showStatus(
-						"No schema files found. Create a .ts or .json file in .pi/schemas/ or ~/.pi/agent/schemas/.",
-					);
+					this.showStatus("No schema files found. Create a .ts file in .pi/schemas/ or ~/.pi/agent/schemas/.");
 					return;
 				}
 				this.showStatus(

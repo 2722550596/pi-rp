@@ -43,6 +43,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files" },
 	{ name: "reroll", description: "Regenerate the last assistant response" },
 	{ name: "resume", description: "Resume a different session" },
-	{ name: "preset", description: "Manage prompt stacks: /preset list, /preset use <id|none>, /preset reload" },
+	{ name: "preset", description: "Manage prompt presets: /preset to list, /preset <id|none> to activate" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];
