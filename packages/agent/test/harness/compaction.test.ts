@@ -20,6 +20,7 @@ import {
 	findCutPoint,
 	findTurnStartIndex,
 	generateSummary,
+	generateSummaryWithUsage,
 	getLastAssistantUsage,
 	prepareCompaction,
 	serializeConversation,
@@ -510,7 +511,7 @@ describe("harness compaction", () => {
 		]);
 
 		const summary = getOrThrow(
-			await generateSummary(messages, models, model, 2000, undefined, "focus", "old summary"),
+			await generateSummaryWithUsage(messages, models, model, 2000, undefined, "focus", "old summary"),
 		);
 
 		expect(summary.text).toContain("Test summary");

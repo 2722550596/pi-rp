@@ -75,7 +75,7 @@ describe("#6647 compaction retries transient summarization failures", () => {
 			});
 			return stream;
 		};
-		harness.session.agent.streamFunction = streamFunction;
+		harness.session.agent.streamFn = streamFunction;
 		return () => callCount;
 	}
 
