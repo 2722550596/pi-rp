@@ -401,8 +401,8 @@ function normalizePolicyPatterns(
 	}
 	const patterns: string[] = [];
 	for (const [index, item] of value.entries()) {
-		if (typeof item !== "string" || !item.trim()) {
-			diagnostics.push({ level: "error", message: `${label}[${index}] must be a non-empty string.` });
+		if (typeof item !== "string") {
+			diagnostics.push({ level: "error", message: `${label}[${index}] must be a string.` });
 			continue;
 		}
 		patterns.push(item.trim());
