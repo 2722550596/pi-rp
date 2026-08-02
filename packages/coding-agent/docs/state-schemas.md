@@ -4,7 +4,7 @@ State schemas enforce structural constraints on conversation state managed by th
 
 The system has two layers:
 
-- **Schema** (static): TypeBox or JSON Schema validates structure, types, and value ranges
+- **Schema** (static): TypeBox validates structure, types, and value ranges
 - **Custom validators** (runtime): `.ts` files that run arbitrary logic — clamp values, enforce cross-field invariants, or reject writes
 
 Schemas are **not** immutable session properties. They're runtime constraints you load, unload, and swap freely — just like presets.
@@ -38,7 +38,7 @@ Now `state_update` calls to `character.*` paths are validated:
 | `state_update character.hp -> 50` | Accepted (0 <= 50) |
 | `state_update character.hp -> -5` | Rejected (minimum: 0) |
 | `state_update character.level -> 0` | Rejected (minimum: 1) |
-| `state_update inventory.gold -> 100` | Accepted (no schema for `inventory`) |
+| `state_update notes.todo -> "buy milk"` | Accepted (no schema for `notes`) |
 
 Add a custom validator to clamp HP overflow:
 
@@ -77,14 +77,6 @@ export default {
 };
 ```
 
-```json
-{
-  "$namespace": "inventory",
-  "type": "object",
-  "properties": { "gold": { "type": "number" } }
-}
-```
-
 A path like `persona.character.hp` routes to the `persona` namespace — the schema validates the entire namespace subtree, not just the mutated key.
 
 Multiple schemas can coexist in different namespaces:
@@ -121,14 +113,32 @@ When strict mode is on, writes to paths **not covered by any loaded schema** are
 
 Without strict mode (default), uncovered paths are freeform — the model can write anything to them.
 
+### Default Values & Initial State
+
+TypeBox `default` keywords double as initial state. On `/schema load`, the system generates an object from the schema's defaults (TypeBox `Create()`) and seeds it into state — no `state_update` needed:
+
+```typescript
+export default Type.Object({
+  name: Type.String({ default: "无名" }),
+  hp: Type.Number({ default: 100 }),
+  level: Type.Number({ default: 1 }),
+});
+```
+
+`/schema load character` immediately seeds `character.name = "无名"`, `character.hp = 100`, `character.level = 1` into state.
+
+The seed is **fill-missing only**: existing keys are never overwritten. Values already written survive a schema reload; only keys absent from state receive their defaults. Nested objects are filled recursively the same way. Session recovery behaves identically — schemas restored from `schema_change` entries re-seed defaults for any keys missing from the restored state.
+
+This pairs naturally with validation: seeded defaults are valid by construction, so the model can start mutating state right away. `Optional` fields get no default and are omitted until written.
+
 ## Schema Files
 
 ### Locations
 
 | Scope | Path |
 |---|---|
-| Global | `~/.pi/agent/schemas/*.ts`, `*.json` |
-| Project | `.pi/schemas/*.ts`, `*.json` |
+| Global | `~/.pi/agent/schemas/*.ts` |
+| Project | `.pi/schemas/*.ts` |
 
 Project schemas take priority over global ones with the same filename. Changes take effect on `/reload` or restart.
 
@@ -172,47 +182,6 @@ The default export can be:
 
 - A bare `TSchema` object (namespace = filename)
 - An object `{ namespace: string, schema: TSchema }` (explicit namespace)
-
-### JSON Schemas
-
-Raw JSON Schema (Draft 2020-12) for those who prefer JSON or don't want TypeBox:
-
-```json
-{
-  "$namespace": "inventory",
-  "type": "object",
-  "properties": {
-    "gold": { "type": "number", "minimum": 0 },
-    "items": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "quantity": { "type": "integer", "minimum": 1 },
-          "type": {
-            "type": "string",
-            "enum": ["weapon", "armor", "consumable", "key", "misc"]
-          },
-          "rarity": {
-            "type": "string",
-            "enum": ["common", "uncommon", "rare", "epic", "legendary"]
-          },
-          "equipped": { "type": "boolean", "default": false }
-        },
-        "required": ["id", "name", "quantity"]
-      }
-    }
-  },
-  "required": ["gold", "items"],
-  "additionalProperties": true
-}
-```
-
-JSON schemas use `$namespace` to set the namespace (defaults to filename).
-
-Both formats are compiled to the same runtime validator via TypeBox's `Compile`. There's no performance difference — `.ts` is just more ergonomic for complex schemas.
 
 ## Custom Validators
 
@@ -376,29 +345,27 @@ export default Type.Object({
 }, { additionalProperties: true });
 ```
 
-```json
-// .pi/schemas/inventory.json
-{
-  "$namespace": "inventory",
-  "type": "object",
-  "properties": {
-    "gold": { "type": "number", "minimum": 0 },
-    "items": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "quantity": { "type": "integer", "minimum": 1 },
-          "type": { "type": "string", "enum": ["weapon", "armor", "consumable", "key", "misc"] }
-        },
-        "required": ["id", "name", "quantity"]
-      }
-    }
-  },
-  "required": ["gold", "items"]
-}
+```typescript
+// .pi/schemas/inventory.ts
+import { Type } from "typebox";
+
+export default Type.Object({
+  gold: Type.Number({ minimum: 0 }),
+  items: Type.Array(
+    Type.Object({
+      id: Type.String(),
+      name: Type.String(),
+      quantity: Type.Integer({ minimum: 1 }),
+      type: Type.Union([
+        Type.Literal("weapon"),
+        Type.Literal("armor"),
+        Type.Literal("consumable"),
+        Type.Literal("key"),
+        Type.Literal("misc"),
+      ]),
+    }),
+  ),
+}, { additionalProperties: true });
 ```
 
 **Custom validators:**
