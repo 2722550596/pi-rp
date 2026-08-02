@@ -62,6 +62,23 @@ export function deepMerge(target: Record<string, JsonValue>, src: Record<string,
 	}
 }
 
+/**
+ * Recursively fill missing keys in `target` from `defaults`. Existing keys
+ * win (unlike deepMerge, primitive defaults never overwrite). Used to seed
+ * initial state from schema `default` values.
+ */
+function fillMissing(target: Record<string, JsonValue>, defaults: Record<string, JsonValue>): void {
+	for (const key of Object.keys(defaults)) {
+		const dv = defaults[key];
+		const tv = target[key];
+		if (tv === undefined) {
+			target[key] = structuredClone(dv);
+		} else if (isObject(dv) && isObject(tv)) {
+			fillMissing(tv, dv);
+		}
+	}
+}
+
 function getPath(root: Record<string, JsonValue>, path: string): JsonValue | undefined {
 	if (path === "") return root;
 	const resolved = resolvePath(root, path);
@@ -223,5 +240,11 @@ export class StateManager {
 
 	load(data: Record<string, unknown>): void {
 		this._data = structuredClone(data) as Record<string, JsonValue>;
+	}
+
+	/** Fill missing keys from `defaults` (existing values win, recursively). */
+	applyDefaults(defaults: Record<string, JsonValue>): void {
+		fillMissing(this._data, defaults);
+		this._notify();
 	}
 }

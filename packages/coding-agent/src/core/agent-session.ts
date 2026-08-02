@@ -1135,6 +1135,7 @@ export class AgentSession {
 					const def = this._loadedSchemaDefs.find((s) => s.schemaId === a.schemaId);
 					if (def) {
 						this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
+						this.applySchemaDefaults(def.namespace);
 					}
 				}
 			}
@@ -1229,12 +1230,20 @@ export class AgentSession {
 	getLoadedSchemaDefs(): LoadedSchemaDef[] {
 		return this._loadedSchemaDefs;
 	}
+	/** Merge a loaded schema's default values into state (existing values win). */
+	private applySchemaDefaults(namespace: string): void {
+		const defaults = this._schemaValidator.getDefaultValue(namespace);
+		if (defaults !== undefined) {
+			this._stateManager.applyDefaults({ [namespace]: defaults });
+		}
+	}
 
 	/** Load a schema by ID and record it as a session entry. */
 	loadSchema(schemaId: string): { ok: boolean; namespace?: string; error?: string } {
 		const def = this._loadedSchemaDefs.find((s) => s.schemaId === schemaId);
 		if (!def) return { ok: false, error: `Schema "${schemaId}" not found` };
 		this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
+		this.applySchemaDefaults(def.namespace);
 		this.sessionManager.appendSchemaChange("load", def.schemaId, def.namespace);
 		return { ok: true, namespace: def.namespace };
 	}

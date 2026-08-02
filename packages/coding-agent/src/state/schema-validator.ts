@@ -1,4 +1,6 @@
+import type { TSchema } from "typebox";
 import { Compile } from "typebox/compile";
+import { Create } from "typebox/value";
 import { deepMerge, isObject, type JsonValue } from "./state-manager.ts";
 
 export interface ValidationResult {
@@ -67,6 +69,17 @@ export class SchemaValidator {
 	getSchemaForPath(fullPath: string): LoadedSchema | undefined {
 		const ns = fullPath.split(/\.|\//).filter((p) => p.length > 0)[0];
 		return this._schemas.get(ns);
+	}
+
+	/** Generate the initial state object from a loaded schema's `default` values (TypeBox Create). */
+	getDefaultValue(namespace: string): JsonValue | undefined {
+		const loaded = this._schemas.get(namespace);
+		if (!loaded || !loaded.raw || typeof loaded.raw !== "object") return undefined;
+		try {
+			return Create(loaded.raw as TSchema) as unknown as JsonValue;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
