@@ -950,7 +950,8 @@ export class InteractiveMode {
 		});
 
 		// Initialize available provider count for footer display
-		await this.updateAvailableProviderCount();
+		// Fire-and-forget: provider count refreshes in background, don't block init
+		void this.updateAvailableProviderCount();
 	}
 
 	/**
@@ -1867,7 +1868,8 @@ export class InteractiveMode {
 			await this.bindCurrentSessionExtensions();
 			this.subscribeToAgent();
 		}
-		await this.updateAvailableProviderCount();
+		// Fire-and-forget: provider count refreshes in background, don't block rebind
+		void this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
 	}
