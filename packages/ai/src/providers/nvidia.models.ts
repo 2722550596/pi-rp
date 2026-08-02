@@ -5,6 +5,14 @@ import values from "./data/nvidia.json" with { type: "json" };
 import type { Model } from "../types.ts";
 
 export const NVIDIA_MODELS = values as {
+	"google/gemma-3-12b-it": Model<"openai-completions"> & {
+		id: "google/gemma-3-12b-it";
+		provider: "nvidia";
+	};
+	"google/gemma-3-4b-it": Model<"openai-completions"> & {
+		id: "google/gemma-3-4b-it";
+		provider: "nvidia";
+	};
 	"meta/llama-3.1-70b-instruct": Model<"openai-completions"> & {
 		id: "meta/llama-3.1-70b-instruct";
 		provider: "nvidia";
@@ -29,12 +37,44 @@ export const NVIDIA_MODELS = values as {
 		id: "minimaxai/minimax-m3";
 		provider: "nvidia";
 	};
-	"mistralai/mistral-small-4-119b-2603": Model<"openai-completions"> & {
-		id: "mistralai/mistral-small-4-119b-2603";
+	"mistralai/mistral-7b-instruct-v0.3": Model<"openai-completions"> & {
+		id: "mistralai/mistral-7b-instruct-v0.3";
+		provider: "nvidia";
+	};
+	"mistralai/mistral-medium-3.5-128b": Model<"openai-completions"> & {
+		id: "mistralai/mistral-medium-3.5-128b";
 		provider: "nvidia";
 	};
 	"moonshotai/kimi-k2.6": Model<"openai-completions"> & {
 		id: "moonshotai/kimi-k2.6";
+		provider: "nvidia";
+	};
+	"nvidia/cosmos-reason2-8b": Model<"openai-completions"> & {
+		id: "nvidia/cosmos-reason2-8b";
+		provider: "nvidia";
+	};
+	"nvidia/llama-3.1-nemotron-70b-instruct": Model<"openai-completions"> & {
+		id: "nvidia/llama-3.1-nemotron-70b-instruct";
+		provider: "nvidia";
+	};
+	"nvidia/llama-3.1-nemotron-nano-8b-v1": Model<"openai-completions"> & {
+		id: "nvidia/llama-3.1-nemotron-nano-8b-v1";
+		provider: "nvidia";
+	};
+	"nvidia/llama-3.1-nemotron-nano-vl-8b-v1": Model<"openai-completions"> & {
+		id: "nvidia/llama-3.1-nemotron-nano-vl-8b-v1";
+		provider: "nvidia";
+	};
+	"nvidia/llama-3.1-nemotron-ultra-253b-v1": Model<"openai-completions"> & {
+		id: "nvidia/llama-3.1-nemotron-ultra-253b-v1";
+		provider: "nvidia";
+	};
+	"nvidia/llama-3.3-nemotron-super-49b-v1": Model<"openai-completions"> & {
+		id: "nvidia/llama-3.3-nemotron-super-49b-v1";
+		provider: "nvidia";
+	};
+	"nvidia/llama-3.3-nemotron-super-49b-v1.5": Model<"openai-completions"> & {
+		id: "nvidia/llama-3.3-nemotron-super-49b-v1.5";
 		provider: "nvidia";
 	};
 	"nvidia/nemotron-3-nano-30b-a3b": Model<"openai-completions"> & {
@@ -53,6 +93,10 @@ export const NVIDIA_MODELS = values as {
 		id: "nvidia/nemotron-3-ultra-550b-a55b";
 		provider: "nvidia";
 	};
+	"nvidia/nemotron-nano-12b-v2-vl": Model<"openai-completions"> & {
+		id: "nvidia/nemotron-nano-12b-v2-vl";
+		provider: "nvidia";
+	};
 	"nvidia/nvidia-nemotron-nano-9b-v2": Model<"openai-completions"> & {
 		id: "nvidia/nvidia-nemotron-nano-9b-v2";
 		provider: "nvidia";
@@ -65,12 +109,16 @@ export const NVIDIA_MODELS = values as {
 		id: "openai/gpt-oss-20b";
 		provider: "nvidia";
 	};
-	"stepfun-ai/step-3.5-flash": Model<"openai-completions"> & {
-		id: "stepfun-ai/step-3.5-flash";
+	"poolside/laguna-xs-2.1": Model<"openai-completions"> & {
+		id: "poolside/laguna-xs-2.1";
 		provider: "nvidia";
 	};
 	"stepfun-ai/step-3.7-flash": Model<"openai-completions"> & {
 		id: "stepfun-ai/step-3.7-flash";
+		provider: "nvidia";
+	};
+	"thinkingmachines/inkling": Model<"openai-completions"> & {
+		id: "thinkingmachines/inkling";
 		provider: "nvidia";
 	};
 	"z-ai/glm-5.2": Model<"openai-completions"> & {

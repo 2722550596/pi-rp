@@ -61,6 +61,10 @@ export const CLOUDFLARE_AI_GATEWAY_MODELS = values as {
 		id: "claude-opus-4-8";
 		provider: "cloudflare-ai-gateway";
 	};
+	"claude-opus-5": Model<"anthropic-messages"> & {
+		id: "claude-opus-5";
+		provider: "cloudflare-ai-gateway";
+	};
 	"claude-sonnet-4": Model<"anthropic-messages"> & {
 		id: "claude-sonnet-4";
 		provider: "cloudflare-ai-gateway";

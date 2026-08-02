@@ -93,6 +93,10 @@ export const VERCEL_AI_GATEWAY_MODELS = values as {
 		id: "alibaba/qwen3.6-plus";
 		provider: "vercel-ai-gateway";
 	};
+	"alibaba/qwen3.7-flash": Model<"anthropic-messages"> & {
+		id: "alibaba/qwen3.7-flash";
+		provider: "vercel-ai-gateway";
+	};
 	"alibaba/qwen3.7-max": Model<"anthropic-messages"> & {
 		id: "alibaba/qwen3.7-max";
 		provider: "vercel-ai-gateway";
@@ -229,6 +233,10 @@ export const VERCEL_AI_GATEWAY_MODELS = values as {
 		id: "deepseek/deepseek-v4-flash";
 		provider: "vercel-ai-gateway";
 	};
+	"deepseek/deepseek-v4-flash-0731": Model<"anthropic-messages"> & {
+		id: "deepseek/deepseek-v4-flash-0731";
+		provider: "vercel-ai-gateway";
+	};
 	"deepseek/deepseek-v4-pro": Model<"anthropic-messages"> & {
 		id: "deepseek/deepseek-v4-pro";
 		provider: "vercel-ai-gateway";
@@ -247,10 +255,6 @@ export const VERCEL_AI_GATEWAY_MODELS = values as {
 	};
 	"google/gemini-3-flash": Model<"anthropic-messages"> & {
 		id: "google/gemini-3-flash";
-		provider: "vercel-ai-gateway";
-	};
-	"google/gemini-3-pro-preview": Model<"anthropic-messages"> & {
-		id: "google/gemini-3-pro-preview";
 		provider: "vercel-ai-gateway";
 	};
 	"google/gemini-3.1-flash-lite": Model<"anthropic-messages"> & {
@@ -451,6 +455,10 @@ export const VERCEL_AI_GATEWAY_MODELS = values as {
 	};
 	"moonshotai/kimi-k3": Model<"anthropic-messages"> & {
 		id: "moonshotai/kimi-k3";
+		provider: "vercel-ai-gateway";
+	};
+	"moonshotai/kimi-k3-fast": Model<"anthropic-messages"> & {
+		id: "moonshotai/kimi-k3-fast";
 		provider: "vercel-ai-gateway";
 	};
 	"nvidia/nemotron-3-nano-30b-a3b": Model<"anthropic-messages"> & {
@@ -659,6 +667,10 @@ export const VERCEL_AI_GATEWAY_MODELS = values as {
 	};
 	"thinkingmachines/inkling": Model<"anthropic-messages"> & {
 		id: "thinkingmachines/inkling";
+		provider: "vercel-ai-gateway";
+	};
+	"thinkingmachines/inkling-small": Model<"anthropic-messages"> & {
+		id: "thinkingmachines/inkling-small";
 		provider: "vercel-ai-gateway";
 	};
 	"xai/grok-4.1-fast-non-reasoning": Model<"anthropic-messages"> & {

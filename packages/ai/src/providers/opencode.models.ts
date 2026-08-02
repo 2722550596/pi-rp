@@ -197,6 +197,10 @@ export const OPENCODE_MODELS = values as {
 		id: "kimi-k2.7-code";
 		provider: "opencode";
 	};
+	"kimi-k3": Model<"openai-completions"> & {
+		id: "kimi-k3";
+		provider: "opencode";
+	};
 	"laguna-s-2.1-free": Model<"openai-completions"> & {
 		id: "laguna-s-2.1-free";
 		provider: "opencode";

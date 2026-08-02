@@ -49,6 +49,10 @@ export const TOGETHER_MODELS = values as {
 		id: "moonshotai/Kimi-K2.7-Code";
 		provider: "together";
 	};
+	"moonshotai/Kimi-K3": Model<"openai-completions"> & {
+		id: "moonshotai/Kimi-K3";
+		provider: "together";
+	};
 	"nvidia/nemotron-3-ultra-550b-a55b": Model<"openai-completions"> & {
 		id: "nvidia/nemotron-3-ultra-550b-a55b";
 		provider: "together";
