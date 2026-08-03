@@ -3,97 +3,77 @@
     <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
   </a>
 </p>
-<p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
-</p>
 
-> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
+# pi-rp — Pi for Role-Playing
 
-# Pi Agent Harness
+**pi-rp** is a deep fork of [pi-coding-agent](https://github.com/earendil-works/pi) that bakes RP infrastructure directly into the agent core. It is to role-playing what [Pi for IDE](https://github.com/can1357/oh-my-pi) is to IDE integration: a purpose-built agent that ships with the primitives RP creators need, without asking them to build everything from scratch.
 
-This is the home of the Pi agent harness project including our self extensible coding agent.
+## Why core, not extensions?
 
-* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
-* **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
-* **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
+Pi's extension system is powerful, but some primitives are too fundamental to live behind a `pi -ne` flag. Modular prompt presets, subagent dispatch, and runtime knowledge-base loading are infrastructure that every RP extension would depend on — if they can be disabled, they can't be relied on. pi-rp moves these into core so the ecosystem builds on bedrock, not sand.
 
-To learn more about Pi:
+The goal is not to replace Pi's extension model. It is to provide the layer that makes RP extensions worth writing in the first place.
 
-* [Visit pi.dev](https://pi.dev), the project website with demos
-* [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself
+## What pi-rp adds
 
-## All Packages
+### Implemented
 
-| Package | Description |
+| Feature | Description |
 |---------|-------------|
-| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
-| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
+| **Prompt preset system** | JSON-based modular prompt stacks under `.pi/prompt-presets/`. Replace, append, or prepend system prompts. 12 built-in slots, macro engine (`{{date}}`, `{{lastUserMessage}}`, `{{tools}}`, custom macros), regex rules, hidden overrides for compaction and continue prompts. `/preset list/use/reload`, `/prompt`. ExtensionAPI hooks for `registerSlot()` / `registerMacro()`. |
+| **`/reroll`** | Regenerate the last assistant reply. Works with branching and tree navigation. |
+| **`/continue`** | Force the agent to keep generating regardless of message state. |
+| **Live message editing** | Press `e` in `/tree` to edit any message content in-place. |
+| **State validation** | Schema-based structural constraints (TypeBox/JSON Schema) and custom validators for conversation state. `/schema list/load/unload/strict`. |
 
-For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
+### Planned
 
-## Permissions & Containerization
+| Feature | Description |
+|---------|-------------|
+| **Knowledge base** | `.knowledge/` directory with Markdown + frontmatter. `lookup` tool for LLM search. `/knowledge` command for switching. |
+| **State management** | `state_update` tool for LLM-driven state read/write. Persisted in session JSONL. `/state` command. |
+| **Compact + recall** | Smarter compaction that archives rather than discards. `recall` tool retrieves compacted content. |
+| **Memory system** | Full memory tools — agent can actively remember and retrieve. |
+| **Subagent** | Forked and hardened pi-subagent, stripped of upstream hidden prompts. |
+| **Provider improvements** | `/login` for custom providers. Provider catalog cleanup. |
 
-Pi does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
+## Comparison: SillyTavern and the RP gap
 
-If you need stronger boundaries, containerize or sandbox Pi. See [packages/coding-agent/docs/containerization.md](packages/coding-agent/docs/containerization.md) for three patterns:
+Pi has better extensibility, better models, and a more capable agent runtime than any RP frontend. Yet the RP ecosystem around Pi is nearly nonexistent. The reason is simple: **native Pi is a coding agent.** It ships with zero RP primitives. Creators who want to build RP experiences on Pi must first reimplement reroll, prompt composition, state tracking, knowledge retrieval, and memory — the same infrastructure SillyTavern has provided for years.
 
-- **Gondolin extension**: keep `pi` and provider auth on the host while routing built-in tools and `!` commands into a local Linux micro-VM.
-- **Plain Docker**: run the whole `pi` process in a local container for simple isolation.
-- **OpenShell**: run the whole `pi` process in a policy-controlled sandbox.
+SillyTavern's advantage is not its architecture. It is that it gives creators a complete, working foundation on day one. pi-rp aims to be that foundation for Pi.
 
-## Contributing
+## Backward compatibility
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).  Longer term plans for Pi can also be found in [RFCs](https://rfc.earendil.com/keyword/pi/).
+pi-rp does not remove or break Pi's existing functionality. It is a superset:
+
+- All Pi commands, tools, and keybindings work as before.
+- The coding agent workflow is fully preserved — use pi-rp for software development, then switch to RP mode.
+- Pi community packages and extensions remain compatible. The extension system is untouched; pi-rp only adds to core.
+- New users navigate onboarding, read docs, browse source, and write extensions with the same agent that runs their RP sessions.
+
+## Quick start
+
+```bash
+git clone https://github.com/2722550596/pi-rp.git
+cd pi-rp
+npm install --ignore-scripts
+npm run build
+./pi-test.sh
+```
 
 ## Development
 
 ```bash
-npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
-npm run build        # Build all packages
 npm run check        # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
-./pi-test.sh         # Run pi from sources (can be run from any directory)
+./pi-test.sh         # Run pi-rp from sources
 ```
 
-## Supply-chain hardening
+## Relationship with upstream
 
-We treat npm dependency changes as reviewed code changes.
-
-- Direct external dependencies are pinned to exact versions. Internal workspace packages remain version-ranged.
-- `.npmrc` sets `save-exact=true` and `min-release-age=2` to avoid same-day dependency releases during npm resolution.
-- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
-- `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated coding-agent shrinkwrap.
-- The published CLI package includes `packages/coding-agent/npm-shrinkwrap.json`, generated from the root lockfile, to pin transitive deps for npm users.
-- Release smoke tests use `npm run release:local` to build, pack, and create isolated npm and Bun installs outside the repo before tagging a release.
-- Local release installs, documented npm installs, and `pi update --self` use `--ignore-scripts` where supported.
-- CI installs with `npm ci --ignore-scripts`, and a scheduled GitHub workflow runs `npm audit --omit=dev` plus `npm audit signatures --omit=dev`.
-- Shrinkwrap generation has an explicit allowlist for dependency lifecycle scripts; new lifecycle-script deps fail checks until reviewed.
-
-## Share your OSS coding agent sessions
-
-If you use Pi or other coding agents for open source work, please share your sessions.
-
-Public OSS session data helps improve coding agents with real-world tasks, tool use, failures, and fixes instead of toy benchmarks.
-
-For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
-
-To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
-
-You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
-
-I regularly publish my own `pi-mono` work sessions here:
-
-- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
+pi-rp tracks upstream Pi but does not actively merge. RP features are developed directly in this monorepo and are not upstreamed. The goal is a focused RP distribution, not a set of patches to maintain.
 
 ## License
 
-MIT
-
-<p align="center">
-  <a href="https://pi.dev">pi.dev</a> domain graciously donated by
-  <br /><br />
-  <a href="https://exe.dev"><img src="packages/coding-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
-</p>
+MIT — same as upstream Pi.
