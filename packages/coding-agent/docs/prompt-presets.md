@@ -113,7 +113,7 @@ Renders each active tool with its prompt snippet.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `onlyWithSnippets` | boolean | `true` | Only show tools with a prompt snippet. |
-| `format` | `"plain"`, `"json"` | `"plain"` | Output format. |
+| `format` | `"plain"`, `"json"`, `"xml"` | `"plain"` | Output format. |
 
 ### `tool-guidelines`
 
@@ -123,7 +123,7 @@ Renders usage rules for the active tool set.
 |---|---|---|---|
 | `heading` | string | `"Guidelines:"` | Section heading. |
 | `includePiDefaultGuidelines` | boolean | `true` | Include Pi's built-in defaults. |
-| `format` | `"plain"`, `"json"` | `"plain"` | Output format. |
+| `format` | `"plain"`, `"json"`, `"xml"` | `"plain"` | Output format. |
 
 ### `project-context`
 
@@ -175,11 +175,25 @@ The conversation insertion point. This slot determines WHERE in the message arra
 | `stripAssistantThinking` | boolean | `false` | Remove `thinking` blocks from past assistant messages. |
 | `roles` | string[] | — | Only include these roles (e.g. `["user", "assistant"]`). |
 | `toolMode` | `"keep"`, `"drop"` | `"keep"` | Keep or discard tool call/result messages. |
-| `includeSummaries` | boolean | `false` | Include Pi's branch/compaction summaries. |
+| `includeSummaries` | boolean | `true` | Include Pi's branch/compaction summaries. Set to `false` to exclude them. |
 
 ### `variables`
 
 Renders runtime variable key-value pairs.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `includeStatic` | boolean | `true` | Include preset-level static variables. |
+| `includeSession` | boolean | `true` | Include session-scoped variables. |
+| `includeTurn` | boolean | `true` | Include turn-scoped variables. |
+
+### `state`
+
+Renders the current conversation state (game stats, inventory, flags).
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `format` | `"key-value"`, `"json"` | `"key-value"` | Output format. |
 
 ## Macros
 
@@ -346,8 +360,6 @@ The `tools` and `skills` top-level fields filter visibility using glob patterns:
 ```json
 {
   "defaults": {
-    "slotFormat": "plain",
-    "syntheticMessagesVisible": false,
     "unresolvedMacroPolicy": "keep"
   }
 }
@@ -355,9 +367,9 @@ The `tools` and `skills` top-level fields filter visibility using glob patterns:
 
 | Field | Default | Description |
 |---|---|---|
-| `slotFormat` | `"plain"` | Default `format` for slot items without explicit format. |
-| `syntheticMessagesVisible` | `false` | Whether Pi's internal branch/continue messages appear in chat-history. |
 | `unresolvedMacroPolicy` | `"keep"` | `"keep"` — leave as text, `"warn"` — add diagnostic, `"error"` — fail compile. |
+
+> **Note**: `slotFormat` and `syntheticMessagesVisible` are accepted in JSON but not yet wired into the compiler. They are reserved for future implementation.
 
 
 ## Regex Rules
@@ -367,9 +379,11 @@ Presets can define regex-based text transformations that run at different stages
 ```json
 {
   "regex": {
+    "schemaVersion": 1,
     "rules": [
       {
         "id": "strip-comments",
+        "name": "Remove HTML comments",
         "enabled": true,
         "stage": "compiled",
         "effect": "finalize",
@@ -391,11 +405,13 @@ Presets can define regex-based text transformations that run at different stages
 }
 ```
 
+
 ### Rule Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Unique identifier within the preset. |
+| `name` | string | no | Display name for diagnostics/logging. |
 | `enabled` | boolean | no | Set to `false` to skip. Default `true`. |
 | `stage` | `"history"`, `"compiled"` | yes | When the rule runs (see [Stages](#stages)). |
 | `effect` | `"outgoing"`, `"display"`, `"both"`, `"finalize"` | no | Which pipeline(s) to apply to (see [Effects](#effects)). Default `"outgoing"`. |

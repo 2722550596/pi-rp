@@ -24,18 +24,18 @@ Pi 的扩展系统非常强大，但有些能力太基础了，不适合放在�
 
 | 功能 | 描述 |
 |------|------|
-| **预设提示词系统** | 基于 JSON 的模块化提示词栈，放在 `.pi/prompt-presets/`。可替换、追加或前置系统提示词。内置 12 个 slot、宏引擎（`{{date}}`、`{{lastUserMessage}}`、`{{tools}}` 及自定义宏）、正则规则、针对 compact 和 continue 提示词的隐藏覆盖。`/preset list/use/reload`、`/prompt`。ExtensionAPI 支持 `registerSlot()` / `registerMacro()`。详见 [prompt-presets](packages/coding-agent/docs/prompt-presets.md)。 |
+| **预设提示词系统** | 基于 JSON 的模块化提示词栈，放在 `.pi/prompt-presets/`。可替换、追加或前置系统提示词。内置 13 个 slot、宏引擎（`{{date}}`、`{{lastUserMessage}}`、`{{tools}}` 及自定义宏）、正则规则、针对 compact 和 continue 提示词的隐藏覆盖。`/preset list/use/reload`、`/prompt`。ExtensionAPI 支持 `registerSlot()` / `registerMacro()`。详见 [prompt-presets](packages/coding-agent/docs/prompt-presets.md)。 |
 | **`/reroll`** | 重新生成上一条 assistant 回复，与分支、树形导航配合。 |
 | **`/continue`** | 无论最后消息处于什么状态，强制 agent 继续生成。 |
 | **实时消息编辑** | 在 `/tree` 中按 `e` 直接编辑任意消息内容。 |
 | **状态校验** | 基于 schema 的结构约束（TypeBox/JSON Schema）与自定义校验器（`.ts` 文件），约束对话状态。`/schema list/load/unload/strict`。详见 [state-schemas](packages/coding-agent/docs/state-schemas.md)。 |
+| **状态管理** | `state_update` 和 `get_state` 工具供 LLM 读写状态，随 session 持久化。`/state` 命令查看当前状态。详见 [state-schemas](packages/coding-agent/docs/state-schemas.md)。 |
 
 ### 规划中
 
 | 功能 | 描述 |
 |------|------|
 | **知识库** | `.knowledge/` 目录，一个子目录一个知识库。Markdown + frontmatter 格式。`lookup` 工具供 LLM 搜索。`/knowledge` 命令切换当前知识库。 |
-| **状态管理** | `state_update` 工具（path, op, val）供 LLM 读写状态，随 session 持久化。`/state` 命令查看当前状态。预留自定义 schema 接口。 |
 | **Compact + recall** | 更智能的压缩：compact 后的内容可检索，而不是真的丢掉。`recall` 工具检索已压缩的内容。 |
 | **记忆系统** | 一套完整的记忆工具，agent 可主动记忆和检索。 |
 | **Subagent** | fork 并魔改 pi-subagent，去掉上游的隐藏提示词和 bug。 |

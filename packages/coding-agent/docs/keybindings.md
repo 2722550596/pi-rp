@@ -130,6 +130,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.tree.foldOrUp` | `ctrl+left`, `alt+left` | Fold current branch segment, or jump to the previous segment start |
 | `app.tree.unfoldOrDown` | `ctrl+right`, `alt+right` | Unfold current branch segment, or jump to the next segment start or branch end |
 | `app.tree.editLabel` | `shift+l` | Edit the label on the selected tree node |
+| `app.tree.editMessage` | `e` | Edit the selected message content in-place |
 | `app.tree.toggleLabelTimestamp` | `shift+t` | Toggle label timestamps in the tree |
 | `app.tree.filter.default` | `ctrl+d` | Set tree filter to default view |
 | `app.tree.filter.noTools` | `ctrl+t` | Toggle tree filter that hides tool results |

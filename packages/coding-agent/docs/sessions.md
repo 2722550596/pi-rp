@@ -93,6 +93,7 @@ Example shape:
 | Ctrl+←/Ctrl+→ or Alt+←/Alt+→ | Fold/unfold or jump between branch segments |
 | Shift+L | Set or clear a label on the selected entry |
 | Shift+T | Toggle label timestamps |
+| E | Edit the selected message content |
 | Enter | Select entry |
 | Escape/Ctrl+C | Cancel |
 | Ctrl+O | Cycle filter mode |

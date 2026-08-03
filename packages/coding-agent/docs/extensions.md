@@ -1601,6 +1601,72 @@ pi.registerFlag("plan", {
 if (pi.getFlag("plan")) {
   // Plan mode enabled
 }
+
+### pi.registerSlot(definition)
+
+Register a custom prompt preset slot. Slots render dynamic content at compile time into the prompt message array. See [prompt-presets.md](prompt-presets.md) for the full slot system.
+
+```typescript
+pi.registerSlot({
+  name: "my-slot",
+  description: "Custom slot description",
+  render: (ctx) => {
+    // ctx.runtime — PromptRuntime (options, messages, skills, variables)
+    // ctx.preset  — the active preset
+    // ctx.item    — the slot item with its options
+    return `<custom>dynamic content</custom>`;
+  },
+});
+```
+
+Unknown options in the preset JSON are passed through to `ctx.item.options` — no changes to pi's core are needed to support new slot-specific options.
+
+### pi.registerMacro(definition)
+
+Register a custom prompt preset macro. Macros expand in block `content` fields via `{{name}}` or `{{name:params}}` syntax.
+
+```typescript
+pi.registerMacro({
+  name: "roll",
+  description: "Roll dice. Usage: {{roll:2d6}}",
+  render: (ctx) => {
+    // ctx.params — the string after ':' in {{name:params}}
+    // ctx.variables — session variables
+    // ctx.runtime  — full PromptRuntime
+    const [count, sides] = (ctx.params ?? "1d6").split("d").map(Number);
+    let total = 0;
+    for (let i = 0; i < Math.min(count, 100); i++) {
+      total += Math.floor(Math.random() * sides) + 1;
+    }
+    return String(total);
+  },
+});
+```
+
+Macros registered without `static: true` are re-expanded each turn, giving a fresh value each time.
+
+### pi.subscribeState(handler)
+
+Subscribe to conversation state changes. The handler fires on every state mutation from `state_update` calls or programmatic writes.
+
+```typescript
+pi.subscribeState((path, value, previousValue) => {
+  if (path === "character.hp" && value < 10) {
+    pi.once("before_agent_start", async (_event, ctx) => {
+      ctx.ui.notify("Low HP warning!", "warn");
+    });
+  }
+});
+```
+
+### pi.getState(path?)
+
+Read the current conversation state snapshot. Returns the full state tree when called without arguments, or a subtree when a dot-notation path is given.
+
+```typescript
+const fullState = pi.getState();           // { character: { hp: 100, ... }, ... }
+const hp = pi.getState("character.hp");    // 100
+```
 ```
 
 ### pi.exec(command, args, options?)

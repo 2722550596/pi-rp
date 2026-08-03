@@ -87,7 +87,7 @@ Multiple schemas can coexist in different namespaces:
 /schema load inventory    # namespace: inventory
 ```
 
-Loading a schema into an already-occupied namespace auto-unloads the previous one. Two schemas can't share a namespace, but they don't need to.
+Loading a schema into an already-occupied namespace replaces the previous one silently. Two schemas can't share a namespace, but they don't need to.
 
 ### Validation Layers
 
@@ -140,7 +140,7 @@ This pairs naturally with validation: seeded defaults are valid by construction,
 | Global | `~/.pi/agent/schemas/*.ts` |
 | Project | `.pi/schemas/*.ts` |
 
-Project schemas take priority over global ones with the same filename. Changes take effect on `/reload` or restart.
+When a project schema and a global schema share the same filename, the global version takes priority (the first match wins). Changes take effect on `/reload` or restart.
 
 ### TypeScript Schemas
 
@@ -280,12 +280,62 @@ export const validators = [
 | Command | Description |
 |---|---|
 | `/schema list` | Show active schemas and strict mode status |
-| `/schema load <id>` | Load a schema by filename (without extension) |
+| `/schema load [id]` | Load a schema by filename (without extension). With no argument, lists available schemas. |
 | `/schema unload <ns>` | Unload a schema by namespace |
 | `/schema strict` | Enable strict mode |
 | `/schema strict off` | Disable strict mode |
+| `/state [path]` | Show conversation state, optionally at a specific path. Tab-completes from current state keys. |
 
-Schema load/unload is recorded as `schema_change` entries in the session tree, just like `preset_change`. Session recovery replays these entries to restore active schemas.
+Schema load/unload is recorded as `schema_change` entries in the session tree, just like `preset_change`. On session recovery, these entries are replayed in reverse order (latest action per namespace wins), and schema defaults are reapplied to fill any missing keys.
+
+## The `get_state` Tool
+
+In addition to `state_update`, pi-rp provides `get_state` — a read-only tool the LLM can call to inspect current state without modifying it:
+
+```
+> get_state
+> (no path)
+Response: {"character": {"name": "无名", "hp": 100, "level": 1}}
+```
+
+Pass an optional path to read a subtree:
+
+```
+> get_state character.hp
+Response: 100
+```
+
+Both `state_update` and `get_state` are active by default in SDK sessions.
+
+### Path Notation
+
+Paths support both dot notation (`character.hp`) and JSON Pointer (`/character/hp`). Both are equivalent — use whichever is more natural.
+
+## Extension Integration
+
+Extensions can read and subscribe to state changes via the ExtensionAPI:
+
+| Method | Description |
+|---|---|
+| `pi.getState(path?)` | Read the current state snapshot, optionally at a specific path. |
+| `pi.subscribeState(handler)` | Register a callback invoked on every state change. Receives `(path, value, previousValue)`. |
+
+```ts
+export default function (pi: ExtensionAPI) {
+  pi.subscribeState((path, value, prev) => {
+    if (path === "character.hp" && value < 10) {
+      pi.ui.notify("Low HP!", "warn");
+    }
+  });
+}
+```
+
+### Tab Completion
+
+Both `/state` and `/schema` commands support tab completion:
+
+- `/state` — completes dot-separated paths by walking the current state tree, with type-aware descriptions (`{...}`, `[...]`, `42`, `"str"`).
+- `/schema` — completes subcommands (`list`, `load`, `unload`, `strict`), schema IDs for `load`, namespaces for `unload`, and `off` for `strict`.
 
 ## Validation Pipeline
 
