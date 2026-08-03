@@ -49,7 +49,7 @@ function createAssistant(
 
 function useSummaryStreamFn(harness: Harness, summary: string): () => number {
 	let callCount = 0;
-	harness.session.agent.streamFn = (model) => {
+	harness.session.agent.streamFunction = (model) => {
 		callCount++;
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {

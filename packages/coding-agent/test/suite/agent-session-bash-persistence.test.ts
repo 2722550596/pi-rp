@@ -323,7 +323,6 @@ describe("AgentSession bash and persistence characterization", () => {
 		};
 
 		await harness.session.executeBash("custom", (delta) => callbackDeltas.push(delta), {
-			id: "bash-1",
 			operations,
 		});
 		unsubscribe();

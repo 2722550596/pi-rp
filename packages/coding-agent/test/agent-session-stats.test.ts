@@ -1,10 +1,17 @@
 import { Agent } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, getModel, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai/compat";
+import {
+	type AssistantMessage,
+	getModel,
+	streamSimple,
+	type ToolResultMessage,
+	type Usage,
+} from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { getUsageCostBreakdown } from "../src/core/usage-totals.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
@@ -68,6 +75,7 @@ async function createSession() {
 	const session = new AgentSession({
 		agent: new Agent({
 			getApiKey: () => "test-key",
+			streamFn: streamSimple,
 			initialState: {
 				model,
 				systemPrompt: "You are a helpful assistant.",
@@ -222,6 +230,31 @@ describe("AgentSession.getSessionStats", () => {
 		} finally {
 			session.dispose();
 		}
+	});
+
+	it("groups tool and summary usage separately from model-attributed usage", () => {
+		const sessionManager = SessionManager.inMemory();
+		const rootId = sessionManager.appendMessage(createUserMessage("hello", 1));
+		sessionManager.appendMessage({
+			...createAssistantMessage("response", 100, 2),
+			usage: { ...createUsage(100), cost: { ...createUsage(100).cost, total: 0.5 } },
+		});
+		sessionManager.appendMessage(
+			createToolResultMessage({ ...createUsage(100), cost: { ...createUsage(100).cost, total: 1 } }),
+		);
+		sessionManager.appendCompaction("summary", rootId, 100, undefined, false, {
+			...createUsage(100),
+			cost: { ...createUsage(100).cost, total: 2 },
+		});
+		sessionManager.branchWithSummary(null, "branch summary", undefined, false, {
+			...createUsage(100),
+			cost: { ...createUsage(100).cost, total: 3 },
+		});
+
+		expect(getUsageCostBreakdown(sessionManager.getEntries())).toEqual([
+			{ key: "Tools/summaries", cost: 6, tokens: 300 },
+			{ key: `${model.provider}/${model.id}`, cost: 0.5, tokens: 100 },
+		]);
 	});
 
 	it("ignores zero-usage messages when checking for post-compaction context usage", async () => {

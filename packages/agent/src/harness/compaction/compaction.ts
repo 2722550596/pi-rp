@@ -103,12 +103,14 @@ function getMessageFromEntryForCompaction(entry: SessionTreeEntry): AgentMessage
 export interface CompactionResult<T = unknown> {
 	/** Summary text that replaces compacted history in future context. */
 	summary: string;
-	/** Entry id where retained history starts. */
-	firstKeptEntryId: string;
+	/** Entry id where retained history starts. Optional during Pi 2.0 transition. */
+	firstKeptEntryId?: string;
 	/** Estimated context tokens before compaction. */
 	tokensBefore: number;
 	/** Usage from the LLM call(s) that generated this summary, if available. */
 	usage?: Usage;
+	/** Retained recent messages stored directly on the compaction entry. Optional during Pi 2.0 transition. */
+	retainedTail?: AgentMessage[];
 	/** Optional implementation-specific details stored with the compaction entry. */
 	details?: T;
 }
@@ -176,8 +178,7 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 };
 
 /** Calculate total context tokens from provider usage. */
-export function calculateContextTokens(usage: Usage | undefined): number {
-	if (!usage) return 0;
+export function calculateContextTokens(usage: Usage): number {
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 function getAssistantUsage(msg: AgentMessage): Usage | undefined {
@@ -621,6 +622,8 @@ export interface CompactionPreparation {
 	messagesToSummarize: AgentMessage[];
 	/** Prefix messages summarized separately when compaction splits a turn. */
 	turnPrefixMessages: AgentMessage[];
+	/** Recent messages retained after compaction and stored on the compaction entry. */
+	retainedTail: AgentMessage[];
 	/** Whether compaction splits a turn. */
 	isSplitTurn: boolean;
 	/** Estimated context tokens before compaction. */
@@ -655,7 +658,9 @@ export function prepareCompaction(
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
 		previousSummary = prevCompaction.summary;
-		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
+		const firstKeptEntryIndex = prevCompaction.firstKeptEntryId
+			? pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId)
+			: -1;
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
 	}
 	const boundaryEnd = pathEntries.length;
@@ -682,6 +687,11 @@ export function prepareCompaction(
 			if (msg) turnPrefixMessages.push(msg);
 		}
 	}
+	const retainedTail: AgentMessage[] = [];
+	for (let i = cutPoint.firstKeptEntryIndex; i < boundaryEnd; i++) {
+		const msg = getMessageFromEntryForCompaction(pathEntries[i]);
+		if (msg) retainedTail.push(msg);
+	}
 	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);
 	if (cutPoint.isSplitTurn) {
 		for (const msg of turnPrefixMessages) {
@@ -693,6 +703,7 @@ export function prepareCompaction(
 		firstKeptEntryId,
 		messagesToSummarize,
 		turnPrefixMessages,
+		retainedTail,
 		isSplitTurn: cutPoint.isSplitTurn,
 		tokensBefore,
 		previousSummary,
@@ -733,6 +744,7 @@ export async function compact(
 		firstKeptEntryId,
 		messagesToSummarize,
 		turnPrefixMessages,
+		retainedTail,
 		isSplitTurn,
 		tokensBefore,
 		previousSummary,
@@ -808,6 +820,7 @@ export async function compact(
 		firstKeptEntryId,
 		tokensBefore,
 		usage: summaryUsage,
+		retainedTail,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	});
 }
