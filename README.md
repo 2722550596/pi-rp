@@ -4,6 +4,10 @@
   </a>
 </p>
 
+<p align="center">
+  <b>English</b> | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 # pi-rp — Pi for Role-Playing
 
 **pi-rp** is a deep fork of [pi-coding-agent](https://github.com/earendil-works/pi) that bakes RP infrastructure directly into the agent core. It is to role-playing what [Pi for IDE](https://github.com/can1357/oh-my-pi) is to IDE integration: a purpose-built agent that ships with the primitives RP creators need, without asking them to build everything from scratch.
@@ -20,11 +24,11 @@ The goal is not to replace Pi's extension model. It is to provide the layer that
 
 | Feature | Description |
 |---------|-------------|
-| **Prompt preset system** | JSON-based modular prompt stacks under `.pi/prompt-presets/`. Replace, append, or prepend system prompts. 12 built-in slots, macro engine (`{{date}}`, `{{lastUserMessage}}`, `{{tools}}`, custom macros), regex rules, hidden overrides for compaction and continue prompts. `/preset list/use/reload`, `/prompt`. ExtensionAPI hooks for `registerSlot()` / `registerMacro()`. |
+| **Prompt preset system** | JSON-based modular prompt stacks under `.pi/prompt-presets/`. Replace, append, or prepend system prompts. 12 built-in slots, macro engine (`{{date}}`, `{{lastUserMessage}}`, `{{tools}}`, custom macros), regex rules, hidden overrides for compaction and continue prompts. `/preset list/use/reload`, `/prompt`. ExtensionAPI hooks for `registerSlot()` / `registerMacro()`. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md). |
 | **`/reroll`** | Regenerate the last assistant reply. Works with branching and tree navigation. |
 | **`/continue`** | Force the agent to keep generating regardless of message state. |
 | **Live message editing** | Press `e` in `/tree` to edit any message content in-place. |
-| **State validation** | Schema-based structural constraints (TypeBox/JSON Schema) and custom validators for conversation state. `/schema list/load/unload/strict`. |
+| **State validation** | Schema-based structural constraints (TypeBox/JSON Schema) and custom validators for conversation state. `/schema list/load/unload/strict`. See [state-schemas](packages/coding-agent/docs/state-schemas.md). |
 
 ### Planned
 
