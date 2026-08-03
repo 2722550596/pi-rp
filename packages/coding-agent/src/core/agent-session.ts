@@ -574,7 +574,7 @@ export class AgentSession {
 			const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
 			const sysPrompt = hasCustomPrompt
 				? (this._systemPromptOverride ?? this._baseSystemPrompt)
-				: (this._systemPromptOverride ?? "");
+			: (this._systemPromptOverride ?? this._baseSystemPrompt);
 			return {
 				...previousSnapshot,
 				context: {
@@ -1337,7 +1337,7 @@ export class AgentSession {
 		if (hasCustomPrompt) {
 			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 		} else {
-			this.agent.state.systemPrompt = this._systemPromptOverride ?? "";
+			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 		}
 	}
 	/**

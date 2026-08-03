@@ -246,7 +246,7 @@ function buildChatPayload(
 	model: Model<"mistral-conversations">,
 	context: Context,
 	messages: Message[],
-	_options?: MistralOptions,
+	options?: MistralOptions,
 ): ChatCompletionStreamRequest {
 	const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
 		messages,
@@ -264,6 +264,13 @@ function buildChatPayload(
 			content: sanitizeSurrogates(mergedSystemPrompt),
 		});
 	}
+	if (context.tools?.length) payload.tools = toFunctionTools(context.tools);
+	if (options?.temperature !== undefined) payload.temperature = options.temperature;
+	if (options?.maxTokens !== undefined) payload.maxTokens = options.maxTokens;
+	if (options?.toolChoice) payload.toolChoice = mapToolChoice(options.toolChoice);
+	if (options?.promptMode) payload.promptMode = options.promptMode;
+	if (options?.reasoningEffort) payload.reasoningEffort = options.reasoningEffort;
+	if (shouldUsePromptCaching(options)) payload.promptCacheKey = options.sessionId;
 
 	return payload;
 }
@@ -650,7 +657,7 @@ function mapReasoningEffort(
 	return (model.thinkingLevelMap?.[level] ?? "high") as MistralReasoningEffort;
 }
 
-function _mapToolChoice(
+function mapToolChoice(
 	choice: MistralOptions["toolChoice"],
 ): "auto" | "none" | "any" | "required" | { type: "function"; function: { name: string } } | undefined {
 	if (!choice) return undefined;
