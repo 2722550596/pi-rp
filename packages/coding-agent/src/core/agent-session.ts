@@ -574,7 +574,7 @@ export class AgentSession {
 			const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
 			const sysPrompt = hasCustomPrompt
 				? (this._systemPromptOverride ?? this._baseSystemPrompt)
-			: (this._systemPromptOverride ?? this._baseSystemPrompt);
+				: (this._systemPromptOverride ?? this._baseSystemPrompt);
 			return {
 				...previousSnapshot,
 				context: {
@@ -1576,7 +1576,7 @@ export class AgentSession {
 		await this._runAgentPrompt(messages);
 
 		// Capture the actual messages sent to the LLM (post context event / preset injection)
-		this._lastCompiledMessages = [...this._extensionRunner.lastContextMessages];
+		this._lastCompiledMessages = [...(this._extensionRunner.lastContextMessages ?? [])];
 		this._lastCompiledSystemPrompt = this.agent.state.systemPrompt;
 	}
 

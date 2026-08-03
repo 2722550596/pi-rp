@@ -80,9 +80,9 @@ describe("AgentSession bash and persistence characterization", () => {
 		]);
 
 		const sawToolStart = new Promise<void>((resolve) => {
-			const unsubscribe = harness.session.subscribe((event) => {
+			const _unsubscribe = harness.session.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
-					unsubscribe();
+					_unsubscribe();
 					resolve();
 				}
 			});
@@ -265,9 +265,9 @@ describe("AgentSession bash and persistence characterization", () => {
 		harness.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
 
 		const sawMessageUpdate = new Promise<void>((resolve) => {
-			const unsubscribe = harness.session.subscribe((event) => {
+			const _unsubscribe = harness.session.subscribe((event) => {
 				if (event.type === "message_update") {
-					unsubscribe();
+					_unsubscribe();
 					resolve();
 				}
 			});
@@ -309,7 +309,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		harnesses.push(harness);
 		const callbackDeltas: string[] = [];
 		const eventUpdates: Array<{ id: string | undefined; delta: string }> = [];
-		const unsubscribe = harness.session.subscribe((event) => {
+		const _unsubscribe = harness.session.subscribe((event) => {
 			if (event.type === "bash_execution_update") {
 				eventUpdates.push({ id: event.id, delta: event.delta });
 			}
