@@ -3,6 +3,9 @@
 	"private": true,
 	"type": "module",
 	"workspaces": [
+		"packages/protocol",
+		"packages/client",
+
 		"packages/*",
 		"packages/coding-agent/examples/extensions/with-deps",
 		"packages/coding-agent/examples/extensions/custom-provider-anthropic",
@@ -11,8 +14,7 @@
 		"packages/coding-agent/examples/extensions/gondolin"
 	],
 	"scripts": {
-		"clean": "npm run clean --workspaces",
-		"build": "cd packages/tui && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../coding-agent && npm run build && cd ../orchestrator && npm run build",
+		"build": "cd packages/tui && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../protocol && npm run build && cd ../client && npm run build && cd ../coding-agent && npm run build && cd ../orchestrator && npm run build",
 		"check": "biome check --write --error-on-warnings . && npm run check:pinned-deps && npm run check:ts-imports && npm run check:shrinkwrap && npm run check:install-lock:coding-agent && tsgo --noEmit && npm run check:browser-smoke",
 		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
@@ -25,7 +27,9 @@
 		"check:model-catalog": "node scripts/publish-model-catalog.mjs --input .artifacts/model-catalog --dry-run",
 		"profile:tui": "node scripts/profile-coding-agent-node.mjs --mode tui",
 		"profile:rpc": "node scripts/profile-coding-agent-node.mjs --mode rpc",
-		"test": "npm run test --workspaces --if-present",
+		"test:scripts": "node --test scripts/*.test.mjs",
+		"test": "npm run test:scripts && npm run test --workspaces --if-present",
+		"eval": "npm run eval --workspace=@earendil-works/pi-evals --",
 		"version:patch": "npm version patch -ws --no-git-tag-version && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts",
 		"version:minor": "npm version minor -ws --no-git-tag-version && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts",
 		"version:major": "npm version major -ws --no-git-tag-version && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts",
