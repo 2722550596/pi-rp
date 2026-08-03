@@ -8,10 +8,9 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AgentHarness } from "../../src/harness/agent-harness.ts";
-import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
-import { InMemorySessionStorage } from "../../src/harness/session/memory-storage.ts";
-import { Session } from "../../src/harness/session/session.ts";
+import type { AgentHarnessOptions } from "../../src/harness/types.ts";
 import { calculateTool } from "../utils/calculate.ts";
+import { createInMemorySession } from "./session-test-utils.ts";
 
 /** Shared collection; each faux provider gets a unique id so coexisting fakes route correctly. */
 const models = createModels();
@@ -23,7 +22,7 @@ function newFaux(): FauxProviderHandle {
 	return faux;
 }
 
-function createHarness(options: ConstructorParameters<typeof AgentHarness>[0]): AgentHarness {
+function createHarness(options: AgentHarnessOptions): AgentHarness {
 	return new AgentHarness(options);
 }
 
@@ -46,10 +45,9 @@ describe("AgentHarness stream configuration", () => {
 			},
 		]);
 
-		const session = new Session(new InMemorySessionStorage({ metadata: { id: "session-1", createdAt: "now" } }));
+		const session = await createInMemorySession("session-1");
 		const harness = createHarness({
 			models,
-			env: new NodeExecutionEnv({ cwd: process.cwd() }),
 			session,
 			model: registration.getModel(),
 			streamOptions: {
@@ -98,8 +96,7 @@ describe("AgentHarness stream configuration", () => {
 
 		const harness = createHarness({
 			models,
-			env: new NodeExecutionEnv({ cwd: process.cwd() }),
-			session: new Session(new InMemorySessionStorage()),
+			session: await createInMemorySession(),
 			model: registration.getModel(),
 			streamOptions: {
 				timeoutMs: 1000,
@@ -156,8 +153,7 @@ describe("AgentHarness stream configuration", () => {
 
 		const harness = createHarness({
 			models,
-			env: new NodeExecutionEnv({ cwd: process.cwd() }),
-			session: new Session(new InMemorySessionStorage()),
+			session: await createInMemorySession(),
 			model: registration.getModel(),
 			tools: [calculateTool],
 			streamOptions: { timeoutMs: 1000, headers: { turn: "first" } },
@@ -191,8 +187,7 @@ describe("AgentHarness stream configuration", () => {
 
 		const harness = createHarness({
 			models,
-			env: new NodeExecutionEnv({ cwd: process.cwd() }),
-			session: new Session(new InMemorySessionStorage()),
+			session: await createInMemorySession(),
 			model: registration.getModel(),
 		});
 

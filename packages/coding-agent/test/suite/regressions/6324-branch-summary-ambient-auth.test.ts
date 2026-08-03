@@ -17,7 +17,7 @@ describe("issue #6324 branch summary ambient auth", () => {
 		harnesses.push(harness);
 
 		let streamCallCount = 0;
-		harness.session.agent.streamFn = (model, _context, options) => {
+		harness.session.agent.streamFunction = (model, _context, options) => {
 			streamCallCount++;
 			expect(options?.apiKey).toBeUndefined();
 

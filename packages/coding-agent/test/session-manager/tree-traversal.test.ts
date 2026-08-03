@@ -523,6 +523,52 @@ describe("createBranchedSession", () => {
 		}
 	});
 
+	it("preserves tool and summary usage across a file-backed reload", () => {
+		const tempDir = join(tmpdir(), `session-usage-roundtrip-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		try {
+			const session = SessionManager.create(tempDir, tempDir);
+			const rootId = session.appendMessage(userMsg("question"));
+			session.appendMessage(assistantMsg("answer"));
+			const usage = {
+				input: 10,
+				output: 20,
+				cacheRead: 30,
+				cacheWrite: 40,
+				totalTokens: 100,
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+			};
+			session.appendMessage({
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "nested-model",
+				content: [{ type: "text", text: "result" }],
+				isError: false,
+				usage,
+				timestamp: Date.now(),
+			});
+			session.appendCompaction("summary", rootId, 100, undefined, false, usage);
+			session.branchWithSummary(rootId, "branch summary", undefined, false, usage);
+
+			const file = session.getSessionFile();
+			expect(file).toBeDefined();
+			const reopened = SessionManager.open(file!, tempDir);
+			expect(reopened.getEntries()).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ type: "compaction", usage }),
+					expect.objectContaining({ type: "branch_summary", usage }),
+					expect.objectContaining({
+						type: "message",
+						message: expect.objectContaining({ role: "toolResult", usage }),
+					}),
+				]),
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("writes file immediately when forking from a point with assistant messages", () => {
 		const tempDir = join(tmpdir(), `session-fork-with-assistant-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });

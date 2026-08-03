@@ -10,6 +10,7 @@ import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { main } from "../src/main.ts";
 import { ConfigSelectorComponent } from "../src/modes/interactive/components/config-selector.ts";
 import { handlePackageCommand } from "../src/package-manager-cli.ts";
+import { allowNetwork } from "./test-network-env.ts";
 
 describe("package commands", () => {
 	let tempDir: string;
@@ -51,6 +52,7 @@ describe("package commands", () => {
 	}
 
 	beforeEach(() => {
+		allowNetwork();
 		tempDir = join(tmpdir(), `pi-package-commands-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		projectDir = join(tempDir, "project");
@@ -467,6 +469,32 @@ describe("package commands", () => {
 			expect(process.exitCode).toBe(1);
 		} finally {
 			errorSpy.mockRestore();
+		}
+	});
+
+	it("allows explicit self-update checks when automatic version checks are disabled", async () => {
+		const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
+		process.env.PI_SKIP_VERSION_CHECK = "1";
+		const fetchMock = vi.fn(async () => Response.json({ version: VERSION }));
+		vi.stubGlobal("fetch", fetchMock);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
+
+			expect(fetchMock).toHaveBeenCalledOnce();
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				`pi is already up to date (v${VERSION})`,
+			);
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(process.exitCode).toBeUndefined();
+		} finally {
+			if (previousSkipVersionCheck === undefined) {
+				delete process.env.PI_SKIP_VERSION_CHECK;
+			} else {
+				process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
+			}
 		}
 	});
 

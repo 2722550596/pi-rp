@@ -175,7 +175,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			} else if (result.errors.size === 1) {
 				this.errorMessage = `Could not refresh ${result.errors.keys().next().value}; showing cached models.`;
 			} else if (result.errors.size > 1) {
-				this.errorMessage = `Could not refresh ${result.errors.size} model catalogs; showing cached models.`;
+				this.errorMessage = `Could not refresh ${result.errors.size} model catalogs (${[...result.errors.keys()].join(", ")}); showing cached models.`;
 			} else {
 				this.errorMessage = this.modelRuntime.getError();
 				if (!this.errorMessage) {
@@ -238,7 +238,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 					getModelSelectorSearchText({ id, provider, name: model.name }),
 				)
 			: this.activeModels;
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+		// When filtering by a query, move the selector to the top row so the best
+		// match is highlighted. When the query is cleared, keep the current position
+		// clamped to the (restored) list length.
+		this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
 		this.updateList();
 	}
 

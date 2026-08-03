@@ -2,23 +2,7 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/zai.json" with { type: "json" };
-import type { Model } from "../types.ts";
+import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
 
-export const ZAI_MODELS = values as {
-	"glm-4.7": Model<"openai-completions"> & {
-		id: "glm-4.7";
-		provider: "zai";
-	};
-	"glm-5-turbo": Model<"openai-completions"> & {
-		id: "glm-5-turbo";
-		provider: "zai";
-	};
-	"glm-5.2": Model<"openai-completions"> & {
-		id: "glm-5.2";
-		provider: "zai";
-	};
-	"glm-5.2-highspeed": Model<"openai-completions"> & {
-		id: "glm-5.2-highspeed";
-		provider: "zai";
-	};
-};
+export const ZAI_MODELS: ModelCatalog<typeof values, "zai"> =
+	flattenModelCatalog("zai", values);

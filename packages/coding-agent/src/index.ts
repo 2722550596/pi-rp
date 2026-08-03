@@ -42,6 +42,7 @@ export {
 	type GenerateBranchSummaryOptions,
 	generateBranchSummary,
 	generateSummary,
+	generateSummaryWithUsage,
 	getLastAssistantUsage,
 	prepareBranchEntries,
 	serializeConversation,
@@ -99,6 +100,8 @@ export type {
 	KeybindingsManager,
 	LoadExtensionsResult,
 	LsToolCallEvent,
+	MarkdownTransformContext,
+	MarkdownTransformer,
 	MessageEndEvent,
 	MessageRenderer,
 	MessageRenderOptions,
@@ -278,6 +281,7 @@ export {
 	type RetrySettings,
 	SettingsManager,
 	type SettingsManagerCreateOptions,
+	type UiMode,
 } from "./core/settings-manager.ts";
 // Skills
 export {

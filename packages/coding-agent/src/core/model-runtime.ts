@@ -62,7 +62,9 @@ export interface CreateModelRuntimeOptions {
 	modelsPath?: string | null;
 	modelsStore?: ModelsStore;
 	modelsStorePath?: string;
+	/** Allow create() to refresh model catalogs over the network. Defaults to false. */
 	allowModelNetwork?: boolean;
+	/** Timeout for the create-time network model refresh. */
 	modelRefreshTimeoutMs?: number;
 	catalogBaseUrl?: string;
 }
@@ -70,7 +72,11 @@ export interface CreateModelRuntimeOptions {
 export interface ModelRuntimeAuthOverrides {
 	apiKey?: string;
 	env?: Record<string, string>;
+	/** Require this much remaining OAuth-token validity; defaults to five minutes. */
+	minOAuthValidityMs?: number;
 }
+
+const DEFAULT_MODEL_REFRESH_TIMEOUT_MS = 15_000;
 
 function mergeHeaders(
 	base: ProviderHeaders | undefined,
@@ -98,7 +104,7 @@ export class ModelRuntime implements Models {
 	private readonly extensionProviders = new Map<string, ProviderConfigInput>();
 	private readonly compositionErrors = new Map<string, string>();
 	private readonly modelsPath: string | undefined;
-	private readonly allowModelNetwork: boolean;
+	private readonly modelNetworkEnabled: boolean;
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = {
 		all: [],
@@ -108,6 +114,7 @@ export class ModelRuntime implements Models {
 		auth: new Map(),
 	};
 	private availabilityRefresh: Promise<void> | undefined;
+	private availabilityRefreshSeq = 0;
 	private availabilityError: string | undefined;
 
 	private constructor(
@@ -116,12 +123,12 @@ export class ModelRuntime implements Models {
 		modelsPath: string | undefined,
 		modelsStore: ModelsStore,
 		providers: readonly Provider[],
-		allowModelNetwork: boolean,
+		modelNetworkEnabled: boolean,
 	) {
 		this.credentials = credentials;
 		this.config = config;
 		this.modelsPath = modelsPath;
-		this.allowModelNetwork = allowModelNetwork;
+		this.modelNetworkEnabled = modelNetworkEnabled;
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
@@ -138,10 +145,13 @@ export class ModelRuntime implements Models {
 			(modelsPath
 				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
 				: new InMemoryCodingAgentModelsStore());
+		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
 		const providers = builtinProviderCatalog
 			.builtinProviders()
 			.map((provider) =>
-				provider.id === "radius" ? provider : withRemoteCatalog(provider, options.catalogBaseUrl),
+				provider.id === "radius"
+					? provider
+					: withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt),
 			);
 		const runtime = new ModelRuntime(
 			credentials,
@@ -149,16 +159,17 @@ export class ModelRuntime implements Models {
 			modelsPath,
 			modelsStore,
 			providers,
-			options.allowModelNetwork ?? process.env.PI_OFFLINE === undefined,
+			process.env.PI_OFFLINE === undefined,
 		);
 		runtime.configureRadiusProviders();
 		runtime.rebuildProviders();
-		const controller = new AbortController();
-		const timeout = runtime.allowModelNetwork
-			? setTimeout(() => controller.abort(), options.modelRefreshTimeoutMs ?? 15_000)
+		const refreshFromNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork === true;
+		const controller = refreshFromNetwork ? new AbortController() : undefined;
+		const timeout = controller
+			? setTimeout(() => controller.abort(), options.modelRefreshTimeoutMs ?? DEFAULT_MODEL_REFRESH_TIMEOUT_MS)
 			: undefined;
 		try {
-			await runtime.refresh({ allowNetwork: runtime.allowModelNetwork, signal: controller.signal });
+			await runtime.refresh({ allowNetwork: refreshFromNetwork, signal: controller?.signal });
 		} finally {
 			if (timeout) clearTimeout(timeout);
 		}
@@ -231,7 +242,7 @@ export class ModelRuntime implements Models {
 		};
 	}
 
-	private async runAvailabilityRefresh(): Promise<void> {
+	private async runAvailabilityRefresh(seq: number): Promise<void> {
 		const providers = this.models.getProviders();
 		const [available, checks, credentials] = await Promise.all([
 			this.models.getAvailable(),
@@ -245,6 +256,10 @@ export class ModelRuntime implements Models {
 			),
 			this.credentials.list(),
 		]);
+		// A newer rebuild was requested while this one was in flight; drop this
+		// result so a slow, superseded refresh cannot clobber the snapshot with
+		// stale data.
+		if (seq !== this.availabilityRefreshSeq) return;
 		const auth = new Map(checks);
 		const configuredProviders = new Set(
 			checks
@@ -261,10 +276,14 @@ export class ModelRuntime implements Models {
 		this.availabilityError = undefined;
 	}
 
-	private queueAvailabilityRefresh(after: Promise<void> | undefined): Promise<void> {
-		const refresh = (after ?? Promise.resolve()).catch(() => {}).then(() => this.runAvailabilityRefresh());
+	private queueAvailabilityRefresh(): Promise<void> {
+		const seq = ++this.availabilityRefreshSeq;
+		const refresh = this.runAvailabilityRefresh(seq);
 		const recorded = refresh.catch((error) => {
-			this.availabilityError = error instanceof Error ? error.message : String(error);
+			// Only the latest requested rebuild owns the error state.
+			if (seq === this.availabilityRefreshSeq) {
+				this.availabilityError = error instanceof Error ? error.message : String(error);
+			}
 			throw error;
 		});
 		const tracked = recorded.finally(() => {
@@ -276,12 +295,17 @@ export class ModelRuntime implements Models {
 
 	/** Coalesce concurrent readers onto the pending refresh. */
 	private refreshAvailability(): Promise<void> {
-		return this.availabilityRefresh ?? this.queueAvailabilityRefresh(undefined);
+		return this.availabilityRefresh ?? this.queueAvailabilityRefresh();
 	}
 
-	/** Mutations must not observe an in-flight refresh started before them. */
+	/**
+	 * Mutations must observe a rebuild that starts after their state change, and a
+	 * stuck in-flight refresh must not block them. Start a fresh, independent
+	 * rebuild instead of chaining onto the pending one. The sequence guard in
+	 * runAvailabilityRefresh ensures a superseded rebuild cannot clobber its result.
+	 */
 	private forceRefreshAvailability(): Promise<void> {
-		return this.queueAvailabilityRefresh(this.availabilityRefresh);
+		return this.queueAvailabilityRefresh();
 	}
 
 	getProviders(): readonly Provider[] {
@@ -389,7 +413,11 @@ export class ModelRuntime implements Models {
 		};
 	}
 
-	async setRuntimeApiKey(providerId: string, apiKey: string): Promise<void> {
+	async setRuntimeApiKey(
+		providerId: string,
+		apiKey: string,
+		refreshOptions: ModelsRefreshOptions = {},
+	): Promise<void> {
 		this.credentials.setRuntimeApiKey(providerId, apiKey);
 		const auth = new Map(this.snapshot.auth).set(providerId, { type: "api_key", source: "runtime API key" });
 		const configuredProviders = new Set(this.snapshot.configuredProviders).add(providerId);
@@ -401,12 +429,12 @@ export class ModelRuntime implements Models {
 			storedProviders,
 			available: this.snapshot.all.filter((model) => configuredProviders.has(model.provider)),
 		};
-		await this.refresh({ allowNetwork: this.allowModelNetwork });
+		await this.refresh(refreshOptions);
 	}
 
 	async removeRuntimeApiKey(providerId: string): Promise<void> {
 		this.credentials.removeRuntimeApiKey(providerId);
-		await this.refresh({ allowNetwork: this.allowModelNetwork });
+		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
 	}
 
 	listCredentials(): Promise<readonly CredentialInfo[]> {
@@ -492,7 +520,11 @@ export class ModelRuntime implements Models {
 
 	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
 		const credential = await this.models.login(providerId, type, interaction);
-		await this.refresh({ allowNetwork: this.allowModelNetwork });
+		const timeoutSignal = AbortSignal.timeout(DEFAULT_MODEL_REFRESH_TIMEOUT_MS);
+		await this.refresh({
+			allowNetwork: this.modelNetworkEnabled,
+			signal: interaction.signal ? AbortSignal.any([interaction.signal, timeoutSignal]) : timeoutSignal,
+		});
 		return credential;
 	}
 
@@ -500,20 +532,16 @@ export class ModelRuntime implements Models {
 		await this.models.logout(providerId);
 		// Reset credential-dependent compatibility projections before the unconfigured provider is skipped by refresh.
 		this.recomposeProvider(providerId);
-		await this.refresh({ allowNetwork: this.allowModelNetwork });
-	}
-
-	async reloadConfig(): Promise<void> {
-		this.config = await ModelConfig.load(this.modelsPath);
-		this.configureRadiusProviders();
-		this.rebuildProviders();
-		await this.refresh({ allowNetwork: this.allowModelNetwork });
+		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
+		this.config = await ModelConfig.load(this.modelsPath);
+		this.configureRadiusProviders();
+		this.rebuildProviders();
 		const refreshOptions = {
 			...options,
-			allowNetwork: options.allowNetwork ?? this.allowModelNetwork,
+			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
 		};
 		// Published pi-ai builds before ModelsStore returned void and accepted a provider ID.
 		// The fallback keeps source-mode CLI tests working without rebuilding workspace dependencies.

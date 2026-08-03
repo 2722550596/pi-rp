@@ -4,7 +4,7 @@
  */
 
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
@@ -19,6 +19,23 @@ type LockResult<T> = {
 };
 
 const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
+
+type AuthFileReadState = {
+	data: AuthStorageData;
+	revision?: string;
+	reload?: Promise<AuthStorageData>;
+};
+
+let sharedAuthFileReadState: { authPath: string; readState: AuthFileReadState } | undefined;
+
+function getFileRevision(path: string): string | undefined {
+	try {
+		const stats = statSync(path, { bigint: true });
+		return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
+	} catch {
+		return undefined;
+	}
+}
 
 export interface AuthStorageBackend {
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
@@ -169,16 +186,26 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
  * Credential storage backed by a JSON file.
  */
 export class AuthStorage implements CredentialStore {
-	private data: AuthStorageData = {};
 	private storage: AuthStorageBackend;
+	private authPath: string | undefined;
+	private readState: AuthFileReadState;
 
-	private constructor(storage: AuthStorageBackend) {
+	private constructor(storage: AuthStorageBackend, authPath?: string) {
 		this.storage = storage;
+		this.authPath = authPath;
+		this.readState =
+			authPath && sharedAuthFileReadState?.authPath === authPath ? sharedAuthFileReadState.readState : { data: {} };
+		if (authPath) {
+			sharedAuthFileReadState = { authPath, readState: this.readState };
+			const revision = getFileRevision(authPath);
+			if (revision !== undefined && revision === this.readState.revision) return;
+		}
 		this.reload();
 	}
 
-	static create(authPath?: string): AuthStorage {
-		return new AuthStorage(new FileAuthStorageBackend(authPath ?? join(getAgentDir(), "auth.json")));
+	static create(authPath: string = join(getAgentDir(), "auth.json")): AuthStorage {
+		const normalizedAuthPath = normalizePath(authPath);
+		return new AuthStorage(new FileAuthStorageBackend(normalizedAuthPath), normalizedAuthPath);
 	}
 
 	static fromStorage(storage: AuthStorageBackend): AuthStorage {
@@ -198,24 +225,55 @@ export class AuthStorage implements CredentialStore {
 		return JSON.parse(content) as AuthStorageData;
 	}
 
+	private updateReadState(data: AuthStorageData, revision?: string): void {
+		this.readState.data = data;
+		this.readState.revision = revision;
+	}
+
 	/**
 	 * Reload credentials from storage.
 	 */
 	reload(): void {
 		let content: string | undefined;
+		let revision: string | undefined;
 		try {
 			this.storage.withLock((current) => {
 				content = current;
+				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
 				return { result: undefined };
 			});
-			this.data = this.parseStorageData(content);
+			this.updateReadState(this.parseStorageData(content), revision);
 		} catch {
 			// Preserve the last valid in-memory snapshot.
 		}
 	}
 
+	private async reloadFromStorageAsync(): Promise<AuthStorageData> {
+		return this.storage.withLockAsync(async (content) => {
+			const currentData = this.parseStorageData(content);
+			const revision = this.authPath ? getFileRevision(this.authPath) : undefined;
+			this.updateReadState(currentData, revision);
+			return { result: currentData };
+		});
+	}
+
+	private async readLatestData(): Promise<AuthStorageData> {
+		if (this.authPath) {
+			const revision = getFileRevision(this.authPath);
+			if (revision !== undefined && revision === this.readState.revision) return this.readState.data;
+		}
+		if (!this.readState.reload) {
+			this.readState.reload = this.reloadFromStorageAsync().catch(() => this.readState.data);
+		}
+		try {
+			return await this.readState.reload;
+		} finally {
+			this.readState.reload = undefined;
+		}
+	}
+
 	async read(provider: string): Promise<Credential | undefined> {
-		const credential = this.data[provider];
+		const credential = (await this.readLatestData())[provider];
 		if (credential?.type !== "api_key") return credential;
 		if (credential.key === undefined) return credential;
 		return { ...credential, key: resolveConfigValue(credential.key, credential.env) };
@@ -225,32 +283,42 @@ export class AuthStorage implements CredentialStore {
 		provider: string,
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
 	): Promise<Credential | undefined> {
-		return this.storage.withLockAsync(async (content) => {
+		let latestData = this.readState.data;
+		let revision: string | undefined;
+		const result = await this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
 			const next = await fn(currentData[provider]);
 			if (next === undefined) {
-				this.data = currentData;
+				latestData = currentData;
+				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
 				return { result: currentData[provider] };
 			}
 
 			const merged: AuthStorageData = { ...currentData, [provider]: next };
-			this.data = merged;
+			latestData = merged;
 			return { result: next, next: JSON.stringify(merged, null, 2) };
 		});
+		this.updateReadState(latestData, revision);
+		return result;
 	}
 
 	async delete(provider: string): Promise<void> {
+		let latestData = this.readState.data;
 		await this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
 			delete currentData[provider];
-			this.data = currentData;
+			latestData = currentData;
 			return { result: undefined, next: JSON.stringify(currentData, null, 2) };
 		});
+		this.updateReadState(latestData);
 	}
 
 	/** List credential metadata without resolving configured key values. */
 	async list(): Promise<readonly CredentialInfo[]> {
-		return Object.entries(this.data).map(([providerId, credential]) => ({ providerId, type: credential.type }));
+		return Object.entries(await this.readLatestData()).map(([providerId, credential]) => ({
+			providerId,
+			type: credential.type,
+		}));
 	}
 }
 

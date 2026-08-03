@@ -11,7 +11,7 @@ The interface has four main areas:
 - **Startup header** - shortcuts, loaded context files, prompt templates, skills, and extensions
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - working directory, session name, token/cache usage, cost, context usage, and current model
+- **Footer** - working directory, session name, token/cache usage, cost, context usage, and current model. Totals include assistant responses, usage reported by tools, and summary generation.
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
@@ -245,11 +245,16 @@ pi --no-extensions -e ./my-extension.ts
 |--------|-------------|
 | `--system-prompt <text>` | Replace default prompt; context files and skills are still appended |
 | `--append-system-prompt <text>` | Append to system prompt |
+| `--ui-mode <mode>` | UI mode: `regular` (default) or experimental `fullscreen` |
 | `--verbose` | Force verbose startup |
 | `-a`, `--approve` | Trust project-local files for this run |
 | `-na`, `--no-approve` | Ignore project-local files for this run |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
+
+In `fullscreen` mode, the transcript scrolls inside the terminal viewport while queued messages, working status, extension widgets, editor, and footer remain fixed at the bottom. Mouse/trackpad input scrolls the region under the pointer; keyboard viewport actions always remain available. Inline images work in terminals that support the Kitty graphics protocol, including Kitty and Ghostty. In iTerm2 they render as text placeholders because its inline-image protocol cannot delete or crop placements during application-owned scrolling. In `regular` mode, pi uses the main screen and terminal-owned scrollback, and iTerm2 inline images continue to render normally.
+
+To use fullscreen mode by default, set **UI mode** to `fullscreen` in `/settings`. The change applies after restarting pi.
 
 ### File Arguments
 

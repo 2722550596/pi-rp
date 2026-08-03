@@ -44,6 +44,8 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"kimi-coding": "kimi-for-coding",
 	"cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
 	"cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
+	"qwen-token-plan": "qwen3.7-max",
+	"qwen-token-plan-cn": "qwen3.7-max",
 	xiaomi: "mimo-v2.5-pro",
 	"xiaomi-token-plan-cn": "mimo-v2.5-pro",
 	"xiaomi-token-plan-ams": "mimo-v2.5-pro",
@@ -258,6 +260,7 @@ export function parseModelPattern(
  */
 export interface ModelScopeDiagnostic {
 	type: "warning";
+	code: "no-match" | "invalid-thinking-level";
 	message: string;
 	pattern: string;
 }
@@ -291,6 +294,14 @@ export async function resolveModelScopeWithDiagnostics(
 				}
 			}
 
+			const exactMatch = findExactModelReferenceMatch(globPattern, availableModels);
+			if (exactMatch) {
+				if (!scopedModels.find((sm) => modelsAreEqual(sm.model, exactMatch))) {
+					scopedModels.push({ model: exactMatch, thinkingLevel });
+				}
+				continue;
+			}
+
 			// Match against "provider/modelId" format OR just model ID
 			// This allows "*sonnet*" to match without requiring "anthropic/*sonnet*"
 			const matchingModels = availableModels.filter((m) => {
@@ -299,7 +310,12 @@ export async function resolveModelScopeWithDiagnostics(
 			});
 
 			if (matchingModels.length === 0) {
-				diagnostics.push({ type: "warning", message: `No models match pattern "${pattern}"`, pattern });
+				diagnostics.push({
+					type: "warning",
+					code: "no-match",
+					message: `No models match pattern "${pattern}"`,
+					pattern,
+				});
 				continue;
 			}
 
@@ -314,11 +330,16 @@ export async function resolveModelScopeWithDiagnostics(
 		const { model, thinkingLevel, warning } = parseModelPattern(pattern, availableModels);
 
 		if (warning) {
-			diagnostics.push({ type: "warning", message: warning, pattern });
+			diagnostics.push({ type: "warning", code: "invalid-thinking-level", message: warning, pattern });
 		}
 
 		if (!model) {
-			diagnostics.push({ type: "warning", message: `No models match pattern "${pattern}"`, pattern });
+			diagnostics.push({
+				type: "warning",
+				code: "no-match",
+				message: `No models match pattern "${pattern}"`,
+				pattern,
+			});
 			continue;
 		}
 
