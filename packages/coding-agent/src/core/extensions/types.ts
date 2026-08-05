@@ -1608,15 +1608,9 @@ export type GetStateHandler = () => Record<string, unknown>;
 
 export type SubscribeStateHandler = (handler: (snapshot: Record<string, unknown>) => void) => () => void;
 
-export type UpdateStateResult =
-	| { ok: true; path: string; newValue?: unknown }
-	| { ok: false; reason: string };
+export type UpdateStateResult = { ok: true; path: string; newValue?: unknown } | { ok: false; reason: string };
 
-export type UpdateStateHandler = (
-	path: string,
-	op: "add" | "remove" | "replace",
-	value?: unknown,
-) => UpdateStateResult;
+export type UpdateStateHandler = (path: string, op: "add" | "remove" | "replace", value?: unknown) => UpdateStateResult;
 
 /**
  * Shared state created by loader, used during registration and runtime.
