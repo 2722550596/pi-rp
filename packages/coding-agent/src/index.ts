@@ -22,6 +22,7 @@ export {
 	type PromptOptions,
 	parseSkillBlock,
 	type SessionStats,
+	type SetActivePresetResult,
 } from "./core/agent-session.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 // Compaction

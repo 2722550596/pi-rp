@@ -5598,10 +5598,23 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (this.session.setActivePreset(arg)) {
-			this.showStatus(`Active prompt preset: ${arg}`);
-		} else {
+		const result = await this.session.setActivePreset(arg);
+		if (!result.ok) {
 			this.showError(`Prompt preset "${arg}" not found. Use /preset to see available presets.`);
+			return;
+		}
+
+		this.footer.invalidate();
+		this.updateEditorBorderColor();
+
+		if (result.model) {
+			this.showStatus(`Active prompt preset: ${arg} · Model: ${result.model.id}`);
+		} else {
+			this.showStatus(`Active prompt preset: ${arg}`);
+		}
+
+		if (result.error) {
+			this.showError(result.error);
 		}
 	}
 

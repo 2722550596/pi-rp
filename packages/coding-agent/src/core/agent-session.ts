@@ -32,6 +32,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
 import type {
+	Api,
 	AssistantMessage,
 	AuthResult,
 	ImageContent,
@@ -106,6 +107,7 @@ import {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
+import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
 import type {
@@ -270,7 +272,18 @@ export interface PromptOptions {
 	preflightResult?: (success: boolean) => void;
 }
 
+/** Result from setActivePreset() */
+export interface SetActivePresetResult {
+	/** true if preset found and activated; false if preset not found */
+	ok: boolean;
+	/** Set if the preset activated but its declared model failed to apply */
+	error?: string;
+	/** Set to the active model when the preset declared one and it is now active */
+	model?: Model<Api>;
+}
+
 /** Result from cycleModel() */
+
 export interface ModelCycleResult {
 	model: Model<any>;
 	thinkingLevel: ThinkingLevel;
@@ -1259,24 +1272,50 @@ export class AgentSession {
 	setStrictMode(enabled: boolean): void {
 		this._schemaValidator.setStrict(enabled);
 	}
-	/** Set the active prompt preset by ID. Persists to session. Returns false if not found. */
-	setActivePreset(id: string): boolean {
+	/**
+	 * Set the active prompt preset by ID. Persists to session.
+	 * If the preset declares a model, switches to it (failures are reported
+	 * via the result's `error` without failing the preset switch).
+	 */
+	async setActivePreset(id: string): Promise<SetActivePresetResult> {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
 			this._restoreToolPolicy();
 			this.sessionManager.appendPresetChange(id);
 			this.settingsManager.setDefaultPreset(id);
 			// _restoreToolPolicy calls setActiveToolsByName which rebuilds the prompt
-			return true;
+			return { ok: true };
 		}
 		const found = this._loadedPresets.find((p) => p.preset.id === id);
-		if (!found) return false;
+		if (!found) return { ok: false };
 		this._activePreset = found.preset;
 		this._syncActiveToolPolicy();
 		this.sessionManager.appendPresetChange(id);
 		this.settingsManager.setDefaultPreset(id);
 		// _syncActiveToolPolicy calls setActiveToolsByName which rebuilds the prompt
-		return true;
+
+		const modelRef = found.preset.model;
+		if (!modelRef) return { ok: true };
+
+		const available = [...this._modelRuntime.getModels()];
+		const model = findExactModelReferenceMatch(modelRef, available);
+		if (!model) {
+			return { ok: true, error: `Preset model "${modelRef}" not found among available models.` };
+		}
+
+		if (this.model && modelsAreEqual(this.model, model)) {
+			return { ok: true, model };
+		}
+
+		try {
+			await this.setModel(model);
+			return { ok: true, model };
+		} catch (error) {
+			return {
+				ok: true,
+				error: `Failed to switch to preset model "${modelRef}": ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
 	}
 
 	private _syncActiveToolPolicy(): void {

@@ -164,6 +164,8 @@ export interface PromptPreset {
 	name?: string;
 	description?: string;
 	autoActivate?: boolean;
+	/** Model to switch to when this preset is activated, in "provider/model" format. */
+	model?: string;
 	mode?: PromptPresetMode;
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;

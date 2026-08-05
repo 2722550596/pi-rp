@@ -166,6 +166,9 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 	if (typeof obj.name === "string") preset.name = obj.name;
 	if (typeof obj.description === "string") preset.description = obj.description;
 	if (obj.autoActivate === false) preset.autoActivate = false;
+	if (typeof obj.model === "string" && obj.model.trim().length > 0) {
+		preset.model = obj.model;
+	}
 	if (variables) preset.variables = variables;
 	if (isPlainObject(obj.defaults)) {
 		const d = obj.defaults as Record<string, unknown>;
