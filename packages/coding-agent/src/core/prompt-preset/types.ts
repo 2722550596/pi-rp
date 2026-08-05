@@ -31,7 +31,7 @@ export type PromptPresetSlot =
 
 export type PromptResourcePolicy = { allow?: string[]; deny?: never } | { allow?: never; deny?: string[] };
 
-export type PromptPresetSlotFormat = "xml" | "json" | "plain";
+export type PromptPresetSlotFormat = "xml" | "json" | "plain" | "yaml";
 
 export interface PromptPresetBaseItem {
 	kind: "block" | "slot";
@@ -61,7 +61,7 @@ export interface VariablesSlotOptions {
 }
 
 export interface PromptPresetSlotOptions {
-	// Shared: tools, tool-guidelines, skills, project-context, variables
+	// Shared: tools, tool-guidelines, skills, project-context, variables, state
 	format?: PromptPresetSlotFormat;
 
 	// tools slot
@@ -79,6 +79,10 @@ export interface PromptPresetSlotOptions {
 
 	// variables slot
 	variables?: VariablesSlotOptions;
+
+	// state slot
+	/** Drop the top-level namespace prefix in rendered paths (key-value/yaml/json). */
+	omitNamespace?: boolean;
 
 	// chat-history slot
 	/** Keep only the most recent N messages (after other filtering). */

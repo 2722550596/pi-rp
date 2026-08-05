@@ -305,6 +305,7 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 	if (typeof options.format === "string") result.format = options.format;
 	if (typeof options.heading === "string") result.heading = options.heading;
 	if (options.includePiDefaultGuidelines === true) result.includePiDefaultGuidelines = true;
+	if (options.omitNamespace === true) result.omitNamespace = true;
 	if (options.onlyWithSnippets === false) result.onlyWithSnippets = false;
 	if (options.requireReadTool === false) result.requireReadTool = false;
 	if (options.includeTime === true) result.includeTime = true;
@@ -325,6 +326,7 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 		"onlyWithSnippets",
 		"requireReadTool",
 		"includeTime",
+		"omitNamespace",
 		"omitLatestUser",
 		"maxMessages",
 		"maxChars",

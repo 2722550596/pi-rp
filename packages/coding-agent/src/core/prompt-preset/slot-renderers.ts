@@ -1,3 +1,4 @@
+import { stringify } from "yaml";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../../config.ts";
 import { formatSkillsForPrompt } from "../skills.ts";
 import { applyResourcePolicy } from "./policy.ts";
@@ -278,15 +279,36 @@ registerSlot(
 		name: "state",
 		description: "Current conversation state.",
 		render: (ctx: SlotRenderContext): string => {
-			const state = ctx.runtime.state;
-			if (!state || Object.keys(state).length === 0) return "";
-			const format = ctx.item.options?.format ?? "key-value";
+			const rawState = ctx.runtime.state;
+			if (!rawState || Object.keys(rawState).length === 0) return "";
+			const options = ctx.item.options ?? {};
+			const state = options.omitNamespace === true ? unwrapNamespaces(rawState) : rawState;
+			const format = options.format ?? "key-value";
 			if (format === "json") return JSON.stringify(state, null, 2);
+			if (format === "yaml") return stringify(state);
 			return formatStateKeyValue(state);
 		},
 	},
 	true,
 );
+
+/**
+ * Drop the top-level namespace prefix by merging each object-typed namespace's
+ * entries into the root. Scalar top-level values keep their key (there is no
+ * namespace level to omit). Identical inner keys from different namespaces
+ * overwrite each other (last namespace wins).
+ */
+function unwrapNamespaces(state: Record<string, unknown>): Record<string, unknown> {
+	const merged: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(state)) {
+		if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+			Object.assign(merged, value);
+		} else {
+			merged[key] = value;
+		}
+	}
+	return merged;
+}
 
 /** Recursively format state as indented key-value text. */
 function formatStateKeyValue(obj: Record<string, unknown>, prefix = "", depth = 0, maxDepth = 5): string {

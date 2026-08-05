@@ -193,7 +193,8 @@ Renders the current conversation state (game stats, inventory, flags).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `format` | `"key-value"`, `"json"` | `"key-value"` | Output format. |
+| `format` | `"key-value"`, `"json"`, `"yaml"` | `"key-value"` | Output format. `"yaml"` renders a nested tree so values under the same key share one parent line; `"json"` renders pretty-printed JSON. |
+| `omitNamespace` | boolean | `false` | Drop the top-level namespace prefix: `magnolia.character.hp` renders as `character.hp`. Namespace contents are merged into the root, so identical inner keys from different namespaces overwrite each other (last one wins) — enable only when namespaces cannot collide (e.g. a single active schema). |
 
 ## Macros
 
