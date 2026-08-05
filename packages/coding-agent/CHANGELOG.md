@@ -10,7 +10,7 @@
 - **Prompt preset system** — built-in prompt stack compiler, slot/macro engine, and JSON preset files under `.pi/prompt-presets/`. Presets can replace, append to, or prepend the default system prompt and control message layout. Includes `/preset list`, `/preset use <id|none>`, `/preset reload`, and `/prompt` commands.
 - **State validation system** — schema-based structural constraints (TypeBox/JSON Schema) and custom validators (`.ts` files) for conversation state. Schemas are loadable/unloadable runtime constraints using namespaces, recorded as `schema_change` session entries. Includes `/schema list`, `/schema load <id>`, `/schema unload <ns>`, `/schema strict [off]` commands. Schema files in `.pi/schemas/` or `~/.pi/agent/schemas/`; custom validators in `.pi/validators/` or `~/.pi/agent/validators/`.
 - Added optional `model` field (`provider/model` format) to prompt preset files. Using `/preset <id>` now switches to the preset's declared model when present; missing or unresolvable models are reported without failing the preset switch.
-- Added `yaml` output format and `omitNamespace` option to the built-in `state` slot.
+- Added `yaml` output format, `omitNamespace`, and `allowNamespace` options to the built-in `state` slot.
 
 - Fixed persisted sessions being read and parsed twice when opened, reducing startup latency for large sessions ([#6793](https://github.com/earendil-works/pi/issues/6793)).
 - Fixed slow Ctrl+G external-editor startup when the system temporary directory contains many entries ([#6774](https://github.com/earendil-works/pi/issues/6774)).

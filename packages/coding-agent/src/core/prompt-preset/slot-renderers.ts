@@ -282,7 +282,9 @@ registerSlot(
 			const rawState = ctx.runtime.state;
 			if (!rawState || Object.keys(rawState).length === 0) return "";
 			const options = ctx.item.options ?? {};
-			const state = options.omitNamespace === true ? unwrapNamespaces(rawState) : rawState;
+			const filtered = filterNamespaces(rawState, options.allowNamespace);
+			if (Object.keys(filtered).length === 0) return "";
+			const state = options.omitNamespace === true ? unwrapNamespaces(filtered) : filtered;
 			const format = options.format ?? "key-value";
 			if (format === "json") return JSON.stringify(state, null, 2);
 			if (format === "yaml") return stringify(state);
@@ -291,6 +293,21 @@ registerSlot(
 	},
 	true,
 );
+
+/**
+ * Keep only the top-level namespaces listed in `allow`. Undefined or an empty
+ * array means no filtering (all namespaces render), matching chat-history
+ * `roles` semantics. Namespaces not listed are dropped.
+ */
+function filterNamespaces(state: Record<string, unknown>, allow?: string[]): Record<string, unknown> {
+	if (!allow || allow.length === 0) return state;
+	const allowed = new Set(allow);
+	const filtered: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(state)) {
+		if (allowed.has(key)) filtered[key] = value;
+	}
+	return filtered;
+}
 
 /**
  * Drop the top-level namespace prefix by merging each object-typed namespace's

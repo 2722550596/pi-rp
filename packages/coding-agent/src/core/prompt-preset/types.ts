@@ -81,6 +81,8 @@ export interface PromptPresetSlotOptions {
 	variables?: VariablesSlotOptions;
 
 	// state slot
+	/** Only render these top-level namespaces; empty/unset renders all. */
+	allowNamespace?: string[];
 	/** Drop the top-level namespace prefix in rendered paths (key-value/yaml/json). */
 	omitNamespace?: boolean;
 

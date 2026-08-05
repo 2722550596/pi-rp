@@ -58,4 +58,30 @@ describe("state slot", () => {
 		const out = renderState({ magnolia: { hp: 50 }, misc: 5 }, { format: "yaml", omitNamespace: true });
 		expect(out).toBe("hp: 50\nmisc: 5\n");
 	});
+
+	it("renders only listed namespaces with allowNamespace", () => {
+		const out = renderState(
+			{ magnolia: { character: { hp: 50 } }, flags: { door_open: true }, misc: 5 },
+			{ allowNamespace: ["magnolia", "misc"] },
+		);
+		expect(out).toBe("magnolia.character.hp: 50\nmisc: 5");
+	});
+
+	it("combines allowNamespace with omitNamespace", () => {
+		const out = renderState(
+			{ magnolia: { character: { hp: 50 } }, flags: { door_open: true } },
+			{ format: "yaml", allowNamespace: ["magnolia"], omitNamespace: true },
+		);
+		expect(out).toBe("character:\n  hp: 50\n");
+	});
+
+	it("renders nothing when allowNamespace matches no namespaces", () => {
+		const out = renderState({ magnolia: { character: { hp: 50 } } }, { allowNamespace: ["missing"] });
+		expect(out).toBe("");
+	});
+
+	it("treats an empty allowNamespace as no filtering", () => {
+		const out = renderState({ magnolia: { hp: 50 } }, { allowNamespace: [] });
+		expect(out).toBe("magnolia.hp: 50");
+	});
 });
