@@ -199,6 +199,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setThinkingLevel: notInitialized,
 		getState: notInitialized,
 		subscribeState: notInitialized,
+		updateState: notInitialized,
 		registerSlot: (definition) => registerCustomSlot(definition, false),
 		registerMacro: (definition) => registerCustomMacro(definition, false),
 		flagValues: new Map(),
@@ -398,9 +399,14 @@ function createExtensionAPI(
 			return runtime.getState();
 		},
 
-		onStateChange(handler) {
+		onStateChange(handler: (state: Record<string, unknown>) => void) {
 			runtime.assertActive();
 			return runtime.subscribeState(handler);
+		},
+
+		updateState(path, op, value) {
+			runtime.assertActive();
+			return runtime.updateState(path, op, value);
 		},
 
 		registerProvider(providerOrName: Provider | string, config?: ProviderConfig) {

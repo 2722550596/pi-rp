@@ -339,6 +339,7 @@ export class ExtensionRunner {
 		this.runtime.getCommands = actions.getCommands;
 		this.runtime.getState = actions.getState;
 		this.runtime.subscribeState = actions.subscribeState;
+		this.runtime.updateState = actions.updateState;
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;

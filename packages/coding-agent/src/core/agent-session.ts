@@ -56,7 +56,7 @@ import { getAgentDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { type LoadedSchemaDef, loadCustomValidators, loadSchemaDefs } from "../state/schema-loader.ts";
 import { type CustomValidator, SchemaValidator } from "../state/schema-validator.ts";
-import { StateManager } from "../state/state-manager.ts";
+import { type JsonValue, StateManager } from "../state/state-manager.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
@@ -2941,6 +2941,21 @@ export class AgentSession {
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
 				getState: () => this._stateManager.snapshot(),
 				subscribeState: (handler) => this._stateManager.subscribe(handler),
+				updateState: (path, op, value) => {
+					const validation = this._schemaValidator.validate(
+						path,
+						op,
+						value as JsonValue,
+						this._stateManager.snapshot() as Record<string, JsonValue>,
+					);
+					if (!validation.ok) {
+						return { ok: false, reason: validation.reason ?? "validation failed" };
+					}
+					const effectiveValue = validation.correctedValue ?? value;
+					const result = this._stateManager.apply(path, op, effectiveValue as JsonValue);
+					this.sessionManager.appendState(this._stateManager.snapshot());
+					return { ok: true, path: result.path, newValue: result.newValue };
+				},
 			},
 			{
 				getModel: () => this.model,

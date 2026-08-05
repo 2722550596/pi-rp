@@ -1334,7 +1334,13 @@ export interface ExtensionAPI {
 	 * Subscribe to state changes. The handler receives the full state snapshot
 	 * after every mutation. Returns an unsubscribe function.
 	 */
-	onStateChange(handler: (state: Record<string, unknown>) => void): () => void;
+
+	/**
+	 * Apply one state mutation and persist it to the session, exactly like the
+	 * state_update tool (schema validation + custom validators included).
+	 * Returns ok:false with a reason when validation rejects the write.
+	 */
+	updateState(path: string, op: "add" | "remove" | "replace", value?: unknown): UpdateStateResult;
 
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
@@ -1602,6 +1608,16 @@ export type GetStateHandler = () => Record<string, unknown>;
 
 export type SubscribeStateHandler = (handler: (snapshot: Record<string, unknown>) => void) => () => void;
 
+export type UpdateStateResult =
+	| { ok: true; path: string; newValue?: unknown }
+	| { ok: false; reason: string };
+
+export type UpdateStateHandler = (
+	path: string,
+	op: "add" | "remove" | "replace",
+	value?: unknown,
+) => UpdateStateResult;
+
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
@@ -1634,6 +1650,7 @@ export interface ExtensionRuntimeState {
 	setThinkingLevel: SetThinkingLevelHandler;
 	getState: GetStateHandler;
 	subscribeState: SubscribeStateHandler;
+	updateState: UpdateStateHandler;
 }
 
 /**
@@ -1657,6 +1674,7 @@ export interface ExtensionActions {
 	setThinkingLevel: SetThinkingLevelHandler;
 	getState: GetStateHandler;
 	subscribeState: SubscribeStateHandler;
+	updateState: UpdateStateHandler;
 }
 
 /**

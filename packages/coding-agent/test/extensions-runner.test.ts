@@ -89,6 +89,7 @@ describe("ExtensionRunner", () => {
 		setThinkingLevel: () => {},
 		getState: () => ({}),
 		subscribeState: () => () => {},
+		updateState: () => ({ ok: false, reason: "not implemented in test" }),
 	};
 
 	const extensionContextActions: ExtensionContextActions = {
