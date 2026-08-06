@@ -129,11 +129,11 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import { createSubagentProfilesToolDefinition, createSubagentToolDefinition } from "./subagent/extension.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createGetStateToolDefinition, createStateUpdateToolDefinition } from "./tools/state-update.ts";
-import { createSubagentProfilesToolDefinition, createSubagentToolDefinition } from "./subagent/extension.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 // ============================================================================
@@ -603,9 +603,7 @@ export class AgentSession {
 			const previousContext = previousSnapshot?.context ?? turn.context;
 
 			const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
-			const sysPrompt = hasCustomPrompt
-				? (this._systemPromptOverride ?? this._baseSystemPrompt)
-				: "";
+			const sysPrompt = hasCustomPrompt ? (this._systemPromptOverride ?? this._baseSystemPrompt) : "";
 			return {
 				...previousSnapshot,
 				context: {

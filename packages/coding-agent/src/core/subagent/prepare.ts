@@ -1,15 +1,15 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
-import type { ModelRuntime } from "../model-runtime.ts";
-import { findExactModelReferenceMatch } from "../model-resolver.ts";
-import type { PromptPreset, PromptRuntime } from "../prompt-preset/index.ts";
-import { compileMessages } from "../prompt-preset/compiler.ts";
-import { loadPromptPresets, isDisabledPromptPresetId } from "../prompt-preset/loader.ts";
-import { getDefaultSessionDir } from "../session-manager.ts";
 import { DEFAULT_THINKING_LEVEL } from "../defaults.ts";
+import { findExactModelReferenceMatch } from "../model-resolver.ts";
+import type { ModelRuntime } from "../model-runtime.ts";
+import { compileMessages } from "../prompt-preset/compiler.ts";
+import type { PromptPreset, PromptRuntime } from "../prompt-preset/index.ts";
 import { defaultPreset } from "../prompt-preset/index.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { isDisabledPromptPresetId, loadPromptPresets } from "../prompt-preset/loader.ts";
+import { getDefaultSessionDir } from "../session-manager.ts";
 import type { Skill } from "../skills.ts";
+import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 
 // =========================================================================
 // Types
@@ -65,9 +65,7 @@ export type PrepareSubagentResult = SubagentPreparation | PrepareSubagentError;
  * This does NOT create an AgentSession - it calls compileMessages directly
  * with a minimal PromptRuntime, avoiding extension/tool/loader overhead.
  */
-export function prepareSubagentConversation(
-	options: PrepareSubagentOptions,
-): PrepareSubagentResult {
+export function prepareSubagentConversation(options: PrepareSubagentOptions): PrepareSubagentResult {
 	const { cwd, profileId, task, modelRuntime, modelRef, thinkingLevel } = options;
 
 	// Load presets
@@ -168,8 +166,6 @@ export function prepareSubagentConversation(
 }
 
 /** Check if a preparation result is an error */
-export function isPrepareError(
-	result: PrepareSubagentResult,
-): result is PrepareSubagentError {
+export function isPrepareError(result: PrepareSubagentResult): result is PrepareSubagentError {
 	return "ok" in result && result.ok === false;
 }

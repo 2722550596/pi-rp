@@ -1,9 +1,9 @@
 import { Type } from "typebox";
-import type { ToolDefinition } from "../extensions/types.ts";
 import type { AgentSession } from "../agent-session.ts";
-import { prepareSubagentConversation, isPrepareError } from "./prepare.ts";
-import { runSubagent } from "./run.ts";
+import type { ToolDefinition } from "../extensions/types.ts";
 import type { LoadedPromptPreset } from "../prompt-preset/index.ts";
+import { isPrepareError, prepareSubagentConversation } from "./prepare.ts";
+import { runSubagent } from "./run.ts";
 
 // =========================================================================
 // Helpers
@@ -30,9 +30,7 @@ const profilesToolParams = Type.Object({});
  * Like state_update/get_state, this is a core tool registered in _buildRuntime.
  * The session is captured via closure (same pattern as createStateUpdateToolDefinition).
  */
-export function createSubagentProfilesToolDefinition(
-	session: AgentSession,
-): ToolDefinition<typeof profilesToolParams> {
+export function createSubagentProfilesToolDefinition(session: AgentSession): ToolDefinition<typeof profilesToolParams> {
 	return {
 		name: "subagent_profiles",
 		label: "Subagent Profiles",
@@ -78,9 +76,7 @@ const subagentToolParams = Type.Object({
  * Create the subagent tool definition.
  * Registered in _buildRuntime alongside state_update/get_state.
  */
-export function createSubagentToolDefinition(
-	session: AgentSession,
-): ToolDefinition<typeof subagentToolParams> {
+export function createSubagentToolDefinition(session: AgentSession): ToolDefinition<typeof subagentToolParams> {
 	return {
 		name: "subagent",
 		label: "Subagent",

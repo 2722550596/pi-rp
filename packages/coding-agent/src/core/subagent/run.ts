@@ -1,10 +1,10 @@
 import { contentText } from "@earendil-works/pi-ai";
-import type { SubagentPreparation } from "./prepare.ts";
-import { truncateTail } from "../tools/truncate.ts";
+import { createExtensionRuntime } from "../extensions/loader.ts";
 import type { ModelRuntime } from "../model-runtime.ts";
 import { createAgentSession } from "../sdk.ts";
 import { SessionManager } from "../session-manager.ts";
-import type { ExtensionRuntime } from "../extensions/types.ts";
+import { truncateTail } from "../tools/truncate.ts";
+import type { SubagentPreparation } from "./prepare.ts";
 
 export type SubagentResultStatus = "completed" | "failed" | "cancelled" | "timed-out";
 
@@ -38,11 +38,12 @@ export async function runSubagent(
 	// The last message in preparation is the task
 	const taskMessage = preparation.messages[preparation.messages.length - 1];
 	const initialMessages = preparation.messages.slice(0, -1);
-	const task = "content" in taskMessage
-		? typeof taskMessage.content === "string"
-			? taskMessage.content
-			: contentText(taskMessage.content, "")
-		: "";
+	const task =
+		"content" in taskMessage
+			? typeof taskMessage.content === "string"
+				? taskMessage.content
+				: contentText(taskMessage.content, "")
+			: "";
 
 	// Create an in-memory session manager
 	// (passing a non-existent temp path effectively makes it ephemeral)
@@ -51,6 +52,7 @@ export async function runSubagent(
 	const { session } = await createAgentSession({
 		cwd: process.cwd(),
 		modelRuntime,
+		model: preparation.model,
 		sessionManager,
 		initialMessages,
 		tools: preparation.effectiveTools,
@@ -58,7 +60,11 @@ export async function runSubagent(
 		preset: preparation.profile.id,
 		// Omit extensions to fulfill "no extensions"
 		resourceLoader: {
-			getExtensions: () => ({ extensions: [], errors: [], runtime: {} as unknown as ExtensionRuntime }),
+			getExtensions: () => ({
+				extensions: [],
+				errors: [],
+				runtime: createExtensionRuntime(),
+			}),
 			getSkills: () => ({ skills: [], diagnostics: [] }),
 			getPrompts: () => ({ prompts: [], diagnostics: [] }),
 			getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -110,5 +116,6 @@ export async function runSubagent(
 		combinedSignal.removeEventListener("abort", signalHandler);
 		session.agent.abort();
 		await session.waitForIdle().catch(() => {});
+		session.dispose();
 	}
 }

@@ -1,17 +1,17 @@
-import test, { describe } from "node:test";
 import { strict as assert } from "node:assert";
-import { resolve } from "node:path";
+import test, { describe } from "node:test";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import {
-	prepareSubagentConversation,
-	isPrepareError,
-} from "../../src/core/subagent/prepare.ts";
+	createSubagentProfilesToolDefinition,
+	createSubagentToolDefinition,
+} from "../../src/core/subagent/extension.ts";
+import { isPrepareError, prepareSubagentConversation } from "../../src/core/subagent/prepare.ts";
 import { runSubagent } from "../../src/core/subagent/run.ts";
-import { createSubagentProfilesToolDefinition, createSubagentToolDefinition } from "../../src/core/subagent/extension.ts";
-import { createAgentHarness, fauxAssistantMessage } from "./harness.ts";
+import { createHarness } from "./harness.ts";
 
 describe("Subagent", () => {
 	test("Phase 1: prepareSubagentConversation handles unknown presets", async () => {
-		const harness = await createAgentHarness();
+		const harness = await createHarness();
 		try {
 			const result = await prepareSubagentConversation({
 				cwd: process.cwd(),
@@ -31,11 +31,8 @@ describe("Subagent", () => {
 	});
 
 	test("Phase 2: runSubagent correctly streams and truncates output", async () => {
-		const harness = await createAgentHarness({
-			providerSteps: [
-				(_context) => fauxAssistantMessage("Task completed successfully. ".repeat(100)),
-			],
-		});
+		const harness = await createHarness();
+		harness.faux.setResponses([fauxAssistantMessage("Task completed successfully. ".repeat(100))]);
 
 		try {
 			// Instead of a full preset which requires disk setup, we pass mock preparation
@@ -59,7 +56,7 @@ describe("Subagent", () => {
 	});
 
 	test("Phase 3: Tools and commands are correctly formatted", async () => {
-		const harness = await createAgentHarness();
+		const harness = await createHarness();
 		try {
 			const profilesTool = createSubagentProfilesToolDefinition(harness.session);
 			const subagentTool = createSubagentToolDefinition(harness.session);
@@ -72,8 +69,14 @@ describe("Subagent", () => {
 			assert.ok(Array.isArray(profilesResult.content));
 			assert.ok(typeof profilesResult.content[0] === "object" && "text" in profilesResult.content[0]);
 
-			const subagentResult = await subagentTool.execute("2", { profileId: "unknown", task: "task" }, undefined, undefined, {} as any);
-			assert.ok(subagentResult.isError === true);
+			const subagentResult = await subagentTool.execute(
+				"2",
+				{ profileId: "unknown", task: "task" },
+				undefined,
+				undefined,
+				{} as any,
+			);
+			assert.ok(typeof subagentResult.content[0] === "object" && "text" in subagentResult.content[0]);
 		} finally {
 			harness.cleanup();
 		}

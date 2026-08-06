@@ -5629,11 +5629,9 @@ export class InteractiveMode {
 
 		// /subagent or /subagent list — list delegatable presets
 		if (!arg || arg === "list") {
-			const presets = this.session
-				.getAllPresets()
-				.filter((p) => p.preset.delegatable === true);
+			const presets = this.session.getAllPresets().filter((p) => p.preset.delegatable === true);
 			if (presets.length === 0) {
-				this.showStatus("No delegatable subagent profiles found. Add \"delegatable\": true to a preset.");
+				this.showStatus('No delegatable subagent profiles found. Add "delegatable": true to a preset.');
 				return;
 			}
 			const lines = presets.map((p) => {
@@ -5662,9 +5660,7 @@ export class InteractiveMode {
 		}
 
 		this.showStatus(`Running subagent "${profileId}"...`);
-		const { prepareSubagentConversation, isPrepareError, runSubagent } = await import(
-			"../../core/subagent/index.ts"
-		);
+		const { prepareSubagentConversation, isPrepareError, runSubagent } = await import("../../core/subagent/index.ts");
 		const preparation = await prepareSubagentConversation({
 			cwd: this.session.sessionManager.getCwd(),
 			profileId,

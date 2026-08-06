@@ -30,7 +30,7 @@
 - 删除 `mode` 字段：types.ts:9、175；loader.ts:355-358（normalizeMode）+ 构造点；index.ts re-export；
   docs/prompt-presets.md:43。出生即死（2b5b742c6f 引入），零消费、零用户、零测试。
 - 修正 docs 谎言：prompt-presets.md:168 声称无 chat-history slot 时"conversation appended at the end"，
-  实际 compiler.ts:53-56/62 不注入任何历史。此语义直接决定 Phase 4 的继承约束。
+  实际 compiler.ts:53-56/62 不注入任何历史。此语义直接决定 Phase 4 的继承约束。（修订：保持不注入任何历史，修订文档即可）
 - 不动 `autoActivate`（loader.ts:73 有真实消费）。
 
 ## Phase 1 — 核心准备模块（packages/coding-agent/src/core/subagent/）
@@ -80,7 +80,7 @@
 - 硬约束：**preset 必须显式声明 chat-history slot 才有继承**（无 slot 时 compiler 不注入任何历史）——
   继承由 preset 声明 + 限界，调用方只决定 seed 什么。
 - 已知小改：`{{lastUserMessage}}` 在 prep 编译恒空（agent-session.ts:1353 硬编码 undefined），
-  继承场景如需支持，prep 时把 seed 历史末条 user 传入。
+  继承场景如需支持，prep 时把 seed 历史末条 user 传入。（修订：无需支持，传空即可）
 - 审批摘要显示"继承 N 条 / X KiB"而非全文。
 
 ## Verification（每阶段）
@@ -93,11 +93,3 @@
 - Phase 3：`/subagent list` 只列 delegatable；`subagent` 工具对未授权 preset 失败；
   print 模式（无 UI）不静默失败
 - Phase 4（若做）：seed 后编译数组含历史且受 slot 限长约束
-
-## 已砍清单（旧版有、新版无）
-
-- 指纹（conversationFingerprint / executionFingerprint / stableStringify / 防御性校验）
-- 子进程（spawn pi child、`--messages` 文件协议、session 文件报告解析、TERM→KILL 升级）
-- rpc backend（Phase 4 旧版，双通道冗余）
-- 强制审批（`hasUI === false → cancelled`）
-- base64 掩码、8MiB/512KiB 文件界、JSONL 半行容错
