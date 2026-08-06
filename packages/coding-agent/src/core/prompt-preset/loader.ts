@@ -158,11 +158,10 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 		return { schemaVersion: 1, id, items: [] };
 	}
 
-	const mode = normalizeMode(obj.mode);
 	const variables = normalizeStringRecord(obj.variables);
 	const items = normalizeItems(obj.items, diagnostics);
 
-	const preset: PromptPreset = { schemaVersion: 1, id, mode, items };
+	const preset: PromptPreset = { schemaVersion: 1, id, items };
 	if (typeof obj.name === "string") preset.name = obj.name;
 	if (typeof obj.description === "string") preset.description = obj.description;
 	if (obj.autoActivate === false) preset.autoActivate = false;
@@ -351,11 +350,6 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 // =========================================================================
 // Helpers
 // =========================================================================
-
-function normalizeMode(raw: unknown): "replace" | "append" | "prepend" | undefined {
-	if (raw === "append" || raw === "prepend") return raw;
-	return "replace";
-}
 
 function normalizeId(value: unknown, fallback: string): string {
 	if (typeof value === "string" && value.trim().length > 0) return value.trim();

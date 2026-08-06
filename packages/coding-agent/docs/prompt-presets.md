@@ -40,7 +40,6 @@ Switch to it with `/preset simple`. Verify with `/prompt`.
 | `name` | string | no | Human-readable name. |
 | `description` | string | no | Shown by `/preset` autocomplete. |
 | `autoActivate` | boolean | no | Auto-select this preset if it has no errors. Default `true`. |
-| `mode` | `"replace"`, `"append"`, `"prepend"` | no | How this preset merges with Pi's base. `"replace"` discards the default. |
 | `defaults` | object | no | Default slot options (see [Defaults](#defaults)). |
 | `tools` | object | no | Filter tool visibility (see [Resource Policies](#resource-policies)). |
 | `skills` | object | no | Filter skill visibility (see [Resource Policies](#resource-policies)). |

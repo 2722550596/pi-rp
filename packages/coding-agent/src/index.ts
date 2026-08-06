@@ -208,7 +208,6 @@ export type {
 	PromptPresetDiagnostic,
 	PromptPresetDiagnosticLevel,
 	PromptPresetItem,
-	PromptPresetMode,
 	PromptPresetRole,
 	PromptPresetSlot,
 	PromptPresetSlotItem,

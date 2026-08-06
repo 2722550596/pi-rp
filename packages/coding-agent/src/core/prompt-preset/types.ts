@@ -6,8 +6,6 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 // Prompt Stack
 // =========================================================================
 
-export type PromptPresetMode = "replace" | "append" | "prepend";
-
 export type PromptPresetRole = "system" | "user" | "assistant" | "custom";
 
 export type PromptPresetSlot =
@@ -172,7 +170,6 @@ export interface PromptPreset {
 	autoActivate?: boolean;
 	/** Model to switch to when this preset is activated, in "provider/model" format. */
 	model?: string;
-	mode?: PromptPresetMode;
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;
