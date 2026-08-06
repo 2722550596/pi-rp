@@ -30,6 +30,7 @@ The goal is not to replace Pi's extension model. It is to provide the layer that
 | **Live message editing** | Press `e` in `/tree` to edit any message content in-place. |
 | **State validation** | Schema-based structural constraints (TypeBox/JSON Schema) and custom validators for conversation state. `/schema list/load/unload/strict`. See [state-schemas](packages/coding-agent/docs/state-schemas.md). |
 | **State management** | `state_update` and `get_state` tools for LLM-driven state read/write. Persisted in session JSONL. `/state` command for viewing current state. See [state-schemas](packages/coding-agent/docs/state-schemas.md). |
+| **Native Subagent** | Native in-process task delegation to delegatable prompt presets (`delegatable: true`). Core `subagent` & `subagent_profiles` tools for LLM delegation, `/subagent` command in TUI. Read-only tool isolation & bounded result output. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md#subagent-delegation). |
 
 ### Planned
 
@@ -38,7 +39,6 @@ The goal is not to replace Pi's extension model. It is to provide the layer that
 | **Knowledge base** | `.knowledge/` directory with Markdown + frontmatter. `lookup` tool for LLM search. `/knowledge` command for switching. |
 | **Compact + recall** | Smarter compaction that archives rather than discards. `recall` tool retrieves compacted content. |
 | **Memory system** | Full memory tools — agent can actively remember and retrieve. |
-| **Subagent** | Forked and hardened pi-subagent, stripped of upstream hidden prompts. |
 | **Provider improvements** | `/login` for custom providers. Provider catalog cleanup. |
 
 ## Comparison: SillyTavern and the RP gap

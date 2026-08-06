@@ -41,6 +41,8 @@ Switch to it with `/preset simple`. Verify with `/prompt`.
 | `description` | string | no | Shown by `/preset` autocomplete. |
 | `autoActivate` | boolean | no | Auto-select this preset if it has no errors. Default `true`. |
 | `defaults` | object | no | Default slot options (see [Defaults](#defaults)). |
+| `delegatable` | boolean | no | Set to `true` to allow this preset to be delegated to as a subagent via the `subagent` tool or `/subagent` command. Default `false`. |
+| `thinkingLevel` | string | no | Thinking level for this preset (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`). Default inherits session level. |
 | `tools` | object | no | Filter tool visibility (see [Resource Policies](#resource-policies)). |
 | `skills` | object | no | Filter skill visibility (see [Resource Policies](#resource-policies)). |
 | `variables` | object | no | Static variable values available as `{{name}}` in block content. |
@@ -657,12 +659,41 @@ A filtered variant uses custom options from the preset JSON to control output:
 
 See the `lore` extension for implementation.
 
+## Subagent Delegation
+
+Presets can act as specialist **subagent profiles**. Setting `"delegatable": true` exposes the preset to the `subagent` tool and `/subagent` command.
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "code-reviewer",
+  "name": "Code Reviewer Subagent",
+  "description": "Specialist for reviewing code changes",
+  "delegatable": true,
+  "model": "anthropic/claude-sonnet-4-5",
+  "thinkingLevel": "high",
+  "tools": { "deny": ["edit", "write", "bash"] },
+  "items": [
+    { "kind": "block", "id": "role", "role": "system", "content": "You are a code reviewer. Inspect code and return structured feedback." }
+  ]
+}
+```
+
+### Delegation Features
+
+- **In-Process Execution**: Subagents execute in memory using the parent session's `modelRuntime` without external CLI dependencies.
+- **Tool Isolation**: Subagents run with a read-only default tool set (`read`, `grep`, `find`, `ls`, `bash`) intersected with the preset's tool policy.
+- **Output Truncation**: Response text is truncated using `truncateTail` before returning to the parent agent.
+- **Preset Overrides**: Preset model, thinking level, and resource policies apply directly to the subagent invocation.
+
 ## Commands
 
 | Command | Description |
 |---|---|
 | `/preset` | List all loaded presets with diagnostic badges. |
 | `/preset <id>` | Switch to the preset with that ID. |
+| `/subagent` | List delegatable subagent profiles (`delegatable: true`). |
+| `/subagent <profileId> <task>` | Run a subagent task using the specified delegatable preset. |
 | `/prompt` | Show the full compiled message array. |
 | `/prompt tools` | Show active tool definitions with JSON schemas. |
 | `/reload` | Reload presets, extensions, skills, and settings. |
