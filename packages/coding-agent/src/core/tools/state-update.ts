@@ -3,7 +3,6 @@ import { type Static, Type } from "typebox";
 import type { SchemaValidator } from "../../state/schema-validator.ts";
 import type { JsonValue, StateDiffResult, StateManager } from "../../state/state-manager.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
-import type { SessionManager } from "../session-manager.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 // Schema — oneof for patch vs merge
@@ -22,7 +21,6 @@ const StateUpdateParameters = Type.Union([
 type StateUpdateParams = Static<typeof StateUpdateParameters>;
 
 export function createStateUpdateToolDefinition(
-	sessionManager: SessionManager,
 	stateManager: StateManager,
 	schemaValidator: SchemaValidator,
 ): ToolDefinition<typeof StateUpdateParameters> {
@@ -81,8 +79,6 @@ export function createStateUpdateToolDefinition(
 			} else {
 				result = stateManager.apply(p.path, p.op, effectiveValue as JsonValue);
 			}
-			// Write full-state snapshot to session
-			sessionManager.appendState(stateManager.snapshot());
 			const text = `state: ${result.path} -> ${JSON.stringify(result.newValue)}`;
 			return { content: [{ type: "text", text }], details: undefined };
 		},
@@ -114,11 +110,7 @@ export function createGetStateToolDefinition(stateManager: StateManager): ToolDe
 	};
 }
 
-export function createStateUpdateTool(
-	sessionManager: SessionManager,
-	stateManager: StateManager,
-	schemaValidator: SchemaValidator,
-) {
-	const definition = createStateUpdateToolDefinition(sessionManager, stateManager, schemaValidator);
+export function createStateUpdateTool(stateManager: StateManager, schemaValidator: SchemaValidator) {
+	const definition = createStateUpdateToolDefinition(stateManager, schemaValidator);
 	return wrapToolDefinition(definition);
 }

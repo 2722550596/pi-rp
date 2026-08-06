@@ -88,6 +88,7 @@ function getPath(root: Record<string, JsonValue>, path: string): JsonValue | und
 export class StateManager {
 	private _data: Record<string, JsonValue> = {};
 	private _subscribers = new Set<(snapshot: Record<string, unknown>) => void>();
+	private _dirty = false;
 
 	/** Apply one state mutation. Path supports dot notation and JSON Pointer. */
 	apply(pathOrOp: string, op?: StateOp, val?: JsonValue): StateDiffResult;
@@ -106,6 +107,7 @@ export class StateManager {
 			result = this._applyOp(op as StateOp, pathOrOp, val);
 		}
 		this._notify();
+		this._dirty = true;
 		return result;
 	}
 
@@ -220,6 +222,16 @@ export class StateManager {
 
 	snapshot(): Record<string, unknown> {
 		return structuredClone(this._data);
+	}
+
+	/** Whether state has been mutated since the last snapshot was persisted. */
+	get dirty(): boolean {
+		return this._dirty;
+	}
+
+	/** Mark state as clean (persisted). Called after appending a snapshot to the session. */
+	clearDirty(): void {
+		this._dirty = false;
 	}
 
 	/** Subscribe to state changes. Returns unsubscribe function. */

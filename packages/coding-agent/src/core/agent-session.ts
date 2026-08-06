@@ -726,6 +726,14 @@ export class AgentSession {
 				}
 			}
 		}
+		// Persist state snapshot at turn boundaries: one snapshot per turn (not per
+		// state_update call). By turn_end, all messages for this turn are already
+		// persisted, so state and transcript stay aligned. Aborted turns never emit
+		// turn_end, so state stays at the last completed turn — also consistent.
+		if (event.type === "turn_end" && this._stateManager.dirty) {
+			this.sessionManager.appendState(this._stateManager.snapshot());
+			this._stateManager.clearDirty();
+		}
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
@@ -2959,7 +2967,12 @@ export class AgentSession {
 					}
 					const effectiveValue = validation.correctedValue ?? value;
 					const result = this._stateManager.apply(path, op, effectiveValue as JsonValue);
-					this.sessionManager.appendState(this._stateManager.snapshot());
+					// Persist immediately when idle (outside a turn); otherwise defer to turn_end
+					// so a single turn with multiple writes produces one snapshot, not N.
+					if (this.isIdle) {
+						this.sessionManager.appendState(this._stateManager.snapshot());
+						this._stateManager.clearDirty();
+					}
 					return { ok: true, path: result.path, newValue: result.newValue };
 				},
 			},
@@ -3138,7 +3151,7 @@ export class AgentSession {
 		// Add state_update and get_state tools
 		this._baseToolDefinitions.set(
 			"state_update",
-			createStateUpdateToolDefinition(this.sessionManager, this._stateManager, this._schemaValidator),
+			createStateUpdateToolDefinition(this._stateManager, this._schemaValidator),
 		);
 		this._baseToolDefinitions.set("get_state", createGetStateToolDefinition(this._stateManager));
 
