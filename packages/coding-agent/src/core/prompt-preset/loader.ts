@@ -169,6 +169,10 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 		preset.model = obj.model;
 	}
 	if (variables) preset.variables = variables;
+	if (obj.delegatable === true) preset.delegatable = true;
+	if (typeof obj.thinkingLevel === "string" && obj.thinkingLevel.trim().length > 0) {
+		preset.thinkingLevel = obj.thinkingLevel.trim();
+	}
 	if (isPlainObject(obj.defaults)) {
 		const d = obj.defaults as Record<string, unknown>;
 		preset.defaults = {};

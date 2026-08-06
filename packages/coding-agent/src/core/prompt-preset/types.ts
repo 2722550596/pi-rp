@@ -170,6 +170,10 @@ export interface PromptPreset {
 	autoActivate?: boolean;
 	/** Model to switch to when this preset is activated, in "provider/model" format. */
 	model?: string;
+	/** If true, this preset can be used as a subagent delegate. */
+	delegatable?: boolean;
+	/** Default thinking level for subagent delegation. */
+	thinkingLevel?: string;
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;

@@ -44,5 +44,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "reroll", description: "Regenerate the last assistant response" },
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "preset", description: "Manage prompt presets: /preset to list, /preset <id|none> to activate" },
+	{ name: "subagent", description: "List subagent profiles or run a task: /subagent [list|<profileId> <task>]" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];

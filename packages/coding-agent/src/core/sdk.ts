@@ -85,6 +85,8 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Prompt preset ID to activate at startup. Wins over session restore and settings default; not persisted to settings. */
 	preset?: string;
+	/** Initial messages to seed the session with (used by subagents) */
+	initialMessages?: AgentMessage[];
 	/** State schema IDs to load at startup, in order. Recorded as schema_change entries. */
 	schemas?: string[];
 }
@@ -249,13 +251,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const defaultActiveToolNames: (ToolName | "state_update" | "get_state")[] = [
+	const defaultActiveToolNames: (ToolName | "state_update" | "get_state" | "subagent_profiles" | "subagent")[] = [
 		"read",
 		"bash",
 		"edit",
 		"write",
 		"state_update",
 		"get_state",
+		"subagent_profiles",
+		"subagent",
 	];
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const excludedToolNames = options.excludeTools;
@@ -368,6 +372,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// getPresetInjectMessages() already embeds agent.state.messages at chat-history position,
 			// so appending raw messages would duplicate the conversation.
 			if (sessionRef.current) {
+				if (sessionRef.current.isSealedContext()) {
+					return result;
+				}
 				const presetItems = sessionRef.current.getPresetInjectMessages();
 				if (presetItems.length > 0) {
 					result = presetItems;
@@ -423,6 +430,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	});
 	sessionRef.current = session;
 	const sessionDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
+	if (options.initialMessages) {
+		session.setInitialMessages(options.initialMessages);
+	}
 	if (options.preset) {
 		const presetResult = await session.setActivePreset(options.preset, { persistSettings: false });
 		if (!presetResult.ok) {

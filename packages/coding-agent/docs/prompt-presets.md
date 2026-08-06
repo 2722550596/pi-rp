@@ -164,7 +164,7 @@ Reserved. Currently renders empty.
 
 ### `chat-history`
 
-The conversation insertion point. This slot determines WHERE in the message array the real conversation appears — it does not render text itself. Omit it and the conversation is appended at the end.
+The conversation insertion point. This slot determines WHERE in the message array the real conversation appears — it does not render text itself. Omit it and no conversation history is injected at all.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

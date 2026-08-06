@@ -2932,6 +2932,11 @@ export class InteractiveMode {
 				await this.handlePresetCommand(text);
 				return;
 			}
+			if (text === "/subagent" || text.startsWith("/subagent ")) {
+				this.editor.setText("");
+				await this.handleSubagentCommand(text);
+				return;
+			}
 			if (text === "/state" || text.startsWith("/state ")) {
 				this.editor.setText("");
 				await this.handleStateCommand(text);
@@ -5615,6 +5620,66 @@ export class InteractiveMode {
 
 		if (result.error) {
 			this.showError(result.error);
+		}
+	}
+
+	private async handleSubagentCommand(text: string): Promise<void> {
+		const parts = text.split(/\s+/);
+		const arg = parts[1];
+
+		// /subagent or /subagent list — list delegatable presets
+		if (!arg || arg === "list") {
+			const presets = this.session
+				.getAllPresets()
+				.filter((p) => p.preset.delegatable === true);
+			if (presets.length === 0) {
+				this.showStatus("No delegatable subagent profiles found. Add \"delegatable\": true to a preset.");
+				return;
+			}
+			const lines = presets.map((p) => {
+				const preset = p.preset;
+				return `  ${preset.id} — ${preset.name ?? preset.id}: ${preset.description ?? "(no description)"}`;
+			});
+			this.showStatus(`Subagent profiles:\n${lines.join("\n")}`);
+			return;
+		}
+
+		// /subagent <profileId> <task...>
+		const profileId = arg;
+		const task = parts.slice(2).join(" ");
+
+		if (!task) {
+			this.showError("Usage: /subagent <profileId> <task>");
+			return;
+		}
+
+		const isDelegatable = this.session
+			.getAllPresets()
+			.some((p) => p.preset.id === profileId && p.preset.delegatable === true);
+		if (!isDelegatable) {
+			this.showError(`Profile "${profileId}" is not delegatable. Use /subagent list.`);
+			return;
+		}
+
+		this.showStatus(`Running subagent "${profileId}"...`);
+		const { prepareSubagentConversation, isPrepareError, runSubagent } = await import(
+			"../../core/subagent/index.ts"
+		);
+		const preparation = await prepareSubagentConversation({
+			cwd: this.session.sessionManager.getCwd(),
+			profileId,
+			task,
+			modelRuntime: this.session.modelRuntime,
+		});
+		if (isPrepareError(preparation)) {
+			this.showError(`Subagent preparation failed: ${preparation.error}`);
+			return;
+		}
+		const result = await runSubagent(preparation, this.session.modelRuntime);
+		if (result.status === "completed") {
+			this.showStatus(`Subagent completed:\n${result.text}`);
+		} else {
+			this.showError(`Subagent ${result.status}: ${result.error ?? result.text}`);
 		}
 	}
 

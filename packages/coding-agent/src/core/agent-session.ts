@@ -133,6 +133,7 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createGetStateToolDefinition, createStateUpdateToolDefinition } from "./tools/state-update.ts";
+import { createSubagentProfilesToolDefinition, createSubagentToolDefinition } from "./subagent/extension.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 // ============================================================================
@@ -417,7 +418,22 @@ export class AgentSession {
 	private _toolPolicyBaseline?: string[];
 	/** Captured messages from the last agent run, for /prompt inspection. */
 	private _lastCompiledMessages: AgentMessage[] = [];
+	private _sealedContext = false;
 	private _lastCompiledSystemPrompt = "";
+
+	/** Check if this session's context is sealed by a subagent preparation */
+	isSealedContext(): boolean {
+		return this._sealedContext;
+	}
+
+	/** Seed initial messages directly. Only valid if the last message is from a user. Seals the context. */
+	setInitialMessages(messages: AgentMessage[]): void {
+		if (messages.length > 0 && messages[messages.length - 1].role !== "user") {
+			throw new Error("Initial messages must end with a user message");
+		}
+		this.agent.state.messages = [...messages];
+		this._sealedContext = true;
+	}
 
 	get modelRuntime(): ModelRuntime {
 		return this._modelRuntime;
@@ -589,7 +605,7 @@ export class AgentSession {
 			const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
 			const sysPrompt = hasCustomPrompt
 				? (this._systemPromptOverride ?? this._baseSystemPrompt)
-				: (this._systemPromptOverride ?? this._baseSystemPrompt);
+				: "";
 			return {
 				...previousSnapshot,
 				context: {
@@ -1305,7 +1321,18 @@ export class AgentSession {
 		this._presetExplicitlyActivated = true;
 		this._syncActiveToolPolicy();
 		this.sessionManager.appendPresetChange(id);
-		if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
+		// Apply preset thinking level (fail-soft)
+		const presetThinkingLevel = found.preset.thinkingLevel;
+		if (presetThinkingLevel) {
+			try {
+				const level = presetThinkingLevel as ThinkingLevel;
+				if (THINKING_LEVELS.includes(level)) {
+					this.setThinkingLevel(level);
+				}
+			} catch {
+				// fail-soft: ignore invalid thinking level
+			}
+		}
 		// _syncActiveToolPolicy calls setActiveToolsByName which rebuilds the prompt
 
 		const modelRef = found.preset.model;
@@ -1390,7 +1417,7 @@ export class AgentSession {
 		if (hasCustomPrompt) {
 			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 		} else {
-			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+			this.agent.state.systemPrompt = "";
 		}
 	}
 	/**
@@ -3154,7 +3181,8 @@ export class AgentSession {
 			createStateUpdateToolDefinition(this._stateManager, this._schemaValidator),
 		);
 		this._baseToolDefinitions.set("get_state", createGetStateToolDefinition(this._stateManager));
-
+		this._baseToolDefinitions.set("subagent_profiles", createSubagentProfilesToolDefinition(this));
+		this._baseToolDefinitions.set("subagent", createSubagentToolDefinition(this));
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {
 			for (const [name, value] of options.flagValues) {
@@ -3177,7 +3205,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
+			: ["read", "bash", "edit", "write", "state_update", "get_state", "subagent_profiles", "subagent"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
