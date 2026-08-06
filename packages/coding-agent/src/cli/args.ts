@@ -46,6 +46,8 @@ export interface Args {
 	noContextFiles?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
+	preset?: string;
+	schemas?: string[];
 	uiMode?: UiMode;
 	verbose?: boolean;
 	projectTrustOverride?: boolean;
@@ -201,6 +203,24 @@ export function parseArgs(args: string[]): Args {
 			result.projectTrustOverride = false;
 		} else if (arg === "--offline") {
 			result.offline = true;
+		} else if (arg === "--preset") {
+			if (i + 1 < args.length) {
+				result.preset = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--preset requires a value" });
+			}
+		} else if (arg === "--schema") {
+			if (i + 1 < args.length) {
+				result.schemas = result.schemas ?? [];
+				result.schemas.push(
+					...args[++i]
+						.split(",")
+						.map((s) => s.trim())
+						.filter((s) => s.length > 0),
+				);
+			} else {
+				result.diagnostics.push({ type: "error", message: "--schema requires a value" });
+			}
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
@@ -294,6 +314,8 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
+  --preset <id>                  Activate prompt preset by ID (from .pi/prompt-presets/ or ~/.pi/agent/prompt-presets/)
+  --schema <ids>                 Load state schemas by ID at startup (comma-separated; from .pi/schemas/ or ~/.pi/agent/schemas/)
   --help, -h                     Show this help
   --version, -v                  Show version number
 

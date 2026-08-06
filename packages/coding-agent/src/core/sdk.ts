@@ -4,6 +4,7 @@ import { clampThinkingLevel, type Message, type Model, streamSimple } from "@ear
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
+import type { AgentSessionRuntimeDiagnostic } from "./agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -82,6 +83,10 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Prompt preset ID to activate at startup. Wins over session restore and settings default; not persisted to settings. */
+	preset?: string;
+	/** State schema IDs to load at startup, in order. Recorded as schema_change entries. */
+	schemas?: string[];
 }
 
 /** Result from createAgentSession */
@@ -92,6 +97,8 @@ export interface CreateAgentSessionResult {
 	extensionsResult: LoadExtensionsResult;
 	/** Warning if session was restored with a different model than saved */
 	modelFallbackMessage?: string;
+	/** Diagnostics from startup preset/schema application (warnings only). */
+	sessionDiagnostics?: AgentSessionRuntimeDiagnostic[];
 }
 
 // Re-exports
@@ -394,7 +401,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionManager.appendModelChange(model.provider, model.id);
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
-		sessionManager.appendPresetChange(settingsManager.getDefaultPreset() ?? "default");
+		if (!options.preset) {
+			sessionManager.appendPresetChange(settingsManager.getDefaultPreset() ?? "default");
+		}
 	}
 
 	const session = new AgentSession({
@@ -413,11 +422,38 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 	});
 	sessionRef.current = session;
+	const sessionDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
+	if (options.preset) {
+		const presetResult = await session.setActivePreset(options.preset, { persistSettings: false });
+		if (!presetResult.ok) {
+			const available =
+				session
+					.getAllPresets()
+					.map((p) => p.preset.id)
+					.join(", ") || "(none defined)";
+			sessionDiagnostics.push({
+				type: "warning",
+				message: `Prompt preset "${options.preset}" not found. Available: ${available}`,
+			});
+		} else if (presetResult.error) {
+			sessionDiagnostics.push({ type: "warning", message: presetResult.error });
+		}
+	}
+	for (const schemaId of options.schemas ?? []) {
+		const schemaResult = session.loadSchema(schemaId);
+		if (!schemaResult.ok) {
+			sessionDiagnostics.push({
+				type: "warning",
+				message: schemaResult.error ?? `Schema "${schemaId}" not found`,
+			});
+		}
+	}
 	const extensionsResult = resourceLoader.getExtensions();
 
 	return {
 		session,
 		extensionsResult,
 		modelFallbackMessage,
+		sessionDiagnostics,
 	};
 }

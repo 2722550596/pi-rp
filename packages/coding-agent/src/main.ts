@@ -497,6 +497,10 @@ function buildSessionOptions(
 		options.excludeTools = [...parsed.excludeTools];
 	}
 
+	// Prompt preset + state schemas from CLI
+	if (parsed.preset) options.preset = parsed.preset;
+	if (parsed.schemas) options.schemas = [...parsed.schemas];
+
 	return { options, cliThinkingFromModel, diagnostics };
 }
 
@@ -777,7 +781,10 @@ export async function main(args: string[], options?: MainOptions) {
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
+			preset: sessionOptions.preset,
+			schemas: sessionOptions.schemas,
 		});
+		if (created.sessionDiagnostics) diagnostics.push(...created.sessionDiagnostics);
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);

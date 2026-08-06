@@ -187,6 +187,48 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--preset flag", () => {
+		test("parses --preset flag with value", () => {
+			const result = parseArgs(["--preset", "plan"]);
+			expect(result.preset).toBe("plan");
+		});
+
+		test("reports missing value", () => {
+			const result = parseArgs(["--preset"]);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--preset requires a value" }]);
+		});
+
+		test("works alongside other flags", () => {
+			const result = parseArgs(["--preset", "plan", "--print", "--model", "gpt-4o", "hello"]);
+			expect(result.preset).toBe("plan");
+			expect(result.print).toBe(true);
+			expect(result.model).toBe("gpt-4o");
+			expect(result.messages).toEqual(["hello"]);
+		});
+	});
+
+	describe("--schema flag", () => {
+		test("parses comma-separated values", () => {
+			const result = parseArgs(["--schema", "a,b"]);
+			expect(result.schemas).toEqual(["a", "b"]);
+		});
+
+		test("concatenates repeated flags", () => {
+			const result = parseArgs(["--schema", "a", "--schema", "b"]);
+			expect(result.schemas).toEqual(["a", "b"]);
+		});
+
+		test("filters empty segments", () => {
+			const result = parseArgs(["--schema", "a,, b"]);
+			expect(result.schemas).toEqual(["a", "b"]);
+		});
+
+		test("reports missing value", () => {
+			const result = parseArgs(["--schema"]);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--schema requires a value" }]);
+		});
+	});
+
 	describe("--no-session flag", () => {
 		test("parses --no-session flag", () => {
 			const result = parseArgs(["--no-session"]);

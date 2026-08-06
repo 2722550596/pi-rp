@@ -405,6 +405,8 @@ export class AgentSession {
 
 	private _baseSystemPrompt = "";
 	private _activePreset: PromptPreset = defaultPreset;
+	/** True once setActivePreset() ran — the lazy restore block must not override an explicit activation. */
+	private _presetExplicitlyActivated = false;
 	private _loadedPresets: LoadedPromptPreset[] = [];
 
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
@@ -1115,10 +1117,12 @@ export class AgentSession {
 			}
 
 			const settingsPresetId = this.settingsManager.getDefaultPreset();
-			const restoreId = storedPresetId ?? settingsPresetId;
-			if (restoreId && !isDisabledPromptPresetId(restoreId) && restoreId !== "default") {
-				const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
-				if (found) this._activePreset = found.preset;
+			if (!this._presetExplicitlyActivated) {
+				const restoreId = storedPresetId ?? settingsPresetId;
+				if (restoreId && !isDisabledPromptPresetId(restoreId) && restoreId !== "default") {
+					const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
+					if (found) this._activePreset = found.preset;
+				}
 			}
 
 			// No initial write needed — sdk.ts handles that for new sessions
@@ -1277,21 +1281,23 @@ export class AgentSession {
 	 * If the preset declares a model, switches to it (failures are reported
 	 * via the result's `error` without failing the preset switch).
 	 */
-	async setActivePreset(id: string): Promise<SetActivePresetResult> {
+	async setActivePreset(id: string, options?: { persistSettings?: boolean }): Promise<SetActivePresetResult> {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
+			this._presetExplicitlyActivated = true;
 			this._restoreToolPolicy();
 			this.sessionManager.appendPresetChange(id);
-			this.settingsManager.setDefaultPreset(id);
+			if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
 			// _restoreToolPolicy calls setActiveToolsByName which rebuilds the prompt
 			return { ok: true };
 		}
 		const found = this._loadedPresets.find((p) => p.preset.id === id);
 		if (!found) return { ok: false };
 		this._activePreset = found.preset;
+		this._presetExplicitlyActivated = true;
 		this._syncActiveToolPolicy();
 		this.sessionManager.appendPresetChange(id);
-		this.settingsManager.setDefaultPreset(id);
+		if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
 		// _syncActiveToolPolicy calls setActiveToolsByName which rebuilds the prompt
 
 		const modelRef = found.preset.model;
