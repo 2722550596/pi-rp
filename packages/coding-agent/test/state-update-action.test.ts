@@ -49,7 +49,7 @@ describe("pi.updateState", () => {
 		expect(res).toMatchObject({ ok: true, path: "/stat_data/当前时间" });
 		expect(harness.session.stateManager.get("/stat_data/当前时间")).toBe("上午 10:35");
 		const snapshot = pi.getState() as Record<string, Record<string, unknown>>;
-		expect(snapshot.stat_data["当前时间"]).toBe("上午 10:35");
+		expect(snapshot.stat_data.当前时间).toBe("上午 10:35");
 	});
 
 	it("remove deletes the path and appends a new state entry", async () => {
@@ -80,5 +80,18 @@ describe("pi.updateState", () => {
 		const accepted = pi.updateState("stat_data.hp", "replace", 42);
 		expect(accepted).toMatchObject({ ok: true, path: "stat_data.hp" });
 		expect(harness.session.stateManager.get("stat_data.hp")).toBe(42);
+	});
+
+	it("rejects removing a schema-required field and does not persist the deletion", async () => {
+		const { harness, pi } = await setup();
+		harness.session.schemaValidator.loadSchema("t", "stat_data", Type.Object({ name: Type.String() }));
+
+		pi.updateState("stat_data.name", "replace", "x");
+		expect(harness.session.stateManager.get("stat_data.name")).toBe("x");
+
+		const res = pi.updateState("stat_data.name", "remove");
+
+		expect(res.ok).toBe(false);
+		expect(harness.session.stateManager.get("stat_data.name")).toBe("x");
 	});
 });

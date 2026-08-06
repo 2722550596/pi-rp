@@ -98,15 +98,42 @@ export class SchemaValidator {
 	): ValidationResult {
 		// Merge at root: validate each namespace subtree that has a schema
 		if (op === "merge" && (fullPath === "" || fullPath === undefined)) {
-			if (!isObject(value)) return { ok: true }; // non-object merge is a full reset, skip
-			const mergeObj = value as Record<string, JsonValue>;
+			if (!isObject(value)) {
+				return { ok: false, reason: "merge requires an object value" };
+			}
+			// Clone so validator corrections never mutate the caller's object.
+			const mergeObj = structuredClone(value as Record<string, JsonValue>);
 			for (const [ns, schema] of this._schemas) {
+				if (!(ns in mergeObj)) continue; // merge doesn't touch this namespace
 				const nsState = (currentState[ns] as Record<string, JsonValue>) ?? {};
-				const projected = structuredClone(nsState) as Record<string, JsonValue>;
-				deepMerge(projected, (mergeObj[ns] as Record<string, JsonValue>) ?? {});
+				const nsMerge = mergeObj[ns] as JsonValue;
+				let projected: JsonValue;
+				if (nsMerge === null) {
+					projected = {}; // namespace deleted → empty subtree
+				} else if (isObject(nsMerge)) {
+					const p = structuredClone(nsState) as Record<string, JsonValue>;
+					deepMerge(p, nsMerge);
+					projected = p;
+				} else {
+					projected = nsMerge; // non-object replaces namespace value → fails object schema
+				}
 				if (!schema.validator.Check(projected)) {
 					const errors = schema.validator.Errors(projected);
 					return { ok: false, reason: `Schema validation failed for "${ns}": ${formatErrors(errors)}` };
+				}
+				// Custom validators
+				if (isObject(nsMerge)) {
+					const vresult = this._runMergeValidators(ns, "", nsMerge, nsState as Readonly<JsonValue>);
+					if (!vresult.ok) return vresult;
+				} else {
+					// Whole-namespace replace/delete: run "*" validators once
+					const vval: JsonValue | undefined = nsMerge === null ? undefined : nsMerge;
+					for (const v of this._validators) {
+						if (v.namespace !== ns || v.path !== "*") continue;
+						if (v.validate(vval, "", nsState as Readonly<JsonValue>) === null) {
+							return { ok: false, reason: `Custom validator rejected merge write to "${ns}"` };
+						}
+					}
 				}
 			}
 			// Strict mode: reject merge keys not in any schema namespace
@@ -117,7 +144,7 @@ export class SchemaValidator {
 					}
 				}
 			}
-			return { ok: true };
+			return { ok: true, correctedValue: mergeObj };
 		}
 
 		const parts = fullPath.split(/\.|\//).filter((p) => p.length > 0);
@@ -130,11 +157,6 @@ export class SchemaValidator {
 				return { ok: false, reason: `Strict mode: no schema loaded for namespace "${ns}"` };
 			}
 			return { ok: true }; // freeform
-		}
-
-		// For "remove", we only need to check the path exists in the schema.
-		if (op === "remove") {
-			return { ok: true }; // removal is always allowed if the namespace has a schema
 		}
 
 		// Compute what the namespace subtree would look like after the mutation
@@ -160,7 +182,50 @@ export class SchemaValidator {
 			resultValue = corrected;
 		}
 
+		if (op === "remove") {
+			return { ok: true }; // remove ignores value at apply time; validators can only reject
+		}
 		return resultValue === value ? { ok: true } : { ok: true, correctedValue: resultValue };
+	}
+
+	/**
+	 * Recursively run custom validators over a merged namespace subtree (object).
+	 * Walks `mergeNsValue` leaf-by-leaf; for each leaf path runs matching
+	 * validators (namespace + exact path or "*"), chaining corrections. Mutates
+	 * `mergeNsValue` in place to apply corrections. A null merge value (RFC 7396
+	 * delete) is presented to validators as undefined. Returns ok=false on the
+	 * first validator rejection.
+	 */
+	private _runMergeValidators(
+		ns: string,
+		basePath: string,
+		mergeNsValue: Record<string, JsonValue>,
+		preMergeNsState: Readonly<JsonValue>,
+	): ValidationResult {
+		for (const key of Object.keys(mergeNsValue)) {
+			const path = basePath === "" ? key : `${basePath}.${key}`;
+			const raw = mergeNsValue[key];
+			if (isObject(raw)) {
+				const sub = this._runMergeValidators(ns, path, raw, preMergeNsState);
+				if (!sub.ok) return sub;
+				continue;
+			}
+			const inputVal: JsonValue | undefined = raw === null ? undefined : raw;
+			let resultValue: JsonValue | undefined = inputVal;
+			for (const v of this._validators) {
+				if (v.namespace !== ns) continue;
+				if (v.path !== "*" && v.path !== path) continue;
+				const corrected = v.validate(resultValue, path, preMergeNsState);
+				if (corrected === null) {
+					return { ok: false, reason: `Custom validator rejected merge write to "${ns}.${path}"` };
+				}
+				resultValue = corrected;
+			}
+			if (resultValue !== inputVal && resultValue !== undefined) {
+				mergeNsValue[key] = resultValue;
+			}
+		}
+		return { ok: true };
 	}
 }
 
@@ -185,6 +250,9 @@ function projectMutation(
 			deepMerge(projected, value as Record<string, JsonValue>);
 		}
 		return projected;
+	}
+	if (op === "remove" && subPath === "") {
+		return {} as Record<string, JsonValue>;
 	}
 
 	const parts = subPath === "" ? [] : subPath.split(".");
