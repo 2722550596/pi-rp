@@ -1,22 +1,27 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { SchemaValidator } from "../../state/schema-validator.ts";
-import type { JsonValue, StateDiffResult, StateManager } from "../../state/state-manager.ts";
+import type { JsonValue, StateDiffResult, StateManager, StateOp } from "../../state/state-manager.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
-// Schema — oneof for patch vs merge
-const StateUpdateParameters = Type.Union([
-	Type.Object({
-		op: Type.Union([Type.Literal("add"), Type.Literal("remove"), Type.Literal("replace")]),
-		path: Type.String({ description: "Dot notation or JSON Pointer (e.g. character.hp, /character/hp)" }),
-		value: Type.Optional(Type.Any()),
+// Schema - single object; op is a string enum (not a nested anyOf of literals, which
+// strict OpenAI-compatible backends reject). path/value are optional so add/remove/replace
+// and merge share one shape, exactly the fields `execute` reads.
+const StateUpdateParameters = Type.Object({
+	op: StringEnum(["add", "remove", "replace", "merge"], {
+		description:
+			"add=set/delta (numbers add, non-numbers replace, arrays append); remove=delete path; replace=force-set; merge=RFC 7396 deep merge (null deletes keys)",
 	}),
-	Type.Object({
-		op: Type.Literal("merge"),
-		value: Type.Record(Type.String(), Type.Any()),
-	}),
-]);
+	path: Type.Optional(
+		Type.String({
+			description:
+				"Dot notation or JSON Pointer (e.g. character.hp, /character/hp). Required for add/remove/replace; ignored for merge.",
+		}),
+	),
+	value: Type.Optional(Type.Any({ description: "Value to set/merge. Required for add/replace/merge." })),
+});
 
 type StateUpdateParams = Static<typeof StateUpdateParameters>;
 
@@ -50,37 +55,47 @@ export function createStateUpdateToolDefinition(
 			_onUpdate,
 			_ctx: ExtensionContext,
 		): Promise<AgentToolResult<undefined>> => {
-			let result: StateDiffResult;
-			const p = params as StateUpdateParams;
+		let result: StateDiffResult;
+		const p = params as StateUpdateParams;
 
-			// Determine the full path for validation
-			const fullPath = p.op === "merge" ? "" : p.path;
+		// op is a flat enum in the schema (no anyOf), so path is optional at the type
+		// level; but add/remove/replace require a path (the old Union enforced it).
+		if (p.op !== "merge" && (p.path === undefined || p.path === "")) {
+			return {
+				content: [{ type: "text", text: `state_update rejected: path is required for op "${p.op}"` }],
+				details: undefined,
+			};
+		}
 
-			// Validate against schema + custom validators
-			const validation = schemaValidator.validate(
-				fullPath,
-				p.op,
-				p.value as JsonValue,
-				stateManager.snapshot() as Record<string, JsonValue>,
-			);
+		// StringEnum's Static widens to `string`; narrow to StateOp (matches state-manager.ts).
+		const op = p.op as StateOp;
+		const fullPath: string = op === "merge" ? "" : (p.path as string);
 
-			if (!validation.ok) {
-				return {
-					content: [{ type: "text", text: `state_update rejected: ${validation.reason}` }],
-					details: undefined,
-				};
-			}
+		// Validate against schema + custom validators
+		const validation = schemaValidator.validate(
+			fullPath,
+			op,
+			p.value as JsonValue,
+			stateManager.snapshot() as Record<string, JsonValue>,
+		);
 
-			// Use corrected value if a custom validator modified it
-			const effectiveValue = validation.correctedValue ?? p.value;
+		if (!validation.ok) {
+			return {
+				content: [{ type: "text", text: `state_update rejected: ${validation.reason}` }],
+				details: undefined,
+			};
+		}
 
-			if (p.op === "merge") {
-				result = stateManager.apply({ op: "merge", value: effectiveValue as JsonValue });
-			} else {
-				result = stateManager.apply(p.path, p.op, effectiveValue as JsonValue);
-			}
-			const text = `state: ${result.path} -> ${JSON.stringify(result.newValue)}`;
-			return { content: [{ type: "text", text }], details: undefined };
+		// Use corrected value if a custom validator modified it
+		const effectiveValue = validation.correctedValue ?? p.value;
+
+		if (op === "merge") {
+			result = stateManager.apply({ op: "merge", value: effectiveValue as JsonValue });
+		} else {
+			result = stateManager.apply(fullPath, op, effectiveValue as JsonValue);
+		}
+		const text = `state: ${result.path} -> ${JSON.stringify(result.newValue)}`;
+		return { content: [{ type: "text", text }], details: undefined };
 		},
 	};
 }
