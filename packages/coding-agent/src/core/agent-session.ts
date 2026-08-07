@@ -617,7 +617,7 @@ export class AgentSession {
 			const previousContext = previousSnapshot?.context ?? turn.context;
 
 			const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
-			const sysPrompt = hasCustomPrompt ? (this._systemPromptOverride ?? this._baseSystemPrompt) : "";
+			const sysPrompt = this._systemPromptOverride ?? (hasCustomPrompt ? this._baseSystemPrompt : "");
 			return {
 				...previousSnapshot,
 				context: {
@@ -1429,8 +1429,10 @@ export class AgentSession {
 	 */
 	private _applyDynamicSystemPrompt(): void {
 		const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
-		if (hasCustomPrompt) {
-			this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		if (this._systemPromptOverride !== undefined) {
+			this.agent.state.systemPrompt = this._systemPromptOverride;
+		} else if (hasCustomPrompt) {
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		} else {
 			this.agent.state.systemPrompt = "";
 		}
