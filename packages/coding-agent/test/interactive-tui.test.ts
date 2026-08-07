@@ -1,9 +1,13 @@
-import type { Component, Terminal } from "@earendil-works/pi-tui";
+import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
-import type { UiMode } from "../src/core/settings-manager.ts";
-import { createInteractiveTui, InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import type { TuiMode } from "../src/core/settings-manager.ts";
+import {
+	createInteractiveTui,
+	createInteractiveTuiReference,
+	InteractiveMode,
+} from "../src/modes/interactive/interactive-mode.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
@@ -14,10 +18,22 @@ vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
 
 class RecordingTerminal extends VirtualTerminal implements Terminal {
 	readonly writes: string[] = [];
+	startCount = 0;
+	stopCount = 0;
+
+	override start(onInput: (data: string) => void, onResize: () => void): void {
+		this.startCount += 1;
+		super.start(onInput, onResize);
+	}
 
 	override write(data: string): void {
 		this.writes.push(data);
 		super.write(data);
+	}
+
+	override stop(): void {
+		this.stopCount += 1;
+		super.stop();
 	}
 }
 
@@ -25,7 +41,7 @@ describe("createInteractiveTui", () => {
 	it("selects the alternate-screen renderer only when requested", async () => {
 		const mainTerminal = new RecordingTerminal();
 		const mainTui = createInteractiveTui({
-			uiMode: "regular",
+			tuiMode: "regular",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal: mainTerminal,
@@ -39,7 +55,7 @@ describe("createInteractiveTui", () => {
 
 		const altTerminal = new RecordingTerminal();
 		const altTui = createInteractiveTui({
-			uiMode: "fullscreen",
+			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal: altTerminal,
@@ -50,6 +66,86 @@ describe("createInteractiveTui", () => {
 		await altTerminal.waitForRender();
 		expect(altTerminal.writes.some((write) => write.includes("\x1b[?1049h"))).toBe(true);
 		altTui.stop();
+	});
+
+	it("replaces the renderer while preserving components and focus", async () => {
+		const terminal = new RecordingTerminal(40, 8);
+		const renderer = createInteractiveTui({
+			tuiMode: "regular",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		});
+		let stableUi: TUI;
+		const invalidatedModes: TuiMode[] = [];
+		const component: Component & { focused: boolean } = {
+			focused: false,
+			render: () => ["content"],
+			invalidate: () => invalidatedModes.push(stableUi.mode),
+		};
+		renderer.addChild(component);
+		renderer.setFocus(component);
+
+		type SwitchContext = {
+			renderer: ReturnType<typeof createInteractiveTui>;
+			ui: TUI;
+			fullscreenLayoutRoot: Component;
+			options: { tuiMode?: TuiMode };
+			themeController: { rebindTui: () => void };
+			extensionTerminalInputSubscriptions: Set<never>;
+		};
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			renderer,
+			ui: undefined as unknown as TUI,
+			fullscreenLayoutRoot: component,
+			options: { tuiMode: "regular" as TuiMode },
+			themeController: { rebindTui: () => {} },
+			extensionTerminalInputSubscriptions: new Set<never>(),
+		}) as SwitchContext;
+		stableUi = createInteractiveTuiReference(() => context.renderer);
+		context.ui = stableUi;
+		const { stopInteractiveTui, switchTuiMode } = InteractiveMode.prototype as unknown as {
+			stopInteractiveTui(this: SwitchContext): void;
+			switchTuiMode(this: SwitchContext, mode: TuiMode, restoreProgress?: boolean): boolean;
+		};
+
+		renderer.start();
+		await terminal.waitForRender();
+		expect(switchTuiMode.call(context, "fullscreen", false)).toBe(true);
+		await terminal.waitForRender();
+
+		expect(stableUi.mode).toBe("fullscreen");
+		expect(context.renderer.children).toEqual([component]);
+		expect(context.renderer.getFocusedComponent()).toBe(component);
+		expect(component.focused).toBe(true);
+		expect(invalidatedModes).toEqual(["fullscreen"]);
+		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 1]);
+
+		stopInteractiveTui.call(context);
+
+		expect(stableUi.mode).toBe("regular");
+		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 3]);
+	});
+});
+
+describe("InteractiveMode right-click paste", () => {
+	it("feeds clipboard text to the focused component as a bracketed paste", async () => {
+		clipboardMocks.readClipboardText.mockResolvedValue("clipboard text");
+		const handleInput = vi.fn<(data: string) => void>();
+		const target = { render: () => [], invalidate: () => {}, handleInput } satisfies Component;
+		const requestRender = vi.fn();
+		const context = {
+			renderer: { getFocusedComponent: () => target },
+			ui: { requestRender },
+		};
+		const prototype = InteractiveMode.prototype as unknown as {
+			handleRightClickPaste(this: typeof context): Promise<void>;
+		};
+
+		await prototype.handleRightClickPaste.call(context);
+
+		expect(handleInput).toHaveBeenCalledWith("\x1b[200~clipboard text\x1b[201~");
+		expect(requestRender).toHaveBeenCalledOnce();
 	});
 });
 
@@ -77,7 +173,7 @@ describe("InteractiveMode copy confirmation", () => {
 	it("flashes Copied! for the copy shortcut in fullscreen mode", async () => {
 		const terminal = new RecordingTerminal(40, 4);
 		const ui = createInteractiveTui({
-			uiMode: "fullscreen",
+			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
@@ -108,7 +204,7 @@ describe("InteractiveMode copy confirmation", () => {
 
 	it("keeps the status-line confirmation for the copy shortcut in regular mode", async () => {
 		const ui = createInteractiveTui({
-			uiMode: "regular",
+			tuiMode: "regular",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal: new RecordingTerminal(),
@@ -132,7 +228,7 @@ describe("InteractiveMode copy confirmation", () => {
 type ClearStatusContext = {
 	activeStatusIndicator: { kind: "working"; dispose: () => void } | undefined;
 	statusContainer: Container;
-	options: { uiMode?: UiMode };
+	options: { tuiMode?: TuiMode };
 	ui: { getClearOnShrink: () => boolean };
 	idleStatus: Component;
 };
@@ -145,7 +241,7 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
 
 describe("clear-on-shrink status spacing", () => {
 	it("reserves status height only on the main-screen renderer", () => {
-		for (const [uiMode, expectedChildren] of [
+		for (const [tuiMode, expectedChildren] of [
 			["regular", 1],
 			["fullscreen", 0],
 		] as const) {
@@ -153,7 +249,7 @@ describe("clear-on-shrink status spacing", () => {
 			const context: ClearStatusContext = {
 				activeStatusIndicator: { kind: "working", dispose },
 				statusContainer: new Container(),
-				options: { uiMode },
+				options: { tuiMode },
 				ui: { getClearOnShrink: () => true },
 				idleStatus: new Text("", 0, 0),
 			};

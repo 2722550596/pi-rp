@@ -2,17 +2,26 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed terminal width accounting for Indic conjunct grapheme clusters ([#6124](https://github.com/earendil-works/pi/issues/6124) by [@petrroll](https://github.com/petrroll)).
-- Fixed phantom alternate-screen text selection from unmatched mouse events when changing terminal pane focus.
-- Fixed spaces in searchable settings queries changing the selected value instead of filtering multi-word labels.
-- Fixed alternate-screen Kitty images crossing vertical layout clip boundaries and overlapping sticky regions while scrolling.
-- Fixed alternate-screen redraws retransmitting Kitty image data, dropping adjacent row content when reusing placements, rendering fixed-basis scroll content twice per frame, and scanning clipped transcript rows while painting.
+## [0.84.1] - 2026-08-07
 
 ### Added
 
+- Added unbound half-page transcript scrolling actions, `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown`, for fullscreen TUI keybindings ([#7735](https://github.com/earendil-works/pi/issues/7735)).
+- Added double-click word and whitespace selection, granularity-aware drag selection, and triple-click paragraph selection in the fullscreen TUI ([#7725](https://github.com/earendil-works/pi/issues/7725), [#7733](https://github.com/earendil-works/pi/pull/7733) by [@volsa](https://github.com/volsa)).
+- Added an optional right-click paste handler to the alternate-screen TUI, currently enabled on Windows.
+
+### Fixed
+
+- Fixed LaTeX relation, multiplication, and named-operator spacing, and correctly composed matrices with stacked fractions, operator limits, and adjacent matrices.
+- Reduced fullscreen mouse event volume under tmux, Zellij, and GNU Screen by using button-motion tracking instead of all-motion tracking.
+
+## [0.84.0] - 2026-08-06
+
+### Added
+
+- Added terminal-friendly Unicode rendering for LaTeX expressions in Markdown, including inline and display math, fractions, scripts, common symbols, aligned equations, cases, and matrices.
 - Added the shared `TuiMode` type and `mode` discriminants to the main-screen and alternate-screen TUI renderers.
+- Added TUI lifecycle and render-state handoff APIs for replacing renderers without replaying main-screen content.
 - Exported the bundled `Marked` parser and token types.
 - Added width-aware source transforms to the `Markdown` component.
 - Added interface-compatible main-screen and alternate-screen TUI renderers with application-owned scrolling ([#7304](https://github.com/earendil-works/pi/issues/7304)).
@@ -20,6 +29,31 @@
 - Added edge auto-scrolling for alternate-screen drag selection across off-screen scroll-view content.
 - Added proportional scrollbars with mouse dragging, Home/End document navigation, transient `auto` mode, and an `always` mode that reserves the rightmost column; scrollbar modes can be changed at runtime.
 - Added page scrolling and OSC 133 semantic prompt navigation to the alternate-screen viewport.
+- Added configurable previous/next prompt history actions for navigation independent of vertical cursor movement.
+- Added stacked transient notifications to the alternate-screen renderer ([#7361](https://github.com/earendil-works/pi/pull/7361)).
+
+### Changed
+
+- Reduced the default alternate-screen mouse wheel step from three lines to one for finer scrolling.
+
+### Fixed
+
+- Fixed Windows Shift+Enter detection by extending the native Win32 helper to report modifier key state.
+- Fixed the npm package omitting the source and build script needed to rebuild the Windows native addon.
+- Fixed the npm package omitting the source and build script needed to rebuild the Darwin native addon.
+- Fixed Windows console truecolor detection when Windows Terminal does not provide `WT_SESSION` to child shells.
+- Fixed terminal width accounting for Indic conjunct grapheme clusters ([#6987](https://github.com/earendil-works/pi/pull/6987) by [@petrroll](https://github.com/petrroll)).
+- Fixed phantom alternate-screen text selection from unmatched mouse events when changing terminal pane focus.
+- Fixed spaces in searchable settings queries changing the selected value instead of filtering multi-word labels.
+- Fixed alternate-screen Kitty images crossing vertical layout clip boundaries and overlapping sticky regions while scrolling.
+- Fixed alternate-screen redraws retransmitting Kitty image data when placements move or recently offscreen images return, dropping adjacent row content when reusing placements, rendering fixed-basis scroll content twice per frame, and scanning clipped transcript rows while painting.
+- Fixed fullscreen transcript navigation leaving no editor-accessible `Home`, `End`, `PageUp`, or `PageDown` variants by adding Ctrl-modified editor bindings ([#7574](https://github.com/earendil-works/pi/issues/7574)).
+- Fixed keyboard input rendering latency on Windows by letting input preempt the throttled render timer.
+- Fixed nested stack layouts ignoring child minimum sizes.
+- Fixed batched terminal color-scheme reports being parsed as one malformed response ([#7550](https://github.com/earendil-works/pi/pull/7550)).
+- Fixed terminal progress clearing to emit the complete OSC 9;4 sequence ([#7581](https://github.com/earendil-works/pi/pull/7581)).
+- Fixed iTerm2 image payloads omitting the size metadata required by the xterm.js image addon ([#7612](https://github.com/earendil-works/pi/pull/7612)).
+- Fixed width truncation leaving OSC 8 hyperlinks unterminated ([#7657](https://github.com/earendil-works/pi/pull/7657) by [@xXJSONDeruloXx](https://github.com/xXJSONDeruloXx)).
 
 ## [0.83.0] - 2026-07-29
 

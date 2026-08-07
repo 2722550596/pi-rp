@@ -396,6 +396,28 @@ describe("totalTokens field", () => {
 	});
 
 	// =========================================================================
+	// Baseten
+	// =========================================================================
+
+	describe.skipIf(!process.env.BASETEN_API_KEY)("Baseten", () => {
+		it("GLM 5.2 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
+			const llm = getModel("baseten", "zai-org/GLM-5.2");
+
+			console.log(`\nBaseten / ${llm.id}:`);
+			const { first, second } = await testTotalTokensWithCache(llm, {
+				apiKey: process.env.BASETEN_API_KEY,
+				reasoningEffort: "high",
+			});
+
+			logUsage("First request", first);
+			logUsage("Second request", second);
+
+			assertTotalTokensEqualsComponents(first);
+			assertTotalTokensEqualsComponents(second);
+		});
+	});
+
+	// =========================================================================
 	// z.ai
 	// =========================================================================
 
@@ -570,6 +592,31 @@ describe("totalTokens field", () => {
 				const llm = getModel("qwen-token-plan", "qwen3.7-max");
 
 				console.log(`\nQwen Token Plan / ${llm.id}:`);
+				const { first, second } = await testTotalTokensWithCache(llm, {
+					apiKey: process.env.QWEN_TOKEN_PLAN_API_KEY,
+				});
+
+				logUsage("First request", first);
+				logUsage("Second request", second);
+
+				assertTotalTokensEqualsComponents(first);
+				assertTotalTokensEqualsComponents(second);
+			},
+		);
+	});
+
+	// =========================================================================
+	// Qwen Token Plan Individual
+	// =========================================================================
+
+	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_API_KEY)("Qwen Token Plan Individual", () => {
+		it(
+			"qwen3.8-max - should return totalTokens equal to sum of components",
+			{ retry: 3, timeout: 60000 },
+			async () => {
+				const llm = getModel("qwen-token-plan-individual", "qwen3.8-max");
+
+				console.log(`\nQwen Token Plan Individual / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, {
 					apiKey: process.env.QWEN_TOKEN_PLAN_API_KEY,
 				});

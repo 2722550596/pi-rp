@@ -13,6 +13,7 @@ import {
 	deleteAllKittyPlacements,
 	deleteKittyImage,
 	detectCapabilities,
+	encodeITerm2,
 	encodeKitty,
 	getKittyImageMetadata,
 	getKittyImagePlacement,
@@ -375,6 +376,13 @@ describe("detectCapabilities", () => {
 	});
 });
 
+describe("iTerm2 image encoding", () => {
+	it("includes the decoded payload size in OSC 1337 metadata", () => {
+		const sequence = encodeITerm2("AAAA", { width: 2, height: "auto" });
+		assert.strictEqual(sequence, "\x1b]1337;File=inline=1;size=3;width=2;height=auto:AAAA\x07");
+	});
+});
+
 describe("Kitty image cursor movement", () => {
 	it("can request no terminal-side cursor movement", () => {
 		const sequence = encodeKitty("AAAA", { columns: 2, rows: 2, moveCursor: false });
@@ -450,6 +458,8 @@ describe("Kitty image cursor movement", () => {
 		const line = `left ${cropKittyImageLine(transmission, 2, 1)} right`;
 		const placement = getKittyImagePlacement(line);
 		assert.ok(placement);
+		assert.strictEqual(placement.transmissionBytes, line.length - "left ".length - " right".length);
+		assert.strictEqual(placement.estimatedDecodedBytes, 100 * 100 * 4);
 		assert.strictEqual(placement.sequence, "\x1b_Ga=p,q=2,C=1,c=3,i=42,y=66,h=34,r=1\x1b\\");
 		assert.strictEqual(placement.replacementLine, `left ${placement.sequence} right`);
 		assert.ok(!placement.replacementLine.includes("AAAA"));

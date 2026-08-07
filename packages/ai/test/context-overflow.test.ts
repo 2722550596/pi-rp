@@ -125,9 +125,10 @@ describe("Context overflow error handling", () => {
 	describe("GitHub Copilot (OAuth)", () => {
 		// Google model via Copilot
 		it.skipIf(!githubCopilotToken)(
-			"gemini-3.5-flash - should detect overflow via isContextOverflow",
+			"Google model - should detect overflow via isContextOverflow",
 			async () => {
-				const model = getModel("github-copilot", "gemini-3.5-flash");
+				const model = getModels("github-copilot").find((candidate) => candidate.id.startsWith("gemini-"));
+				if (!model) throw new Error("No Google models available through GitHub Copilot");
 				const result = await testContextOverflow(model, githubCopilotToken!);
 				logResult(result);
 
@@ -469,6 +470,18 @@ describe("Context overflow error handling", () => {
 	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_API_KEY)("Qwen Token Plan", () => {
 		it("qwen3.7-max - should detect overflow via isContextOverflow", async () => {
 			const model = getModel("qwen-token-plan", "qwen3.7-max");
+			const result = await testContextOverflow(model, process.env.QWEN_TOKEN_PLAN_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toMatch(/input length/i);
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
+	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_API_KEY)("Qwen Token Plan Individual", () => {
+		it("qwen3.8-max - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("qwen-token-plan-individual", "qwen3.8-max");
 			const result = await testContextOverflow(model, process.env.QWEN_TOKEN_PLAN_API_KEY!);
 			logResult(result);
 
