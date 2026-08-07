@@ -101,7 +101,7 @@ describe("openai-completions state_update schema", () => {
 		expect("oneOf" in parameters).toBe(false);
 
 		// op must be a flat string enum, not a nested anyOf of const literals.
-		const op = parameters.properties!.op as Record<string, unknown>;
+		const op = (parameters.properties as Record<string, unknown>).op as Record<string, unknown>;
 		expect(op.type).toBe("string");
 		expect(op.enum).toEqual(["add", "remove", "replace", "merge"]);
 		expect("anyOf" in op).toBe(false);

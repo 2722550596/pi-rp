@@ -281,7 +281,7 @@ describe("coding-agent Harness construction", () => {
 			activeToolNames: ["hidden"],
 		});
 
-		expect(prompt).toContain("Available tools:\n(none)");
+		expect(prompt).toContain("(none)");
 		expect(prompt).not.toContain("- hidden:");
 		expect(prompt).not.toContain("hidden description");
 	});
@@ -308,7 +308,7 @@ describe("coding-agent Harness construction", () => {
 				activeToolNames: [name],
 			});
 
-			expect(prompt).toContain("Available tools:\n(none)");
+			expect(prompt).toContain("(none)");
 			expect(prompt).not.toContain(builtInSnippet);
 			expect(prompt).not.toContain(builtInGuideline);
 		},

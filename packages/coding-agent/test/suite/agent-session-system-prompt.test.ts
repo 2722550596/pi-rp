@@ -1,10 +1,10 @@
 import { strict as assert } from "node:assert";
-import test, { describe } from "node:test";
+import { describe, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createHarness } from "./harness.ts";
 
 describe("AgentSession - system prompt", () => {
-	test("Phase 0: context.systemPrompt remains empty across multiple turns when using presets", async () => {
+	it("Phase 0: context.systemPrompt remains empty across multiple turns when using presets", async () => {
 		const harness = await createHarness();
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("read", { path: "package.json" }), { stopReason: "toolUse" }),

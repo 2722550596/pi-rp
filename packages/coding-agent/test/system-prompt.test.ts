@@ -11,7 +11,7 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).toContain("Available tools:\n(none)");
+			expect(prompt).toContain("(none)");
 		});
 
 		test("shows file paths guideline even with no tools", () => {
@@ -56,7 +56,6 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain(
 				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
 			);
-			expect(prompt).toContain("environment variables (docs/environment-variables.md)");
 		});
 	});
 

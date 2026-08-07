@@ -114,7 +114,11 @@ describe("AuthStorage", () => {
 	});
 
 	test("keeps a coalesced reload alive while another credential reader is waiting", async () => {
-		writeAuthJson({ anthropic: { type: "api_key", key: "old" } });
+		// The first write must differ from the second in file size as well as content:
+		// getFileRevision() compares dev:ino:size:mtime, and on filesystems with coarse
+		// mtime granularity two same-size rewrites can share a timestamp, which would
+		// make the revision check miss the external change entirely.
+		writeAuthJson({ anthropic: { type: "api_key", key: "old-value-that-differs-in-length" } });
 		const storage = AuthStorage.create(authJsonPath);
 		writeAuthJson({ anthropic: { type: "api_key", key: "new" } });
 		let grantLock: (() => void) | undefined;

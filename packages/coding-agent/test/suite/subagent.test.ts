@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import test, { describe } from "node:test";
+import { describe, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import {
 	createSubagentProfilesToolDefinition,
@@ -10,7 +10,7 @@ import { runSubagent } from "../../src/core/subagent/run.ts";
 import { createHarness } from "./harness.ts";
 
 describe("Subagent", () => {
-	test("Phase 1: prepareSubagentConversation handles unknown presets", async () => {
+	it("Phase 1: prepareSubagentConversation handles unknown presets", async () => {
 		const harness = await createHarness();
 		try {
 			const result = await prepareSubagentConversation({
@@ -30,7 +30,7 @@ describe("Subagent", () => {
 		}
 	});
 
-	test("Phase 2: runSubagent correctly streams and truncates output", async () => {
+	it("Phase 2: runSubagent correctly streams and truncates output", async () => {
 		const harness = await createHarness();
 		harness.faux.setResponses([fauxAssistantMessage("Task completed successfully. ".repeat(100))]);
 
@@ -55,7 +55,7 @@ describe("Subagent", () => {
 		}
 	});
 
-	test("Phase 3: Tools and commands are correctly formatted", async () => {
+	it("Phase 3: Tools and commands are correctly formatted", async () => {
 		const harness = await createHarness();
 		try {
 			const profilesTool = createSubagentProfilesToolDefinition(harness.session);

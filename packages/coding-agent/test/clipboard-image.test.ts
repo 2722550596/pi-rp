@@ -1,6 +1,19 @@
 import type { SpawnSyncReturns } from "child_process";
-import { writeFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+
+/**
+ * isWSL() falls back to reading /proc/version, so the "Non-Wayland" tests
+ * (which exercise the generic Linux path) cannot run on WSL hosts: the code
+ * legitimately detects WSL there and routes through wl-paste/PowerShell.
+ */
+const isWslHost = (() => {
+	try {
+		return /microsoft|wsl/i.test(readFileSync("/proc/version", "utf-8"));
+	} catch {
+		return false;
+	}
+})();
 
 const mocks = vi.hoisted(() => {
 	return {
@@ -145,7 +158,7 @@ describe("readClipboardImage", () => {
 		expect(Array.from(result?.bytes ?? [])).toEqual([4, 5, 6]);
 	});
 
-	test("Non-Wayland: uses clipboard", async () => {
+	test.skipIf(isWslHost)("Non-Wayland: uses clipboard", async () => {
 		mocks.spawnSync.mockImplementation(() => {
 			throw new Error(
 				"spawnSync should not be called for non-Wayland sessions when native clipboard returns an image",
@@ -162,7 +175,7 @@ describe("readClipboardImage", () => {
 		expect(Array.from(result?.bytes ?? [])).toEqual([7]);
 	});
 
-	test("Non-Wayland: falls back to xclip when clipboard has no image", async () => {
+	test.skipIf(isWslHost)("Non-Wayland: falls back to xclip when clipboard has no image", async () => {
 		mocks.spawnSync.mockImplementation((command, args, _options) => {
 			if (command === "xclip" && args.includes("TARGETS")) {
 				return spawnOk(Buffer.from("image/png\n", "utf-8"));
