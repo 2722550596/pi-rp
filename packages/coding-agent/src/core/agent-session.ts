@@ -1124,6 +1124,49 @@ export class AgentSession {
 		}
 		return Array.from(unique);
 	}
+	/**
+	 * Restore StateManager state + SchemaValidator schemas from the session's
+	 * active leaf path. Walks entries backward from the current leaf, applying
+	 * the latest state snapshot and the latest schema_change per namespace.
+	 * Shared by first-time session load (_rebuildSystemPrompt) and navigateTree
+	 * (rollback), which must also rewind state to the target branch.
+	 */
+	private _restoreStateFromSessionEntries(): void {
+		// Leaf-path entry list: tree traversal from current leaf to root,
+		// compaction-aware (state entries included). SessionManager.buildContextEntries()
+		// passes this.byId internally, so this is exactly the active branch.
+		const entries = this.sessionManager.buildContextEntries();
+
+		// Restore state from session entries: latest state entry on the active path
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (e.type === "state") {
+				this._stateManager.load(e.state);
+				break;
+			}
+		}
+
+		// Restore schemas: latest action per namespace, backward from leaf
+		const schemaActions: Array<{ action: "load" | "unload"; schemaId: string; namespace: string }> = [];
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (e.type === "schema_change") {
+				if (!schemaActions.some((a) => a.namespace === e.namespace)) {
+					schemaActions.push({ action: e.action, schemaId: e.schemaId, namespace: e.namespace });
+				}
+			}
+		}
+		for (const a of schemaActions) {
+			if (a.action === "load") {
+				const def = this._loadedSchemaDefs.find((s) => s.schemaId === a.schemaId);
+				if (def) {
+					this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
+					this.applySchemaDefaults(def.namespace);
+				}
+			}
+		}
+	}
+
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		if (this._loadedPresets.length === 0) {
 			this._loadedPresets = loadPromptPresets(this._cwd, getAgentDir());
@@ -1150,36 +1193,9 @@ export class AgentSession {
 
 			// No initial write needed — sdk.ts handles that for new sessions
 
-			// Restore state from session entries
-			for (let i = entries.length - 1; i >= 0; i--) {
-				const e = entries[i];
-				if (e.type === "state") {
-					this._stateManager.load(e.state);
-					break;
-				}
-			}
-
-			// Restore schemas from session entries
-			// Walk backward collecting the latest action per namespace
-			const schemaActions: Array<{ action: "load" | "unload"; schemaId: string; namespace: string }> = [];
-			for (let i = entries.length - 1; i >= 0; i--) {
-				const e = entries[i];
-				if (e.type === "schema_change") {
-					if (!schemaActions.some((a) => a.namespace === e.namespace)) {
-						schemaActions.push({ action: e.action, schemaId: e.schemaId, namespace: e.namespace });
-					}
-				}
-			}
-			// Apply load actions (skip unloads — they mean the namespace has no schema)
-			for (const a of schemaActions) {
-				if (a.action === "load") {
-					const def = this._loadedSchemaDefs.find((s) => s.schemaId === a.schemaId);
-					if (def) {
-						this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
-						this.applySchemaDefaults(def.namespace);
-					}
-				}
-			}
+			// Restore StateManager state + SchemaValidator schemas from the
+			// session's active leaf path (shared with navigateTree rollback)
+			this._restoreStateFromSessionEntries();
 		}
 
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
@@ -3686,6 +3702,9 @@ export class AgentSession {
 
 			// Update agent state
 			this._syncAgentStateFromSession();
+
+			// Restore StateManager state + schemas to the target branch (rollback)
+			this._restoreStateFromSessionEntries();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({
