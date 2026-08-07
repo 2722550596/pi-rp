@@ -54,4 +54,9 @@ if [[ "$NO_ENV" == "true" ]]; then
   echo "Running without API keys..."
 fi
 
+if [[ ! -f "$SCRIPT_DIR/packages/ai/src/providers/data/amazon-bedrock.json" ]]; then
+  echo "Hydrating model data..."
+  npm --prefix "$SCRIPT_DIR/packages/ai" run hydrate-model-data >/dev/null 2>&1 || true
+fi
+
 "$SCRIPT_DIR/node_modules/.bin/tsx" --tsconfig "$SCRIPT_DIR/tsconfig.json" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}
