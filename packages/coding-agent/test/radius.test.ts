@@ -112,7 +112,16 @@ describe("Radius provider", () => {
 	});
 
 	it("does not fetch or expose Radius models without configured auth", async () => {
-		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		// Reject network calls outright: ambient API keys in the environment
+		// (e.g. XIAOMI_API_KEY) resolve as credentials for other providers, whose
+		// create-time catalog refresh would otherwise hit the real network and
+		// hang on unreachable endpoints. The assertions below only care that no
+		// Radius catalog request happens.
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () => {
+				throw new TypeError("network access disabled in test");
+			});
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory(),
 			modelsStore: new InMemoryModelsStore(),

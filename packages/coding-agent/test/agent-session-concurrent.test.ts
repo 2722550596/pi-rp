@@ -16,7 +16,7 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -59,6 +59,13 @@ function createAssistantMessage(text: string): AssistantMessage {
 }
 
 describe("AgentSession concurrent prompt guard", () => {
+	// These tests exercise concurrency guards, not timing. The default 30s
+	// bound is too tight under full-suite parallel load on slow machines
+	// (cold module transforms + several workers per core), producing
+	// load-dependent timeouts in createSession. 60s still fails any real
+	// deadlock.
+	vi.setConfig({ testTimeout: 60_000 });
+
 	let session: AgentSession;
 	let tempDir: string;
 
@@ -110,7 +117,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const authStorage = AuthStorage.inMemory();
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		// Set a runtime API key so validation passes
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
@@ -133,11 +140,9 @@ describe("AgentSession concurrent prompt guard", () => {
 		// Start first prompt (don't await, it will block until abort)
 		const firstPrompt = session.prompt("First message");
 
-		// Wait a tick for isStreaming to be set
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		// Verify we're streaming
-		expect(session.isStreaming).toBe(true);
+		// isStreaming is set asynchronously; poll instead of assuming a fixed
+		// tick, which starves under parallel full-suite load.
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		// Second prompt should reject
 		await expect(session.prompt("Second message")).rejects.toThrow(
@@ -154,7 +159,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		// Start first prompt
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		// steer should work while streaming
 		expect(() => session.steer("Steering message")).not.toThrow();
@@ -170,7 +175,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		// Start first prompt
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		// followUp should work while streaming
 		expect(() => session.followUp("Follow-up message")).not.toThrow();
@@ -235,7 +240,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const authStorage = AuthStorage.inMemory();
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 
@@ -265,8 +270,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(session.isStreaming).toBe(true);
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		const pi = (
 			globalThis as typeof globalThis & {
@@ -278,9 +282,8 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(pi).toBeDefined();
 
 		pi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
-		await new Promise((resolve) => setTimeout(resolve, 25));
 
-		expect(session.pendingMessageCount).toBe(1);
+		await vi.waitFor(() => expect(session.pendingMessageCount).toBe(1));
 		expect(session.getSteeringMessages()).toContain("Steer from extension");
 		expect(lastInputSource).toBe("extension");
 		expect(queueEvents.some((event) => event.steering.includes("Steer from extension"))).toBe(true);
@@ -313,7 +316,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const authStorage = AuthStorage.inMemory();
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 
@@ -419,7 +422,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const authStorage = AuthStorage.inMemory();
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 
@@ -566,7 +569,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const authStorage = AuthStorage.inMemory();
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 
