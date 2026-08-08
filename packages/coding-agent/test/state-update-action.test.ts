@@ -95,3 +95,26 @@ describe("pi.updateState", () => {
 		expect(harness.session.stateManager.get("stat_data.name")).toBe("x");
 	});
 });
+
+describe("StateManager.load() notifies subscribers", () => {
+	it("onStateChange handler fires after load()", async () => {
+		const { harness, pi } = await setup();
+
+		const received: Record<string, unknown>[] = [];
+		const unsub = pi.onStateChange((state) => received.push(state));
+
+		// load() is called internally on rollback/session-restore (agent-session.ts).
+		// Clear the initial state so we only observe the load() notification.
+		received.length = 0;
+
+		harness.session.stateManager.load({ world: { day: 5, clock: "12:00" } });
+
+		expect(received).toHaveLength(1);
+		expect(received[0]).toEqual({ world: { day: 5, clock: "12:00" } });
+
+		// After unsubscribe, load() must not call the handler.
+		unsub();
+		harness.session.stateManager.load({ world: { day: 9 } });
+		expect(received).toHaveLength(1);
+	});
+});

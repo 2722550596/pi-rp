@@ -252,6 +252,7 @@ export class StateManager {
 
 	load(data: Record<string, unknown>): void {
 		this._data = structuredClone(data) as Record<string, JsonValue>;
+		this._notify();
 	}
 
 	/** Fill missing keys from `defaults` (existing values win, recursively). */

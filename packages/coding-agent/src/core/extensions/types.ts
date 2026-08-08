@@ -1337,8 +1337,10 @@ export interface ExtensionAPI {
 
 	/**
 	 * Subscribe to state changes. The handler receives the full state snapshot
-	 * after every mutation. Returns an unsubscribe function.
+	 * after every mutation (including session restore/rollback via load()).
+	 * Returns an unsubscribe function.
 	 */
+	onStateChange(handler: (state: Record<string, unknown>) => void): () => void;
 
 	/**
 	 * Apply one state mutation and persist it to the session, exactly like the
