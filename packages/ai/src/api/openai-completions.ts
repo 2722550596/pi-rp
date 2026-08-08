@@ -1343,6 +1343,25 @@ export function convertMessages(
 	return params;
 }
 
+/**
+ * Recursively strip TypeBox internal marker fields (prefixed with ~) from a JSON Schema.
+ * These markers (~optional, ~unsafe, ~kind) are non-standard and rejected by some
+ * providers (e.g. Gemini via OpenAI-compatible proxy). Object.entries only visits
+ * enumerable own keys, so non-enumerable markers on pi's built-in tools are naturally
+ * excluded; enumerable markers from extension-registered tools are explicitly skipped.
+ */
+function stripTypeBoxMarkers(schema: unknown): unknown {
+	if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+		return schema;
+	}
+	const result: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(schema)) {
+		if (key.startsWith("~")) continue;
+		result[key] = stripTypeBoxMarkers(value);
+	}
+	return result;
+}
+
 function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
@@ -1372,7 +1391,7 @@ function convertTools(
 			function: {
 				name: tool.name,
 				description: tool.description,
-				parameters: tool.parameters as Record<string, unknown>, // TypeBox already generates JSON Schema
+				parameters: stripTypeBoxMarkers(tool.parameters) as Record<string, unknown>,
 				// Only include strict if provider supports it. Some reject unknown fields.
 				...(compat.supportsStrictMode !== false && { strict: strict ?? false }),
 			},
