@@ -1,9 +1,45 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "../src/core/extensions/types.ts";
-import { createHarnessWithExtensions, type Harness } from "./test-harness.ts";
-import { getSlot } from "../src/core/prompt-preset/slot-renderers.ts";
 import { getMacro } from "../src/core/prompt-preset/macro-engine.ts";
-import type { SlotDefinition, MacroDefinition } from "../src/core/prompt-preset/types.ts";
+import { getSlot } from "../src/core/prompt-preset/slot-renderers.ts";
+import type {
+	MacroDefinition,
+	MacroRenderContext,
+	SlotDefinition,
+	SlotRenderContext,
+} from "../src/core/prompt-preset/types.ts";
+import { createHarnessWithExtensions, type Harness } from "./test-harness.ts";
+
+function slotContext(state: Record<string, unknown> = {}): SlotRenderContext {
+	return {
+		runtime: {
+			options: { cwd: "" },
+			messages: [],
+			now: new Date(),
+			variables: {},
+			skills: [],
+			state,
+		},
+		item: { kind: "slot", id: "test", slot: "custom-slot" },
+		preset: { schemaVersion: 1, id: "test", items: [] },
+		diagnostics: [],
+	};
+}
+
+function macroContext(opts: { params?: string; variables?: Record<string, string> } = {}): MacroRenderContext {
+	return {
+		runtime: {
+			options: { cwd: "" },
+			messages: [],
+			now: new Date(),
+			variables: opts.variables ?? {},
+			skills: [],
+			state: {},
+		},
+		variables: opts.variables ?? {},
+		...(opts.params !== undefined ? { params: opts.params } : {}),
+	};
+}
 
 const setups: Harness[] = [];
 
@@ -42,14 +78,7 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			expect(slot!.name).toBe("custom-slot");
 			expect(slot!.description).toBe("A custom slot for testing");
 
-			const ctx = {
-				runtime: { state: {}, messages: [] },
-				item: { kind: "slot" as const, id: "test", slot: "custom-slot" },
-				preset: { schemaVersion: 1, id: "test", items: [] },
-				diagnostics: [],
-			} as unknown as { runtime: { state: Record<string, unknown>; messages: unknown[] }; item: { kind: "slot"; id: string; slot: string }; preset: { schemaVersion: number; id: string; items: unknown[] }; diagnostics: unknown[] };
-
-			expect(slot!.render(ctx)).toBe("custom slot content");
+			expect(slot!.render(slotContext())).toBe("custom slot content");
 		});
 
 		it("custom slot can access runtime state and variables", async () => {
@@ -69,23 +98,8 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			const slot = getSlot("stateful-slot");
 			expect(slot).toBeDefined();
 
-			const ctxWithState = {
-				runtime: { state: { testValue: "hello" }, messages: [] },
-				item: { kind: "slot" as const, id: "test", slot: "stateful-slot" },
-				preset: { schemaVersion: 1, id: "test", items: [] },
-				diagnostics: [],
-			} as unknown as { runtime: { state: Record<string, unknown>; messages: unknown[] }; item: { kind: "slot"; id: string; slot: string }; preset: { schemaVersion: number; id: string; items: unknown[] }; diagnostics: unknown[] };
-
-			expect(slot!.render(ctxWithState)).toBe("state value: hello");
-
-			const ctxWithoutState = {
-				runtime: { state: {}, messages: [] },
-				item: { kind: "slot" as const, id: "test", slot: "stateful-slot" },
-				preset: { schemaVersion: 1, id: "test", items: [] },
-				diagnostics: [],
-			} as unknown as { runtime: { state: Record<string, unknown>; messages: unknown[] }; item: { kind: "slot"; id: string; slot: string }; preset: { schemaVersion: number; id: string; items: unknown[] }; diagnostics: unknown[] };
-
-			expect(slot!.render(ctxWithoutState)).toBe("state value: empty");
+			expect(slot!.render(slotContext({ testValue: "hello" }))).toBe("state value: hello");
+			expect(slot!.render(slotContext())).toBe("state value: empty");
 		});
 
 		it("custom slot persists across extension reloads within same process", async () => {
@@ -101,7 +115,7 @@ describe("ExtensionAPI - prompt preset registration", () => {
 
 			const slot = getSlot("persistent-slot");
 			expect(slot).toBeDefined();
-			expect(slot!.render({} as unknown as { runtime: { state: Record<string, unknown>; messages: unknown[] }; item: { kind: "slot"; id: string; slot: string }; preset: { schemaVersion: number; id: string; items: unknown[] }; diagnostics: unknown[] })).toBe("persisted");
+			expect(slot!.render(slotContext())).toBe("persisted");
 		});
 
 		it("overwrites existing custom slot with same name", async () => {
@@ -114,7 +128,7 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			});
 
 			let slot = getSlot("overwrite-slot");
-			expect(slot!.render({} as unknown as { runtime: { state: Record<string, unknown>; messages: unknown[] }; item: { kind: "slot"; id: string; slot: string }; preset: { schemaVersion: number; id: string; items: unknown[] }; diagnostics: unknown[] })).toBe("first");
+			expect(slot!.render(slotContext())).toBe("first");
 
 			pi.registerSlot({
 				name: "overwrite-slot",
@@ -123,7 +137,7 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			});
 
 			slot = getSlot("overwrite-slot");
-			expect(slot!.render({} as unknown as { runtime: { state: Record<string, unknown>; messages: unknown[] }; item: { kind: "slot"; id: string; slot: string }; preset: { schemaVersion: number; id: string; items: unknown[] }; diagnostics: unknown[] })).toBe("second");
+			expect(slot!.render(slotContext())).toBe("second");
 		});
 	});
 
@@ -144,12 +158,7 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			expect(macro!.name).toBe("custom-macro");
 			expect(macro!.description).toBe("A custom macro for testing");
 
-			const ctx = {
-				runtime: { state: {}, variables: {}, messages: [] },
-				variables: {},
-			} as unknown as { runtime: { state: Record<string, unknown>; variables: Record<string, string>; messages: unknown[] }; variables: Record<string, string> };
-
-			expect(macro!.render(ctx)).toBe("custom macro content");
+			expect(macro!.render(macroContext())).toBe("custom macro content");
 		});
 
 		it("custom macro can access runtime variables and params", async () => {
@@ -168,13 +177,9 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			const macro = getMacro("param-macro");
 			expect(macro).toBeDefined();
 
-			const ctx = {
-				runtime: { state: {}, variables: { testVar: "var-value" }, messages: [] },
-				variables: { testVar: "var-value" },
-				params: "test-param",
-			} as unknown as { runtime: { state: Record<string, unknown>; variables: Record<string, string>; messages: unknown[] }; variables: Record<string, string>; params: string };
-
-			expect(macro!.render(ctx)).toBe("param: test-param, var: var-value");
+			expect(macro!.render(macroContext({ params: "test-param", variables: { testVar: "var-value" } }))).toBe(
+				"param: test-param, var: var-value",
+			);
 		});
 
 		it("static macro is registered correctly", async () => {
@@ -204,7 +209,7 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			});
 
 			let macro = getMacro("overwrite-macro");
-			expect(macro!.render({} as unknown as { runtime: { state: Record<string, unknown>; variables: Record<string, string>; messages: unknown[] }; variables: Record<string, string> })).toBe("first");
+			expect(macro!.render(macroContext())).toBe("first");
 
 			pi.registerMacro({
 				name: "overwrite-macro",
@@ -213,7 +218,7 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			});
 
 			macro = getMacro("overwrite-macro");
-			expect(macro!.render({} as unknown as { runtime: { state: Record<string, unknown>; variables: Record<string, string>; messages: unknown[] }; variables: Record<string, string> })).toBe("second");
+			expect(macro!.render(macroContext())).toBe("second");
 		});
 	});
 
@@ -238,8 +243,8 @@ describe("ExtensionAPI - prompt preset registration", () => {
 
 			expect(slot).toBeDefined();
 			expect(macro).toBeDefined();
-			expect(slot!.render({} as unknown as { runtime: { state: Record<string, unknown>; messages: unknown[] }; item: { kind: "slot"; id: string; slot: string }; preset: { schemaVersion: number; id: string; items: unknown[] }; diagnostics: unknown[] })).toBe("slot content");
-			expect(macro!.render({} as unknown as { runtime: { state: Record<string, unknown>; variables: Record<string, string>; messages: unknown[] }; variables: Record<string, string> })).toBe("macro content");
+			expect(slot!.render(slotContext())).toBe("slot content");
+			expect(macro!.render(macroContext())).toBe("macro content");
 		});
 
 		it("custom slot and macro work with built-in ones", async () => {
