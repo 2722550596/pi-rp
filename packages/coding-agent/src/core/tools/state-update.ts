@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Static, Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { type Static, Type } from "typebox";
 import type { SchemaValidator } from "../../state/schema-validator.ts";
 import type { JsonValue, StateDiffResult, StateManager, StateOp } from "../../state/state-manager.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
@@ -55,47 +55,47 @@ export function createStateUpdateToolDefinition(
 			_onUpdate,
 			_ctx: ExtensionContext,
 		): Promise<AgentToolResult<undefined>> => {
-		let result: StateDiffResult;
-		const p = params as StateUpdateParams;
+			let result: StateDiffResult;
+			const p = params as StateUpdateParams;
 
-		// op is a flat enum in the schema (no anyOf), so path is optional at the type
-		// level; but add/remove/replace require a path (the old Union enforced it).
-		if (p.op !== "merge" && (p.path === undefined || p.path === "")) {
-			return {
-				content: [{ type: "text", text: `state_update rejected: path is required for op "${p.op}"` }],
-				details: undefined,
-			};
-		}
+			// op is a flat enum in the schema (no anyOf), so path is optional at the type
+			// level; but add/remove/replace require a path (the old Union enforced it).
+			if (p.op !== "merge" && (p.path === undefined || p.path === "")) {
+				return {
+					content: [{ type: "text", text: `state_update rejected: path is required for op "${p.op}"` }],
+					details: undefined,
+				};
+			}
 
-		// StringEnum's Static widens to `string`; narrow to StateOp (matches state-manager.ts).
-		const op = p.op as StateOp;
-		const fullPath: string = op === "merge" ? "" : (p.path as string);
+			// StringEnum's Static widens to `string`; narrow to StateOp (matches state-manager.ts).
+			const op = p.op as StateOp;
+			const fullPath: string = op === "merge" ? "" : (p.path as string);
 
-		// Validate against schema + custom validators
-		const validation = schemaValidator.validate(
-			fullPath,
-			op,
-			p.value as JsonValue,
-			stateManager.snapshot() as Record<string, JsonValue>,
-		);
+			// Validate against schema + custom validators
+			const validation = schemaValidator.validate(
+				fullPath,
+				op,
+				p.value as JsonValue,
+				stateManager.snapshot() as Record<string, JsonValue>,
+			);
 
-		if (!validation.ok) {
-			return {
-				content: [{ type: "text", text: `state_update rejected: ${validation.reason}` }],
-				details: undefined,
-			};
-		}
+			if (!validation.ok) {
+				return {
+					content: [{ type: "text", text: `state_update rejected: ${validation.reason}` }],
+					details: undefined,
+				};
+			}
 
-		// Use corrected value if a custom validator modified it
-		const effectiveValue = validation.correctedValue ?? p.value;
+			// Use corrected value if a custom validator modified it
+			const effectiveValue = validation.correctedValue ?? p.value;
 
-		if (op === "merge") {
-			result = stateManager.apply({ op: "merge", value: effectiveValue as JsonValue });
-		} else {
-			result = stateManager.apply(fullPath, op, effectiveValue as JsonValue);
-		}
-		const text = `state: ${result.path} -> ${JSON.stringify(result.newValue)}`;
-		return { content: [{ type: "text", text }], details: undefined };
+			if (op === "merge") {
+				result = stateManager.apply({ op: "merge", value: effectiveValue as JsonValue });
+			} else {
+				result = stateManager.apply(fullPath, op, effectiveValue as JsonValue);
+			}
+			const text = `state: ${result.path} -> ${JSON.stringify(result.newValue)}`;
+			return { content: [{ type: "text", text }], details: undefined };
 		},
 	};
 }

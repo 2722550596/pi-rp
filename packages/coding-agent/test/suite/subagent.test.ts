@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
-import { describe, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { describe, it } from "vitest";
 import {
 	createSubagentProfilesToolDefinition,
 	createSubagentToolDefinition,

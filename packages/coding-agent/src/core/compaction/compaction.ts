@@ -593,7 +593,9 @@ export async function completeSummarization(
 		sessionId: uuidv7(),
 	};
 	const produce = async (): Promise<AssistantMessage> =>
-		streamFn ? (await streamFn(model, context, requestOptions)).result() : completeSimple(model, context, requestOptions);
+		streamFn
+			? (await streamFn(model, context, requestOptions)).result()
+			: completeSimple(model, context, requestOptions);
 	return retryAssistantCall(produce, retry, requestOptions.signal, callbacks);
 }
 

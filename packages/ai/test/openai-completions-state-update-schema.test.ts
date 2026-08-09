@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createStateUpdateToolDefinition } from "../../coding-agent/src/core/tools/state-update.ts";
+import { SchemaValidator } from "../../coding-agent/src/state/schema-validator.ts";
+import { StateManager } from "../../coding-agent/src/state/state-manager.ts";
 import { getModel, streamSimple } from "../src/compat.ts";
 import type { Tool } from "../src/types.ts";
-import { createStateUpdateToolDefinition } from "../../coding-agent/src/core/tools/state-update.ts";
-import { StateManager } from "../../coding-agent/src/state/state-manager.ts";
-import { SchemaValidator } from "../../coding-agent/src/state/schema-validator.ts";
 
 // Regression: the built-in `state_update` tool's parameters must serialize to a
 // JSON Schema with root `type: "object"` (and a flat string-enum `op`), because

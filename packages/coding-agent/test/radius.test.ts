@@ -117,11 +117,9 @@ describe("Radius provider", () => {
 		// create-time catalog refresh would otherwise hit the real network and
 		// hang on unreachable endpoints. The assertions below only care that no
 		// Radius catalog request happens.
-		const fetchSpy = vi
-			.spyOn(globalThis, "fetch")
-			.mockImplementation(async () => {
-				throw new TypeError("network access disabled in test");
-			});
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			throw new TypeError("network access disabled in test");
+		});
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory(),
 			modelsStore: new InMemoryModelsStore(),
