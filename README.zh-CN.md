@@ -80,8 +80,14 @@ pi-rp 持续关注上游 Pi，但不主动合入。RP 功能直接在 monorepo �
 
 ## Star 历史
 
-<a href="https://www.star-history.com/#2722550596%2Fpi-rp&type=Date">
-  <img src="https://api.star-history.com/svg?repos=2722550596%2Fpi-rp&type=date" alt="Star History Chart">
+## Star History
+
+<a href="https://www.star-history.com/?repos=2722550596%2Fpi-rp&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=2722550596/pi-rp&type=date&theme=dark&legend=top-left&sealed_token=M7qUeNHsq2vjzE1YJGRqbMiuTcNCsCeWZ7tbHjj9igeb29mZBJcRa0XZM0B_KUBUNPNmUiQw-ZBFIaDWsXetAqjGXy39JXDrJXLwESuft7hcx4sE75zINjvcRTIg1xR5tKAejEGNng_l6yTayhgOwP6H8INHe4zT1HKDnMvWiUumEceTK-ULJow1ZU85" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=2722550596/pi-rp&type=date&legend=top-left&sealed_token=M7qUeNHsq2vjzE1YJGRqbMiuTcNCsCeWZ7tbHjj9igeb29mZBJcRa0XZM0B_KUBUNPNmUiQw-ZBFIaDWsXetAqjGXy39JXDrJXLwESuft7hcx4sE75zINjvcRTIg1xR5tKAejEGNng_l6yTayhgOwP6H8INHe4zT1HKDnMvWiUumEceTK-ULJow1ZU85" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=2722550596/pi-rp&type=date&legend=top-left&sealed_token=M7qUeNHsq2vjzE1YJGRqbMiuTcNCsCeWZ7tbHjj9igeb29mZBJcRa0XZM0B_KUBUNPNmUiQw-ZBFIaDWsXetAqjGXy39JXDrJXLwESuft7hcx4sE75zINjvcRTIg1xR5tKAejEGNng_l6yTayhgOwP6H8INHe4zT1HKDnMvWiUumEceTK-ULJow1ZU85" />
+ </picture>
 </a>
 
 ## 许可证
