@@ -48,6 +48,8 @@ export interface Args {
 	offline?: boolean;
 	preset?: string;
 	schemas?: string[];
+	/** Enable state schema strict mode: reject state writes to paths not covered by a loaded schema. */
+	strict?: boolean;
 	tuiMode?: TuiMode;
 	verbose?: boolean;
 	projectTrustOverride?: boolean;
@@ -219,6 +221,8 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.diagnostics.push({ type: "error", message: "--schema requires a value" });
 			}
+		} else if (arg === "--strict") {
+			result.strict = true;
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
@@ -314,6 +318,7 @@ ${chalk.bold("Options:")}
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
   --preset <id>                  Activate prompt preset by ID (from .pi/prompt-presets/ or ~/.pi/agent/prompt-presets/)
   --schema <ids>                 Load state schemas by ID at startup (comma-separated; from .pi/schemas/ or ~/.pi/agent/schemas/)
+  --strict                       Enable state schema strict mode: reject state writes to paths not covered by a loaded schema
   --help, -h                     Show this help
   --version, -v                  Show version number
 

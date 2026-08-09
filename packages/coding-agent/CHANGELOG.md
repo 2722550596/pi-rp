@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `--strict` CLI flag to enable state schema strict mode at startup, rejecting state writes to paths not covered by a loaded schema. See [State Schemas](docs/state-schemas.md).
+
 ## [0.84.1] - 2026-08-07
 
 ### New Features

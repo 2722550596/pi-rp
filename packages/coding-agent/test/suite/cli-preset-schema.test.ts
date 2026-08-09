@@ -7,6 +7,7 @@ import { ENV_AGENT_DIR } from "../../src/config.ts";
 import { createAgentSession } from "../../src/core/sdk.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
+import type { JsonValue } from "../../src/state/state-manager.ts";
 
 describe("CLI --preset and --schema flags", () => {
 	let tempDir: string;
@@ -109,6 +110,33 @@ describe("CLI --preset and --schema flags", () => {
 		const { session, sessionDiagnostics } = await createAgentSession({ ...options, schemas: ["nope"] });
 
 		expect(sessionDiagnostics?.some((d) => /Schema "nope" not found/.test(d.message))).toBe(true);
+
+		session.dispose();
+	});
+
+	it("enables strict mode at startup when strict is set", async () => {
+		const options = baseOptions();
+		const { session } = await createAgentSession({ ...options, schemas: ["character"], strict: true });
+
+		expect(session.schemaValidator.isStrict()).toBe(true);
+
+		const state = session.stateManager.snapshot() as unknown as Record<string, JsonValue>;
+		const rejected = session.schemaValidator.validate("notes.todo", "replace", "x", state);
+		expect(rejected.ok).toBe(false);
+		if (!rejected.ok) expect(rejected.reason).toContain("Strict mode");
+		expect(session.schemaValidator.validate("character.name", "replace", "A", state).ok).toBe(true);
+
+		session.dispose();
+	});
+
+	it("leaves strict mode off by default", async () => {
+		const options = baseOptions();
+		const { session } = await createAgentSession({ ...options, schemas: ["character"] });
+
+		expect(session.schemaValidator.isStrict()).toBe(false);
+
+		const state = session.stateManager.snapshot() as unknown as Record<string, JsonValue>;
+		expect(session.schemaValidator.validate("notes.todo", "replace", "x", state).ok).toBe(true);
 
 		session.dispose();
 	});

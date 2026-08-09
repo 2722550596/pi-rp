@@ -229,6 +229,27 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--strict flag", () => {
+		test("parses --strict flag", () => {
+			const result = parseArgs(["--strict"]);
+			expect(result.strict).toBe(true);
+			expect(result.unknownFlags.size).toBe(0);
+		});
+
+		test("works alongside other flags", () => {
+			const result = parseArgs(["--strict", "--print", "--model", "gpt-4o", "hello"]);
+			expect(result.strict).toBe(true);
+			expect(result.print).toBe(true);
+			expect(result.model).toBe("gpt-4o");
+			expect(result.messages).toEqual(["hello"]);
+		});
+
+		test("is unset by default", () => {
+			const result = parseArgs([]);
+			expect(result.strict).toBeUndefined();
+		});
+	});
+
 	describe("--no-session flag", () => {
 		test("parses --no-session flag", () => {
 			const result = parseArgs(["--no-session"]);

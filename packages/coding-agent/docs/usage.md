@@ -210,6 +210,13 @@ cat README.md | pi -p "Summarize this text"
 | `--no-session` | Ephemeral mode; do not save |
 | `--name <name>`, `-n <name>` | Set session display name at startup |
 
+### State Schema Options
+
+| Option | Description |
+|--------|-------------|
+| `--schema <ids>` | Load state schemas by ID at startup (comma-separated); see [State Schemas](state-schemas.md) |
+| `--strict` | Enable state schema strict mode: reject state writes to paths not covered by a loaded schema |
+
 ### Tool Options
 
 | Option | Description |

@@ -64,6 +64,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	customTools?: ToolDefinition[];
 	preset?: string;
 	schemas?: string[];
+	strict?: boolean;
 }
 
 /**
@@ -221,5 +222,6 @@ export async function createAgentSessionFromServices(
 		sessionStartEvent: options.sessionStartEvent,
 		preset: options.preset,
 		schemas: options.schemas,
+		strict: options.strict,
 	});
 }

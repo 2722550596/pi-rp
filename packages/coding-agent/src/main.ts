@@ -548,6 +548,7 @@ function buildSessionOptions(
 	// Prompt preset + state schemas from CLI
 	if (parsed.preset) options.preset = parsed.preset;
 	if (parsed.schemas) options.schemas = [...parsed.schemas];
+	if (parsed.strict) options.strict = true;
 
 	return { options, cliThinkingFromModel, diagnostics };
 }
@@ -833,6 +834,7 @@ export async function main(args: string[], options?: MainOptions) {
 			customTools: sessionOptions.customTools,
 			preset: sessionOptions.preset,
 			schemas: sessionOptions.schemas,
+			strict: sessionOptions.strict,
 		});
 		if (created.sessionDiagnostics) diagnostics.push(...created.sessionDiagnostics);
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;

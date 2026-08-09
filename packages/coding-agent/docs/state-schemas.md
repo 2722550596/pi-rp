@@ -31,6 +31,12 @@ In Pi, load it:
 /schema load character
 ```
 
+Or start a session with it preloaded from the CLI:
+
+```bash
+pi --schema character --strict
+```
+
 Now `state_update` calls to `character.*` paths are validated:
 
 | Operation | Result |
@@ -112,6 +118,8 @@ When strict mode is on, writes to paths **not covered by any loaded schema** are
 ```
 
 Without strict mode (default), uncovered paths are freeform — the model can write anything to them.
+
+Strict mode can also be enabled at startup by combining the CLI flags: `pi --schema <id> --strict` loads the schema and enables strict mode before the first turn.
 
 ### Default Values & Initial State
 

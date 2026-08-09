@@ -89,6 +89,8 @@ export interface CreateAgentSessionOptions {
 	initialMessages?: AgentMessage[];
 	/** State schema IDs to load at startup, in order. Recorded as schema_change entries. */
 	schemas?: string[];
+	/** Enable state schema strict mode: reject state writes to paths not covered by a loaded schema. */
+	strict?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -457,6 +459,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				message: schemaResult.error ?? `Schema "${schemaId}" not found`,
 			});
 		}
+	}
+	if (options.strict) {
+		session.setStrictMode(true);
 	}
 	const extensionsResult = resourceLoader.getExtensions();
 
