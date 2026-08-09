@@ -78,6 +78,12 @@ npm run check        # Lint、格式化、类型检查
 
 pi-rp 持续关注上游 Pi，但不主动合入。RP 功能直接在 monorepo 内开发，不回馈上游。目标是做一个聚焦 RP 的发行版，而不是一堆需要长期维护的补丁。
 
+## Star 历史
+
+<a href="https://www.star-history.com/#2722550596%2Fpi-rp&type=Date">
+  <img src="https://api.star-history.com/svg?repos=2722550596%2Fpi-rp&type=date" alt="Star History Chart">
+</a>
+
 ## 许可证
 
 MIT —— 与上游 Pi 相同。
