@@ -78,6 +78,12 @@ npm run check        # Lint, format, and type check
 
 pi-rp tracks upstream Pi but does not actively merge. RP features are developed directly in this monorepo and are not upstreamed. The goal is a focused RP distribution, not a set of patches to maintain.
 
+## Star history
+
+<a href="https://www.star-history.com/#2722550596%2Fpi-rp&type=Date">
+  <img src="https://api.star-history.com/svg?repos=2722550596%2Fpi-rp&type=date" alt="Star History Chart">
+</a>
+
 ## License
 
 MIT — same as upstream Pi.
