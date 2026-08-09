@@ -56,6 +56,11 @@ export class SchemaValidator {
 		this._schemas.delete(namespace);
 	}
 
+	/** Remove all loaded schemas (used before re-applying on reload). */
+	clearSchemas(): void {
+		this._schemas.clear();
+	}
+
 	/** Register custom validators (typically loaded from .ts files) */
 	setCustomValidators(validators: CustomValidator[]): void {
 		this._validators = validators;

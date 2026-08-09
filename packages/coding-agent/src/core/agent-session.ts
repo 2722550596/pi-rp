@@ -1125,9 +1125,10 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 	/**
-	 * Restore StateManager state + SchemaValidator schemas from the session's
-	 * active leaf path. Walks entries backward from the current leaf, applying
-	 * the latest state snapshot and the latest schema_change per namespace.
+	 * Restore StateManager state + SchemaValidator schemas/strict mode from the
+	 * session's active leaf path. Walks entries backward from the current leaf,
+	 * applying the latest state snapshot, the latest schema_change per namespace,
+	 * and the latest strict_change entry.
 	 * Shared by first-time session load (_rebuildSystemPrompt) and navigateTree
 	 * (rollback), which must also rewind state to the target branch.
 	 */
@@ -1146,6 +1147,20 @@ export class AgentSession {
 			}
 		}
 
+		this._restoreSchemasFromEntries(entries);
+	}
+
+	/**
+	 * Re-apply loaded schemas and strict mode from session entries.
+	 * Clears all currently loaded schemas first, then replays the latest
+	 * schema_change per namespace and the latest strict_change entry.
+	 * Called on reload (after _loadedSchemaDefs is refreshed) and by
+	 * _restoreStateFromSessionEntries (first load / tree rollback).
+	 */
+	private _restoreSchemasFromEntries(entries: SessionEntry[]): void {
+		// Clear stale schemas so reload picks up file changes
+		this._schemaValidator.clearSchemas();
+
 		// Restore schemas: latest action per namespace, backward from leaf
 		const schemaActions: Array<{ action: "load" | "unload"; schemaId: string; namespace: string }> = [];
 		for (let i = entries.length - 1; i >= 0; i--) {
@@ -1163,6 +1178,15 @@ export class AgentSession {
 					this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
 					this.applySchemaDefaults(def.namespace);
 				}
+			}
+		}
+
+		// Restore strict mode: latest strict_change entry on the active path
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (e.type === "strict_change") {
+				this._schemaValidator.setStrict(e.enabled);
+				break;
 			}
 		}
 	}
@@ -1287,6 +1311,11 @@ export class AgentSession {
 	getLoadedSchemaDefs(): LoadedSchemaDef[] {
 		return this._loadedSchemaDefs;
 	}
+
+	/** Custom validators loaded from disk (for /validator list). */
+	getLoadedCustomValidators(): CustomValidator[] {
+		return this._loadedCustomValidators;
+	}
 	/** Merge a loaded schema's default values into state (existing values win). */
 	private applySchemaDefaults(namespace: string): void {
 		const defaults = this._schemaValidator.getDefaultValue(namespace);
@@ -1311,9 +1340,10 @@ export class AgentSession {
 		this.sessionManager.appendSchemaChange("unload", namespace, namespace);
 	}
 
-	/** Toggle strict mode. */
+	/** Toggle strict mode and record it as a session entry. */
 	setStrictMode(enabled: boolean): void {
 		this._schemaValidator.setStrict(enabled);
+		this.sessionManager.appendStrictChange(enabled);
 	}
 	/**
 	 * Set the active prompt preset by ID. Persists to session.
@@ -3193,6 +3223,10 @@ export class AgentSession {
 		this._loadedSchemaDefs = schemaResult.schemas;
 		this._loadedCustomValidators = loadCustomValidators(this._cwd, getAgentDir());
 		this._schemaValidator.setCustomValidators(this._loadedCustomValidators);
+		// Re-apply loaded schemas and strict mode from session entries so
+		// /reload picks up file changes (clears stale, replays schema_change
+		// + strict_change entries with the freshly loaded schema defs).
+		this._restoreSchemasFromEntries(this.sessionManager.buildContextEntries());
 
 		// Add state_update and get_state tools
 		this._baseToolDefinitions.set(

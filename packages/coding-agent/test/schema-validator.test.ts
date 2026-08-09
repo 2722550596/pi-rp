@@ -139,3 +139,27 @@ describe("SchemaValidator.validate — merge", () => {
 		expect(res.ok).toBe(false);
 	});
 });
+
+describe("SchemaValidator.clearSchemas", () => {
+	it("removes all loaded schemas", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s1", "character", Type.Object({ hp: Type.Number() }));
+		v.loadSchema("s2", "world", Type.Object({ name: Type.String() }));
+		expect(v.getActiveNamespaces()).toEqual(["character", "world"]);
+
+		v.clearSchemas();
+
+		expect(v.getActiveNamespaces()).toEqual([]);
+	});
+
+	it("makes previously covered paths freeform (non-strict)", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ hp: Type.Number({ minimum: 0 }) }));
+		v.clearSchemas();
+		const state: Record<string, JsonValue> = {};
+
+		// Previously would fail (minimum: 0); after clearSchemas it's freeform
+		const res = v.validate("character.hp", "replace", -5, state);
+		expect(res.ok).toBe(true);
+	});
+});

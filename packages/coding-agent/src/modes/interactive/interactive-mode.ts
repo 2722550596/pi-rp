@@ -3147,6 +3147,11 @@ export class InteractiveMode {
 				await this.handleSchemaCommand(text);
 				return;
 			}
+			if (text === "/validator" || text.startsWith("/validator ")) {
+				this.editor.setText("");
+				await this.handleValidatorCommand(text);
+				return;
+			}
 			if (text.startsWith("/prompt")) {
 				this.editor.setText("");
 				const parts = text.split(/\s+/);
@@ -6077,6 +6082,25 @@ export class InteractiveMode {
 		}
 
 		this.showError("Usage: /schema [list|load <id>|unload <ns>|strict [off]]");
+	}
+
+	private async handleValidatorCommand(text: string): Promise<void> {
+		const sub = text.split(/\s+/)[1];
+
+		if (!sub || sub === "list") {
+			const validators = this.session.getLoadedCustomValidators();
+			if (validators.length === 0) {
+				this.showStatus(
+					"No custom validators loaded. Create a .ts file in .pi/validators/ or ~/.pi/agent/validators/. Use /reload after changes.",
+				);
+				return;
+			}
+			const lines = validators.map((v) => `  ${v.namespace}.${v.path}`);
+			this.showStatus(`Custom validators (${validators.length}):\n${lines.join("\n")}`);
+			return;
+		}
+
+		this.showError("Usage: /validator [list]");
 	}
 
 	private async handlePromptCommand(): Promise<void> {

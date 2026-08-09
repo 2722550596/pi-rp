@@ -4,7 +4,13 @@
 
 ### Added
 
-- Added `--strict` CLI flag to enable state schema strict mode at startup, rejecting state writes to paths not covered by a loaded schema. See [State Schemas](docs/state-schemas.md).
+- Added `/validator` slash command to list loaded custom validators (namespace + path for each).
+
+### Fixed
+
+- Fixed `/reload` not re-applying schemas loaded via `/schema load`; loaded schemas are now cleared and re-applied from `schema_change` session entries with freshly loaded schema definitions.
+- Fixed strict mode not persisting across session recovery; `/schema strict` is now recorded as a `strict_change` session entry and restored on resume/rollback.
+- Fixed documentation incorrectly stating that custom validators receive a post-write state snapshot; the `state` argument is a pre-write snapshot of the namespace subtree.
 
 ## [0.84.1] - 2026-08-07
 

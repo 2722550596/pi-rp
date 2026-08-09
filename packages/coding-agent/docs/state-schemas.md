@@ -209,7 +209,7 @@ interface CustomValidator {
   validate: (
     value: JsonValue | undefined,  // The value being written
     path: string,                  // Full dot-notation path within the namespace
-    state: Readonly<JsonValue>,    // Readonly snapshot of the namespace subtree
+    state: Readonly<JsonValue>,    // Readonly PRE-WRITE snapshot of the namespace subtree
   ) => JsonValue | null;           // Return corrected value, or null to reject
 }
 ```
@@ -273,9 +273,11 @@ export const validators = [
     namespace: "character",
     path: "*",
     validate(value, _path, state) {
-      // When any attribute changes, update derived stats
-      // This runs after the write, so the state snapshot already reflects the change
-      // Return the value unchanged — we're just doing side-effect computation
+      // When any field changes, update derived stats
+      // NOTE: `state` is a PRE-WRITE snapshot of the namespace subtree.
+      // It does NOT reflect the pending mutation yet - the value being
+      // written is passed as the `value` argument, not in `state`.
+      // Return the value unchanged - we're just doing side-effect computation
       // (Note: you'd need to call state_update for the derived stat in a real ext)
       return value;
     },
@@ -292,9 +294,10 @@ export const validators = [
 | `/schema unload <ns>` | Unload a schema by namespace |
 | `/schema strict` | Enable strict mode |
 | `/schema strict off` | Disable strict mode |
+| `/validator list` | Show loaded custom validators (namespace + path for each) |
 | `/state [path]` | Show conversation state, optionally at a specific path. Tab-completes from current state keys. |
 
-Schema load/unload is recorded as `schema_change` entries in the session tree, just like `preset_change`. On session recovery, these entries are replayed in reverse order (latest action per namespace wins), and schema defaults are reapplied to fill any missing keys.
+Schema load/unload is recorded as `schema_change` entries and strict mode toggles as `strict_change` entries in the session tree, just like `preset_change`. On session recovery, these entries are replayed in reverse order (latest action per namespace wins for schemas; latest `strict_change` wins for strict mode), and schema defaults are reapplied to fill any missing keys. `/reload` re-reads schema and validator files from disk and re-applies the session's schema/strict entries, so file changes take effect without restarting.
 
 ## The `get_state` Tool
 
@@ -351,7 +354,7 @@ When the model calls `state_update`, the following happens in order:
 
 1. **Schema validation** — the projected namespace subtree is checked against the compiled TypeBox validator. If it fails, the write is rejected with an error message including the specific validation failures.
 
-2. **Custom validators** — matching validators (by `namespace` + `path`) run in sequence. Each receives the value from the previous validator. If any returns `null`, the write is rejected.
+2. **Custom validators** - matching validators (by `namespace` + `path`) run in sequence. Each receives the value from the previous validator, along with a **pre-write** snapshot of the namespace subtree (`state`). The pending mutation is NOT yet reflected in `state` - it is passed separately as `value`. If any validator returns `null`, the write is rejected.
 
 3. **Persist** — if both layers pass, the (possibly corrected) value is applied to the state and persisted as a `state` session entry.
 

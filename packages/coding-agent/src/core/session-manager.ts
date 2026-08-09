@@ -83,6 +83,11 @@ export interface SchemaChangeEntry extends SessionEntryBase {
 	namespace: string;
 }
 
+export interface StrictChangeEntry extends SessionEntryBase {
+	type: "strict_change";
+	enabled: boolean;
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -170,7 +175,8 @@ export type SessionEntry =
 	| LabelEntry
 	| SessionInfoEntry
 	| StateEntry
-	| SchemaChangeEntry;
+	| SchemaChangeEntry
+	| StrictChangeEntry;
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
@@ -1151,6 +1157,19 @@ export class SessionManager {
 			action,
 			schemaId,
 			namespace,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a strict mode change as child of current leaf, then advance leaf. Returns entry id. */
+	appendStrictChange(enabled: boolean): string {
+		const entry: StrictChangeEntry = {
+			type: "strict_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			enabled,
 		};
 		this._appendEntry(entry);
 		return entry.id;

@@ -385,7 +385,7 @@
           }
 
           // Apply filter mode
-          const isSettingsEntry = ['label', 'custom', 'model_change', 'preset_change', 'thinking_level_change'].includes(entry.type);
+          const isSettingsEntry = ['label', 'custom', 'model_change', 'preset_change', 'thinking_level_change', 'state', 'schema_change', 'strict_change'].includes(entry.type);
           let passesFilter = true;
 
           switch (filterMode) {
