@@ -489,6 +489,28 @@ export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent
 export const APP_NAME: string = piConfigName || "pi";
 export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
+export const ENV_PROJECT_CONFIG_DIR = `${APP_NAME.toUpperCase()}_PROJECT_CONFIG_DIR`;
+
+/**
+ * Get the project-local config directory name for a given cwd.
+ *
+ * Resolved at call time (not module load) so that `--config-dir` can set
+ * the env var before any discovery happens.
+ *
+ * Precedence: PI_PROJECT_CONFIG_DIR env var > package-configured CONFIG_DIR_NAME.
+ */
+export function getProjectConfigDirName(): string {
+	return process.env[ENV_PROJECT_CONFIG_DIR] || CONFIG_DIR_NAME;
+}
+
+/**
+ * Resolve the full path to a project-local config subdirectory.
+ * e.g. getProjectConfigDir(cwd, "prompt-presets") -> cwd/.pi/prompt-presets (or cwd/<custom>/prompt-presets)
+ */
+export function getProjectConfigDir(cwd: string, ...segments: string[]): string {
+	return join(cwd, getProjectConfigDirName(), ...segments);
+}
+
 export const VERSION: string = pkg.version || "0.0.0";
 
 // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR

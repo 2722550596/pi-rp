@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getProjectConfigDir } from "../../config.ts";
 import { validateRegexConfig } from "./regex-engine.ts";
 import { SUPPORTED_SLOTS } from "./slot-renderers.ts";
 import type {
@@ -27,13 +28,13 @@ export function promptPresetsDir(parentDir: string): string {
 }
 
 export function promptPresetsProjectDir(cwd: string): string {
-	return join(cwd, ".pi", PROMPT_PRESET_DIR);
+	return getProjectConfigDir(cwd, PROMPT_PRESET_DIR);
 }
 
 export function loadPromptPresets(cwd: string, agentDir?: string): LoadedPromptPreset[] {
 	const dirs: string[] = [];
 	if (agentDir) dirs.push(join(agentDir, PROMPT_PRESET_DIR));
-	dirs.push(join(cwd, ".pi", PROMPT_PRESET_DIR));
+	dirs.push(getProjectConfigDir(cwd, PROMPT_PRESET_DIR));
 
 	const presets: LoadedPromptPreset[] = [];
 	for (const dir of dirs) {

@@ -21,7 +21,7 @@ import { createJiti } from "jiti/static";
 import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
-import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir, getProjectConfigDir, isBunBinary } from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @earendil-works/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.ts";
@@ -754,7 +754,7 @@ export async function discoverAndLoadExtensions(
 	};
 
 	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
-	const localExtDir = path.join(resolvedCwd, CONFIG_DIR_NAME, "extensions");
+	const localExtDir = getProjectConfigDir(resolvedCwd, "extensions");
 	addPaths(discoverExtensionsInDir(localExtDir));
 
 	// 2. Global extensions: agentDir/extensions/

@@ -5,7 +5,7 @@
 import chalk from "chalk";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.ts";
+import { CONFIG_DIR_NAME, getAgentDir, getBinDir, getProjectConfigDir } from "./config.ts";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
 
 const MIGRATION_GUIDE_URL =
@@ -256,7 +256,7 @@ function checkDeprecatedExtensionDirs(baseDir: string, label: string): string[] 
  */
 function migrateExtensionSystem(cwd: string): string[] {
 	const agentDir = getAgentDir();
-	const projectDir = join(cwd, CONFIG_DIR_NAME);
+	const projectDir = getProjectConfigDir(cwd);
 
 	// Migrate commands/ to prompts/
 	migrateCommandsToPrompts(agentDir, "Global");

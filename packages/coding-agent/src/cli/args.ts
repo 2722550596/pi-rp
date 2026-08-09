@@ -50,6 +50,8 @@ export interface Args {
 	schemas?: string[];
 	/** Enable state schema strict mode: reject state writes to paths not covered by a loaded schema. */
 	strict?: boolean;
+	/** Override the project-local config directory name (default: .pi or package-configured) */
+	configDir?: string;
 	tuiMode?: TuiMode;
 	verbose?: boolean;
 	projectTrustOverride?: boolean;
@@ -221,6 +223,12 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.diagnostics.push({ type: "error", message: "--schema requires a value" });
 			}
+		} else if (arg === "--config-dir") {
+			if (i + 1 < args.length) {
+				result.configDir = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--config-dir requires a value" });
+			}
 		} else if (arg === "--strict") {
 			result.strict = true;
 		} else if (arg.startsWith("@")) {
@@ -310,6 +318,8 @@ ${chalk.bold("Options:")}
   --no-themes                    Disable theme discovery and loading
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file>                Export session file to HTML and exit
+  --config-dir <name>            Override the project-local config directory name (default: .pi)
+                                 Scanned for prompt-presets, schemas, validators, extensions, settings, and MCP config
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --tui-mode <mode>              TUI mode: regular (default) or fullscreen

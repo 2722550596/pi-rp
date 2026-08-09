@@ -15,7 +15,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { CONFIG_DIR_NAME } from "../../../config.ts";
+import { CONFIG_DIR_NAME, getProjectConfigDir } from "../../../config.ts";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
 import { canonicalizePath, isLocalPath, resolvePath } from "../../../utils/paths.ts";
@@ -848,7 +848,7 @@ class ResourceList implements Component, Focusable {
 	}
 
 	private getTopLevelBaseDir(scope: "user" | "project"): string {
-		return scope === "project" ? join(this.cwd, CONFIG_DIR_NAME) : this.agentDir;
+		return scope === "project" ? getProjectConfigDir(this.cwd) : this.agentDir;
 	}
 
 	private getResourcePattern(item: ResourceItem): string {
