@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Api } from "@earendil-works/pi-ai";
 import {
 	type AssistantMessage,
@@ -11,6 +14,8 @@ import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ModelRuntime } from "../../../src/core/model-runtime.ts";
 import { RequestGateway } from "../../../src/core/request-gateway.ts";
+import { createAgentSession } from "../../../src/core/sdk.ts";
+import { SessionManager } from "../../../src/core/session-manager.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../../../src/core/settings-manager.ts";
 
 /** Flush pending microtasks (acquire/resume/promote chains) plus one macrotask. */
@@ -140,9 +145,9 @@ describe("request gateway", () => {
 		const modelA = { ...model };
 		const modelB = { ...model };
 		const modelC = { ...model };
-		const sA = gateway.streamSimple(modelA, context, undefined, { sessionId: "?", priority: 0, label: "main" });
-		const sB = gateway.streamSimple(modelB, context, undefined, { sessionId: "?", priority: 0, label: "main" });
-		const sC = gateway.streamSimple(modelC, context, undefined, { sessionId: "?", priority: 2, label: "subagent" });
+		const sA = gateway.streamSimple(modelA, context, undefined, { sessionId: "?", priority: 2, label: "main" });
+		const sB = gateway.streamSimple(modelB, context, undefined, { sessionId: "?", priority: 0, label: "subagent" });
+		const sC = gateway.streamSimple(modelC, context, undefined, { sessionId: "?", priority: 2, label: "main" });
 		await flush();
 		expect(streams).toHaveLength(1);
 		expect(started[0]).toBe(modelA);
@@ -150,7 +155,7 @@ describe("request gateway", () => {
 		streams[0].push(doneEvent(fauxAssistantMessage("ok")));
 		await flush();
 		expect(streams).toHaveLength(2);
-		expect(started[1]).toBe(modelC); // priority 2 jumped the queue
+		expect(started[1]).toBe(modelC); // priority 2 (main) jumped ahead of priority 0 (subagent)
 
 		streams[1].push(doneEvent(fauxAssistantMessage("ok")));
 		await flush();
@@ -178,6 +183,26 @@ describe("request gateway", () => {
 		pending[1](fauxAssistantMessage("ok"));
 		await expect(p1).resolves.toMatchObject({ stopReason: "stop" });
 		await expect(p2).resolves.toMatchObject({ stopReason: "stop" });
+	});
+
+	it("reuses a passed request gateway instance", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-gw-"));
+		try {
+			const { runtime } = createFakeRuntime();
+			const gateway = new RequestGateway(runtime, { providers: {}, defaultMaxConcurrency: undefined });
+			const { session } = await createAgentSession({
+				cwd: tempDir,
+				agentDir: tempDir,
+				model,
+				sessionManager: SessionManager.inMemory(tempDir),
+				modelRuntime: runtime,
+				requestGateway: gateway,
+			});
+			expect(session.requestGateway).toBe(gateway);
+			session.dispose();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 });
 

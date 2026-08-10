@@ -17,7 +17,7 @@ import type { ModelRuntime } from "./model-runtime.ts";
 export interface RequestIdentity {
 	/** Placeholder "?"; real value from Phase 1b. */
 	sessionId: string;
-	/** 0=main loop, 1=compaction, 2=subagent. */
+	/** Larger value = higher priority. 2=main loop, 1=compaction, 0=subagent. */
 	priority: number;
 	/** "main", "compaction", "branch-summary", "subagent". */
 	label: string;

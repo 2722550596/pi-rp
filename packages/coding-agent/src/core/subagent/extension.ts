@@ -123,7 +123,10 @@ export function createSubagentToolDefinition(session: AgentSession): ToolDefinit
 			}
 
 			// Execute the subagent
-			const result = await runSubagent(preparation, session.modelRuntime, { signal });
+			const result = await runSubagent(preparation, session.modelRuntime, {
+				signal,
+				requestGateway: session.requestGateway,
+			});
 
 			const statusLabel = result.status === "completed" ? "" : ` [${result.status}]`;
 			const errorLabel = result.error ? `\nError: ${result.error}` : "";

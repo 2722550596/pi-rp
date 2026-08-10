@@ -6004,7 +6004,9 @@ export class InteractiveMode {
 			this.showError(`Subagent preparation failed: ${preparation.error}`);
 			return;
 		}
-		const result = await runSubagent(preparation, this.session.modelRuntime);
+		const result = await runSubagent(preparation, this.session.modelRuntime, {
+			requestGateway: this.session.requestGateway,
+		});
 		if (result.status === "completed") {
 			this.showStatus(`Subagent completed:\n${result.text}`);
 		} else {

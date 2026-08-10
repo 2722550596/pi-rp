@@ -1,6 +1,7 @@
 import { contentText } from "@earendil-works/pi-ai";
 import { createExtensionRuntime } from "../extensions/loader.ts";
 import type { ModelRuntime } from "../model-runtime.ts";
+import type { RequestGateway } from "../request-gateway.ts";
 import { createAgentSession } from "../sdk.ts";
 import { SessionManager } from "../session-manager.ts";
 import { truncateTail } from "../tools/truncate.ts";
@@ -23,6 +24,8 @@ export interface RunSubagentOptions {
 	timeoutMs?: number;
 	/** AbortSignal to cancel the run */
 	signal?: AbortSignal;
+	/** Parent session's gateway to share for per-provider concurrency control. */
+	requestGateway?: RequestGateway;
 }
 
 export async function runSubagent(
@@ -45,13 +48,13 @@ export async function runSubagent(
 				: contentText(taskMessage.content, "")
 			: "";
 
-	// Create an in-memory session manager
-	// (passing a non-existent temp path effectively makes it ephemeral)
-	const sessionManager = SessionManager.create(process.cwd(), "/tmp/pi-subagent-ephemeral");
+	// In-memory session manager: no disk I/O, nothing to clean up.
+	const sessionManager = SessionManager.inMemory(process.cwd());
 
 	const { session } = await createAgentSession({
 		cwd: process.cwd(),
 		modelRuntime,
+		requestGateway: options.requestGateway,
 		model: preparation.model,
 		sessionManager,
 		initialMessages,

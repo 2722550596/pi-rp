@@ -82,6 +82,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
 	settingsManager?: SettingsManager;
+	/** Request gateway for per-provider concurrency control. When omitted, a new one is created. */
+	requestGateway?: RequestGateway;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
 	/** Prompt preset ID to activate at startup. Wins over session restore and settings default; not persisted to settings. */
@@ -316,7 +318,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Per-provider concurrency gate for all LLM requests in this session.
 	// Wrapping the single streamFn below catches the main loop, compaction,
 	// and branch summarization (all read `agent.streamFunction`).
-	const gateway = new RequestGateway(modelRuntime, settingsManager.getRequestGatewayConfig());
+	const gateway =
+		options.requestGateway ?? new RequestGateway(modelRuntime, settingsManager.getRequestGatewayConfig());
 
 	agent = new Agent({
 		initialState: {
@@ -357,7 +360,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							: (headers ?? {});
 					},
 				},
-				{ sessionId: "?", priority: 0, label: "main" },
+				{ sessionId: "?", priority: 2, label: "main" },
+				options?.signal,
 			);
 		},
 		onPayload: async (payload, _model) => {
