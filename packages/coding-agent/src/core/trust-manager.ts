@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
-import { CONFIG_DIR_NAME, getProjectConfigDirName } from "../config.ts";
+import { getProjectConfigDirName } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 
 export type ProjectTrustDecision = boolean | null;

@@ -5,9 +5,10 @@ import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
-import { CONFIG_DIR_NAME, getAgentDir, getProjectConfigDir } from "../config.ts";
+import { getAgentDir, getProjectConfigDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import type { RequestGatewayConfig } from "./request-gateway.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -135,6 +136,10 @@ export interface Settings {
 	userName?: string;
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
+	/** Per-provider settings (e.g. request gateway concurrency limits). */
+	providers?: Record<string, { maxConcurrency?: number }>;
+	/** Request gateway defaults applied to providers without explicit limits. */
+	requestGateway?: { defaultMaxConcurrency?: number };
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -857,6 +862,17 @@ export class SettingsManager {
 			maxRetries: this.settings.retry?.provider?.maxRetries,
 			maxRetryDelayMs: this.settings.retry?.provider?.maxRetryDelayMs ?? 60000,
 		};
+	}
+
+	getRequestGatewayConfig(): RequestGatewayConfig {
+		const providerSettings = this.settings.providers ?? {};
+		const providers: Record<string, { maxConcurrency: number }> = {};
+		for (const [providerId, config] of Object.entries(providerSettings)) {
+			if (config?.maxConcurrency !== undefined) {
+				providers[providerId] = { maxConcurrency: config.maxConcurrency };
+			}
+		}
+		return { providers, defaultMaxConcurrency: this.settings.requestGateway?.defaultMaxConcurrency };
 	}
 
 	getWebSocketConnectTimeoutMs(): number | undefined {

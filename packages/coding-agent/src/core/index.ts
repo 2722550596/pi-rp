@@ -114,4 +114,9 @@ export {
 	registerMacro,
 	registerSlot,
 } from "./prompt-preset/index.ts";
+export {
+	RequestGateway,
+	type RequestGatewayConfig,
+	type RequestIdentity,
+} from "./request-gateway.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";

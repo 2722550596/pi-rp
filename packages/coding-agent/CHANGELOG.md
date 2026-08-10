@@ -5,6 +5,7 @@
 ### Added
 
 - Added `/validator` slash command to list loaded custom validators (namespace + path for each).
+- Added per-provider LLM request concurrency gating. Set `providers.<id>.maxConcurrency` (or the `requestGateway.defaultMaxConcurrency` default) in settings to limit concurrent requests per provider.
 
 ### Fixed
 

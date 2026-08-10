@@ -12,6 +12,7 @@ import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
+import { RequestGateway } from "./request-gateway.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
@@ -312,6 +313,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 	const sessionRef: { current?: AgentSession } = {};
 
+	// Per-provider concurrency gate for all LLM requests in this session.
+	// Wrapping the single streamFn below catches the main loop, compaction,
+	// and branch summarization (all read `agent.streamFunction`).
+	const gateway = new RequestGateway(modelRuntime, settingsManager.getRequestGatewayConfig());
+
 	agent = new Agent({
 		initialState: {
 			systemPrompt: "",
@@ -330,24 +336,29 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const websocketConnectTimeoutMs =
 				options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 			const headerRunner = extensionRunnerRef.current;
-			return modelRuntime.streamSimple(model, context, {
-				...options,
-				timeoutMs,
-				websocketConnectTimeoutMs,
-				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
-				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-				transformHeaders: async (requestHeaders) => {
-					const headers = mergeProviderAttributionHeaders(
-						model,
-						settingsManager,
-						options?.sessionId,
-						requestHeaders,
-					);
-					return headerRunner?.hasHandlers("before_provider_headers")
-						? headerRunner.emitBeforeProviderHeaders(headers ?? {})
-						: (headers ?? {});
+			return gateway.streamSimple(
+				model,
+				context,
+				{
+					...options,
+					timeoutMs,
+					websocketConnectTimeoutMs,
+					maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
+					maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+					transformHeaders: async (requestHeaders) => {
+						const headers = mergeProviderAttributionHeaders(
+							model,
+							settingsManager,
+							options?.sessionId,
+							requestHeaders,
+						);
+						return headerRunner?.hasHandlers("before_provider_headers")
+							? headerRunner.emitBeforeProviderHeaders(headers ?? {})
+							: (headers ?? {});
+					},
 				},
-			});
+				{ sessionId: "?", priority: 0, label: "main" },
+			);
 		},
 		onPayload: async (payload, _model) => {
 			const runner = extensionRunnerRef.current;
@@ -424,6 +435,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		resourceLoader,
 		customTools: options.customTools,
 		modelRuntime,
+		requestGateway: gateway,
 		initialActiveToolNames,
 		allowedToolNames,
 		excludedToolNames,

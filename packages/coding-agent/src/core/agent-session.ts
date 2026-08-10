@@ -125,6 +125,7 @@ import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
+import type { RequestGateway } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
@@ -233,6 +234,8 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
+	/** Optional request gateway for per-provider concurrency control. */
+	requestGateway?: RequestGateway;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -400,6 +403,7 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _modelRuntime: ModelRuntime;
+	private _requestGateway?: RequestGateway;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
@@ -441,6 +445,10 @@ export class AgentSession {
 		return this._modelRuntime;
 	}
 
+	get requestGateway(): RequestGateway | undefined {
+		return this._requestGateway;
+	}
+
 	get stateManager(): StateManager {
 		return this._stateManager;
 	}
@@ -462,6 +470,7 @@ export class AgentSession {
 		this._schemaValidator = new SchemaValidator();
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._requestGateway = config.requestGateway;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;

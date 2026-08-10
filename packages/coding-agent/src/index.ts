@@ -6,12 +6,12 @@ export { type Args, parseArgs } from "./cli/args.ts";
 export {
 	CONFIG_DIR_NAME,
 	ENV_PROJECT_CONFIG_DIR,
-	getProjectConfigDir,
-	getProjectConfigDirName,
 	getAgentDir,
 	getDocsPath,
 	getExamplesPath,
 	getPackageDir,
+	getProjectConfigDir,
+	getProjectConfigDirName,
 	getReadmePath,
 	VERSION,
 } from "./config.ts";

@@ -1,4 +1,4 @@
-import { CONFIG_DIR_NAME, getProjectConfigDirName } from "../config.ts";
+import { getProjectConfigDirName } from "../config.ts";
 import { emitProjectTrustEvent } from "./extensions/runner.ts";
 import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
