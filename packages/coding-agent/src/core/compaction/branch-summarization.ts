@@ -8,13 +8,15 @@
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import { contentText } from "@earendil-works/pi-ai";
-import type { Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.ts";
+import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "../prompt-preset/regex-engine.ts";
+import type { PromptPreset, PromptPresetDiagnostic } from "../prompt-preset/types.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { completeSummarization, estimateTokens } from "./compaction.ts";
 import {
@@ -89,6 +91,10 @@ export interface GenerateBranchSummaryOptions {
 	callbacks?: RetryCallbacks;
 	/** Optional override for the default branch summary prompt. Contains {conversation} placeholder. */
 	promptOverride?: string;
+	/** Active prompt preset. When provided, its outgoing regex rules filter the summarized
+	 * messages and its finalize rules rewrite the raw LLM summary before the preamble and
+	 * file operations are appended. */
+	preset?: PromptPreset;
 }
 
 // ============================================================================
@@ -324,9 +330,19 @@ export async function generateBranchSummary(
 		return { summary: "No content to summarize" };
 	}
 
+	// Apply the active preset's outgoing regex (history + compiled stages) so the
+	// summarizer sees the same filtered content as the main model, mirroring
+	// compaction's _applyPresetToCompactionPreparation.
+	let filteredMessages = messages;
+	if (options.preset) {
+		const diags: PromptPresetDiagnostic[] = [];
+		filteredMessages = applyRegexRulesToMessages(options.preset, filteredMessages, "history", "outgoing", diags);
+		filteredMessages = applyRegexRulesToMessages(options.preset, filteredMessages, "compiled", "outgoing", diags);
+	}
+
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue
-	const llmMessages = convertToLlm(messages);
+	const llmMessages = convertToLlm(filteredMessages);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build prompt — use override if provided, otherwise default
@@ -366,6 +382,25 @@ export async function generateBranchSummary(
 	}
 
 	let summary = contentText(response.content);
+
+	// The summary is LLM output: run the active preset's finalize regex rules over
+	// it before the preamble and file operations are appended, matching the main
+	// loop's post-processing of assistant messages.
+	if (options.preset) {
+		const diags: PromptPresetDiagnostic[] = [];
+		const message = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: summary }],
+		} as AgentMessage;
+		// applyFinalizeRegexRulesToMessage only transforms assistant messages, so the
+		// result keeps the assistant role and always carries content.
+		const finalized = applyFinalizeRegexRulesToMessage(options.preset, message, diags) as
+			| AssistantMessage
+			| undefined;
+		if (finalized) {
+			summary = contentText(finalized.content, "");
+		}
+	}
 
 	// Prepend preamble to provide context about the branch summary
 	summary = BRANCH_SUMMARY_PREAMBLE + summary;

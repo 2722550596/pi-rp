@@ -467,6 +467,11 @@ export class AgentSession {
 		return this._schemaValidator;
 	}
 
+	/** Flattened system-prompt options for subagent peer-completion. */
+	get systemPromptOptions(): BuildSystemPromptOptions {
+		return this._baseSystemPromptOptions;
+	}
+
 	/** Final messages after transformContext (extensions + preset injection). */
 	lastTransformedMessages: AgentMessage[] = [];
 	constructor(config: AgentSessionConfig) {
@@ -2509,6 +2514,13 @@ export class AgentSession {
 				details = result.details;
 			}
 
+			// Pi-generated summaries are LLM output: apply the active preset's finalize
+			// regex rules before persisting, matching assistant-message post-processing.
+			// Extension-provided summaries are already in final form and are left as-is.
+			if (!fromExtension) {
+				summary = this._applyFinalizeToSummaryText(summary);
+			}
+
 			if (this._compactionAbortController.signal.aborted) {
 				throw new Error("Compaction cancelled");
 			}
@@ -2624,6 +2636,22 @@ export class AgentSession {
 		}
 
 		return { ...preparation, messagesToSummarize, turnPrefixMessages };
+	}
+
+	/** Apply the active preset's finalize regex rules to a pi-generated summary text. */
+	private _applyFinalizeToSummaryText(summary: string): string {
+		const preset = this._activePreset;
+		if (preset === defaultPreset || preset.id === "pi-default") return summary;
+		const diags: PromptPresetDiagnostic[] = [];
+		const message = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: summary }],
+		} as AgentMessage;
+		// applyFinalizeRegexRulesToMessage only transforms assistant messages, so the
+		// result keeps the assistant role and always carries content.
+		const finalized = applyFinalizeRegexRulesToMessage(preset, message, diags) as AssistantMessage | undefined;
+		if (!finalized) return summary;
+		return contentText(finalized.content, "");
 	}
 
 	/**
@@ -2831,6 +2859,13 @@ export class AgentSession {
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
 				details = compactResult.details;
+			}
+
+			// Pi-generated summaries are LLM output: apply the active preset's finalize
+			// regex rules before persisting, matching assistant-message post-processing.
+			// Extension-provided summaries are already in final form and are left as-is.
+			if (!fromExtension) {
+				summary = this._applyFinalizeToSummaryText(summary);
 			}
 
 			if (this._autoCompactionAbortController.signal.aborted) {
@@ -3740,6 +3775,10 @@ export class AgentSession {
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 					promptOverride: (this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined)
 						?.branchSummaryPrompt,
+					preset:
+						this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default"
+							? this._activePreset
+							: undefined,
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };

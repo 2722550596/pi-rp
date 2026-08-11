@@ -13,6 +13,8 @@
 - Fixed `/reload` not re-applying schemas loaded via `/schema load`; loaded schemas are now cleared and re-applied from `schema_change` session entries with freshly loaded schema definitions.
 - Fixed strict mode not persisting across session recovery; `/schema strict` is now recorded as a `strict_change` session entry and restored on resume/rollback.
 - Fixed documentation incorrectly stating that custom validators receive a post-write state snapshot; the `state` argument is a pre-write snapshot of the namespace subtree.
+- Fixed pi-generated compaction summaries not running the active preset's `finalize` regex rules before being persisted (extension-provided summaries are left as-is).
+- Fixed branch summaries ignoring the active preset's regex rules: `outgoing` rules now filter the summarized messages and `finalize` rules rewrite the raw LLM summary before it is stored.
 
 ## [0.84.1] - 2026-08-07
 
