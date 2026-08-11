@@ -180,6 +180,8 @@ export interface PromptPreset {
 	delegatable?: boolean;
 	/** Default thinking level for subagent delegation. */
 	thinkingLevel?: string;
+	/** Number of parent conversation messages to seed as chat history when this preset is delegated. */
+	inheritHistory?: number;
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;

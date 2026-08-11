@@ -42,6 +42,8 @@ Switch to it with `/preset simple`. Verify with `/prompt`.
 | `autoActivate` | boolean | no | Auto-select this preset if it has no errors. Default `true`. |
 | `defaults` | object | no | Default slot options (see [Defaults](#defaults)). |
 | `delegatable` | boolean | no | Set to `true` to allow this preset to be delegated to as a subagent via the `subagent` tool or `/subagent` command. Default `false`. |
+| `inheritHistory` | number | no | Number of parent conversation messages to seed as chat history when this preset is delegated (see [Subagent Delegation](#subagent-delegation)). An explicit invocation option wins over this field. Default `0` (no history). |
+| `schemas` | string[] | no | State schema IDs to load into the subagent session when this preset is delegated (see [Subagent Delegation](#subagent-delegation)). The subagent invocation's `schemas` option wins over this field. Default none. |
 | `thinkingLevel` | string | no | Thinking level for this preset (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`). Default inherits session level. |
 | `tools` | object | no | Filter tool visibility (see [Resource Policies](#resource-policies)). |
 | `skills` | object | no | Filter skill visibility (see [Resource Policies](#resource-policies)). |
@@ -682,9 +684,56 @@ Presets can act as specialist **subagent profiles**. Setting `"delegatable": tru
 ### Delegation Features
 
 - **In-Process Execution**: Subagents execute in memory using the parent session's `modelRuntime` without external CLI dependencies.
-- **Tool Isolation**: Subagents run with a read-only default tool set (`read`, `grep`, `find`, `ls`, `bash`) intersected with the preset's tool policy.
+- **Tool Isolation**: Subagents run with a read-only default tool set (`read`, `grep`, `find`, `ls`, `bash`) intersected with the preset's tool policy. In peer-completion mode, the parent session's extension tools are inherited as well: their definitions are carried into the subagent session, so they are registered and executable there. What does NOT carry over is the extension *runtime* — extension event handlers (`agent_start`, `tool_result`, ...) do not fire in the subagent session, only the tool definitions. Preset tool policies (`allow`/`deny`) apply to inherited extension tools just like built-in ones, so a deny-all profile still ends up with no tools.
 - **Output Truncation**: Response text is truncated using `truncateTail` before returning to the parent agent.
 - **Preset Overrides**: Preset model, thinking level, and resource policies apply directly to the subagent invocation.
+- **Custom Slots**: Custom slots registered by extensions are process-wide (module-level registry), so a delegatable preset that uses a custom slot renders it in subagents too — the extension only needs to have run once in the parent process; no extension runtime is loaded into the subagent session.
+
+### Subagent Context
+
+A subagent's context is built at **prepare time** and sealed before execution: `setInitialMessages` marks the context sealed, so the preset is never recompiled during the run. Everything the subagent sees — slot rendering, state, history — is compiled into the message array up front. State changes in the parent session during the subagent run are not visible to it.
+
+Two modes:
+
+- **Minimal (no parent context)** — the subagent receives only the preset's compiled items plus the task text. State slots render empty, no conversation history is injected, and system-prompt options are empty.
+- **Peer completion (with parent session)** — when invoked from a parent session (always the case via the `subagent` tool and `/subagent` command), the subagent inherits from the parent:
+
+  - **Preset discovery** — the parent session's in-memory preset list is used first; disk discovery (`~/.pi/agent/prompt-presets/` and `.pi/prompt-presets/`) is the fallback, so presets added after session start are still found.
+  - **State snapshot** — `state` slots render the parent's live state via `stateManager.snapshot()`, still filtered by the slot's `allowNamespace` / `format` options.
+  - **Conversation history** — the `chat-history` slot is seeded with the parent's last N messages (N is passed as the `inheritHistory` option by the caller); all chat-history slot options (`maxMessages`, `maxChars`, `roles`, `stripAssistantThinking`, `toolMode`, ...) apply as usual.
+  - **System-prompt options** — the parent's skills, context files, custom prompt, appended system prompt, and prompt guidelines carry over; `selectedTools` and `toolSnippets` are filtered to the preset's post-policy tool set so a deny-all-tools profile does not leak tool descriptions.
+  - **Extension tools** — the parent session's extension tool definitions are inherited (see [Delegation Features](#delegation-features)); their names join the default tool set and their snippets render in the `tools` slot unless the preset's tool policy filters them out.
+  - **Schemas** — schema IDs from the preset's `schemas` field (or the invocation's `schemas` option) are loaded into the subagent session, so `get_state` semantics are correct if the profile has state access. Failed loads produce warnings, not errors.
+
+A peer-completion preset typically combines the `state` slot (full visibility), a `chat-history` slot (inherited dialogue), and the profile's own instructions:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "referee",
+  "name": "World Referee",
+  "delegatable": true,
+  "model": "anthropic/claude-sonnet-4-5",
+  "thinkingLevel": "high",
+  "tools": { "allow": [] },
+  "schemas": ["world", "secret"],
+  "items": [
+    { "kind": "block", "id": "role", "role": "system", "content": "You are the referee. Answer only what the asker needs to know." },
+    { "kind": "slot", "id": "state", "role": "system", "slot": "state",
+      "options": { "allowNamespace": ["world", "secret"], "format": "yaml" } },
+    { "kind": "slot", "id": "history", "role": "user", "slot": "chat-history",
+      "options": { "maxMessages": 200 } }
+  ]
+}
+```
+
+### Model and Thinking Resolution
+
+The model for a subagent run resolves as: explicit `modelRef` option → preset `model` field → first available model on the parent's runtime. Thinking level: explicit option → preset `thinkingLevel` → `"medium"`.
+
+### Execution
+
+`runSubagent` creates a fresh in-memory session (`SessionManager.inMemory`) and calls `createAgentSession` with the compiled messages as `initialMessages`, the effective tool set, the preset id, the inherited extension tool definitions (`customTools`), and the resolved `schemas`. It then prompts with the task text and waits for idle, returning the last assistant message truncated with `truncateTail`. An `AbortSignal` or `timeoutMs` cancels the run; results carry a status of `completed`, `failed`, `cancelled`, or `timed-out`, with the final `dispose()` cleaning up the in-memory session.
 
 ## Commands
 

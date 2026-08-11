@@ -62,6 +62,7 @@ export async function runSubagent(
 		noTools: "builtin",
 		preset: preparation.profile.id,
 		schemas: preparation.schemas,
+		customTools: preparation.customTools,
 		// Omit extensions to fulfill "no extensions"
 		resourceLoader: {
 			getExtensions: () => ({

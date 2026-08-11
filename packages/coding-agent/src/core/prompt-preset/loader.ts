@@ -174,6 +174,9 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 	if (typeof obj.thinkingLevel === "string" && obj.thinkingLevel.trim().length > 0) {
 		preset.thinkingLevel = obj.thinkingLevel.trim();
 	}
+	if (typeof obj.inheritHistory === "number" && Number.isFinite(obj.inheritHistory) && obj.inheritHistory > 0) {
+		preset.inheritHistory = Math.floor(obj.inheritHistory);
+	}
 	if (isPlainObject(obj.defaults)) {
 		const d = obj.defaults as Record<string, unknown>;
 		preset.defaults = {};

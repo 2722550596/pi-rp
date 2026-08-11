@@ -2,6 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../agent-session.ts";
 import { DEFAULT_THINKING_LEVEL } from "../defaults.ts";
+import type { ToolDefinition } from "../extensions/types.ts";
 import { findExactModelReferenceMatch } from "../model-resolver.ts";
 import type { ModelRuntime } from "../model-runtime.ts";
 import { compileMessages } from "../prompt-preset/compiler.ts";
@@ -52,6 +53,9 @@ export interface SubagentPreparation {
 	profile: PromptPreset;
 	/** Schema IDs to load into the subagent session (from options or preset). */
 	schemas?: string[];
+	/** Extension/custom tool definitions inherited from the parent session,
+	 *  so the subagent can execute them. Empty when no parent session. */
+	customTools?: ToolDefinition[];
 }
 
 export interface PrepareSubagentError {
@@ -126,17 +130,24 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 	const effectiveThinkingLevel =
 		thinkingLevel ?? (preset.thinkingLevel as ThinkingLevel | undefined) ?? DEFAULT_THINKING_LEVEL;
 
-	// Effective tools: from options, or read-only default. Resolved before
-	// runtime construction so buildPeerOptions can apply the preset's tool policy.
-	const effectiveTools = options.tools ?? ["read", "grep", "find", "ls", "bash"];
+	// Effective tools: explicit option wins; otherwise the read-only default
+	// plus the parent session's extension tools (peer-completion). Resolved
+	// before runtime construction so buildPeerOptions can apply the preset's
+	// tool policy.
+	const extensionTools = options.session ? options.session.extensionRunner.getAllRegisteredTools() : [];
+	const effectiveTools = options.tools
+		? [...options.tools]
+		: [...["read", "grep", "find", "ls", "bash"], ...extensionTools.map((t) => t.definition.name)];
 
 	// Build the PromptRuntime for compileMessages. With a parent session,
 	// build a peer-context runtime (state, history, options); otherwise minimal.
+	// History seeding: explicit option > preset-level field > none.
+	const inheritHistory = options.inheritHistory ?? preset.inheritHistory ?? 0;
 	let runtime: PromptRuntime;
 	if (options.session) {
 		runtime = {
 			options: buildPeerOptions(options.session, effectiveTools, preset),
-			messages: options.inheritHistory ? options.session.agent.state.messages.slice(-options.inheritHistory) : [],
+			messages: inheritHistory > 0 ? options.session.agent.state.messages.slice(-inheritHistory) : [],
 			latestUserMessage: undefined,
 			now: new Date(),
 			variables: {},
@@ -196,6 +207,7 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 		effectiveTools,
 		profile: preset,
 		schemas,
+		customTools: extensionTools.length > 0 ? extensionTools.map((t) => t.definition) : undefined,
 	};
 }
 
