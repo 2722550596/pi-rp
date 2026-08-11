@@ -15,6 +15,7 @@
 - Fixed documentation incorrectly stating that custom validators receive a post-write state snapshot; the `state` argument is a pre-write snapshot of the namespace subtree.
 - Fixed pi-generated compaction summaries not running the active preset's `finalize` regex rules before being persisted (extension-provided summaries are left as-is).
 - Fixed branch summaries ignoring the active preset's regex rules: `outgoing` rules now filter the summarized messages and `finalize` rules rewrite the raw LLM summary before it is stored.
+- Fixed HTML export (`/export` and `--export`) not applying the active preset's `display` regex rules to message text, so exported pages could show content the TUI redacts.
 
 ## [0.84.1] - 2026-08-07
 

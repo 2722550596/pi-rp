@@ -1,12 +1,16 @@
-import type { AgentState } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentState } from "@earendil-works/pi-agent-core";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
-import { APP_NAME, getExportTemplateDir } from "../../config.ts";
+import { APP_NAME, getAgentDir, getExportTemplateDir } from "../../config.ts";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
+import { isDisabledPromptPresetId, loadPromptPresets } from "../prompt-preset/loader.ts";
+import { applyDisplayRegexToString } from "../prompt-preset/regex-engine.ts";
+import type { PromptPreset } from "../prompt-preset/types.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
+import { SettingsManager } from "../settings-manager.ts";
 
 /**
  * Interface for rendering custom tools to HTML.
@@ -37,6 +41,9 @@ export interface ExportOptions {
 	themeName?: string;
 	/** Optional tool renderer for custom tools */
 	toolRenderer?: ToolHtmlRenderer;
+	/** Active prompt preset. When provided, its display-effect regex rules are applied
+	 * to message text before it is embedded in the HTML, matching TUI rendering. */
+	preset?: PromptPreset;
 }
 
 /** Parse a color string to RGB values. Supports hex (#RRGGBB) and rgb(r,g,b) formats. */
@@ -230,6 +237,77 @@ function preRenderCustomTools(
 }
 
 /**
+ * Apply the active preset's display-effect regex rules to a message, mirroring the
+ * TUI's display filtering (`_filterMessageForDisplay` in interactive-mode). Only
+ * text parts are rewritten; structure (tool calls, images) is preserved. Applied to
+ * every message role, including tool results, since the export renders their text.
+ */
+function filterMessageForDisplay(message: AgentMessage, preset: PromptPreset): AgentMessage {
+	if (!("content" in message)) return message;
+
+	// Normalize string content to a single text part so display regex can apply.
+	// CustomMessage content can be a plain string; assistant/user/toolResult use arrays.
+	if (typeof message.content === "string") {
+		const filtered = applyDisplayRegexToString(preset, message.content, []);
+		if (filtered === message.content) return message;
+		return { ...message, content: filtered } as AgentMessage;
+	}
+
+	if (!Array.isArray(message.content)) return message;
+	let changed = false;
+	const content = message.content.map((part) => {
+		if (part && typeof part === "object" && "type" in part && part.type === "text" && typeof part.text === "string") {
+			const filtered = applyDisplayRegexToString(preset, part.text, []);
+			if (filtered !== part.text) changed = true;
+			return { ...part, text: filtered };
+		}
+		return part;
+	});
+	return changed ? ({ ...message, content } as AgentMessage) : message;
+}
+
+/** Apply the display-effect regex rules of a preset to all message entries. */
+function filterEntriesForDisplay(entries: SessionEntry[], preset: PromptPreset): SessionEntry[] {
+	if (!preset.regex?.rules?.length) return entries;
+	return entries.map((entry) => {
+		if (entry.type !== "message") return entry;
+		return { ...entry, message: filterMessageForDisplay(entry.message, preset) };
+	});
+}
+
+/**
+ * Resolve the active prompt preset for a session file, mirroring AgentSession's
+ * restore logic (`_rebuildSystemPrompt`): the last `preset_change` entry in the
+ * session, then the settings default.
+ */
+function resolveSessionPreset(sm: SessionManager): PromptPreset | undefined {
+	const header = sm.getHeader();
+	if (!header) return undefined;
+
+	const presets = loadPromptPresets(header.cwd, getAgentDir());
+	if (presets.length === 0) return undefined;
+
+	const entries = sm.getEntries();
+	let storedPresetId: string | undefined;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type === "preset_change") {
+			storedPresetId = entry.presetId;
+			break;
+		}
+	}
+
+	const settingsPresetId = SettingsManager.create(header.cwd, getAgentDir(), {
+		projectTrusted: false,
+	}).getDefaultPreset();
+	const restoreId = storedPresetId ?? settingsPresetId;
+	if (!restoreId || isDisabledPromptPresetId(restoreId)) return undefined;
+
+	const found = presets.find((p) => p.preset.id === restoreId);
+	return found?.preset;
+}
+
+/**
  * Export session to HTML using SessionManager and AgentState.
  * Used by TUI's /export command.
  */
@@ -248,7 +326,7 @@ export async function exportSessionToHtml(
 		throw new Error("Nothing to export yet - start a conversation first");
 	}
 
-	const entries = sm.getEntries();
+	const entries = opts.preset ? filterEntriesForDisplay(sm.getEntries(), opts.preset) : sm.getEntries();
 
 	// Pre-render custom tools if a tool renderer is provided
 	let renderedTools: Record<string, RenderedToolHtml> | undefined;
@@ -295,9 +373,12 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 
 	const sm = SessionManager.open(resolvedInputPath);
 
+	const preset = resolveSessionPreset(sm);
+	const entries = preset ? filterEntriesForDisplay(sm.getEntries(), preset) : sm.getEntries();
+
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries: sm.getEntries(),
+		entries,
 		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,
