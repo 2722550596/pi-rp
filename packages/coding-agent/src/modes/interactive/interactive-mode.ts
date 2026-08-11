@@ -81,7 +81,11 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { convertToLlm as convertToLlmFn, createCompactionSummaryMessage } from "../../core/messages.ts";
+import {
+	type CustomMessage,
+	convertToLlm as convertToLlmFn,
+	createCompactionSummaryMessage,
+} from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -434,6 +438,7 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private streamingCustomComponents = new Map<CustomMessage<unknown>, CustomMessageComponent>();
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -3313,6 +3318,12 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
+					// Track for streaming updates (startLiveMessage relays message_update events).
+					// Key by the original message object so concurrent live messages don't clobber each other.
+					const lastChild = this.chatContainer.children[this.chatContainer.children.length - 1];
+					if (lastChild instanceof CustomMessageComponent) {
+						this.streamingCustomComponents.set(event.message, lastChild);
+					}
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
@@ -3367,6 +3378,15 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				}
 				break;
+			case "custom_message_update":
+				{
+					const component = this.streamingCustomComponents.get(event.message);
+					if (component) {
+						component.updateMessage(this._filterMessageForDisplay(event.message) as CustomMessage<unknown>);
+						this.ui.requestRender();
+					}
+				}
+				break;
 
 			case "message_end":
 				if (event.message.role === "user") break;
@@ -3404,6 +3424,9 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 					this.footer.invalidate();
+				}
+				if (event.message.role === "custom") {
+					this.streamingCustomComponents.delete(event.message);
 				}
 				this.ui.requestRender();
 				break;
@@ -3638,7 +3661,17 @@ export class InteractiveMode {
 	private _filterMessageForDisplay(message: AgentMessage): AgentMessage {
 		const preset = this.session.activePreset;
 		if (!preset.regex?.rules?.length) return message;
-		if (!("content" in message) || !Array.isArray(message.content)) return message;
+		if (!("content" in message)) return message;
+
+		// Normalize string content to a single text part so display regex can apply.
+		// CustomMessage content can be a plain string; assistant/user/toolResult use arrays.
+		if (typeof message.content === "string") {
+			const filtered = applyDisplayRegexToString(preset, message.content, []);
+			if (filtered === message.content) return message;
+			return { ...message, content: filtered } as AgentMessage;
+		}
+
+		if (!Array.isArray(message.content)) return message;
 		let changed = false;
 		const content = message.content.map((part) => {
 			if (

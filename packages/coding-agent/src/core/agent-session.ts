@@ -88,6 +88,7 @@ import {
 	ExtensionRunner,
 	type ExtensionUIContext,
 	type InputSource,
+	type LiveMessageHandle,
 	type MessageEndEvent,
 	type MessageStartEvent,
 	type MessageUpdateEvent,
@@ -206,7 +207,8 @@ export type AgentSessionEvent =
 			reason: "manual" | "threshold" | "overflow";
 	  }
 	| { type: "summarization_retry_finished" }
-	| { type: "bash_execution_update"; id?: string; delta: string };
+	| { type: "bash_execution_update"; id?: string; delta: string }
+	| { type: "custom_message_update"; message: CustomMessage };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -1921,6 +1923,47 @@ export class AgentSession {
 	}
 
 	/**
+	 * Start a live (streamable) custom message. Pushes the message and emits
+	 * message_start; the returned handle streams message_update on update() and
+	 * persists + emits message_end on end(). Does not trigger an agent turn.
+	 */
+	startLiveMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	): LiveMessageHandle<T> {
+		const appMessage: CustomMessage<T> = {
+			role: "custom",
+			customType: message.customType,
+			content: message.content ?? [],
+			display: message.display,
+			details: message.details,
+			timestamp: Date.now(),
+		};
+		this.agent.state.messages.push(appMessage);
+		this._emit({ type: "message_start", message: appMessage });
+
+		let ended = false;
+		return {
+			update: (content: string | (TextContent | ImageContent)[], details?: T) => {
+				if (ended) return;
+				appMessage.content = content;
+				if (details !== undefined) appMessage.details = details;
+				this._emit({ type: "custom_message_update", message: appMessage });
+			},
+			end: async () => {
+				if (ended) return;
+				ended = true;
+				this.sessionManager.appendCustomMessageEntry(
+					appMessage.customType,
+					appMessage.content,
+					appMessage.display,
+					appMessage.details,
+				);
+				this._emit({ type: "message_end", message: appMessage });
+			},
+		};
+	}
+
+	/**
 	 * Send a user message to the agent. Always triggers a turn.
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
 	 *
@@ -3010,6 +3053,7 @@ export class AgentSession {
 						});
 					});
 				},
+				startLiveMessage: (message) => this.startLiveMessage(message),
 				appendEntry: (customType, data) => {
 					const entryId = this.sessionManager.appendCustomEntry(customType, data);
 					const entry = this.sessionManager.getEntry(entryId);

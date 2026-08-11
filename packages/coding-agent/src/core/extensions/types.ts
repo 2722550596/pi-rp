@@ -1312,6 +1312,11 @@ export interface ExtensionAPI {
 		options?: { deliverAs?: "steer" | "followUp" },
 	): void;
 
+	/** Start a live (streamable) custom message. Returns a handle to stream updates and finalize. */
+	startLiveMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	): LiveMessageHandle<T>;
+
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
 
@@ -1589,6 +1594,17 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp" },
 ) => void;
 
+export type StartLiveMessageHandler = <T = unknown>(
+	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+) => LiveMessageHandle<T>;
+
+export interface LiveMessageHandle<T = unknown> {
+	/** Update streamed content (and optionally details). Emits a message_update event. */
+	update(content: string | (TextContent | ImageContent)[], details?: T): void;
+	/** Finalize: persist to the session and emit message_end. */
+	end(): Promise<void>;
+}
+
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
 export type SetSessionNameHandler = (name: string) => void;
@@ -1670,6 +1686,7 @@ export interface ExtensionRuntimeState {
 export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
+	startLiveMessage: StartLiveMessageHandler;
 	appendEntry: AppendEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;

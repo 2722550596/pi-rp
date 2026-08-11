@@ -92,6 +92,7 @@ export type {
 	InputEventResult,
 	InputSource,
 	KeybindingsManager,
+	LiveMessageHandle,
 	LoadExtensionsResult,
 	LsToolCallEvent,
 	LsToolResultEvent,
@@ -144,6 +145,7 @@ export type {
 	SetLabelHandler,
 	SetModelHandler,
 	SetThinkingLevelHandler,
+	StartLiveMessageHandler,
 	TerminalInputHandler,
 	// Events - Tool
 	ToolCallEvent,

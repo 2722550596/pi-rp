@@ -57,6 +57,12 @@ export class CustomMessageComponent extends Container {
 		this.rebuild();
 	}
 
+	/** Update the rendered message in place (for streaming custom messages). */
+	updateMessage(message: CustomMessage<unknown>): void {
+		this.message = message;
+		this.rebuild();
+	}
+
 	private rebuild(): void {
 		// Remove previous content component
 		if (this.customComponent) {

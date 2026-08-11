@@ -185,6 +185,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	const runtime: ExtensionRuntime = {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
+		startLiveMessage: notInitialized,
 		appendEntry: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
@@ -337,6 +338,11 @@ function createExtensionAPI(
 		sendUserMessage(content, options): void {
 			runtime.assertActive();
 			runtime.sendUserMessage(content, options);
+		},
+
+		startLiveMessage(message) {
+			runtime.assertActive();
+			return runtime.startLiveMessage(message);
 		},
 
 		appendEntry(customType: string, data?: unknown): void {
