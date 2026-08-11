@@ -173,7 +173,7 @@ The conversation insertion point. This slot determines WHERE in the message arra
 | `maxMessages` | number | — | Keep only most recent N messages. |
 | `maxChars` | number | — | Keep only messages within this character budget. |
 | `omitLatestUser` | boolean | `false` | Drop latest user message (for re-insertion via `{{lastUserMessage}}`). |
-| `stripAssistantThinking` | boolean | `false` | Remove `thinking` blocks from past assistant messages. |
+| `stripAssistantThinking` | `boolean`, `"previous-traces"` | `false` | Remove `thinking` blocks from assistant messages. `true` strips every assistant message; `"previous-traces"` strips only traces (agent start to agent end) completed before the current one, keeping the current trace's thinking intact — useful in the tool-calling loop where the current round's reasoning stays coherent across turns. |
 | `roles` | string[] | — | Only include these roles (e.g. `["user", "assistant"]`). |
 | `toolMode` | `"keep"`, `"drop"` | `"keep"` | Keep or discard tool call/result messages. |
 | `includeSummaries` | boolean | `true` | Include Pi's branch/compaction summaries. Set to `false` to exclude them. |

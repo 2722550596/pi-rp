@@ -383,6 +383,13 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
+	/**
+	 * Index into agent.state.messages where the current trace (agent start to
+	 * agent end) begins. Recorded on agent_start, when state.messages still
+	 * contains only completed traces. Consumed by chat-history
+	 * `stripAssistantThinking: "previous-traces"`.
+	 */
+	private _currentTraceStartIndex = 0;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -440,6 +447,7 @@ export class AgentSession {
 			throw new Error("Initial messages must end with a user message");
 		}
 		this.agent.state.messages = [...messages];
+		this._currentTraceStartIndex = 0;
 		this._sealedContext = true;
 	}
 
@@ -822,6 +830,9 @@ export class AgentSession {
 	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
+			// agent_start fires before the new trace's prompt messages are pushed,
+			// so state.messages.length is the first index of the current trace.
+			this._currentTraceStartIndex = this.agent.state.messages.length;
 			await this._extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
@@ -1441,6 +1452,7 @@ export class AgentSession {
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
+			currentTraceStartIndex: this._currentTraceStartIndex,
 			latestUserMessage: undefined,
 			now: new Date(),
 			variables: { user: this.settingsManager.getUserName() },
@@ -1490,6 +1502,7 @@ export class AgentSession {
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
+			currentTraceStartIndex: this._currentTraceStartIndex,
 			latestUserMessage: undefined,
 			now: new Date(),
 			variables: { user: this.settingsManager.getUserName() },
@@ -2591,7 +2604,11 @@ export class AgentSession {
 		const chatHistoryItem = preset.items.find(
 			(item): item is PromptPresetSlotItem => item.kind === "slot" && item.slot === "chat-history",
 		);
-		if (chatHistoryItem?.options?.stripAssistantThinking) {
+		// "previous-traces" also strips everything here: the summarized messages
+		// are replaced by the summary regardless, and the current trace's retained
+		// tail keeps its thinking verbatim.
+		const stripThinkingMode = chatHistoryItem?.options?.stripAssistantThinking;
+		if (stripThinkingMode === true || stripThinkingMode === "previous-traces") {
 			const stripThinking = (msg: AgentMessage): AgentMessage => {
 				if (typeof msg !== "object" || msg === null || !("content" in msg)) return msg;
 				const content = msg.content;

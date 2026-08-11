@@ -91,8 +91,14 @@ export interface PromptPresetSlotOptions {
 	maxChars?: number;
 	/** If true, skip the latest user message in history (for re-insertion via {{lastUserMessage}}). */
 	omitLatestUser?: boolean;
-	/** Remove assistant thinking content blocks from inserted history. */
-	stripAssistantThinking?: boolean;
+	/**
+	 * Remove assistant thinking content blocks from inserted history.
+	 * `true` strips thinking from every assistant message; `"previous-traces"`
+	 * strips thinking only from assistant messages in traces (agent start to
+	 * agent end) that completed before the current trace, keeping the current
+	 * trace's thinking intact.
+	 */
+	stripAssistantThinking?: boolean | "previous-traces";
 	/** Filter history to only these roles. */
 	roles?: string[];
 	/** Keep or drop prior tool call/result messages. */
@@ -194,6 +200,13 @@ export interface PromptRuntime {
 	now: Date;
 	variables: Record<string, string>;
 	skills: Skill[];
+	/**
+	 * Index into `messages` where the current trace (agent start to agent end) begins.
+	 * Used by chat-history `stripAssistantThinking: "previous-traces"` to decide which
+	 * assistant thinking blocks are historical. When unset, every message is treated
+	 * as previous.
+	 */
+	currentTraceStartIndex?: number;
 	/** Current conversation state (game stats, inventory, flags) */
 	state?: Record<string, unknown>;
 	/** If true, {{macros}} are left unexpanded in the compiled output. */

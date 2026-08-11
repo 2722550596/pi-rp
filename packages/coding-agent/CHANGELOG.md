@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `"previous-traces"` mode for the chat-history `stripAssistantThinking` preset option: strips `thinking` blocks from assistant messages in completed traces (agent start to agent end) while keeping the current trace's thinking intact.
 - Added `/validator` slash command to list loaded custom validators (namespace + path for each).
 - Added per-provider LLM request concurrency gating. Set `providers.<id>.maxConcurrency` (or the `requestGateway.defaultMaxConcurrency` default) in settings to limit concurrent requests per provider.
 

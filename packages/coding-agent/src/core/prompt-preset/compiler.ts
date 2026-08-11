@@ -80,6 +80,8 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 		// Strip assistant thinking
 		if (options?.stripAssistantThinking === true) {
 			filtered = filtered.map(stripThinkingFromMessage);
+		} else if (options?.stripAssistantThinking === "previous-traces") {
+			filtered = stripThinkingFromPreviousTraces(filtered, runtime.messages, runtime.currentTraceStartIndex);
 		}
 
 		// Drop tool history
@@ -254,6 +256,26 @@ function stripThinkingFromMessage(message: AgentMessage): AgentMessage {
 	const stripped = content.filter((part: { type?: string }) => part?.type !== "thinking");
 	if (stripped.length === content.length) return message;
 	return { ...message, content: stripped } as AgentMessage;
+}
+
+/**
+ * Strip thinking from assistant messages in completed traces (before
+ * `currentTraceStartIndex`), keeping the current trace's thinking intact.
+ * Filters applied earlier (roles, summaries) drop messages without cloning,
+ * so reference identity against the source `messages` array is a reliable
+ * membership test for the current trace. Without a trace boundary there is
+ * no current trace to protect, so every message is treated as previous.
+ */
+function stripThinkingFromPreviousTraces(
+	messages: AgentMessage[],
+	sourceMessages: AgentMessage[],
+	currentTraceStartIndex: number | undefined,
+): AgentMessage[] {
+	if (currentTraceStartIndex === undefined) {
+		return messages.map(stripThinkingFromMessage);
+	}
+	const currentTrace = new Set(sourceMessages.slice(currentTraceStartIndex));
+	return messages.map((msg) => (currentTrace.has(msg) ? msg : stripThinkingFromMessage(msg)));
 }
 
 function contentToText(message: AgentMessage): string {
