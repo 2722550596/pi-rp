@@ -231,10 +231,23 @@ export class RpcClient {
 	}
 
 	/**
-	 * Get current session state.
+	 * Get current session state. Pass `ifVersion` to skip the state snapshot
+	 * when the remote revision matches (cheap unchanged check).
 	 */
-	async getState(): Promise<RpcSessionState> {
-		const response = await this.send({ type: "get_state" });
+	async getState(ifVersion?: number): Promise<RpcSessionState> {
+		const response = await this.send({ type: "get_state", ifVersion });
+		return this.getData(response);
+	}
+
+	/**
+	 * Apply a state mutation on the remote session (validate + apply + persist when idle).
+	 */
+	async updateState(
+		path: string,
+		op: "add" | "remove" | "replace" | "merge",
+		value?: unknown,
+	): Promise<{ path: string; newValue: unknown }> {
+		const response = await this.send({ type: "update_state", path, op, value });
 		return this.getData(response);
 	}
 

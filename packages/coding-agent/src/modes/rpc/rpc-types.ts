@@ -26,7 +26,8 @@ export type RpcCommand =
 	| { id?: string; type: "new_session"; parentSession?: string }
 
 	// State
-	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_state"; ifVersion?: number }
+	| { id?: string; type: "update_state"; path: string; op: "add" | "remove" | "replace" | "merge"; value?: unknown }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -106,6 +107,10 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+	/** Monotonic state revision; state snapshot omitted when it matches the caller's ifVersion. */
+	stateRevision: number;
+	/** Full stateManager snapshot (all namespaces), for peer state sync back to the parent. */
+	state?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -123,6 +128,13 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| {
+			id?: string;
+			type: "response";
+			command: "update_state";
+			success: true;
+			data: { path: string; newValue: unknown };
+	  }
 
 	// Model
 	| {

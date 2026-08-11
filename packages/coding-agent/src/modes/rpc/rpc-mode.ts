@@ -25,6 +25,7 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import type { JsonValue } from "../../state/state-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
@@ -444,6 +445,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "get_state": {
+				const revision = session.stateManager.revision;
 				const state: RpcSessionState = {
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
@@ -457,8 +459,32 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
+					stateRevision: revision,
+					state: command.ifVersion === revision ? undefined : session.stateManager.snapshot(),
 				};
 				return success(id, "get_state", state);
+			}
+
+			case "update_state": {
+				const { path, op, value } = command;
+				const validation = session.schemaValidator.validate(
+					path,
+					op,
+					value as JsonValue | undefined,
+					session.stateManager.snapshot() as Record<string, JsonValue>,
+				);
+				if (!validation.ok) {
+					return error(id, "update_state", validation.reason ?? "validation failed");
+				}
+				const effectiveValue = validation.correctedValue ?? value;
+				const result = session.stateManager.apply(path, op, effectiveValue as JsonValue);
+				// Persist immediately when idle (mirrors AgentSession extension updateState),
+				// so a peer can read the new state from the session file without waiting for turn_end.
+				if (session.isIdle) {
+					session.sessionManager.appendState(session.stateManager.snapshot());
+					session.stateManager.clearDirty();
+				}
+				return success(id, "update_state", { path: result.path, newValue: result.newValue });
 			}
 
 			// =================================================================

@@ -1,6 +1,6 @@
 # Watchdog 系统：轻量级单次调用审查/自动化机制
 
-> 状态：草案 v2，待推敲
+> 状态：草案 v3，可行性已对照 pi-rp 源码核对
 > 关联：[multi-agent-infrastructure.md](./multi-agent-infrastructure.md) Step 5（本方案是其触发条件）
 
 ## 1. 目标
@@ -14,7 +14,7 @@
 | 维度 | Idle Recap（omp） | Advisor（omp） | **Watchdog（本方案）** |
 |---|---|---|---|
 | 本质 | 单次 completion | 完整 agent + 持久上下文 | 单次 completion |
-| 花名册 | 无（单一） | 有（WATCHDOG.yml） | 有（WATCHDOG.yml） |
+| 花名册 | 无（单一） | 有（配置文件） | 有（`watchdog.json`） |
 | 触发 | 空闲定时 | 每回合 onTurnEnd | 可配置：turnEnd / traceEnd / 每 N traceEnd / 空闲 |
 | 工具 | 无 | 有（read/grep/glob+） | 无 |
 | 持久上下文 | 无 | 有（append-only + 维护/压缩） | 无（一次性快照） |
@@ -31,6 +31,7 @@
 - **不打断语义**：等下次用户 prompt，消息进 `_pendingNextTurnMessages`，随用户消息注入上下文
 - **触发频率**："每 N 轮" = 每 N 次 `agent_end` 事件触发一次
 - **提示词构建**：完全委托给预设系统（`compileMessages` + `compileSystemPrompt`）
+- **配置格式**：JSON（`watchdog.json`），与 pi-rp 全局风格一致——pi-rp 零 YAML 依赖，所有配置均为 JSON
 
 ## 3. 核心设计：预设系统复用
 
@@ -66,66 +67,63 @@ watchdog 触发
        └─ user block → watchdog 的指令
   └─ compileSystemPrompt(preset, runtime, "") → 独立 system prompt
   └─ modelRegistry.complete(model, { systemPrompt, messages })
+  └─ applyFinalizeRegexRulesToMessage(preset, response) → 后处理 LLM 输出
 ```
 
 关键：`PromptRuntime.messages` 传主会话的 `agent.state.messages`，预设编译器的 `chat-history` slot 的 `maxMessages` 负责截取——watchdog runtime 不碰消息筛选。
 
 ### 3.3 预设引用方式
 
-WATCHDOG.yml 中的每个 watchdog 通过 `preset` 字段引用预设：
+`watchdog.json` 中的每个 watchdog 通过 `preset` 字段引用预设：
 
-```yaml
-watchdogs:
-  - name: state-updater
-    preset: state-updater      # 引用 .pi/prompt-presets/state-updater.json 的 id
+```json
+{
+  "watchdogs": [
+    { "name": "state-updater", "preset": "state-updater" }
+  ]
+}
 ```
 
-预设文件放在标准的 `.pi/prompt-presets/` 目录，与主 agent 的预设共享发现路径（`loadPromptPresets`）。watchdog 预设不需要特殊标记——它就是一个普通预设，只是被 watchdog 引用而非激活为主预设。
+`preset` 字段引用 `.pi/prompt-presets/state-updater.json` 的 `id`。预设文件放在标准的 `.pi/prompt-presets/` 目录，与主 agent 的预设共享发现路径（`loadPromptPresets`）。watchdog 预设不需要特殊标记——它就是一个普通预设，只是被 watchdog 引用而非激活为主预设。
 
-### 3.4 WATCHDOG.yml 配置格式
+### 3.4 watchdog.json 配置格式
 
-```yaml
-# 共享配置，所有 watchdog 继承
-defaults:
-  retry:
-    enabled: true
-    maxRetries: 2
-    baseDelayMs: 1000
-
-watchdogs:
-  - name: story-summary
-    enabled: true
-    model: openai/gpt-5.2          # 可选，省略用会话当前模型
-    thinkingLevel: medium           # 可选
-    trigger:
-      type: everyNTraces
-      n: 3
-    preset: story-summary           # 引用预设 ID
-    delivery:
-      persist: true
-      deliverAs: nextTurn
-      statusBar: true
-    retry:                          # 可选，覆盖 defaults
-      maxRetries: 3
-
-  - name: state-updater
-    model: openai/gpt-5.2
-    trigger:
-      type: turnEnd
-    preset: state-updater
-    delivery:
-      persist: false
-      eventBus: true
-
-  - name: idle-recap
-    enabled: false
-    trigger:
-      type: idle
-      idleSeconds: 120
-    preset: idle-recap
-    delivery:
-      persist: false
-      statusBar: true
+```json
+{
+  "defaults": {
+    "retry": {
+      "enabled": true,
+      "maxRetries": 2,
+      "baseDelayMs": 1000
+    }
+  },
+  "watchdogs": [
+    {
+      "name": "story-summary",
+      "enabled": true,
+      "model": "openai/gpt-5.2",
+      "thinkingLevel": "medium",
+      "trigger": { "type": "everyNTraces", "n": 3 },
+      "preset": "story-summary",
+      "delivery": { "persist": true, "deliverAs": "nextTurn", "statusBar": true },
+      "retry": { "maxRetries": 3 }
+    },
+    {
+      "name": "state-updater",
+      "model": "openai/gpt-5.2",
+      "trigger": { "type": "turnEnd" },
+      "preset": "state-updater",
+      "delivery": { "persist": false, "eventBus": true }
+    },
+    {
+      "name": "idle-recap",
+      "enabled": false,
+      "trigger": { "type": "idle", "idleSeconds": 120 },
+      "preset": "idle-recap",
+      "delivery": { "persist": false, "statusBar": true }
+    }
+  ]
+}
 ```
 
 ### 3.5 字段定义
@@ -162,6 +160,7 @@ watchdogs:
             ├─ compileSystemPrompt(preset, runtime, "") → system prompt
             ├─ modelRegistry.complete(model, { systemPrompt, messages })
             │   └─ 包裹 retryAssistantCall
+            ├─ applyFinalizeRegexRulesToMessage(preset, response) → 后处理
             ├─ epoch guard（session switch 后的 stale 结果丢弃）
             └─ 送达
                  ├─ persist → sendCustomMessage({customType:"watchdog:<slug>"}, {deliverAs})
@@ -233,9 +232,11 @@ if (this.#epoch !== epoch || this.#disposed) return;  // stale，丢弃
 
 ### 4.7 失败处理
 
-复用 `retryAssistantCall`（`@earendil-works/pi-ai/utils/retry`）：
+复用 `retryAssistantCall`（**import 自 `@earendil-works/pi-ai`**，与 compaction 一致——`compaction.ts:9`）：
 
 ```ts
+import { retryAssistantCall } from "@earendil-works/pi-ai";
+
 const response = await retryAssistantCall(
     () => modelRegistry.complete(model, context, options),
     retryPolicy,
@@ -254,7 +255,7 @@ const response = await retryAssistantCall(
 
 ```
 packages/coding-agent/src/core/watchdog/
-├── config.ts              # WATCHDOG.yml 发现与解析
+├── config.ts              # watchdog.json 发现与解析
 ├── runtime.ts             # WatchdogRuntime：触发、执行、生命周期
 ├── types.ts               # WatchdogConfig, TriggerType, DeliveryConfig 等
 └── index.ts               # 导出 + 注册到 AgentSession
@@ -380,7 +381,7 @@ async #execute(instance: WatchdogInstance): Promise<void> {
         const systemResult = compileSystemPrompt(instance.preset, runtime, "");
         const llmMessages = convertToLlm(compiled.messages);
 
-        // 4. 执行（复用 retryAssistantCall）
+        // 4. 执行（retryAssistantCall import 自 @earendil-works/pi-ai）
         const context: Context = {
             systemPrompt: systemResult.systemPrompt,
             messages: llmMessages,
@@ -399,15 +400,21 @@ async #execute(instance: WatchdogInstance): Promise<void> {
         // 5. epoch guard
         if (this.#epoch !== epoch || this.#disposed) return;
 
-        // 6. 提取文本
-        const text = response.content
+        // 6. 应用 finalize 正则（与主 agent message_end 路径一致，见 agent-session.ts:887）
+        let processed: AssistantMessage = response;
+        const finalizeDiags: PromptPresetDiagnostic[] = [];
+        const finalized = applyFinalizeRegexRulesToMessage(instance.preset, response, finalizeDiags);
+        if (finalized) processed = finalized;
+
+        // 7. 提取文本
+        const text = processed.content
             .filter((c): c is TextContent => c.type === "text")
             .map(c => c.text)
             .join("\n");
         if (!text.trim()) return;
 
-        // 7. 送达
-        this.#deliver(instance, text, response);
+        // 8. 送达
+        this.#deliver(instance, text, processed);
     } catch (err) {
         if (!abort.signal.aborted) {
             logger.warn(`watchdog "${instance.config.name}" failed`, { err: String(err) });
@@ -421,7 +428,7 @@ async #execute(instance: WatchdogInstance): Promise<void> {
 
 ### 5.5 AgentSession 接线
 
-在 `AgentSession` 构造函数中创建 `WatchdogRuntime`，在 `_emitExtensionEvent` 对应分支后同步调用：
+`turn_end` 和 `agent_end` 在 `_emitExtensionEvent` 中（`agent-session.ts:837-854`），在 `await extensionRunner.emit(...)` 之后同步调用：
 
 ```ts
 // agent-session.ts _emitExtensionEvent 修改
@@ -432,9 +439,22 @@ async #execute(instance: WatchdogInstance): Promise<void> {
 } else if (event.type === "agent_end") {
     await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
     this._watchdogRuntime?.onAgentEnd();      // 同步
-} else if (event.type === "agent_settled") {
-    await this._extensionRunner.emit({ type: "agent_settled" });
-    this._watchdogRuntime?.onAgentSettled();  // 同步
+}
+```
+
+`agent_settled` **不在 `_emitExtensionEvent` 中**——它在独立的 `_emitAgentSettled()` 方法（`agent-session.ts:696-704`）。idle 触发器的启动钩子接在这里：
+
+```ts
+// agent-session.ts _emitAgentSettled 修改
+private async _emitAgentSettled(): Promise<void> {
+    this._isAgentRunActive = false;
+    try {
+        await this._extensionRunner.emit({ type: "agent_settled" });
+        this._watchdogRuntime?.onAgentSettled();  // 同步：启动 idle 定时器
+        this._emit({ type: "agent_settled" });
+    } finally {
+        this._resolveIdleWaitIfIdle();
+    }
 }
 ```
 
@@ -447,7 +467,7 @@ this._watchdogRuntime?.onBeforeAgentStart();
 Session 生命周期：
 - `switchSession()` / tree navigation / compaction → `watchdogRuntime.reset()`
 - `dispose()` → `watchdogRuntime.dispose()`
-- `reload()` → 重新发现 WATCHDOG.yml + 预设 → `watchdogRuntime.reload(configs, presets)`
+- `reload()` → 重新发现 `watchdog.json` + 预设 → `watchdogRuntime.reload(configs, presets)`
 
 ### 5.6 ExtensionAPI 暴露
 
@@ -464,25 +484,25 @@ export interface ExtensionAPI {
 }
 ```
 
-动态注册的 watchdog 与 WATCHDOG.yml 配置合并：同 slug 时动态注册优先。
+动态注册的 watchdog 与 `watchdog.json` 配置合并：同 slug 时动态注册优先。
 
 ## 6. 用例
 
 ### 6.1 AIRP 自动总结（每 3 轮）
 
-WATCHDOG.yml:
-```yaml
-watchdogs:
-  - name: story-summary
-    model: openai/gpt-5.2
-    trigger:
-      type: everyNTraces
-      n: 3
-    preset: story-summary
-    delivery:
-      persist: true
-      deliverAs: nextTurn
-      statusBar: true
+`.pi/watchdog.json`:
+```json
+{
+  "watchdogs": [
+    {
+      "name": "story-summary",
+      "model": "openai/gpt-5.2",
+      "trigger": { "type": "everyNTraces", "n": 3 },
+      "preset": "story-summary",
+      "delivery": { "persist": true, "deliverAs": "nextTurn", "statusBar": true }
+    }
+  ]
+}
 ```
 
 `.pi/prompt-presets/story-summary.json`:
@@ -511,21 +531,23 @@ watchdogs:
 }
 ```
 
-效果：每 3 个 user 轮 → 后台编译预设（state + 最近 50 条历史 + 指令）→ LLM 调用 → 落盘 `watchdog:story-summary` custom message → 下次 prompt 注入 → 状态栏提示。
+效果：每 3 个 user 轮 → 后台编译预设（state + 最近 50 条历史 + 指令）→ LLM 调用 → finalize 正则 → 落盘 `watchdog:story-summary` custom message → 下次 prompt 注入 → 状态栏提示。
 
 ### 6.2 自动状态更新（每轮，jsonpatch）
 
-WATCHDOG.yml:
-```yaml
-watchdogs:
-  - name: state-updater
-    model: openai/gpt-5.2
-    trigger:
-      type: turnEnd
-    preset: state-updater
-    delivery:
-      persist: false
-      eventBus: true
+`.pi/watchdog.json`:
+```json
+{
+  "watchdogs": [
+    {
+      "name": "state-updater",
+      "model": "openai/gpt-5.2",
+      "trigger": { "type": "turnEnd" },
+      "preset": "state-updater",
+      "delivery": { "persist": false, "eventBus": true }
+    }
+  ]
+}
 ```
 
 `.pi/prompt-presets/state-updater.json`:
@@ -550,9 +572,23 @@ watchdogs:
       "kind": "block", "id": "instruction", "role": "user",
       "content": "Output a JSON Patch array for state changes from this turn."
     }
-  ]
+  ],
+  "regex": {
+    "rules": [
+      {
+        "id": "extract-json",
+        "stage": "compiled",
+        "effect": "finalize",
+        "pattern": "```json\\n([\\s\\S]*?)```",
+        "flags": "g",
+        "replace": "$1"
+      }
+    ]
+  }
 }
 ```
+
+finalize 正则在此剥离 markdown code fence，转译扩展拿到的就是纯 JSON。
 
 转译扩展：
 ```ts
@@ -574,17 +610,18 @@ export default function (pi: ExtensionAPI) {
 
 ### 6.3 Idle Recap
 
-WATCHDOG.yml:
-```yaml
-watchdogs:
-  - name: idle-recap
-    trigger:
-      type: idle
-      idleSeconds: 120
-    preset: idle-recap
-    delivery:
-      persist: false
-      statusBar: true
+`.pi/watchdog.json`:
+```json
+{
+  "watchdogs": [
+    {
+      "name": "idle-recap",
+      "trigger": { "type": "idle", "idleSeconds": 120 },
+      "preset": "idle-recap",
+      "delivery": { "persist": false, "statusBar": true }
+    }
+  ]
+}
 ```
 
 `.pi/prompt-presets/idle-recap.json`:
@@ -624,10 +661,10 @@ watchdogs:
 ### Phase 1：核心 runtime
 
 1. `core/watchdog/types.ts` — 类型定义
-2. `core/watchdog/config.ts` — WATCHDOG.yml 发现与解析
+2. `core/watchdog/config.ts` — `watchdog.json` 发现与解析
 3. `core/watchdog/runtime.ts` — WatchdogRuntime（触发、执行、生命周期）
 4. `core/agent-session.ts` — 接线（事件钩子 + 构造 + 生命周期）
-5. 手动测试：`everyNTraces` watchdog + 预设编译 + 落盘
+5. 手动测试：`everyNTraces` watchdog + 预设编译 + finalize 正则 + 落盘
 
 ### Phase 2：完整送达
 
@@ -638,20 +675,22 @@ watchdogs:
 
 8. 失败处理 + retry
 9. session switch / compaction / dispose 的 reset
-10. 配置 reload（`/reload` 时重新发现 WATCHDOG.yml + 预设）
+10. 配置 reload（`/reload` 时重新发现 `watchdog.json` + 预设）
 
 ### Phase 4：测试
 
 11. 单元测试：配置解析、触发计数、delivery 路由、预设编译
-12. 集成测试：turn_end 触发 → compileMessages → complete → custom message 落盘
+12. 集成测试：turn_end 触发 → compileMessages → complete → finalize → custom message 落盘
 
-## 9. 待推敲的问题
+## 9. 已确认的决策
 
-1. **预设发现时机**：watchdog 预设和主 agent 预设共享 `loadPromptPresets()` 发现路径。需要确认 `reload()` 时预设和 WATCHDOG.yml 一起重新加载，且 watchdog 引用的预设 ID 找不到时的降级行为（跳过 + warn）。
+> 原"待推敲"问题，经对照 pi-rp 源码核实后确认如下结论。
 
-2. **模型解析**：`model: "openai/gpt-5.2"` 走 `modelRegistry.find(provider, modelId)` + `hasConfiguredAuth`，还是走 `resolveModelOverride`（支持 role alias 和 thinking suffix）？倾向后者，与 omp 一致。thinkingLevel 独立字段还是合并到 model 字符串（`openai/gpt-5.2:high`）？倾向独立字段，更清晰。
+1. **预设发现时机**：`reload()` 时预设和 `watchdog.json` 一起重新加载。watchdog 引用的预设 ID 找不到时 → **跳过 + warn**，不阻塞其他 watchdog。
 
-3. **usage 记账**：watchdog 的 usage 如何归属？倾向走 `usage-totals.ts` 聚合（与 compaction 一致），同时在 custom message 的 `details` 中携带 usage。
+2. **模型解析**：使用 `modelRegistry.find(provider, modelId)` + `hasConfiguredAuth`（两者均已存在于 `model-registry.ts:56-62`）。`config.model` 字段 `"provider/modelId"` 在首个 `/` 处拆分。`thinkingLevel` 作为独立字段，不合并进 model 字符串——更清晰，且 `ScopedModel`（`model-resolver.ts:63`）已支持独立的 `thinkingLevel`。`resolveModelOverride` 在 pi-rp 中**不存在**（全文搜索零匹配），不引用。
+
+3. **usage 记账**：走 `usage-totals.ts` 的 `addUsageToTotals`（与 compaction 一致），同时在 custom message 的 `details` 中携带 usage。`getUsageCostBreakdown`（`usage-totals.ts:37`）已将 compaction/branch-summary 归入 `"Tools/summaries"` 桶，watchdog 用法同理归入此桶或单独桶。
 
 4. **多 watchdog 同 trace 并发**：N 个 watchdog 同时在 `agent_end` 触发会并发 N 次 LLM 调用。短期不需要限流；未来走 multi-agent-infrastructure.md Phase 0 的 RequestGateway。
 
@@ -659,14 +698,42 @@ watchdogs:
 
 6. **watchdog custom message 的 TUI 渲染**：`customType: "watchdog:story-summary"` 需要默认 EntryRenderer，或回退到默认 custom message 渲染。
 
-7. **与 compaction 的关系**：compaction 本质是"触发式 side request"。未来可重新定义为内置 watchdog。短期不做，架构留可能性。
+7. **与 compaction 的关系**：compaction 本质是"触发式 side request"。短期不做合并——compaction 的破坏性输出语义（替换消息为 summary）、cut-point 检测、token 预算、overflow 自动重试都是 watchdog 架构不覆盖的。架构留可能性：从 watchdog 的 `#execute` 抽 `sideRequestExecutor`（构建 PromptRuntime → compile → complete → retry → epoch guard → finalize → 返回 text），watchdog 和未来 refactor 的 compaction 共用。**已记账 compaction/branch-summary 的正则 BUG，见 §10。**
 
 8. **RPC 模式**：watchdog 在 `-p` 一次性模式下不启用。仅在 interactive 和常驻 RPC daemon 模式下启用。
 
-9. **动态注册时机**：扩展通过 `pi.watchdog.register()` 在 `session_start` 中注册是否太晚？需要确认 `session_start` 和第一个 `agent_start` 的先后顺序。
+9. **动态注册时机**：扩展通过 `pi.watchdog.register()` 在 `session_start` 中注册。需确认 `session_start` 在第一个 `agent_start` 之前完成（注册的 watchdog 能收到首个 trace 的触发）。
 
-10. **预设的 `variables`**：watchdog 是否需要额外变量（如 `{{turnIndex}}`、`{{traceCount}}`）？可以通过预设的 `variables` 字段注入，watchdog runtime 构建 `PromptRuntime` 时填入。
+10. **预设的 `variables`**：watchdog 通过 `PromptRuntime.variables` 注入额外变量（如 `{{turnIndex}}`、`{{traceCount}}`），watchdog runtime 构建 `PromptRuntime` 时填入。
 
-11. **预设 regex 的 finalize stage**：预设的 `regex` 规则 `finalize` stage 用于后处理 assistant 输出。watchdog 的 LLM 输出是否应过 regex？倾向支持——这样可以在预设里定义"提取 JSON"之类的后处理规则，无需在转译扩展中手写。需要在 `#execute` 中对 response 应用 `applyFinalizeRegexRulesToMessage`。
+11. **finalize 正则**（原待推敲，**已确认为必做**）：watchdog 的 LLM 输出**必须**过 `applyFinalizeRegexRulesToMessage`，与主 agent `message_end` 路径（`agent-session.ts:887`）一致。这样"提取 JSON"之类的后处理写在预设里，转译扩展不用手写。已在 §5.4 step 6 实现。
 
-12. **`PromptRuntime.options`**：watchdog 编译预设时，`BuildSystemPromptOptions` 传什么？不需要主 agent 的 tools/skills 信息——传一个空选项或最小选项即可，预设的 `tools`/`skills` slot 不会在 watchdog 预设中使用。
+12. **`PromptRuntime.options`**：watchdog 编译预设时传一个空/最小 `BuildSystemPromptOptions`——不需要主 agent 的 tools/skills 信息，预设的 `tools`/`skills` slot 不会在 watchdog 预设中使用。
+
+## 10. 已记账的 BUG（正则审计）
+
+> 审计原则：一个"用预设的系统"要完整支持正则，需在**构建 prompt 时应用 `outgoing`**（`applyRegexRulesToMessages`，history + compiled stage）+ **处理 LLM 输出时应用 `finalize`**（`applyFinalizeRegexRulesToMessage`）。正则四个 effect：`outgoing` / `display` / `both` / `finalize`。
+
+### 审计结果
+
+| 系统 | 用预设？ | outgoing（输入侧） | finalize（输出侧） | 状态 |
+|---|---|---|---|---|
+| 主 agent 循环 | `compileMessages` | ✓（compiler 内置，`compiler.ts:121,137`） | ✓（`agent-session.ts:887`） | OK |
+| subagent | `compileMessages` | ✓（compiler 内置） | ✓（subagent 自有 session，同 `agent-session.ts:887` 路径） | OK |
+| **compaction** | `hiddenOverrides` + `applyRegexRulesToMessages` | ✓（`agent-session.ts:2586-2601`） | ✗ | **BUG 1** |
+| **branch-summary** | `hiddenOverrides` only | ✗ | ✗ | **BUG 2** |
+| watchdog（本方案） | `compileMessages` | ✓（compiler 内置） | ✓（§5.4 step 6） | OK |
+
+### BUG 1：compaction summary 输出没有过 finalize 正则
+
+- **位置**：`agent-session.ts:2504`，`summary = result.summary` —— raw LLM 输出，直接落盘。
+- compaction summary 是 LLM 输出（`compact()` → `generateSummaryWithUsage()` 返回的 text），应当过 `finalize`。现在如果用户在预设里写了 `finalize` 规则（如"提取 JSON"），compaction summary 不触发。
+- **修复**：拿到 `summary` 后，包成 assistant message → `applyFinalizeRegexRulesToMessage(preset, msg, diags)` → 取回 text。
+- **影响范围**：`compact()`（`agent-session.ts:2490-2509`）和 auto-compaction 路径（`agent-session.ts:2825-2828`）。
+
+### BUG 2：branch-summary 完全没有正则
+
+- **输入侧**：`branch-summarization.ts:329`，`convertToLlm(messages)` —— 没有 `applyRegexRulesToMessages`。compaction 有等价的 `_applyPresetToCompactionPreparation`（`agent-session.ts:2580`），branch-summary 没有。
+- **输出侧**：`branch-summarization.ts:368`，`summary = contentText(response.content)` —— raw，没有 `finalize`。
+- branch-summary 消费了 `hiddenOverrides.compaction.branchSummaryPrompt`（`agent-session.ts:3740`），是预设消费者，却零正则。
+- **修复**：输入侧加 `applyRegexRulesToMessages`（history + compiled outgoing）；输出侧加 `finalize`。

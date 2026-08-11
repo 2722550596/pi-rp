@@ -89,6 +89,13 @@ export class StateManager {
 	private _data: Record<string, JsonValue> = {};
 	private _subscribers = new Set<(snapshot: Record<string, unknown>) => void>();
 	private _dirty = false;
+	private _revision = 0;
+
+	/** Monotonic state revision: increments on every mutation/load.
+	 *  Peers (subagent, RPC) use it to skip unchanged snapshots. */
+	get revision(): number {
+		return this._revision;
+	}
 
 	/** Apply one state mutation. Path supports dot notation and JSON Pointer. */
 	apply(pathOrOp: string, op?: StateOp, val?: JsonValue): StateDiffResult;
@@ -108,6 +115,7 @@ export class StateManager {
 		}
 		this._notify();
 		this._dirty = true;
+		this._revision++;
 		return result;
 	}
 
@@ -253,11 +261,13 @@ export class StateManager {
 	load(data: Record<string, unknown>): void {
 		this._data = structuredClone(data) as Record<string, JsonValue>;
 		this._notify();
+		this._revision++;
 	}
 
 	/** Fill missing keys from `defaults` (existing values win, recursively). */
 	applyDefaults(defaults: Record<string, JsonValue>): void {
 		fillMissing(this._data, defaults);
 		this._notify();
+		this._revision++;
 	}
 }
