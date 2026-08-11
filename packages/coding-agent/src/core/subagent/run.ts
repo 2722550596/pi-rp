@@ -38,15 +38,11 @@ export async function runSubagent(
 		return { status: "failed", text: "", error: "No messages to send." };
 	}
 
-	// The last message in preparation is the task
-	const taskMessage = preparation.messages[preparation.messages.length - 1];
-	const initialMessages = preparation.messages.slice(0, -1);
-	const task =
-		"content" in taskMessage
-			? typeof taskMessage.content === "string"
-				? taskMessage.content
-				: contentText(taskMessage.content, "")
-			: "";
+	// setInitialMessages 要求播种消息以 user 结尾（agent-session.ts 的硬契约）。
+	// prepare.ts 已把 task 追加为最后一条 user 消息——播种消息必须**包含**它：
+	// 剥出会让末尾退回 compileMessages 的原末尾，而 chat-history slot 渲染的继承
+	// 历史常以 assistant 结尾，会触发 "Initial messages must end with a user message"。
+	const initialMessages = preparation.messages;
 
 	// In-memory session manager: no disk I/O, nothing to clean up.
 	const sessionManager = SessionManager.inMemory(process.cwd());
@@ -95,7 +91,10 @@ export async function runSubagent(
 	combinedSignal.addEventListener("abort", signalHandler);
 
 	try {
-		await session.prompt(task);
+		// 播种消息已含 task（最后一条 user 消息），直接 continue() 触发 run——
+		// 再 prompt(task) 会双份发送。continue() 要求上下文以 user/toolResult 结尾，
+		// 播种后的末尾正是 task。
+		await session.agent.continue();
 		await session.waitForIdle();
 
 		const lastAssistant = [...session.agent.state.messages].reverse().find((m) => m.role === "assistant");
