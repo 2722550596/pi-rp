@@ -415,6 +415,17 @@ export class RpcClient {
 	}
 
 	/**
+	 * Move the session tree leaf to the rollback position of the given entry
+	 * (without summarization). Used to rewind this session in lockstep with
+	 * another session's rollback.
+	 * @returns Object with `cancelled: true` if an extension cancelled the navigation
+	 */
+	async navigateTree(targetId: string): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "navigate_tree", targetId });
+		return this.getData<{ cancelled: boolean }>(response);
+	}
+
+	/**
 	 * Get text of last assistant message.
 	 */
 	async getLastAssistantText(): Promise<string | null> {

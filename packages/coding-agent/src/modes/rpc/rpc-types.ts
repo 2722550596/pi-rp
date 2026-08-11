@@ -63,6 +63,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_entries"; since?: string }
 	| { id?: string; type: "get_tree" }
+	| { id?: string; type: "navigate_tree"; targetId: string }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
 
@@ -205,6 +206,13 @@ export type RpcResponse =
 			command: "get_tree";
 			success: true;
 			data: { tree: SessionTreeNode[]; leafId: string | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "navigate_tree";
+			success: true;
+			data: { cancelled: boolean };
 	  }
 	| {
 			id?: string;

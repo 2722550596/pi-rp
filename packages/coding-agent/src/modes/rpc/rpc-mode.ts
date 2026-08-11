@@ -648,6 +648,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_tree", { tree: sessionManager.getTree(), leafId: sessionManager.getLeafId() });
 			}
 
+			case "navigate_tree": {
+				// Move the session tree leaf to the target's rollback position
+				// (no summarization: used by the writer process to rewind a
+				// character session in lockstep with its own rollback).
+				try {
+					const result = await session.navigateTree(command.targetId, { summarize: false });
+					return success(id, "navigate_tree", { cancelled: result.cancelled });
+				} catch (err) {
+					return error(id, "navigate_tree", err instanceof Error ? err.message : String(err));
+				}
+			}
+
 			case "get_last_assistant_text": {
 				const text = session.getLastAssistantText();
 				return success(id, "get_last_assistant_text", { text });

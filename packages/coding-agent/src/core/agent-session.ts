@@ -1962,7 +1962,7 @@ export class AgentSession {
 				if (details !== undefined) appMessage.details = details;
 				this._emit({ type: "custom_message_update", message: appMessage });
 			},
-			end: async () => {
+			end: async (entryId?: string) => {
 				if (ended) return;
 				ended = true;
 				this.sessionManager.appendCustomMessageEntry(
@@ -1970,6 +1970,7 @@ export class AgentSession {
 					appMessage.content,
 					appMessage.display,
 					appMessage.details,
+					entryId,
 				);
 				this._emit({ type: "message_end", message: appMessage });
 			},

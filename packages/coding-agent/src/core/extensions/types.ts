@@ -1601,8 +1601,12 @@ export type StartLiveMessageHandler = <T = unknown>(
 export interface LiveMessageHandle<T = unknown> {
 	/** Update streamed content (and optionally details). Emits a message_update event. */
 	update(content: string | (TextContent | ImageContent)[], details?: T): void;
-	/** Finalize: persist to the session and emit message_end. */
-	end(): Promise<void>;
+	/**
+	 * Finalize: persist to the session and emit message_end.
+	 * @param entryId Optional explicit entry id to persist under (links this
+	 *   entry to a corresponding entry in another session).
+	 */
+	end(entryId?: string): Promise<void>;
 }
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;

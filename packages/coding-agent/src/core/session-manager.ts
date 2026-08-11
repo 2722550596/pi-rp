@@ -1248,6 +1248,9 @@ export class SessionManager {
 	 * @param content Message content (string or TextContent/ImageContent array)
 	 * @param display Whether to show in TUI (true = styled display, false = hidden)
 	 * @param details Optional extension-specific metadata (not sent to LLM)
+	 * @param id Optional explicit entry id (used to link this entry to a
+	 *   corresponding entry in another session, e.g. a character subprocess).
+	 *   Falls back to a generated id when absent or colliding.
 	 * @returns Entry id
 	 */
 	appendCustomMessageEntry<T = unknown>(
@@ -1255,6 +1258,7 @@ export class SessionManager {
 		content: string | (TextContent | ImageContent)[],
 		display: boolean,
 		details?: T,
+		id?: string,
 	): string {
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
@@ -1262,7 +1266,7 @@ export class SessionManager {
 			content,
 			display,
 			details,
-			id: generateId(this.byId),
+			id: id && !this.byId.has(id) ? id : generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 		};
