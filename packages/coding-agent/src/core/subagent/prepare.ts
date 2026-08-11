@@ -1,5 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
+import type { AgentSession } from "../agent-session.ts";
 import { DEFAULT_THINKING_LEVEL } from "../defaults.ts";
 import { findExactModelReferenceMatch } from "../model-resolver.ts";
 import type { ModelRuntime } from "../model-runtime.ts";
@@ -7,6 +8,7 @@ import { compileMessages } from "../prompt-preset/compiler.ts";
 import type { PromptPreset, PromptRuntime } from "../prompt-preset/index.ts";
 import { defaultPreset } from "../prompt-preset/index.ts";
 import { isDisabledPromptPresetId, loadPromptPresets } from "../prompt-preset/loader.ts";
+import { applyResourcePolicy } from "../prompt-preset/policy.ts";
 import { getDefaultSessionDir } from "../session-manager.ts";
 import type { Skill } from "../skills.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -29,8 +31,12 @@ export interface PrepareSubagentOptions {
 	/** Thinking level override. Falls back to preset's level, then "medium". */
 	thinkingLevel?: ThinkingLevel;
 	tools?: string[];
-	/** Reserved for Phase 4: number of parent conversation messages to seed as history. */
+	/** Number of parent messages to seed as chat history. Requires `session`. */
 	inheritHistory?: number;
+	/** Parent session for peer-completion (preset discovery, state, history, options). */
+	session?: AgentSession;
+	/** State schema IDs for the subagent session. Falls back to preset.schemas. */
+	schemas?: string[];
 }
 
 export interface SubagentPreparation {
@@ -44,6 +50,8 @@ export interface SubagentPreparation {
 	effectiveTools: string[];
 	/** The resolved preset profile */
 	profile: PromptPreset;
+	/** Schema IDs to load into the subagent session (from options or preset). */
+	schemas?: string[];
 }
 
 export interface PrepareSubagentError {
@@ -64,13 +72,21 @@ export type PrepareSubagentResult = SubagentPreparation | PrepareSubagentError;
  *
  * This does NOT create an AgentSession - it calls compileMessages directly
  * with a minimal PromptRuntime, avoiding extension/tool/loader overhead.
+ *
+ * When a parent `session` is supplied (peer-completion), the runtime is
+ * built from the parent's live context: in-memory presets, state snapshot,
+ * conversation history (up to `inheritHistory`), and full system-prompt
+ * options. Without a session, a minimal empty runtime is used.
  */
 export function prepareSubagentConversation(options: PrepareSubagentOptions): PrepareSubagentResult {
 	const { cwd, profileId, task, modelRuntime, modelRef, thinkingLevel } = options;
 
-	// Load presets
-	const allPresets = loadPromptPresets(cwd, getDefaultSessionDir(cwd));
-	const foundPreset = allPresets.find((p) => p.preset.id === profileId);
+	// Preset discovery: parent session presets first (in-memory, up-to-date),
+	// then disk fallback (handles presets added after session creation).
+	const sessionPresets = options.session ? options.session.getAllPresets() : [];
+	const foundInSession = sessionPresets.find((p) => p.preset.id === profileId);
+	const allPresets = foundInSession ? sessionPresets : loadPromptPresets(cwd, getDefaultSessionDir(cwd));
+	const foundPreset = foundInSession ?? allPresets.find((p) => p.preset.id === profileId);
 	if (!foundPreset && !isDisabledPromptPresetId(profileId)) {
 		return {
 			ok: false,
@@ -78,7 +94,6 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 			availablePresets: allPresets.map((p) => p.preset.id),
 		};
 	}
-
 	const preset = foundPreset?.preset ?? defaultPreset;
 
 	// Resolve model
@@ -111,27 +126,45 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 	const effectiveThinkingLevel =
 		thinkingLevel ?? (preset.thinkingLevel as ThinkingLevel | undefined) ?? DEFAULT_THINKING_LEVEL;
 
-	// Build a minimal PromptRuntime for compileMessages
-	const systemPromptOptions: BuildSystemPromptOptions = {
-		cwd,
-		skills: [] as Skill[],
-		contextFiles: [],
-		customPrompt: undefined,
-		appendSystemPrompt: undefined,
-		selectedTools: [],
-		toolSnippets: {},
-		promptGuidelines: [],
-	};
-	const runtime: PromptRuntime = {
-		options: systemPromptOptions,
-		messages: [],
-		latestUserMessage: undefined,
-		now: new Date(),
-		variables: {},
-		skills: [],
-	};
+	// Effective tools: from options, or read-only default. Resolved before
+	// runtime construction so buildPeerOptions can apply the preset's tool policy.
+	const effectiveTools = options.tools ?? ["read", "grep", "find", "ls", "bash"];
 
-	// Compile preset messages (system prompt + preset items, no conversation history)
+	// Build the PromptRuntime for compileMessages. With a parent session,
+	// build a peer-context runtime (state, history, options); otherwise minimal.
+	let runtime: PromptRuntime;
+	if (options.session) {
+		runtime = {
+			options: buildPeerOptions(options.session, effectiveTools, preset),
+			messages: options.inheritHistory ? options.session.agent.state.messages.slice(-options.inheritHistory) : [],
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: options.session.systemPromptOptions.skills ?? [],
+			state: options.session.stateManager.snapshot(),
+		};
+	} else {
+		const systemPromptOptions: BuildSystemPromptOptions = {
+			cwd,
+			skills: [] as Skill[],
+			contextFiles: [],
+			customPrompt: undefined,
+			appendSystemPrompt: undefined,
+			selectedTools: [],
+			toolSnippets: {},
+			promptGuidelines: [],
+		};
+		runtime = {
+			options: systemPromptOptions,
+			messages: [],
+			latestUserMessage: undefined,
+			now: new Date(),
+			variables: {},
+			skills: [],
+		};
+	}
+
+	// Compile preset messages (system prompt + preset items + chat history)
 	const compiled = compileMessages(preset, runtime);
 	if (compiled.diagnostics.some((d) => d.level === "error")) {
 		const errors = compiled.diagnostics
@@ -153,8 +186,8 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 	};
 	const fullMessages = [...compiled.messages, taskMessage];
 
-	// Effective tools: from options, or read-only default
-	const effectiveTools = options.tools ?? ["read", "grep", "find", "ls", "bash"];
+	// Schemas: explicit option wins, then preset-declared schemas.
+	const schemas = options.schemas ?? preset.schemas;
 
 	return {
 		messages: fullMessages,
@@ -162,6 +195,37 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 		thinkingLevel: effectiveThinkingLevel,
 		effectiveTools,
 		profile: preset,
+		schemas,
+	};
+}
+
+/**
+ * Build peer-context system-prompt options for a subagent by spreading the
+ * parent session's options and overriding `selectedTools` / `toolSnippets`
+ * with the subagent's post-policy tool set. The parent's options are never
+ * mutated — spreading copies the top level. The tool policy applied here
+ * mirrors setActivePreset's later application (idempotent), so the snippets
+ * and selectedTools reflect exactly what the subagent session will use.
+ */
+function buildPeerOptions(
+	session: AgentSession,
+	effectiveTools: string[],
+	preset: PromptPreset,
+): BuildSystemPromptOptions {
+	const parent = session.systemPromptOptions;
+	const policyTools = applyResourcePolicy(effectiveTools, preset.tools);
+
+	// Filter toolSnippets to only tools the subagent actually has.
+	const filteredToolSnippets: Record<string, string> = {};
+	const toolSet = new Set(policyTools);
+	for (const [name, snippet] of Object.entries(parent.toolSnippets ?? {})) {
+		if (toolSet.has(name)) filteredToolSnippets[name] = snippet;
+	}
+
+	return {
+		...parent,
+		selectedTools: policyTools,
+		toolSnippets: filteredToolSnippets,
 	};
 }
 

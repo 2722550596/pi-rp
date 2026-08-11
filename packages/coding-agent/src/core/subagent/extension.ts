@@ -108,6 +108,7 @@ export function createSubagentToolDefinition(session: AgentSession): ToolDefinit
 				profileId: params.profileId,
 				task: params.task,
 				modelRuntime: session.modelRuntime,
+				session,
 			});
 
 			if (isPrepareError(preparation)) {

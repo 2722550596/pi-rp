@@ -189,6 +189,10 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 	if (obj.skills !== undefined) {
 		preset.skills = normalizeResourcePolicy(obj.skills, "skills", diagnostics);
 	}
+	// Normalize state schema IDs
+	if (Array.isArray(obj.schemas)) {
+		preset.schemas = obj.schemas.filter((s): s is string => typeof s === "string");
+	}
 
 	// Validate and copy regex config
 	if (obj.regex !== undefined) {

@@ -183,6 +183,9 @@ export interface PromptPreset {
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;
+
+	/** State schema IDs to load into a subagent session using this preset. */
+	schemas?: string[];
 	regex?: PromptPresetRegexConfig;
 	hiddenOverrides?: PromptPresetHiddenOverrides;
 	variables?: Record<string, string>;

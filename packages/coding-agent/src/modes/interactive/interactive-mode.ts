@@ -6032,6 +6032,7 @@ export class InteractiveMode {
 			profileId,
 			task,
 			modelRuntime: this.session.modelRuntime,
+			session: this.session,
 		});
 		if (isPrepareError(preparation)) {
 			this.showError(`Subagent preparation failed: ${preparation.error}`);

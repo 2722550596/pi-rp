@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, it } from "vitest";
 import {
@@ -7,7 +9,7 @@ import {
 } from "../../src/core/subagent/extension.ts";
 import { isPrepareError, prepareSubagentConversation } from "../../src/core/subagent/prepare.ts";
 import { runSubagent } from "../../src/core/subagent/run.ts";
-import { createHarness } from "./harness.ts";
+import { createHarness, getMessageText } from "./harness.ts";
 
 describe("Subagent", () => {
 	it("Phase 1: prepareSubagentConversation handles unknown presets", async () => {
@@ -77,6 +79,70 @@ describe("Subagent", () => {
 				{} as any,
 			);
 			assert.ok(typeof subagentResult.content[0] === "object" && "text" in subagentResult.content[0]);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("Phase 4: peer completion inherits parent state and history", async () => {
+		const harness = await createHarness();
+		try {
+			// Write a delegatable preset with state + chat-history slots
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-peer.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-peer",
+					name: "Test Peer",
+					delegatable: true,
+					items: [
+						{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a test peer." },
+						{
+							kind: "slot",
+							id: "state",
+							enabled: true,
+							role: "system",
+							slot: "state",
+							options: { allowNamespace: ["world", "secret"], format: "yaml" },
+						},
+						{
+							kind: "slot",
+							id: "history",
+							enabled: true,
+							role: "user",
+							slot: "chat-history",
+							options: { maxMessages: 10 },
+						},
+					],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			// Seed parent state and conversation history
+			harness.session.stateManager.load({ world: { name: "TestWorld" }, secret: { plot: "hidden" } });
+			harness.session.agent.state.messages.push(
+				{ role: "user", content: [{ type: "text", text: "Hello world" }], timestamp: Date.now() },
+				fauxAssistantMessage("Hi there"),
+			);
+
+			const result = prepareSubagentConversation({
+				cwd: harness.tempDir,
+				profileId: "test-peer",
+				task: "What is the world name?",
+				modelRuntime: harness.session.modelRuntime,
+				session: harness.session,
+				inheritHistory: 10,
+			});
+
+			assert.equal(isPrepareError(result), false);
+			if (!isPrepareError(result)) {
+				const allText = result.messages.map((m) => getMessageText(m)).join("\n");
+				assert.ok(allText.includes("Hello world"), "compiled messages should contain parent history");
+				assert.ok(allText.includes("TestWorld"), "compiled messages should contain parent state (world)");
+				assert.ok(allText.includes("hidden"), "compiled messages should contain parent state (secret)");
+			}
 		} finally {
 			harness.cleanup();
 		}

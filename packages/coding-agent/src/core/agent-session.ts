@@ -4012,6 +4012,10 @@ export class AgentSession {
 			outputPath,
 			themeName,
 			toolRenderer,
+			preset:
+				this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default"
+					? this._activePreset
+					: undefined,
 		});
 	}
 
