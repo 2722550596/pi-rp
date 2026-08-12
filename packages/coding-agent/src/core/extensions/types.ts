@@ -1332,8 +1332,20 @@ export interface ExtensionAPI {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	): LiveMessageHandle<T>;
 
-	/** Append a custom entry to the session for state persistence (not sent to LLM). */
+	/**
+	 * Append a custom entry to the session for state persistence (not sent to LLM).
+	 * Use the `"message"` overload to append a real conversation message instead.
+	 */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
+	/**
+	 * Append a real `user`/`assistant` message to the session. The message is
+	 * persisted in the session file, included in the LLM context, and rendered in
+	 * the TUI exactly like a normal conversation message.
+	 */
+	appendEntry(
+		type: "message",
+		message: { role: "user" | "assistant"; content: string | (TextContent | ImageContent)[] },
+	): void;
 
 	// =========================================================================
 	// Session Metadata
@@ -1625,7 +1637,10 @@ export interface LiveMessageHandle<T = unknown> {
 	end(entryId?: string): Promise<void>;
 }
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export type AppendEntryHandler = {
+	<T = unknown>(customType: string, data?: T): void;
+	(type: "message", message: { role: "user" | "assistant"; content: string | (TextContent | ImageContent)[] }): void;
+};
 
 export type SetSessionNameHandler = (name: string) => void;
 

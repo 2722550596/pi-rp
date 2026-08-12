@@ -31,6 +31,7 @@ import type {
 	StreamFn,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
 import { contentText } from "@earendil-works/pi-ai";
 import type {
 	Api,
@@ -3110,8 +3111,33 @@ export class AgentSession {
 					});
 				},
 				startLiveMessage: (message) => this.startLiveMessage(message),
-				appendEntry: (customType, data) => {
-					const entryId = this.sessionManager.appendCustomEntry(customType, data);
+				appendEntry: (typeOrCustomType: string, data?: unknown) => {
+					if (typeOrCustomType === "message") {
+						// Real message entry: persisted in the session, included in LLM
+						// context (agent state + session entries), rendered in the TUI.
+						const input = data as {
+							role: "user" | "assistant";
+							content: string | (TextContent | ImageContent)[];
+						};
+						// Normalize string content to the canonical content-array form the
+						// loop persists for real messages (provider layer maps over arrays).
+						const content: (TextContent | ImageContent)[] =
+							typeof input.content === "string" ? [{ type: "text", text: input.content }] : input.content;
+						// Seeded messages carry only role/content/timestamp; the full
+						// Message type additionally requires model-output fields
+						// (api/provider/model) that do not apply here.
+						const appMessage = {
+							role: input.role,
+							content,
+							timestamp: Date.now(),
+						} as unknown as Message;
+						this.agent.state.messages.push(appMessage);
+						this.sessionManager.appendMessage(appMessage);
+						this._emit({ type: "message_start", message: appMessage });
+						this._emit({ type: "message_end", message: appMessage });
+						return;
+					}
+					const entryId = this.sessionManager.appendCustomEntry(typeOrCustomType, data);
 					const entry = this.sessionManager.getEntry(entryId);
 					if (entry) {
 						this._emit({ type: "entry_appended", entry });

@@ -1446,6 +1446,21 @@ pi.on("session_start", async (_event, ctx) => {
 });
 ```
 
+### pi.appendEntry("message", { role, content })
+
+Append a real conversation message to the session. Unlike the custom-entry form, the message **participates in LLM context**, is persisted in the session file, and renders in the TUI exactly like a normal `user`/`assistant` message. `content` may be a plain string or a `(TextContent | ImageContent)[]` array (string content is normalized to a text part). Use this to seed an opening scene, inject narration, or replay a scripted exchange.
+
+```typescript
+pi.on("session_start", (_event, ctx) => {
+  // Skip re-seeding on reload or when the session already has history.
+  const hasMessages = ctx.sessionManager.getEntries().some((e) => e.type === "message");
+  if (hasMessages) return;
+  pi.appendEntry("message", { role: "assistant", content: "晨雾笼罩着驿站，你在门口站了片刻。" });
+});
+```
+
+Does not trigger a turn: the message is added to the agent's message state and the next user turn will include it in context.
+
 ### pi.setSessionName(name)
 
 Set the session display name (shown in session selector instead of first message).
