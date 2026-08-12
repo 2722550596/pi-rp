@@ -3656,6 +3656,8 @@ export class InteractiveMode {
 				return;
 			}
 		}
+
+		this.chatContainer.addChild(component);
 	}
 
 	private _filterMessageForDisplay(message: AgentMessage): AgentMessage {
