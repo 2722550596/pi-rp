@@ -446,6 +446,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_state": {
 				const revision = session.stateManager.revision;
+				const value = command.path ? session.stateManager.get(command.path) : session.stateManager.snapshot();
 				const state: RpcSessionState = {
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
@@ -460,7 +461,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					stateRevision: revision,
-					state: command.ifVersion === revision ? undefined : session.stateManager.snapshot(),
+					path: command.path,
+					// Path mode fetches a namespace subtree (an object); full mode returns the snapshot.
+					state: command.ifVersion === revision ? undefined : (value as Record<string, unknown> | undefined),
 				};
 				return success(id, "get_state", state);
 			}

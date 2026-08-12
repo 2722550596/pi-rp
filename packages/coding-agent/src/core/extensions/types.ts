@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
+	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	ConstrainedSamplingConfig,
@@ -55,7 +56,10 @@ import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
-import type { MacroDefinition, SlotDefinition } from "../prompt-preset/types.ts";
+import type { MacroDefinition, PromptPresetDiagnostic, PromptRuntime, SlotDefinition } from "../prompt-preset/types.ts";
+
+export type { PromptPresetDiagnostic, PromptRuntime } from "../prompt-preset/types.ts";
+
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -345,6 +349,17 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/** One-shot side LLM request outside the main loop (gateway-attributed, uncached). */
+	completeSideRequest(options: CompleteSideRequestOptions): Promise<AssistantMessage>;
+	/** Compile a prompt preset with the given runtime; throws when the preset id is unknown. */
+	compilePreset(
+		presetId: string,
+		runtime: PromptRuntime,
+	): {
+		messages: AgentMessage[];
+		systemPrompt: string;
+		diagnostics: PromptPresetDiagnostic[];
+	};
 }
 
 /**
@@ -1351,6 +1366,7 @@ export interface ExtensionAPI {
 	 * Apply one state mutation and persist it to the session, exactly like the
 	 * state_update tool (schema validation + custom validators included).
 	 * Returns ok:false with a reason when validation rejects the write.
+	 * `add` appends a single element to an array or increments a number; `replace` sets a value; `remove` deletes a path.
 	 */
 	updateState(path: string, op: "add" | "remove" | "replace", value?: unknown): UpdateStateResult;
 
@@ -1725,6 +1741,33 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	completeSideRequest: (options: CompleteSideRequestOptions) => Promise<AssistantMessage>;
+	compilePreset: (
+		presetId: string,
+		runtime: PromptRuntime,
+	) => {
+		messages: AgentMessage[];
+		systemPrompt: string;
+		diagnostics: PromptPresetDiagnostic[];
+	};
+}
+
+/** Options for ctx.completeSideRequest: a one-shot side LLM request outside the main loop. */
+export interface CompleteSideRequestOptions {
+	/** Defaults to ctx.model */
+	model?: Model<any>;
+	/** { systemPrompt, messages } from @earendil-works/pi-ai/compat */
+	context: Context;
+	maxTokens?: number;
+	/** Defaults to ctx.thinkingLevel; mapped to options.reasoning when model.reasoning */
+	thinkingLevel?: ThinkingLevel;
+	signal?: AbortSignal;
+	/** Default 0 (subagent-tier). Only enforced when the gateway has maxConcurrency configured. */
+	priority?: number;
+	/** Default "extension" */
+	label?: string;
+	/** Passed through to SimpleStreamOptions */
+	timeoutMs?: number;
 }
 
 /**

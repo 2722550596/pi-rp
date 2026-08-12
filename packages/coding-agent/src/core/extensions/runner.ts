@@ -3,7 +3,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
@@ -20,6 +20,7 @@ import type {
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	CompactOptions,
+	CompleteSideRequestOptions,
 	ContextEvent,
 	ContextEventResult,
 	ContextUsage,
@@ -48,6 +49,8 @@ import type {
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
+	PromptPresetDiagnostic,
+	PromptRuntime,
 	ProviderConfig,
 	RegisteredCommand,
 	RegisteredTool,
@@ -288,6 +291,19 @@ export class ExtensionRunner {
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
+	private completeSideRequestFn: (options: CompleteSideRequestOptions) => Promise<AssistantMessage> = async () => {
+		throw new Error("completeSideRequest: not bound");
+	};
+	private compilePresetFn: (
+		presetId: string,
+		runtime: PromptRuntime,
+	) => {
+		messages: AgentMessage[];
+		systemPrompt: string;
+		diagnostics: PromptPresetDiagnostic[];
+	} = () => {
+		throw new Error("compilePreset: not bound");
+	};
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -358,6 +374,8 @@ export class ExtensionRunner {
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
+		this.completeSideRequestFn = contextActions.completeSideRequest;
+		this.compilePresetFn = contextActions.compilePreset;
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
@@ -750,6 +768,14 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			completeSideRequest: (options) => {
+				runner.assertActive();
+				return runner.completeSideRequestFn(options);
+			},
+			compilePreset: (presetId, runtime) => {
+				runner.assertActive();
+				return runner.compilePresetFn(presetId, runtime);
 			},
 		};
 	}

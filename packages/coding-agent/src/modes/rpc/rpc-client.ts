@@ -232,10 +232,12 @@ export class RpcClient {
 
 	/**
 	 * Get current session state. Pass `ifVersion` to skip the state snapshot
-	 * when the remote revision matches (cheap unchanged check).
+	 * when the remote revision matches (cheap unchanged check). Pass `path`
+	 * to fetch only a subtree (e.g. a character's namespace) instead of the
+	 * full snapshot.
 	 */
-	async getState(ifVersion?: number): Promise<RpcSessionState> {
-		const response = await this.send({ type: "get_state", ifVersion });
+	async getState(ifVersion?: number, path?: string): Promise<RpcSessionState> {
+		const response = await this.send({ type: "get_state", ifVersion, path });
 		return this.getData(response);
 	}
 

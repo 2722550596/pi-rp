@@ -38,6 +38,7 @@ export {
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	completeSummarization,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTokens,
 	type FileOperations,
@@ -45,7 +46,13 @@ export {
 	findTurnStartIndex,
 	type GenerateBranchSummaryOptions,
 	generateBranchSummary,
+	/**
+	 * streamFn defaults to completeSimple (bypasses the gateway); side requests should use ctx.completeSideRequest or pass an explicit gateway streamFn.
+	 */
 	generateSummary,
+	/**
+	 * streamFn defaults to completeSimple (bypasses the gateway); side requests should use ctx.completeSideRequest or pass an explicit gateway streamFn.
+	 */
 	generateSummaryWithUsage,
 	getLastAssistantUsage,
 	prepareBranchEntries,

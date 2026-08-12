@@ -12,6 +12,7 @@ import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
+import type { RequestIdentity } from "./request-gateway.ts";
 import { RequestGateway } from "./request-gateway.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -84,6 +85,8 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Request gateway for per-provider concurrency control. When omitted, a new one is created. */
 	requestGateway?: RequestGateway;
+	/** Identity for gateway-attributed requests from this session. Default: main-tier identity. */
+	requestIdentity?: RequestIdentity;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
 	/** Prompt preset ID to activate at startup. Wins over session restore and settings default; not persisted to settings. */
@@ -320,6 +323,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// and branch summarization (all read `agent.streamFunction`).
 	const gateway =
 		options.requestGateway ?? new RequestGateway(modelRuntime, settingsManager.getRequestGatewayConfig());
+	// Hoisted before streamFn's own `options` param shadows the session options.
+	const sessionRequestIdentity = options.requestIdentity;
 
 	agent = new Agent({
 		initialState: {
@@ -360,7 +365,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							: (headers ?? {});
 					},
 				},
-				{ sessionId: "?", priority: 2, label: "main" },
+				sessionRequestIdentity ?? { sessionId: "?", priority: 2, label: "main" },
 				options?.signal,
 			);
 		},

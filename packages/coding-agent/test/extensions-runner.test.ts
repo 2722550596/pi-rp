@@ -104,6 +104,12 @@ describe("ExtensionRunner", () => {
 		compact: () => {},
 		getSystemPrompt: () => "",
 		getScopedModels: () => [],
+		completeSideRequest: async () => {
+			throw new Error("not implemented in test");
+		},
+		compilePreset: () => {
+			throw new Error("not implemented in test");
+		},
 	};
 
 	describe("scopedModels", () => {

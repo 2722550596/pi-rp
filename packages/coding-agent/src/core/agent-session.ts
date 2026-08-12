@@ -28,6 +28,7 @@ import type {
 	AgentState,
 	AgentTool,
 	PrepareNextTurnContext,
+	StreamFn,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
@@ -38,6 +39,7 @@ import type {
 	ImageContent,
 	Model,
 	ProviderHeaders,
+	SimpleStreamOptions,
 	TextContent,
 	Usage,
 } from "@earendil-works/pi-ai/compat";
@@ -71,6 +73,7 @@ import {
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	completeSummarization,
 	estimateContextTokens,
 	estimateTokens,
 	generateBranchSummary,
@@ -3189,6 +3192,50 @@ export class AgentSession {
 				},
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				completeSideRequest: async ({
+					model,
+					context,
+					maxTokens,
+					thinkingLevel,
+					signal,
+					priority,
+					label,
+					timeoutMs,
+				}) => {
+					const m = model ?? this.model;
+					if (!m) throw new Error("completeSideRequest: no model available");
+					const streamFn: StreamFn | undefined = this._requestGateway
+						? (mm, cc, oo) =>
+								this._requestGateway!.streamSimple(
+									mm,
+									cc,
+									oo,
+									{ sessionId: "?", priority: priority ?? 0, label: label ?? "extension" },
+									signal,
+								)
+						: undefined;
+					const options: SimpleStreamOptions = { maxTokens, signal, timeoutMs };
+					if (m.reasoning && thinkingLevel && thinkingLevel !== "off") {
+						options.reasoning = thinkingLevel;
+					}
+					return completeSummarization(m, context, options, streamFn, this.settingsManager.getRetrySettings());
+				},
+				compilePreset: (presetId, runtime) => {
+					const presets = this.getAllPresets();
+					const loaded = presets.find((p) => p.preset.id === presetId);
+					if (!loaded) {
+						throw new Error(
+							`Preset not found: ${presetId}. Available presets: ${presets.map((p) => p.preset.id).join(", ")}`,
+						);
+					}
+					const messages = compileMessages(loaded.preset, runtime);
+					const system = compileSystemPrompt(loaded.preset, runtime, "");
+					return {
+						messages: messages.messages,
+						systemPrompt: system.systemPrompt,
+						diagnostics: [...messages.diagnostics, ...system.diagnostics],
+					};
+				},
 			},
 			{
 				registerProvider: (name, config) => {

@@ -55,6 +55,14 @@ import {
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 
+function assertModelApi(model: Model<Api>): void {
+	if (!model.api) {
+		throw new Error(
+			`Model ${model.provider}/${model.id} has no api configured; pass the session's ctx.model instead of rebuilding {provider, id}`,
+		);
+	}
+}
+
 interface ModelRuntimeSnapshot {
 	all: readonly Model<Api>[];
 	available: readonly Model<Api>[];
@@ -612,6 +620,7 @@ export class ModelRuntime implements Models {
 		context: Context,
 		options?: ModelsApiStreamOptions<TApi>,
 	): AssistantMessageEventStream {
+		assertModelApi(model);
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(
 				model,
@@ -634,6 +643,7 @@ export class ModelRuntime implements Models {
 	}
 
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+		assertModelApi(model);
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(model, options);
 			return prepared.provider.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);

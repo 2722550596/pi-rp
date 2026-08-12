@@ -21,6 +21,12 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
 		getContextUsage: () => ({ tokens, contextWindow: 200_000, percent: tokens === null ? null : tokens / 2000 }),
 		compact,
 		getSystemPrompt: () => "",
+		completeSideRequest: async () => {
+			throw new Error("not implemented in test");
+		},
+		compilePreset: () => {
+			throw new Error("not implemented in test");
+		},
 	};
 }
 

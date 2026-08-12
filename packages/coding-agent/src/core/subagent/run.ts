@@ -51,6 +51,7 @@ export async function runSubagent(
 		cwd: process.cwd(),
 		modelRuntime,
 		requestGateway: options.requestGateway,
+		requestIdentity: { sessionId: "?", priority: 0, label: "subagent" },
 		model: preparation.model,
 		sessionManager,
 		initialMessages,
