@@ -140,4 +140,63 @@ describe("CLI --preset and --schema flags", () => {
 
 		session.dispose();
 	});
+
+	it("does not re-append preset/schema/strict entries when resuming with identical flags", async () => {
+		const options = baseOptions();
+		const first = await createAgentSession({ ...options, preset: "plan", schemas: ["character"], strict: true });
+		// 模拟续档：会话里已有消息（hasExistingSession = true）
+		options.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "hi" }],
+			timestamp: Date.now(),
+		});
+		first.session.dispose();
+
+		const { session } = await createAgentSession({
+			...options,
+			preset: "plan",
+			schemas: ["character"],
+			strict: true,
+		});
+
+		const branch = options.sessionManager.getBranch();
+		expect(branch.filter((e) => e.type === "preset_change")).toHaveLength(1);
+		expect(branch.filter((e) => e.type === "schema_change")).toHaveLength(1);
+		expect(branch.filter((e) => e.type === "strict_change")).toHaveLength(1);
+		// 去重只跳过追加，内存态仍全部生效
+		expect(session.activePreset.id).toBe("plan");
+		expect(session.schemaValidator.getActiveNamespaces()).toContain("character");
+		expect(session.schemaValidator.isStrict()).toBe(true);
+
+		session.dispose();
+	});
+
+	it("still records preset change when resumed preset differs from the session", async () => {
+		const options = baseOptions();
+		const first = await createAgentSession({ ...options, preset: "plan", schemas: ["character"], strict: true });
+		options.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "hi" }],
+			timestamp: Date.now(),
+		});
+		first.session.dispose();
+
+		// 换预设 → 追加新的 preset_change；schema/strict 未变仍去重
+		const { session } = await createAgentSession({
+			...options,
+			preset: "fast",
+			schemas: ["character"],
+			strict: true,
+		});
+
+		const branch = options.sessionManager.getBranch();
+		const presetEntries = branch.filter((e) => e.type === "preset_change");
+		expect(presetEntries).toHaveLength(2);
+		expect(presetEntries.at(-1)?.presetId).toBe("fast");
+		expect(branch.filter((e) => e.type === "schema_change")).toHaveLength(1);
+		expect(branch.filter((e) => e.type === "strict_change")).toHaveLength(1);
+		expect(session.activePreset.id).toBe("fast");
+
+		session.dispose();
+	});
 });

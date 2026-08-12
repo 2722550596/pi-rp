@@ -16,7 +16,14 @@ import type { RequestIdentity } from "./request-gateway.ts";
 import { RequestGateway } from "./request-gateway.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
-import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
+import {
+	getDefaultSessionDir,
+	type PresetChangeEntry,
+	type SchemaChangeEntry,
+	type SessionEntry,
+	SessionManager,
+	type StrictChangeEntry,
+} from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import {
@@ -37,6 +44,25 @@ import {
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
 // provider-agnostic and does not import pi-ai/compat itself.
 setDefaultStreamFn(streamSimple);
+
+/** Latest entry of a given type walking backward (newest first). */
+function latestEntryOfType<T extends SessionEntry>(entries: SessionEntry[], type: T["type"]): T | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		if (entries[i].type === type) return entries[i] as T;
+	}
+	return undefined;
+}
+
+/** Latest schema_change for a namespace walking backward (newest first). */
+function latestSchemaChangeForNamespace(entries: SessionEntry[], namespace: string): SchemaChangeEntry | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const e = entries[i];
+		if (e.type === "schema_change" && (e as SchemaChangeEntry).namespace === namespace) {
+			return e as SchemaChangeEntry;
+		}
+	}
+	return undefined;
+}
 
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
@@ -456,8 +482,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	if (options.initialMessages) {
 		session.setInitialMessages(options.initialMessages);
 	}
+	// 续档去重：preset/schema/strict 的最新条目与本次 CLI 参数一致时，只应用内存态、
+	// 不追加 change 条目——进程重启（--continue 续档、web 壳断线重连后重新 spawn）
+	// 不再给会话文件留下重复的 preset_change/schema_change/strict_change 尾巴。
+	const resumedEntries = hasExistingSession ? sessionManager.getEntries() : [];
+	const presetAlreadyActive =
+		options.preset !== undefined &&
+		latestEntryOfType<PresetChangeEntry>(resumedEntries, "preset_change")?.presetId === options.preset;
 	if (options.preset) {
-		const presetResult = await session.setActivePreset(options.preset, { persistSettings: false });
+		const presetResult = await session.setActivePreset(options.preset, {
+			persistSettings: false,
+			record: !presetAlreadyActive,
+		});
 		if (!presetResult.ok) {
 			const available =
 				session
@@ -473,7 +509,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 	}
 	for (const schemaId of options.schemas ?? []) {
-		const schemaResult = session.loadSchema(schemaId);
+		const def = session.getLoadedSchemaDefs().find((s) => s.schemaId === schemaId);
+		const alreadyLoaded =
+			def !== undefined &&
+			latestSchemaChangeForNamespace(resumedEntries, def.namespace)?.action === "load" &&
+			latestSchemaChangeForNamespace(resumedEntries, def.namespace)?.schemaId === schemaId;
+		const schemaResult = session.loadSchema(schemaId, { record: !alreadyLoaded });
 		if (!schemaResult.ok) {
 			sessionDiagnostics.push({
 				type: "warning",
@@ -482,7 +523,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 	}
 	if (options.strict) {
-		session.setStrictMode(true);
+		const alreadyStrict = latestEntryOfType<StrictChangeEntry>(resumedEntries, "strict_change")?.enabled === true;
+		session.setStrictMode(true, { record: !alreadyStrict });
 	}
 	const extensionsResult = resourceLoader.getExtensions();
 

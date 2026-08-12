@@ -1355,13 +1355,13 @@ export class AgentSession {
 		}
 	}
 
-	/** Load a schema by ID and record it as a session entry. */
-	loadSchema(schemaId: string): { ok: boolean; namespace?: string; error?: string } {
+	/** Load a schema by ID and record it as a session entry. Pass `record: false` to apply in-memory only (e.g. resume dedup). */
+	loadSchema(schemaId: string, options?: { record?: boolean }): { ok: boolean; namespace?: string; error?: string } {
 		const def = this._loadedSchemaDefs.find((s) => s.schemaId === schemaId);
 		if (!def) return { ok: false, error: `Schema "${schemaId}" not found` };
 		this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
 		this.applySchemaDefaults(def.namespace);
-		this.sessionManager.appendSchemaChange("load", def.schemaId, def.namespace);
+		if (options?.record !== false) this.sessionManager.appendSchemaChange("load", def.schemaId, def.namespace);
 		return { ok: true, namespace: def.namespace };
 	}
 
@@ -1371,22 +1371,25 @@ export class AgentSession {
 		this.sessionManager.appendSchemaChange("unload", namespace, namespace);
 	}
 
-	/** Toggle strict mode and record it as a session entry. */
-	setStrictMode(enabled: boolean): void {
+	/** Toggle strict mode and record it as a session entry. Pass `record: false` to apply in-memory only (e.g. resume dedup). */
+	setStrictMode(enabled: boolean, options?: { record?: boolean }): void {
 		this._schemaValidator.setStrict(enabled);
-		this.sessionManager.appendStrictChange(enabled);
+		if (options?.record !== false) this.sessionManager.appendStrictChange(enabled);
 	}
 	/**
 	 * Set the active prompt preset by ID. Persists to session.
 	 * If the preset declares a model, switches to it (failures are reported
 	 * via the result's `error` without failing the preset switch).
 	 */
-	async setActivePreset(id: string, options?: { persistSettings?: boolean }): Promise<SetActivePresetResult> {
+	async setActivePreset(
+		id: string,
+		options?: { persistSettings?: boolean; record?: boolean },
+	): Promise<SetActivePresetResult> {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
 			this._presetExplicitlyActivated = true;
 			this._restoreToolPolicy();
-			this.sessionManager.appendPresetChange(id);
+			if (options?.record !== false) this.sessionManager.appendPresetChange(id);
 			if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
 			// _restoreToolPolicy calls setActiveToolsByName which rebuilds the prompt
 			return { ok: true };
@@ -1396,7 +1399,7 @@ export class AgentSession {
 		this._activePreset = found.preset;
 		this._presetExplicitlyActivated = true;
 		this._syncActiveToolPolicy();
-		this.sessionManager.appendPresetChange(id);
+		if (options?.record !== false) this.sessionManager.appendPresetChange(id);
 		// Apply preset thinking level (fail-soft)
 		const presetThinkingLevel = found.preset.thinkingLevel;
 		if (presetThinkingLevel) {

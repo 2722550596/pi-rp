@@ -104,3 +104,60 @@ P3/P4 为低成本文档/防御性改动，可随任何一次源码提交顺带�
 - 本实测是对 watchdog 计划"触发式 side request"的一次**最小落地验证**：触发（`agent_end` 事件）、单次 completion（`modelRegistry.complete`）、预设驱动提示词（手搓子集）、输出送达（`updateState` / custom entry）全部在扩展层成立。
 - 发现 #1/#3 直接喂给 watchdog 设计：watchdog 若建成，应内置"扩展可调用的 side request"与"预设编译"两个 API，而不是让每个扩展重造。
 - 触发频率模型（turnEnd / everyNTraces）在扩展层用事件 + 计数器即可实现，无需 runtime 支持——watchdog 的 runtime 侧价值主要在 retry/epoch/送达编排，而非触发原语。
+
+## 5. 升级方向：更新器 = loop agent（前因后果）
+
+> 关联：[affiliated-session.md](./affiliated-session.md)（技术底座，本节的产物）、[side-request-extension-apis.md](./side-request-extension-apis.md)（并行路线 1）、[co-creation-canon-beliefs.md](./co-creation-canon-beliefs.md)（当前落地搭在路线 1 上）、[CO-CREATION.md](../../worldlines-rivet/CO-CREATION.md) §5.6（handoff context 构造）
+> 状态：方向论证完成，未实现（依赖 pi-rp 的 spawnAgent API）
+
+### 5.1 起因：手搓管线其实是重造 agent 循环
+
+现状实现（§1）是 one-shot `modelRegistry.complete()` + 手搓全套：`parseJsonPatchBlocks`（文本契约解析）→ `translateJsonPatch`（op 翻译）→ `applyCalls`（应用 + 记账）→ `isFailedRun` 守卫 → 失败即丢（无重试）。这些全是 **agent 循环已经在做的事**：
+
+| 现在手搓的 | agent 形态下变成 |
+|---|---|
+| `parseJsonPatchBlocks` + `<UpdateVariable>` 文本契约 | 结构化工具调用（`state_update` 参数就是 JSON Schema） |
+| `translateJsonPatch`（add→replace、delta、test-skip、move/copy 读源） | 内建工具语义：`add`=数值增量/非数值替换/数组追加（`tools/state-update.ts`），agent 自己选对 op |
+| `applyCalls` + rejected 记账 + 幂等跳过 | 工具结果 `state_update rejected: <reason>`（`state-update.ts:88-92`，schema 校验失败作为 tool error）→ **agent 看到错误自己改值重试** |
+| `isFailedRun` 守卫 | 仍是触发门控（失败回合不 spawn），但只剩一行 |
+| 重试/容错 | 循环内建：校验失败不会静默丢，而是自纠错收敛 |
+| `buildPrompt` 手搓预设子集 | 子会话初始 prompt 由引擎按 profile 编译 |
+
+调用次数判断（用户）：正常路径 = 1 次 LLM + 1 次工具调用，与 one-shot 等价；多花的只发生在需要自纠错时——那是特性不是浪费。
+
+### 5.2 瓶颈：扩展无法程序化 spawn loop agent
+
+两条现有路径都不行：
+
+1. **LLM 的 `subagent` 工具**：在 turn 内同步跑（不是后台 side request）；且 subagent 是 **read-only 设计**（`core/subagent/extension.ts:83` 描述原文），写进 **throwaway in-memory StateManager**，永不落回父进程。
+2. **RPC 子进程**（handoff 模式）：每个 trace spawn 一个进程，重。
+
+而 **subagent 引擎其实 90% 就绪**：`prepare.ts:145-155`（inheritHistory + 父 state 快照播种）、`run.ts:38`（`SessionManager.inMemory`，无磁盘）、工具集、timeout、重试全有——**缺的是程序化入口 + 写回通道**。
+
+### 5.3 方案与深化：spawnAgent → affiliated-session
+
+**spawnAgent**（复用 `runSubagent` 引擎 + 显式工具集 `["state_update","get_state"]` + 写回）：子会话写 throwaway state（校验失败在子会话内自纠错），跑完后父进程 **diff-merge 回自己的 StateManager**——复用 handoff.ts `syncCharacterStateToWriter` 的 get/diff/update 模式，进程内版。校验失败重试发生在子会话内，最终只有合法状态合回。
+
+用户深化（RPC 对比）：RPC 有 `--no-session` 轻量模式（`cli/args.ts:112`），但真正的需求是**"与父进程共生的子进程"**——共享 chat history + state，且能把消息以 addEntry 形式反向注入父 session。这催生了 **affiliated-session** 设计（三能力：A 出生继承 / B 活体读取 / C 写回可控；一个协议两个 transport——in-process subagent 引擎 + RPC 子进程），详见 [affiliated-session.md](./affiliated-session.md)。
+
+**边界划分**（用户裁定）：addEntry 反向注入是**扩展**的事（`pi.appendEntry` 已有，子进程结果由父扩展注入）；共生原语本身（继承 / 反向读取 / 回滚）是 **pi-rp** 的事。
+
+### 5.4 与 side-request 路径的关系（两条演进路线）
+
+| | 路线 1：completeSideRequest | 路线 2：spawnAgent |
+|---|---|---|
+| 形态 | 保持 one-shot，**修路径**（网关 + 重试 + 预设编译） | **改形态**为 agent 循环，管线塌缩 |
+| 落点 | [side-request-extension-apis.md](./side-request-extension-apis.md)（已定稿待实现） | affiliated-session 的 in-process transport |
+| 当前依赖 | **co-creation-canon-beliefs.md 的 canon/beliefs 落地搭在这条上**（零扩展代码改动） | 依赖 pi-rp 新 API，未实现 |
+| 关系 | 先落地（成本低、立即受益） | 长期形态：更新器扩展 ~600 行 → ~150 行，等 spawnAgent 实现后重写 |
+
+findings 消化：P1（compilePreset）在路线 2 里被 spawnAgent **吸收为内部实现细节**（子会话初始 prompt 由引擎编译预设，无需单独暴露）；P2 的网关路径在路线 1 落地。
+
+### 5.5 落地序列（= affiliated-session §8）
+
+1. **in-process spawn + scratch** → writer 更新器重写（删 parse/translate/apply 管线）；
+2. **RPC `init_context`** → 角色出生场景继承（配合 CO-CREATION §5.6 的 handoff context 构造）；
+3. **RPC `context_request/response`** → 角色侧更新器去掉磁盘解析（发现 #4 的终态）；
+4. 远期：steering/events（长驻 observer，watchdog 需要时再做）。
+
+
