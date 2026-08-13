@@ -13,7 +13,7 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand, RpcStateChangedEvent } from "./rpc-types.ts";
 
 // ============================================================================
 // Types
@@ -57,6 +57,9 @@ export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private stateWatchListeners = new Set<(event: RpcStateChangedEvent) => void>();
+	/** Last delivered stateRevision per watch listener (dedup). */
+	private stateWatchLastRevisions = new Map<(event: RpcStateChangedEvent) => void, number>();
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -164,6 +167,8 @@ export class RpcClient {
 
 		this.process = null;
 		this.pendingRequests.clear();
+		this.stateWatchListeners.clear();
+		this.stateWatchLastRevisions.clear();
 	}
 
 	/**
@@ -251,6 +256,36 @@ export class RpcClient {
 	): Promise<{ path: string; newValue: unknown }> {
 		const response = await this.send({ type: "update_state", path, op, value });
 		return this.getData(response);
+	}
+
+	/**
+	 * Subscribe to state changes. The handler is called immediately with the
+	 * initial snapshot, then on every StateManager revision change (server
+	 * debounces high-frequency applies). Pushes with a revision at or below
+	 * the last delivered one are dropped (dedup). Returns an unsubscribe
+	 * function.
+	 */
+	async watchState(
+		handler: (event: RpcStateChangedEvent) => void,
+		options?: { path?: string; ifVersion?: number },
+	): Promise<() => void> {
+		const response = await this.send({
+			type: "watch_state",
+			path: options?.path,
+			ifVersion: options?.ifVersion,
+		});
+		const data = this.getData<{
+			stateRevision: number;
+			path?: string;
+			value?: Record<string, unknown> | undefined;
+		}>(response);
+		this.stateWatchLastRevisions.set(handler, data.stateRevision);
+		this.stateWatchListeners.add(handler);
+		handler({ type: "state_changed", stateRevision: data.stateRevision, path: data.path, value: data.value });
+		return () => {
+			this.stateWatchListeners.delete(handler);
+			this.stateWatchLastRevisions.delete(handler);
+		};
 	}
 
 	/**
@@ -540,6 +575,19 @@ export class RpcClient {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
+				return;
+			}
+
+			// state_changed pushes go to watch_state listeners only (never to
+			// JsonAgentSessionEvent listeners); dedup by stateRevision.
+			if (data.type === "state_changed") {
+				const event = data as RpcStateChangedEvent;
+				for (const listener of this.stateWatchListeners) {
+					const last = this.stateWatchLastRevisions.get(listener) ?? -1;
+					if (event.stateRevision <= last) continue;
+					this.stateWatchLastRevisions.set(listener, event.stateRevision);
+					listener(event);
+				}
 				return;
 			}
 

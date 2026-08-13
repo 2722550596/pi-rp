@@ -70,6 +70,11 @@ export class SchemaValidator {
 		return [...this._schemas.keys()];
 	}
 
+	/** Whether a schema is loaded for the given namespace. */
+	hasSchema(namespace: string): boolean {
+		return this._schemas.has(namespace);
+	}
+
 	/** Check if a path is covered by any loaded schema */
 	getSchemaForPath(fullPath: string): LoadedSchema | undefined {
 		const ns = fullPath.split(/\.|\//).filter((p) => p.length > 0)[0];

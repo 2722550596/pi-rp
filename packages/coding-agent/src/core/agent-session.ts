@@ -20,7 +20,7 @@ export type {
 } from "./prompt-preset/compiler.ts";
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
@@ -56,11 +56,12 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getProjectConfigDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { type LoadedSchemaDef, loadCustomValidators, loadSchemaDefs } from "../state/schema-loader.ts";
 import { type CustomValidator, SchemaValidator } from "../state/schema-validator.ts";
 import { type JsonValue, StateManager } from "../state/state-manager.ts";
+import { StateStore } from "../state/state-store.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
@@ -259,6 +260,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Mount the cross-process shared state store (default: true). Subagents pass false. */
+	attachStateStore?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -417,6 +420,7 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 	private _modelRuntime: ModelRuntime;
 	private _requestGateway?: RequestGateway;
+	private _attachStateStore = true;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
@@ -496,6 +500,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._attachStateStore = config.attachStateStore ?? true;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -789,6 +794,10 @@ export class AgentSession {
 		if (event.type === "turn_end" && this._stateManager.dirty) {
 			this.sessionManager.appendState(this._stateManager.snapshot());
 			this._stateManager.clearDirty();
+			// Files must not lag the session snapshot: if the process exits
+			// inside the debounce window, restart would restore stale file
+			// values over the fresher session snapshot.
+			this._stateManager.flushStore();
 		}
 	};
 
@@ -1182,6 +1191,38 @@ export class AgentSession {
 	}
 
 	/**
+	 * Mount the cross-process shared state store (settings opt-in). Files
+	 * override the session-restored namespace values: the shared file is the
+	 * authoritative mirror across processes. Called on first load (after
+	 * _restoreStateFromSessionEntries) and after reload re-builds the runtime.
+	 */
+	private _initStateStore(): void {
+		if (!this._attachStateStore) return;
+		const cfg = this.settingsManager.getStateStoreConfig();
+		if (!cfg.enabled) return;
+		let dir = getProjectConfigDir(this._cwd, "state");
+		if (cfg.storeDir !== undefined) {
+			dir = resolve(this._cwd, cfg.storeDir);
+		} else {
+			console.warn(`[state-store] storeDir 未解析（检查 settings.state.storeDir 的 \${VAR}），回退项目配置目录`);
+		}
+		const store = new StateStore(dir);
+		store.cleanTmp();
+		const gate = (ns: string) => this._schemaValidator.hasSchema(ns);
+		this._stateManager.attachStore(store, {
+			canLoadNamespace: gate,
+			// Files are authoritative but often partial: restore schema-default
+			// keys absent from the file so required-key validation still passes.
+			fillDefaults: (ns) => this.applySchemaDefaults(ns),
+		});
+		for (const ns of store.listNamespaces()) {
+			if (!gate(ns)) continue; // gate: don't load secret/other-actor namespaces
+			const snap = store.readNamespace(ns);
+			if (snap.state !== undefined) this._stateManager.loadNamespace(ns, snap.state);
+		}
+	}
+
+	/**
 	 * Re-apply loaded schemas and strict mode from session entries.
 	 * Clears all currently loaded schemas first, then replays the latest
 	 * schema_change per namespace and the latest strict_change entry.
@@ -1251,6 +1292,9 @@ export class AgentSession {
 			// Restore StateManager state + SchemaValidator schemas from the
 			// session's active leaf path (shared with navigateTree rollback)
 			this._restoreStateFromSessionEntries();
+
+			// Mount cross-process state store; files override session values
+			this._initStateStore();
 		}
 
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
@@ -1361,6 +1405,11 @@ export class AgentSession {
 		if (!def) return { ok: false, error: `Schema "${schemaId}" not found` };
 		this._schemaValidator.loadSchema(def.schemaId, def.namespace, def.schema);
 		this.applySchemaDefaults(def.namespace);
+		// The shared store attaches before the CLI applies --schema (prompt
+		// rebuild in the constructor), so the initial file load was gated out.
+		// Once a schema lands, pull any store file for this namespace that is
+		// newer than what we have seen.
+		this._stateManager.reloadNamespaceFromStore(def.namespace);
 		if (options?.record !== false) this.sessionManager.appendSchemaChange("load", def.schemaId, def.namespace);
 		return { ok: true, namespace: def.namespace };
 	}
@@ -3458,6 +3507,7 @@ export class AgentSession {
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
 		await this.settingsManager.reload();
+		this._stateManager.detachStore();
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();
@@ -3467,6 +3517,7 @@ export class AgentSession {
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
+		this._initStateStore();
 
 		const hasBindings =
 			this._extensionUIContext ||
@@ -3927,6 +3978,11 @@ export class AgentSession {
 
 			// Restore StateManager state + schemas to the target branch (rollback)
 			this._restoreStateFromSessionEntries();
+
+			// Rolled-back memory is older than the shared files: commit owned
+			// namespaces so the next apply replays onto the rolled-back baseline
+			// instead of the stale (ahead) file revision.
+			this._stateManager.commitOwnedToStore();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({

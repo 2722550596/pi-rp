@@ -13,4 +13,5 @@ export type {
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
+	RpcStateChangedEvent,
 } from "./rpc/rpc-types.ts";

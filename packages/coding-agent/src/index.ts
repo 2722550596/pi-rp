@@ -383,6 +383,7 @@ export {
 	type RpcExtensionUIResponse,
 	type RpcResponse,
 	type RpcSessionState,
+	type RpcStateChangedEvent,
 	runPrintMode,
 	runRpcMode,
 } from "./modes/index.ts";

@@ -28,6 +28,7 @@ export type RpcCommand =
 	// State
 	| { id?: string; type: "get_state"; ifVersion?: number; path?: string }
 	| { id?: string; type: "update_state"; path: string; op: "add" | "remove" | "replace" | "merge"; value?: unknown }
+	| { id?: string; type: "watch_state"; path?: string; ifVersion?: number }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -136,6 +137,13 @@ export type RpcResponse =
 			command: "update_state";
 			success: true;
 			data: { path: string; newValue: unknown };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "watch_state";
+			success: true;
+			data: { stateRevision: number; path?: string; value?: Record<string, unknown> | undefined };
 	  }
 
 	// Model
@@ -255,6 +263,16 @@ export type RpcResponse =
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
+
+/** Pushed to `watch_state` subscribers when the StateManager revision changes. */
+export interface RpcStateChangedEvent {
+	type: "state_changed";
+	stateRevision: number;
+	/** Watched path (echo of the watch_state request); full snapshot when omitted. */
+	path?: string;
+	/** Value at the watched path (subtree when path given, full snapshot otherwise). */
+	value?: Record<string, unknown> | undefined;
+}
 
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =

@@ -9,6 +9,7 @@ import { getAgentDir, getProjectConfigDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import type { RequestGatewayConfig } from "./request-gateway.ts";
+import { resolveConfigValue } from "./resolve-config-value.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -140,6 +141,8 @@ export interface Settings {
 	providers?: Record<string, { maxConcurrency?: number }>;
 	/** Request gateway defaults applied to providers without explicit limits. */
 	requestGateway?: { defaultMaxConcurrency?: number };
+	/** Cross-process shared state store (opt-in). */
+	state?: { store?: "file"; storeDir?: string };
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -873,6 +876,13 @@ export class SettingsManager {
 			}
 		}
 		return { providers, defaultMaxConcurrency: this.settings.requestGateway?.defaultMaxConcurrency };
+	}
+
+	getStateStoreConfig(): { enabled: boolean; storeDir: string | undefined } {
+		const state = this.settings.state;
+		const enabled = state?.store === "file";
+		const storeDir = state?.storeDir !== undefined ? resolveConfigValue(state.storeDir) : undefined;
+		return { enabled, storeDir };
 	}
 
 	getWebSocketConnectTimeoutMs(): number | undefined {

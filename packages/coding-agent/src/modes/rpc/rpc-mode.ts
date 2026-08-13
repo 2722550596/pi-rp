@@ -37,6 +37,7 @@ import type {
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
+	RpcStateChangedEvent,
 } from "./rpc-types.ts";
 
 // Re-export types for consumers
@@ -46,7 +47,16 @@ export type {
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
+	RpcStateChangedEvent,
 } from "./rpc-types.ts";
+
+/** A live `watch_state` subscription bound to a session's StateManager. */
+interface WatchStateSubscription {
+	path: string | undefined;
+	notify: () => void;
+	unsubscribe: () => void;
+	timer: ReturnType<typeof setTimeout> | undefined;
+}
 
 /**
  * Run in RPC mode.
@@ -58,7 +68,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	let unsubscribe: (() => void) | undefined;
 	let unsubscribeBackpressure: (() => void) | undefined;
 
-	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
+	/** Active `watch_state` subscriptions (unsubscribed on rebind/shutdown). */
+	const watchSubscriptions: WatchStateSubscription[] = [];
+
+	const output = (obj: RpcResponse | RpcExtensionUIRequest | RpcStateChangedEvent | object) => {
 		writeRawStdout(serializeJsonLine(obj));
 	};
 
@@ -353,6 +366,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
+		// Rebind watch subscriptions to the new session's StateManager; the
+		// notify closures read the live `session` variable, so they now target
+		// the new session automatically.
+		for (const sub of watchSubscriptions) {
+			clearTimeout(sub.timer);
+			sub.unsubscribe();
+			sub.timer = undefined;
+			sub.unsubscribe = session.stateManager.subscribe(() => {
+				clearTimeout(sub.timer);
+				sub.timer = setTimeout(sub.notify, 100);
+			});
+		}
 		unsubscribe = session.subscribe((event) => {
 			output(toJsonEvent(event));
 			if (event.type === "agent_settled") {
@@ -488,6 +513,38 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					session.stateManager.clearDirty();
 				}
 				return success(id, "update_state", { path: result.path, newValue: result.newValue });
+			}
+
+			case "watch_state": {
+				const watchPath = command.path;
+				const record: WatchStateSubscription = {
+					path: watchPath,
+					notify: () => {
+						clearTimeout(record.timer);
+						record.timer = undefined;
+						const value = watchPath ? session.stateManager.get(watchPath) : session.stateManager.snapshot();
+						output({
+							type: "state_changed",
+							stateRevision: session.stateManager.revision,
+							path: watchPath,
+							value: value as Record<string, unknown> | undefined,
+						});
+					},
+					unsubscribe: () => {},
+					timer: undefined,
+				};
+				record.unsubscribe = session.stateManager.subscribe(() => {
+					clearTimeout(record.timer);
+					record.timer = setTimeout(record.notify, 100);
+				});
+				watchSubscriptions.push(record);
+				// Response = initial push
+				const initialValue = watchPath ? session.stateManager.get(watchPath) : session.stateManager.snapshot();
+				return success(id, "watch_state", {
+					stateRevision: session.stateManager.revision,
+					path: watchPath,
+					value: initialValue as Record<string, unknown> | undefined,
+				});
 			}
 
 			// =================================================================
@@ -769,6 +826,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		for (const cleanup of signalCleanupHandlers) {
 			cleanup();
 		}
+		for (const sub of watchSubscriptions) {
+			clearTimeout(sub.timer);
+			sub.unsubscribe();
+		}
+		watchSubscriptions.length = 0;
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
 		await runtimeHost.dispose();

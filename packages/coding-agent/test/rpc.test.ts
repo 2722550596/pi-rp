@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -396,4 +396,43 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 		expect(sessionInfoEntries.length).toBe(1);
 		expect(sessionInfoEntries[0].name).toBe("my-test-session");
 	}, 60000);
+
+	test("watch_state delivers initial push and subsequent revision changes", async () => {
+		await client.start();
+
+		const pushes: Array<{ stateRevision: number; value?: unknown }> = [];
+		const unsubscribe = await client.watchState(
+			(event) => pushes.push({ stateRevision: event.stateRevision, value: event.value }),
+			{ path: "world" },
+		);
+
+		// Initial push delivered on registration.
+		expect(pushes.length).toBe(1);
+
+		// Mutate state → push with a higher revision carrying the new subtree.
+		await client.updateState("world", "replace", { seeded: true });
+		await vi.waitFor(
+			() => {
+				expect(pushes.length).toBeGreaterThanOrEqual(2);
+			},
+			{ timeout: 5000 },
+		);
+		expect(pushes[1].stateRevision).toBeGreaterThan(pushes[0].stateRevision);
+		expect(pushes[1].value).toEqual({ seeded: true });
+
+		// Rapid follow-up mutation → revisions stay monotonic and the last push
+		// carries the newest value (server-side debounce merges high-frequency applies).
+		await client.updateState("world", "replace", { seeded: true, round: 2 });
+		await vi.waitFor(
+			() => {
+				expect(pushes[pushes.length - 1].value).toEqual({ seeded: true, round: 2 });
+			},
+			{ timeout: 5000 },
+		);
+		for (let i = 1; i < pushes.length; i++) {
+			expect(pushes[i].stateRevision).toBeGreaterThanOrEqual(pushes[i - 1].stateRevision);
+		}
+
+		unsubscribe();
+	}, 30000);
 });

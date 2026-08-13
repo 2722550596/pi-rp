@@ -60,6 +60,9 @@ export async function runSubagent(
 		preset: preparation.profile.id,
 		schemas: preparation.schemas,
 		customTools: preparation.customTools,
+		// In-memory session: must not write the shared state store (would
+		// conflict with the main session's CAS commits).
+		attachStateStore: false,
 		// Omit extensions to fulfill "no extensions"
 		resourceLoader: {
 			getExtensions: () => ({

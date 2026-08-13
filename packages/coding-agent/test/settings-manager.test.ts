@@ -572,4 +572,50 @@ describe("SettingsManager", () => {
 			expect(manager.getShellPath()).toBe(homedir());
 		});
 	});
+
+	describe("getStateStoreConfig", () => {
+		it("is disabled by default", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getStateStoreConfig()).toEqual({ enabled: false, storeDir: undefined });
+		});
+
+		it('is enabled only when state.store === "file"', () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ state: { store: "other", storeDir: ".pi/state" } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getStateStoreConfig().enabled).toBe(false);
+
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ state: { store: "file", storeDir: ".pi/state" } }),
+			);
+			const reloaded = SettingsManager.create(projectDir, agentDir);
+			expect(reloaded.getStateStoreConfig()).toEqual({ enabled: true, storeDir: ".pi/state" });
+		});
+
+		it("expands env-var templates in storeDir", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ state: { store: "file", storeDir: `\${WL_SAVE_DIR}/.pi/state` } }),
+			);
+			process.env.WL_SAVE_DIR = "/tmp/save";
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getStateStoreConfig()).toEqual({ enabled: true, storeDir: "/tmp/save/.pi/state" });
+		});
+
+		it("returns undefined storeDir when the env var cannot be expanded", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ state: { store: "file", storeDir: `\${WL_SAVE_DIR}/.pi/state` } }),
+			);
+			delete process.env.WL_SAVE_DIR;
+			const manager = SettingsManager.create(projectDir, agentDir);
+			const cfg = manager.getStateStoreConfig();
+			expect(cfg.enabled).toBe(true);
+			expect(cfg.storeDir).toBeUndefined();
+		});
+	});
 });

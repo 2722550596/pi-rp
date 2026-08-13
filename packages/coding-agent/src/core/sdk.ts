@@ -123,6 +123,8 @@ export interface CreateAgentSessionOptions {
 	schemas?: string[];
 	/** Enable state schema strict mode: reject state writes to paths not covered by a loaded schema. */
 	strict?: boolean;
+	/** Mount the cross-process shared state store (default: true). Pass false for in-memory subagents. */
+	attachStateStore?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -476,6 +478,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		attachStateStore: options.attachStateStore,
 	});
 	sessionRef.current = session;
 	const sessionDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
