@@ -23,6 +23,7 @@ import type {
 	ConstrainedSamplingConfig,
 	Context,
 	ImageContent,
+	Message,
 	Model,
 	OAuthCredentials,
 	OAuthLoginCallbacks,
@@ -53,7 +54,7 @@ import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
-import type { CustomMessage } from "../messages.ts";
+import type { CustomMessage, CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { MacroDefinition, PromptPresetDiagnostic, PromptRuntime, SlotDefinition } from "../prompt-preset/types.ts";
@@ -733,7 +734,20 @@ export interface AgentStartEvent {
 /** Fired when an agent loop ends */
 export interface AgentEndEvent {
 	type: "agent_end";
+	/**
+	 * Messages added during this run only (the same run whose completion this
+	 * event reports). This is NOT the full conversation context: custom
+	 * messages pushed while idle, earlier turns, etc. are absent.
+	 */
 	messages: AgentMessage[];
+	/**
+	 * The current branch's full LLM view — what the next main-loop prompt would
+	 * see from the transcript (custom messages already converted per their
+	 * declared {@link CustomTypePolicy}). Present only when at least one
+	 * extension handles `agent_end` (the conversion is skipped otherwise).
+	 * Use this instead of re-deriving the same conversion from session entries.
+	 */
+	contextMessages?: Message[];
 }
 
 /** Fired after an agent run has fully settled and no automatic retry, compaction, or queued continuation will run. */
@@ -1308,6 +1322,30 @@ export interface ExtensionAPI {
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
 
+	/**
+	 * Declare how a custom message type participates in the LLM context.
+	 *
+	 * Custom messages sent via `sendMessage`/`startLiveMessage` convert to
+	 * `user` messages in the LLM context by default. Declaring a policy lets
+	 * you opt out per type:
+	 *
+	 * - `{ context: "exclude" }` — the message stays persisted and rendered
+	 *   but never reaches the LLM (notifications, transient chatter).
+	 * - `{ context: "include", llmRole: "assistant" }` — the message enters
+	 *   the context as an assistant turn (another agent's speech).
+	 *
+	 * Omitted fields keep the default (`{ context: "include", llmRole: "user" }`),
+	 * so registering with no arguments is a no-op declaration that documents
+	 * intent. The first declaration per type wins; registering from an event
+	 * handler or command takes effect for subsequent conversions. Note: the
+	 * exclusion applies to the live context path (`convertToLlm`); compaction
+	 * summaries may still include excluded types.
+	 */
+	registerCustomType(customType: string, policy?: Partial<CustomTypePolicy>): void;
+
+	/** Read the effective policy for a custom type (declared or the default). */
+	getCustomTypePolicy(customType: string): CustomTypePolicy;
+
 	/** Register a markdown transformer for assistant and user messages. */
 	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
 
@@ -1707,6 +1745,10 @@ export interface ExtensionRuntimeState {
 	unregisterProvider: (name: string, extensionPath?: string) => void;
 	registerSlot: (definition: SlotDefinition) => void;
 	registerMacro: (definition: MacroDefinition) => void;
+	/** Declare a custom type policy (first declaration per type wins). */
+	registerCustomType: (customType: string, policy: CustomTypePolicy) => void;
+	/** Effective policy for a custom type (declared or default). */
+	getCustomTypePolicy: (customType: string) => CustomTypePolicy;
 	refreshTools: RefreshToolsHandler;
 	getCommands: GetCommandsHandler;
 	setModel: SetModelHandler;

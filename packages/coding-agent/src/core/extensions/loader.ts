@@ -29,6 +29,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import { type CustomTypePolicy, DEFAULT_CUSTOM_TYPE_POLICY } from "../messages.ts";
 import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
@@ -176,6 +177,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	};
 	const state: { staleMessage?: string } = {};
 	const eventBusUnsubscribers = new Set<() => void>();
+	const customTypePolicies = new Map<string, CustomTypePolicy>();
 	const assertActive = () => {
 		if (state.staleMessage) {
 			throw new Error(state.staleMessage);
@@ -204,6 +206,12 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		updateState: notInitialized,
 		registerSlot: (definition) => registerCustomSlot(definition, false),
 		registerMacro: (definition) => registerCustomMacro(definition, false),
+		registerCustomType: (customType, policy) => {
+			if (!customTypePolicies.has(customType)) {
+				customTypePolicies.set(customType, policy);
+			}
+		},
+		getCustomTypePolicy: (customType) => customTypePolicies.get(customType) ?? DEFAULT_CUSTOM_TYPE_POLICY,
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],
@@ -413,6 +421,16 @@ function createExtensionAPI(
 		registerMacro(definition) {
 			runtime.assertActive();
 			runtime.registerMacro(definition);
+		},
+
+		registerCustomType(customType, policy) {
+			runtime.assertActive();
+			runtime.registerCustomType(customType, { ...DEFAULT_CUSTOM_TYPE_POLICY, ...policy });
+		},
+
+		getCustomTypePolicy(customType) {
+			runtime.assertActive();
+			return runtime.getCustomTypePolicy(customType);
 		},
 
 		getState() {

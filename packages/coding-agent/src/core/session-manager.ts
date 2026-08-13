@@ -146,8 +146,10 @@ export interface SessionInfoEntry extends SessionEntryBase {
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
  *
- * Unlike CustomEntry, this DOES participate in LLM context.
- * The content is converted to a user message in buildSessionContext().
+ * Unlike CustomEntry (audit), this DOES participate in LLM context by default:
+ * the content is converted to a user message in buildSessionContext() /
+ * convertToLlm(). Declare a policy via pi.registerCustomType to exclude a
+ * type from context or give it an assistant role.
  * Use details for extension-specific metadata (not sent to LLM).
  *
  * display controls TUI rendering:

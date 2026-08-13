@@ -86,6 +86,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
+	type AgentEndEvent,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
@@ -114,6 +115,7 @@ import {
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -134,7 +136,12 @@ import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts
 import type { RequestGateway } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
-import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
+import {
+	CURRENT_SESSION_VERSION,
+	getLatestCompactionEntry,
+	type SessionHeader,
+	sessionEntryToContextMessages,
+} from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -854,7 +861,22 @@ export class AgentSession {
 			this._currentTraceStartIndex = this.agent.state.messages.length;
 			await this._extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
-			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
+			// contextMessages = the full LLM view of the current branch (custom messages
+			// converted per declared policies). Computed only when an extension actually
+			// listens, so plain sessions don't pay a branch walk on every turn.
+			const extensionEvent: AgentEndEvent = {
+				type: "agent_end",
+				messages: event.messages,
+				...(this._extensionRunner.hasHandlers("agent_end")
+					? {
+							contextMessages: convertToLlm(
+								this.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages),
+								(customType) => this._extensionRunner.getCustomTypePolicy(customType),
+							),
+						}
+					: {}),
+			};
+			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {
 				type: "turn_start",

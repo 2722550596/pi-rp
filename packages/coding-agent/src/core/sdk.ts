@@ -308,7 +308,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const converted = convertToLlm(messages);
+		// Resolve per-type custom-message policies from the extension runner (declared
+		// via pi.registerCustomType); defaults apply when no runner or no declaration.
+		const converted = convertToLlm(messages, (customType) =>
+			extensionRunnerRef.current?.getCustomTypePolicy(customType),
+		);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			return converted;

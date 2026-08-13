@@ -8,6 +8,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
+import type { CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
@@ -666,6 +667,11 @@ export class ExtensionRunner {
 
 	getModelRegistry(): ModelRegistry {
 		return this.modelRegistry;
+	}
+
+	/** Effective policy for a custom type (declared via pi.registerCustomType or default). */
+	getCustomTypePolicy(customType: string): CustomTypePolicy {
+		return this.runtime.getCustomTypePolicy(customType);
 	}
 
 	getRegisteredCommands(): ResolvedCommand[] {
