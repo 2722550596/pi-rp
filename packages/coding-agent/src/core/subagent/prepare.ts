@@ -38,6 +38,14 @@ export interface PrepareSubagentOptions {
 	session?: AgentSession;
 	/** State schema IDs for the subagent session. Falls back to preset.schemas. */
 	schemas?: string[];
+	/** Explicit chat history input (runtime.messages for the chat-history slot). Takes precedence over inheritHistory. */
+	inheritMessages?: AgentMessage[];
+	/** Only feed these top-level state namespaces to the subagent (state slot + seeding). Default: all. */
+	stateNamespaces?: string[];
+	/** Inherit the parent session's extension tools (customTools). Default true (existing behavior); spawnAgent passes false. */
+	inheritExtensionTools?: boolean;
+	/** Explicit model object (takes precedence over modelRef/preset.model/first available). */
+	model?: Model<any>;
 }
 
 export interface SubagentPreparation {
@@ -65,6 +73,19 @@ export interface PrepareSubagentError {
 }
 
 export type PrepareSubagentResult = SubagentPreparation | PrepareSubagentError;
+
+// =========================================================================
+// Helpers
+// =========================================================================
+
+/** Top-level namespace filter: keep only the given keys of a state snapshot. */
+export function pick(obj: Record<string, unknown>, namespaces: string[]): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const ns of namespaces) {
+		if (ns in obj) out[ns] = obj[ns];
+	}
+	return out;
+}
 
 // =========================================================================
 // prepareSubagentConversation
@@ -100,10 +121,12 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 	}
 	const preset = foundPreset?.preset ?? defaultPreset;
 
-	// Resolve model
+	// Resolve model: explicit model object > modelRef > preset.model > first available.
 	const availableModels = [...modelRuntime.getModels()];
 	let model: Model<any> | undefined;
-	if (modelRef) {
+	if (options.model) {
+		model = options.model;
+	} else if (modelRef) {
 		model = findExactModelReferenceMatch(modelRef, availableModels);
 		if (!model) {
 			return {
@@ -134,7 +157,10 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 	// plus the parent session's extension tools (peer-completion). Resolved
 	// before runtime construction so buildPeerOptions can apply the preset's
 	// tool policy.
-	const extensionTools = options.session ? options.session.extensionRunner.getAllRegisteredTools() : [];
+	const extensionTools =
+		options.session && options.inheritExtensionTools !== false
+			? options.session.extensionRunner.getAllRegisteredTools()
+			: [];
 	const effectiveTools = options.tools
 		? [...options.tools]
 		: [...["read", "grep", "find", "ls", "bash"], ...extensionTools.map((t) => t.definition.name)];
@@ -147,12 +173,16 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 	if (options.session) {
 		runtime = {
 			options: buildPeerOptions(options.session, effectiveTools, preset),
-			messages: inheritHistory > 0 ? options.session.agent.state.messages.slice(-inheritHistory) : [],
+			messages:
+				options.inheritMessages ??
+				(inheritHistory > 0 ? options.session.agent.state.messages.slice(-inheritHistory) : []),
 			latestUserMessage: undefined,
 			now: new Date(),
 			variables: {},
 			skills: options.session.systemPromptOptions.skills ?? [],
-			state: options.session.stateManager.snapshot(),
+			state: options.stateNamespaces
+				? pick(options.session.stateManager.snapshot(), options.stateNamespaces)
+				: options.session.stateManager.snapshot(),
 		};
 	} else {
 		const systemPromptOptions: BuildSystemPromptOptions = {

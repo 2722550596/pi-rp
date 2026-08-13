@@ -110,6 +110,9 @@ describe("ExtensionRunner", () => {
 		compilePreset: () => {
 			throw new Error("not implemented in test");
 		},
+		spawnAgent: async () => {
+			throw new Error("not implemented in test");
+		},
 	};
 
 	describe("scopedModels", () => {

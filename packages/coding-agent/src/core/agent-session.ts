@@ -139,6 +139,7 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { createSubagentProfilesToolDefinition, createSubagentToolDefinition } from "./subagent/extension.ts";
+import { spawnAgent } from "./subagent/spawn.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
@@ -3314,6 +3315,7 @@ export class AgentSession {
 						diagnostics: [...messages.diagnostics, ...system.diagnostics],
 					};
 				},
+				spawnAgent: (options) => spawnAgent(this, options),
 			},
 			{
 				registerProvider: (name, config) => {

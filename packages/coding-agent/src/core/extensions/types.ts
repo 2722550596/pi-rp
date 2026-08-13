@@ -57,6 +57,7 @@ import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { MacroDefinition, PromptPresetDiagnostic, PromptRuntime, SlotDefinition } from "../prompt-preset/types.ts";
+import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
 
 export type { PromptPresetDiagnostic, PromptRuntime } from "../prompt-preset/types.ts";
 
@@ -360,6 +361,8 @@ export interface ExtensionContext {
 		systemPrompt: string;
 		diagnostics: PromptPresetDiagnostic[];
 	};
+	/** Spawn an in-process subagent (runSubagent engine) and replay its successful state_update calls. */
+	spawnAgent(options: SpawnAgentOptions): Promise<SpawnAgentResult>;
 }
 
 /**
@@ -1765,6 +1768,7 @@ export interface ExtensionContextActions {
 		systemPrompt: string;
 		diagnostics: PromptPresetDiagnostic[];
 	};
+	spawnAgent: (options: SpawnAgentOptions) => Promise<SpawnAgentResult>;
 }
 
 /** Options for ctx.completeSideRequest: a one-shot side LLM request outside the main loop. */

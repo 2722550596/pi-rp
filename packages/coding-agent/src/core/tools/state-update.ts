@@ -61,10 +61,10 @@ export function createStateUpdateToolDefinition(
 			// op is a flat enum in the schema (no anyOf), so path is optional at the type
 			// level; but add/remove/replace require a path (the old Union enforced it).
 			if (p.op !== "merge" && (p.path === undefined || p.path === "")) {
-				return {
-					content: [{ type: "text", text: `state_update rejected: path is required for op "${p.op}"` }],
-					details: undefined,
-				};
+				// Throw, not soft-return: rejected calls surface as tool errors so
+				// the agent self-corrects and error-aware recorders (spawnAgent)
+				// never count them as applied writes.
+				throw new Error(`state_update rejected: path is required for op "${p.op}"`);
 			}
 
 			// StringEnum's Static widens to `string`; narrow to StateOp (matches state-manager.ts).
@@ -80,10 +80,9 @@ export function createStateUpdateToolDefinition(
 			);
 
 			if (!validation.ok) {
-				return {
-					content: [{ type: "text", text: `state_update rejected: ${validation.reason}` }],
-					details: undefined,
-				};
+				// Throw: rejected writes surface as tool errors (agent self-corrects on
+				// the message); error-aware recorders (spawnAgent) skip them.
+				throw new Error(`state_update rejected: ${validation.reason}`);
 			}
 
 			// Use corrected value if a custom validator modified it

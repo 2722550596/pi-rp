@@ -13,6 +13,7 @@ import type { ScopedModel } from "../model-resolver.ts";
 import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
 import type { SessionManager } from "../session-manager.ts";
+import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
@@ -304,6 +305,9 @@ export class ExtensionRunner {
 	} = () => {
 		throw new Error("compilePreset: not bound");
 	};
+	private spawnAgentFn: (options: SpawnAgentOptions) => Promise<SpawnAgentResult> = async () => {
+		throw new Error("spawnAgent: not bound");
+	};
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -376,6 +380,7 @@ export class ExtensionRunner {
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
 		this.completeSideRequestFn = contextActions.completeSideRequest;
 		this.compilePresetFn = contextActions.compilePreset;
+		this.spawnAgentFn = contextActions.spawnAgent;
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
@@ -776,6 +781,10 @@ export class ExtensionRunner {
 			compilePreset: (presetId, runtime) => {
 				runner.assertActive();
 				return runner.compilePresetFn(presetId, runtime);
+			},
+			spawnAgent: (options) => {
+				runner.assertActive();
+				return runner.spawnAgentFn(options);
 			},
 		};
 	}

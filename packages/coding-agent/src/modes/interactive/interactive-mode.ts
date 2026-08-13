@@ -2168,6 +2168,7 @@ export class InteractiveMode {
 			getSystemPrompt: () => this.session.systemPrompt,
 			completeSideRequest: (options) => extensionRunner.createContext().completeSideRequest(options),
 			compilePreset: (presetId, runtime) => extensionRunner.createContext().compilePreset(presetId, runtime),
+			spawnAgent: (options) => extensionRunner.createContext().spawnAgent(options),
 		});
 
 		// Set up the extension shortcut handler on the default editor

@@ -27,6 +27,9 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
 		compilePreset: () => {
 			throw new Error("not implemented in test");
 		},
+		spawnAgent: async () => {
+			throw new Error("not implemented in test");
+		},
 	};
 }
 
