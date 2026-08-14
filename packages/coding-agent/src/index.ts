@@ -373,6 +373,15 @@ export {
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
 } from "./core/trust-manager.ts";
+// Opening preset seeding (generic core; role-filtering consumers transform first)
+export {
+	type ApplyOpeningResult,
+	applyOpeningPreset,
+	listOpeningPresets,
+	loadOpeningPreset,
+	type OpeningPreset,
+	type OpeningPresetMessage,
+} from "./extensions/opening/preset.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage

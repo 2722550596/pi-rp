@@ -1,9 +1,10 @@
 /**
- * Opening extension tests — seeding behavior through the public factory.
+ * Opening extension tests — generic seeding through the public factory.
  *
- * Exercises the builtin opening extension with a recording ExtensionAPI stub:
- * preset loading, role-filtered message/state seeding, idempotence guard, and
- * the /opening command registration.
+ * The builtin opening extension is role-agnostic: every message (user/assistant
+ * real entries, arbitrary customTypes) and every state namespace applies to the
+ * current process. Role-filtered deployments (e.g. worldlines) transform the
+ * preset before applying — out of scope here.
  */
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -93,9 +94,10 @@ const PRESET = {
 	name: "Smoke Test",
 	description: "smoke fixture",
 	messages: [
-		{ role: "narration", content: "场景叙事：清晨的门口。" },
-		{ role: "character_reply", character_id: "lin", content: "林说：来了？" },
-		{ role: "user", content: "作家旁白" },
+		{ role: "assistant", content: "旁白" },
+		{ customType: "narration", content: "场景叙事：清晨的门口。" },
+		{ customType: "character_reply", display: true, details: { character_id: "lin" }, content: "林说：来了？" },
+		{ role: "user", content: "玩家输入" },
 	],
 	state: { world: { scene: "门口" }, lin: { location: "门口" } },
 };
@@ -103,11 +105,9 @@ const PRESET = {
 const originalEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-	originalEnv.PI_OPENING = process.env.PI_OPENING;
-	originalEnv.WL_OPENING = process.env.WL_OPENING;
-	originalEnv.PI_PROCESS_ROLE = process.env.PI_PROCESS_ROLE;
-	originalEnv.WL_PROCESS_ROLE = process.env.WL_PROCESS_ROLE;
-	originalEnv.PI_OPENINGS_DIR = process.env.PI_OPENINGS_DIR;
+	for (const key of ["PI_OPENING", "WL_OPENING", "PI_OPENINGS_DIR"]) {
+		originalEnv[key] = process.env[key];
+	}
 });
 
 afterEach(() => {
@@ -123,7 +123,7 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("opening extension", () => {
-	it("auto-applies on session_start when PI_OPENING is set (writer: all messages + all state)", () => {
+	it("auto-applies on session_start when PI_OPENING is set", () => {
 		const { cwd } = fixture("writer");
 		writePreset(cwd, "test", PRESET);
 		process.env.PI_OPENING = "test";
@@ -134,9 +134,11 @@ describe("opening extension", () => {
 
 		handler!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 
-		const appendMessages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
-		expect(appendMessages).toHaveLength(1);
-		expect(appendMessages[0].args[1]).toEqual({ role: "user", content: "作家旁白" });
+		const appendedMessages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
+		expect(appendedMessages.map((c) => c.args[1])).toEqual([
+			{ role: "assistant", content: "旁白" },
+			{ role: "user", content: "玩家输入" },
+		]);
 
 		const custom = calls.filter((c) => c.op === "sendMessage");
 		expect(custom).toHaveLength(2);
@@ -151,20 +153,20 @@ describe("opening extension", () => {
 
 		const audit = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "opening");
 		expect(audit).toHaveLength(1);
-		expect(audit[0].args[1]).toMatchObject({ name: "test", role: "writer" });
+		expect(audit[0].args[1]).toMatchObject({ name: "test" });
 	});
 
-	it("legacy WL_OPENING env is honored", () => {
-		const { cwd } = fixture("legacy-env");
-		writePreset(cwd, "test", { name: "T", messages: [{ role: "narration", content: "n" }] });
+	it("ignores WL_OPENING (worldlines layer owns the legacy env)", () => {
+		const { cwd } = fixture("wl-env");
+		writePreset(cwd, "test", { name: "T", messages: [] });
 		process.env.WL_OPENING = "test";
 		const { pi, calls, handlers } = createStub();
 		openingExtension(pi);
 		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
-		expect(calls.some((c) => c.op === "sendMessage")).toBe(true);
+		expect(calls).toHaveLength(0);
 	});
 
-	it("skips when the session already has messages (resume/reload/respawn)", () => {
+	it("skips when the session already has messages (resume/reload)", () => {
 		const { cwd } = fixture("seeded");
 		writePreset(cwd, "test", PRESET);
 		process.env.PI_OPENING = "test";
@@ -182,28 +184,18 @@ describe("opening extension", () => {
 		expect(calls).toHaveLength(0);
 	});
 
-	it("character role: narration backdrop + own reply as assistant memory + own state only", () => {
-		const { cwd } = fixture("character");
-		writePreset(cwd, "test", PRESET);
+	it("warns and skips messages without role or customType", () => {
+		const { cwd } = fixture("malformed");
+		writePreset(cwd, "test", { messages: [{ content: "orphan" }] });
 		process.env.PI_OPENING = "test";
-		process.env.PI_PROCESS_ROLE = "character:lin";
 		const { pi, calls, handlers } = createStub();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		openingExtension(pi);
 		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 
-		const custom = calls.filter((c) => c.op === "sendMessage");
-		expect(custom).toHaveLength(1); // narration only
-		expect(custom[0].args[0]).toMatchObject({ customType: "narration" });
-
-		const appendedMessages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
-		expect(appendedMessages).toHaveLength(1); // own character_reply, no writer user entry
-		expect(appendedMessages[0].args[1]).toEqual({ role: "assistant", content: "林说：来了？" });
-
-		const stateOps = calls.filter((c) => c.op === "updateState");
-		expect(stateOps.map((c) => c.args[0])).toEqual(["lin.location"]); // world excluded
-
-		const audit = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "opening");
-		expect(audit[0].args[1]).toMatchObject({ role: "lin" });
+		expect(calls.filter((c) => c.args[0] === "message" || c.op === "sendMessage")).toHaveLength(0);
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("without role or customType"));
+		warn.mockRestore();
 	});
 
 	it("skips schema-rejected state leaves with a warning, applies the rest", () => {
@@ -248,7 +240,7 @@ describe("opening extension", () => {
 
 		// unknown id → error
 		await commands[0].handler("missing", ctx);
-		expect(notifications.some((n) => n.includes('opening preset "missing" not found'))).toBe(true);
+		expect(notifications.some((n) => n.includes('Opening preset "missing" not found'))).toBe(true);
 	});
 
 	it("resolves presets from PI_OPENINGS_DIR when set", () => {
@@ -264,5 +256,17 @@ describe("opening extension", () => {
 		openingExtension(pi);
 		handlers.get("session_start")!(sessionStart(), sessionCtx(join(root, "elsewhere"), [{ type: "session" }]));
 		expect(calls.some((c) => c.op === "appendEntry" && c.args[0] === "opening")).toBe(true);
+	});
+
+	it("warns when the preset file is missing or malformed", () => {
+		const { cwd } = fixture("missing");
+		process.env.PI_OPENING = "nope";
+		const { pi, calls, handlers } = createStub();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		openingExtension(pi);
+		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
+		expect(calls).toHaveLength(0);
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining('"nope" not found'));
+		warn.mockRestore();
 	});
 });
