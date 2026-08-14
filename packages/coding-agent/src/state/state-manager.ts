@@ -358,6 +358,10 @@ export class StateManager {
 		try {
 			fs.mkdirSync(store.dir, { recursive: true });
 			this._storeWatcher = fs.watch(store.dir, (_event, filename) => this._onStoreWatchEvent(filename));
+			// 不阻止进程退出：print 模式（一次性处理 prompt 后退出）代码跑完后事件循环
+			// 只剩 watcher 句柄会卡死进程（main 不调 process.exit）。unref 后 watcher 照常
+			// 工作，只是不再独自持住事件循环——交互/rpc 常驻模式有其他活跃句柄，不受影响。
+			this._storeWatcher.unref();
 		} catch (err) {
 			console.warn(`[state-store] fs.watch failed on ${store.dir}: ${(err as Error).message}`);
 		}
