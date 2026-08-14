@@ -116,7 +116,8 @@ Renders each active tool with its prompt snippet.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `onlyWithSnippets` | boolean | `true` | Only show tools with a prompt snippet. |
-| `format` | `"plain"`, `"json"`, `"xml"` | `"plain"` | Output format. |
+
+> **Note**: The `format` option is accepted in JSON but not yet wired into the renderer. It is reserved for future implementation; the slot currently renders plain markdown lines.
 
 ### `tool-guidelines`
 
@@ -126,7 +127,8 @@ Renders usage rules for the active tool set.
 |---|---|---|---|
 | `heading` | string | `"Guidelines:"` | Section heading. |
 | `includePiDefaultGuidelines` | boolean | `true` | Include Pi's built-in defaults. |
-| `format` | `"plain"`, `"json"`, `"xml"` | `"plain"` | Output format. |
+
+> **Note**: The `format` option is accepted in JSON but not yet wired into the renderer. It is reserved for future implementation; the slot currently renders plain markdown lines.
 
 ### `project-context`
 
@@ -160,7 +162,7 @@ Current working directory.
 
 ### `date-cwd`
 
-Working directory line (alias for `cwd` with different label for legacy compat).
+Current date and working directory lines. Unlike `date` or `cwd` alone, this slot renders both: a `Current date:` line followed by a `Current working directory:` line.
 
 ### `active-model`
 
@@ -184,11 +186,7 @@ The conversation insertion point. This slot determines WHERE in the message arra
 
 Renders runtime variable key-value pairs.
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `includeStatic` | boolean | `true` | Include preset-level static variables. |
-| `includeSession` | boolean | `true` | Include session-scoped variables. |
-| `includeTurn` | boolean | `true` | Include turn-scoped variables. |
+> **Note**: The `includeStatic`, `includeSession`, and `includeTurn` options are accepted in JSON but not yet wired into the renderer. They are reserved for future implementation; the slot currently renders the full runtime variable set.
 
 ### `state`
 
@@ -684,7 +682,7 @@ Presets can act as specialist **subagent profiles**. Setting `"delegatable": tru
 ### Delegation Features
 
 - **In-Process Execution**: Subagents execute in memory using the parent session's `modelRuntime` without external CLI dependencies.
-- **Tool Isolation**: Subagents run with a read-only default tool set (`read`, `grep`, `find`, `ls`, `bash`) intersected with the preset's tool policy. In peer-completion mode, the parent session's extension tools are inherited as well: their definitions are carried into the subagent session, so they are registered and executable there. What does NOT carry over is the extension *runtime* — extension event handlers (`agent_start`, `tool_result`, ...) do not fire in the subagent session, only the tool definitions. Preset tool policies (`allow`/`deny`) apply to inherited extension tools just like built-in ones, so a deny-all profile still ends up with no tools.
+- **Tool Isolation**: Subagents run with a minimal default tool set (`read`, `grep`, `find`, `ls`, `bash`) intersected with the preset's tool policy. The default includes `bash`, so the tool set is read-only only when the preset's `tools` policy denies write tools. In peer-completion mode, the parent session's extension tools are inherited as well: their definitions are carried into the subagent session, so they are registered and executable there. What does NOT carry over is the extension *runtime* — extension event handlers (`agent_start`, `tool_result`, ...) do not fire in the subagent session, only the tool definitions. Preset tool policies (`allow`/`deny`) apply to inherited extension tools just like built-in ones, so a deny-all profile still ends up with no tools.
 - **Output Truncation**: Response text is truncated using `truncateTail` before returning to the parent agent.
 - **Preset Overrides**: Preset model, thinking level, and resource policies apply directly to the subagent invocation.
 - **Custom Slots**: Custom slots registered by extensions are process-wide (module-level registry), so a delegatable preset that uses a custom slot renders it in subagents too — the extension only needs to have run once in the parent process; no extension runtime is loaded into the subagent session.
@@ -741,6 +739,7 @@ The model for a subagent run resolves as: explicit `modelRef` option → preset 
 |---|---|
 | `/preset` | List all loaded presets with diagnostic badges. |
 | `/preset <id>` | Switch to the preset with that ID. |
+| `/preset none` | Disable presets and fall back to the built-in default prompt. |
 | `/subagent` | List delegatable subagent profiles (`delegatable: true`). |
 | `/subagent <profileId> <task>` | Run a subagent task using the specified delegatable preset. |
 | `/prompt` | Show the full compiled message array. |

@@ -301,26 +301,20 @@ Schema load/unload is recorded as `schema_change` entries and strict mode toggle
 
 ## The `get_state` Tool
 
-In addition to `state_update`, pi-rp provides `get_state` — a read-only tool the LLM can call to inspect current state without modifying it:
+In addition to `state_update`, pi-rp provides `get_state` — a read-only tool the LLM can call to inspect current state without modifying it. It takes **no arguments** and always returns the **full state snapshot** as JSON:
 
 ```
 > get_state
-> (no path)
 Response: {"character": {"name": "无名", "hp": 100, "level": 1}}
-```
-
-Pass an optional path to read a subtree:
-
-```
-> get_state character.hp
-Response: 100
 ```
 
 Both `state_update` and `get_state` are active by default in SDK sessions.
 
+The RPC layer's `get_state` command is separate from the LLM tool: it accepts an optional `path` to read a single namespace subtree. See [RPC Mode](rpc.md#get_state) for details.
+
 ### Path Notation
 
-Paths support both dot notation (`character.hp`) and JSON Pointer (`/character/hp`). Both are equivalent — use whichever is more natural.
+`state_update` paths support both dot notation (`character.hp`) and JSON Pointer (`/character/hp`). Both are equivalent — use whichever is more natural. The `/state` command accepts the same paths for viewing.
 
 ## Extension Integration
 
@@ -328,18 +322,21 @@ Extensions can read and subscribe to state changes via the ExtensionAPI:
 
 | Method | Description |
 |---|---|
-| `pi.getState(path?)` | Read the current state snapshot, optionally at a specific path. |
-| `pi.subscribeState(handler)` | Register a callback invoked on every state change. Receives `(path, value, previousValue)`. |
+| `pi.getState()` | Read the full current state snapshot (deep-cloned). No path argument — for a subtree, filter the snapshot yourself. |
+| `pi.onStateChange(handler)` | Register a callback invoked after every state mutation (including session restore/rollback). The handler receives the **full state snapshot**. Returns an unsubscribe function. |
 
 ```ts
 export default function (pi: ExtensionAPI) {
-  pi.subscribeState((path, value, prev) => {
-    if (path === "character.hp" && value < 10) {
+  pi.onStateChange((snapshot) => {
+    const hp = (snapshot.character as any)?.hp;
+    if (typeof hp === "number" && hp < 10) {
       pi.ui.notify("Low HP!", "warn");
     }
   });
 }
 ```
+
+`pi.updateState(path, op, value)` applies one state mutation and persists it to the session, exactly like the `state_update` tool (schema validation + custom validators included). `op` is `"add"` (append to an array / increment a number), `"replace"` (set a value), or `"remove"` (delete a path). Returns `{ ok: false, reason }` when validation rejects the write.
 
 ### Tab Completion
 
@@ -347,6 +344,37 @@ Both `/state` and `/schema` commands support tab completion:
 
 - `/state` — completes dot-separated paths by walking the current state tree, with type-aware descriptions (`{...}`, `[...]`, `42`, `"str"`).
 - `/schema` — completes subcommands (`list`, `load`, `unload`, `strict`), schema IDs for `load`, namespaces for `unload`, and `off` for `strict`.
+
+## Shared State Store (Cross-Process)
+
+Conversation state can be mirrored to a shared on-disk store so multiple pi processes on the same project (an interactive session plus an RPC client, for example) observe the same state. It is opt-in via settings:
+
+```json
+{
+  "state": {
+    "store": "file",
+    "storeDir": ".pi/state"
+  }
+}
+```
+
+- `state.store: "file"` enables the file-backed store. Omitted or any other value disables it.
+- `state.storeDir` sets the store directory, resolved relative to the project cwd (config-value syntax, e.g. `${VAR}`, is supported). Defaults to the project config directory (`<cwd>/.pi/state`).
+- The store is **multi-writer**: every attached pi process is a writer, and each process watches the files so peers' changes land in its in-memory state without a restart.
+
+The store keeps **one file per namespace** under the store directory, named `<namespace>.json`:
+
+```json
+{
+  "revision": 3,
+  "state": { "name": "无名", "hp": 80 }
+}
+```
+
+- Files are written atomically (tmp file + rename) and debounced.
+- `revision` is a monotonic CAS token: a commit reads the file, checks its revision equals the expected value, replays the ops onto the file state, and writes back with `revision + 1`. Conflicting writes retry against the new baseline (up to 3 retries), then fail with a revision conflict.
+- Only namespaces covered by a **loaded schema** participate (the schema gate): unloaded namespaces are neither loaded from nor written to the store.
+- Files are authoritative: on attach and on external change, the file state **replaces** the in-memory namespace, with schema defaults filling any keys missing from the file.
 
 ## Validation Pipeline
 

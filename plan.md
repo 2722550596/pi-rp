@@ -23,12 +23,12 @@ pi-rp 是 [pi-coding-agent](https://github.com/earendil-works/pi) 的一个深�
 
 - ✅ **PromptPreset 核心类型** — `PromptPreset`, `PromptPresetItem` (block/slot), `PromptRuntime`
 - ✅ **编译器** — `compileSystemPrompt()` (replace/append/prepend) + `compileMessages()` (chat-history 定位)
-- ✅ **12 个内置 slot** — tools, tool-guidelines, pi-docs, append-system-prompt, project-context, skills, date-cwd, date, cwd, active-model, variables, chat-history
+- ✅ **13 个内置 slot** — tools, tool-guidelines, pi-docs, append-system-prompt, project-context, skills, date-cwd, date, cwd, active-model, variables, chat-history, state
 - ✅ **宏引擎** — `{{date}}`/`{{time}}`/`{{cwd}}`/`{{lastUserMessage}}`/`{{tools}}`/`{{selectedTools}}`/`{{activeModel}}` + 自定义宏注册
 - ✅ **内置默认 preset** — 完全复现 `buildSystemPrompt()` 行为，零兼容成本
 - ✅ **加载器** — 读 `.pi/prompt-presets/*.json`，验证，ID 去重，autoActivate 支持
 - ✅ **`buildSystemPrompt` 回退** — 非 customPrompt 路径走编译器；customPrompt 保留旧行为
-- ✅ **`/preset list/use/reload`** — 切换和管理 prompt preset
+- ✅ **`/preset [id|none]`** — 切换或停用 prompt preset；`/reload` 重新读取 preset 文件
 - ✅ **`/prompt`** — 显示编译后的完整 provider 负载（system prompt + messages），过滤空消息
 - ✅ **ExtensionAPI 集成** — `registerSlot()` / `registerMacro()` 可自定义 slot 和宏
 - ✅ **正则规则** — `PromptPreset.regex.rules`，支持 outgoing/display/both/finalize 效果，history/compiled 阶段，system/messages 目标，以及 scope 过滤（roles/maxMessages/深度等）
@@ -43,10 +43,18 @@ pi-rp 是 [pi-coding-agent](https://github.com/earendil-works/pi) 的一个深�
 
 ### 变量与状态管理
 
-- `state_update` 工具（path, op, val）供 LLM 读写状态
-- `/state` 命令查看当前状态
-- 存储挂载到会话 jsonl 中，随 session 持久化
-- 预留自定义 schema 的接口
+- ✅ `state_update` 工具（path, op, val）供 LLM 读写状态
+- ✅ `get_state` 工具（无参数，返回完整状态快照）供 LLM 只读查看
+- ✅ `/state` 命令查看当前状态
+- ✅ 存储挂载到会话 jsonl 中，随 session 持久化
+- ✅ 跨进程共享状态存储（`state.store: "file"`，按 namespace 一个文件，CAS revision）
+
+### 状态校验 (Schema)
+
+- ✅ 基于 TypeBox/JSON Schema 的结构约束，按 namespace 加载/卸载/替换，`/schema list/load/unload/strict` 命令
+- ✅ 自定义校验器（`.ts` 文件），在 schema 校验后运行，可修正或拒绝写入
+- ✅ 严格模式：未加载 schema 的路径写入被拒绝
+- ✅ `schema_change` / `strict_change` session 条目，恢复与 `/reload` 时重放
 
 ### Compact + Recall
 
@@ -61,7 +69,7 @@ pi-rp 是 [pi-coding-agent](https://github.com/earendil-works/pi) 的一个深�
 
 ### 其他集成
 
-- **pi-subagent** — fork 并魔改，去掉原生包的隐藏提示词和 bug
+- ✅ **原生 Subagent** — 基于可委派 preset（`delegatable: true`）的进程内子代理：`subagent` / `subagent_profiles` 工具、`/subagent` 命令，扩展 API 的 `spawnAgent()`
 - **记忆系统** — 一套完整的记忆工具，agent 可主动记忆和检索
 
 ## 代码结构
@@ -82,11 +90,11 @@ packages/coding-agent/src/
 1. ✅ 基础命令与实用扩展小功能（`/reroll`, `/continue`, 实时消息编辑）
 2. ✅ 预设提示词系统（PromptPreset 核心类型 + 编译器 + slot 渲染 + 宏引擎 + loader + /preset + /prompt + ExtensionAPI 集成）
 3. 知识库 + lookup
-4. 状态管理
+4. ✅ 状态管理（state_update / get_state / /state + schema 校验 + 跨进程共享状态存储）
 5. Compact + recall
 6. 记忆系统
 7. Provider 改进
-8. pi-subagent 魔改
+8. ✅ 原生 Subagent（基于可委派 preset 的进程内子代理）
 
 ## 已实现的教训总结
 

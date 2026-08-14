@@ -14,7 +14,7 @@
 
 Pi is a minimal terminal coding harness. Adapt pi to your workflows, not the other way around, without having to fork and modify pi internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Pi Packages](#pi-packages) and share them with others via npm or git.
 
-Pi ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow.
+Pi ships with powerful defaults but skips features like plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow. This fork additionally ships native subagents, prompt presets, and state schemas in core — see [docs/prompt-presets.md](docs/prompt-presets.md) and [docs/state-schemas.md](docs/state-schemas.md).
 
 Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
 
@@ -194,6 +194,14 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/export [file]` | Export session to HTML or JSONL file |
 | `/import <file>` | Import and resume a session from a JSONL file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
+| `/reroll` | Regenerate the last assistant reply |
+| `/continue` | Make the agent continue generating |
+| `/preset` | List prompt presets, or activate one: `/preset <id\|none>` (`none` disables) |
+| `/prompt` | Show the compiled system prompt and messages sent to the provider |
+| `/state [path]` | Show conversation state, optionally at a specific path |
+| `/schema` | Manage state schemas: `/schema [list\|load <id>\|unload <ns>\|strict [off]]` |
+| `/validator` | List loaded custom validators (namespace + path for each) |
+| `/subagent` | List subagent profiles or run a task: `/subagent [list\|<profileId> <task>]` |
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |

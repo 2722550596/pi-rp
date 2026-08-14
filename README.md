@@ -24,13 +24,13 @@ The goal is not to replace Pi's extension model. It is to provide the layer that
 
 | Feature | Description |
 |---------|-------------|
-| **Prompt preset system** | JSON-based modular prompt stacks under `.pi/prompt-presets/`. Replace, append, or prepend system prompts. 13 built-in slots, macro engine (`{{date}}`, `{{lastUserMessage}}`, `{{tools}}`, custom macros), regex rules, hidden overrides for compaction and continue prompts. `/preset list/use/reload`, `/prompt`. ExtensionAPI hooks for `registerSlot()` / `registerMacro()`. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md). |
+| **Prompt preset system** | JSON-based modular prompt stacks under `.pi/prompt-presets/`. Replace, append, or prepend system prompts. 13 built-in slots, macro engine (`{{date}}`, `{{lastUserMessage}}`, `{{tools}}`, custom macros), regex rules, hidden overrides for compaction and continue prompts. `/preset [id\|none]` to activate or disable, `/reload` to re-read preset files, `/prompt`. ExtensionAPI hooks for `registerSlot()` / `registerMacro()`. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md). |
 | **`/reroll`** | Regenerate the last assistant reply. Works with branching and tree navigation. |
 | **`/continue`** | Force the agent to keep generating regardless of message state. |
 | **Live message editing** | Press `e` in `/tree` to edit any message content in-place. |
 | **State validation** | Schema-based structural constraints (TypeBox/JSON Schema) and custom validators for conversation state. `/schema list/load/unload/strict`. See [state-schemas](packages/coding-agent/docs/state-schemas.md). |
 | **State management** | `state_update` and `get_state` tools for LLM-driven state read/write. Persisted in session JSONL. `/state` command for viewing current state. See [state-schemas](packages/coding-agent/docs/state-schemas.md). |
-| **Native Subagent** | Native in-process task delegation to delegatable prompt presets (`delegatable: true`). Core `subagent` & `subagent_profiles` tools for LLM delegation, `/subagent` command in TUI. Read-only tool isolation & bounded result output. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md#subagent-delegation). |
+| **Native Subagent** | Native in-process task delegation to delegatable prompt presets (`delegatable: true`). Core `subagent` & `subagent_profiles` tools for LLM delegation, `/subagent` command in TUI. Minimal default tool set (`read`, `grep`, `find`, `ls`, `bash`), filtered by preset policy, with bounded result output. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md#subagent-delegation). |
 
 ### Planned
 

@@ -20,6 +20,10 @@
           "path": "providers.md"
         },
         {
+          "title": "llama.cpp",
+          "path": "llama-cpp.md"
+        },
+        {
           "title": "Security",
           "path": "security.md"
         },
@@ -69,6 +73,10 @@
           "path": "state-schemas.md"
         },
         {
+          "title": "Themes",
+          "path": "themes.md"
+        },
+        {
           "title": "Pi Packages",
           "path": "packages.md"
         },
@@ -85,6 +93,10 @@
     {
       "title": "Reference",
       "items": [
+        {
+          "title": "Environment Variables",
+          "path": "environment-variables.md"
+        },
         {
           "title": "Session Format",
           "path": "session-format.md"

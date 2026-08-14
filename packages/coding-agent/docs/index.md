@@ -54,6 +54,8 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 - [Extensions](extensions.md) - TypeScript modules for tools, commands, events, and custom UI.
 - [Skills](skills.md) - Agent Skills for reusable on-demand capabilities.
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
+- [Prompt presets](prompt-presets.md) - JSON-based modular prompt stacks with slots, macros, and regex rules.
+- [State schemas](state-schemas.md) - schema validation and custom validators for conversation state.
 - [Themes](themes.md) - built-in and custom terminal themes.
 - [Pi packages](packages.md) - bundle and share extensions, skills, prompts, and themes.
 - [Custom models](models.md) - add model entries for supported provider APIs.

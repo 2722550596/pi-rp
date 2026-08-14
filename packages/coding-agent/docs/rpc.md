@@ -167,6 +167,11 @@ Get current session state.
 {"type": "get_state"}
 ```
 
+Optional fields:
+
+- `path` — fetch a single namespace subtree instead of the full snapshot: `{"type": "get_state", "path": "character"}` returns `data.state` as that subtree. Without a path, `data.state` is the full snapshot.
+- `ifVersion` — only return the state when its revision differs from this value. When the revision matches, `data.state` is omitted (keep your cached copy).
+
 Response:
 ```json
 {
@@ -185,12 +190,48 @@ Response:
     "sessionName": "my-feature-work",
     "autoCompactionEnabled": true,
     "messageCount": 5,
-    "pendingMessageCount": 0
+    "pendingMessageCount": 0,
+    "stateRevision": 3,
+    "path": "character",
+    "state": {"name": "无名", "hp": 80}
   }
 }
 ```
 
-The `model` field is a full [Model](#model) object or `null`. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
+The `model` field is a full [Model](#model) object or `null`. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set. `stateRevision` is the state's monotonic revision, incremented on every mutation; `path` echoes the requested path (omitted when the full snapshot was requested); `state` is the value at that path or the full snapshot (omitted when `ifVersion` matches the current revision).
+
+#### update_state
+
+Apply one state mutation, exactly like the LLM `state_update` tool — schema validation and custom validators run first, and a rejected write returns `success: false`.
+
+```json
+{"type": "update_state", "path": "character.hp", "op": "replace", "value": 80}
+```
+
+- `path` — dot notation (`character.hp`) or JSON Pointer (`/character/hp`); `""` targets the whole namespace.
+- `op` — `"add"` (append to an array / increment a number), `"remove"` (delete a path), `"replace"` (set a value), or `"merge"` (bulk merge an object into state).
+- `value` — the value for `add`/`replace`/`merge`.
+
+Success response `data` is `{"path": "...", "newValue": ...}`. When the session is idle the mutation is persisted to the session file immediately, so a peer process can read the new state without waiting for `turn_end`.
+
+#### watch_state
+
+Subscribe to state changes. The server pushes a `state_changed` event on every state mutation while the subscription is active.
+
+```json
+{"type": "watch_state", "path": "character"}
+```
+
+- `path` — watch a single namespace subtree (optional; full snapshot when omitted).
+- `ifVersion` — only push changes newer than this revision.
+
+The command response returns the current `{stateRevision, path, value}` so the client can establish a baseline. After that, each mutation pushes:
+
+```json
+{"type": "state_changed", "stateRevision": 4, "path": "character", "value": {"hp": 85}}
+```
+
+`stateRevision` is the new revision; `path` echoes the watched path (omitted when watching the full snapshot); `value` is the value at the watched path (subtree or full snapshot). `state_changed` pushes are delivered only to `watch_state` subscribers — they are never emitted as session events. Subscriptions are torn down when the session is rebound (`new_session`, `switch_session`) or the RPC connection closes.
 
 #### get_messages
 
@@ -668,6 +709,55 @@ If an extension cancelled the clone:
 }
 ```
 
+#### reroll
+
+Regenerate the last assistant response: branches the session tree to the last user message, restores state/schemas to the new path, and emits `leaf_changed`. The response is sent once the branch + restore completes; the regeneration run then starts and streams agent events to stdout (like `prompt`).
+
+```json
+{"type": "reroll"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "reroll",
+  "success": true
+}
+```
+
+Fails (no branch performed) when the session is busy (streaming/compacting) or there is no user message to branch to:
+```json
+{
+  "type": "response",
+  "command": "reroll",
+  "success": false,
+  "error": "Cannot reroll: session is busy or no user message to branch to"
+}
+```
+
+#### navigate_tree
+
+Navigate the session tree to another entry: switches the active branch, restores state/schemas to the target path, and emits `leaf_changed`. The response is sent once the switch + restore completes (or is cancelled).
+
+```json
+{"type": "navigate_tree", "targetId": "<entryId>"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "navigate_tree",
+  "success": true,
+  "data": {
+    "cancelled": false
+  }
+}
+```
+
+The navigation can be cancelled by a `session_before_tree` extension handler, in which case `cancelled` is `true`. The RPC form always navigates without summarization (used by the writer process to rewind a session in lockstep with its own rollback); the interactive `/tree` flow supports summarization via the selector UI.
+
 #### get_fork_messages
 
 Get user messages available for forking.
@@ -806,9 +896,9 @@ Response:
   "success": true,
   "data": {
     "commands": [
-      {"name": "session-name", "description": "Set or clear session name", "source": "extension", "path": "/home/user/.pi/agent/extensions/session.ts"},
-      {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt", "location": "project", "path": "/home/user/myproject/.pi/agent/prompts/fix-tests.md"},
-      {"name": "skill:brave-search", "description": "Web search via Brave API", "source": "skill", "location": "user", "path": "/home/user/.pi/agent/skills/brave-search/SKILL.md"}
+      {"name": "session-name", "description": "Set or clear session name", "source": "extension", "sourceInfo": {"path": "/home/user/.pi/agent/extensions/session.ts", "source": "session.ts", "scope": "user", "origin": "top-level"}},
+      {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt", "sourceInfo": {"path": "/home/user/myproject/.pi/agent/prompts/fix-tests.md", "source": "fix-tests.md", "scope": "project", "origin": "top-level"}},
+      {"name": "skill:brave-search", "description": "Web search via Brave API", "source": "skill", "sourceInfo": {"path": "/home/user/.pi/agent/skills/brave-search/SKILL.md", "source": "SKILL.md", "scope": "user", "origin": "top-level"}}
     ]
   }
 }
@@ -821,11 +911,11 @@ Each command has:
   - `"extension"`: Registered via `pi.registerCommand()` in an extension
   - `"prompt"`: Loaded from a prompt template `.md` file
   - `"skill"`: Loaded from a skill directory (name is prefixed with `skill:`)
-- `location`: Where it was loaded from (optional, not present for extensions):
-  - `"user"`: User-level (`~/.pi/agent/`)
-  - `"project"`: Project-level (`./.pi/agent/`)
-  - `"path"`: Explicit path via CLI or settings
-- `path`: Absolute file path to the command source (optional)
+- `sourceInfo`: Source metadata for the owning resource:
+  - `path`: Absolute file path to the command source
+  - `source`: File name of the source
+  - `scope`: `"user"` (`~/.pi/agent/`), `"project"` (`./.pi/agent/`), or `"temporary"` (in-memory, e.g. builtin)
+  - `origin`: `"package"` (shipped with pi) or `"top-level"` (user/project file)
 
 **Note**: Built-in TUI commands (`/settings`, `/hotkeys`, etc.) are not included. They are handled only in interactive mode and would not execute if sent via `prompt`.
 
@@ -850,6 +940,7 @@ Events are streamed to stdout as JSON lines during agent operation. Events do no
 | `tool_execution_update` | Tool execution progress (streaming output) |
 | `tool_execution_end` | Tool completes |
 | `queue_update` | Pending steering/follow-up queue changed |
+| `state_changed` | State mutation pushed to a `watch_state` subscriber (see [watch_state](#watch_state)) |
 | `compaction_start` | Compaction begins |
 | `compaction_end` | Compaction completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
@@ -857,6 +948,9 @@ Events are streamed to stdout as JSON lines during agent operation. Events do no
 | `summarization_retry_scheduled` | Retry scheduled for a transient compaction or branch-summary summarization error |
 | `summarization_retry_attempt_start` | Retried summarization request starts |
 | `summarization_retry_finished` | Summarization retry loop completes |
+| `leaf_changed` | Active tree leaf changed (reroll, navigate_tree); payload `{newLeafId, oldLeafId}` after state/schema restore completes |
+| `entry_edited` | A session entry was edited (`edit_message`); payload `{entryId}` |
+| `preset_activated` | The active prompt preset changed; payload `{presetId}` |
 | `extension_error` | Extension threw an error |
 
 ### agent_start

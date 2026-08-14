@@ -497,6 +497,39 @@ pi.on("session_tree", async (event, ctx) => {
 });
 ```
 
+`session_tree` is extension-only (mirror). The session event stream and the TUI rebuild both use `leaf_changed` (below), which fires on the same navigation; `session_tree` stays during the transition for extension compatibility.
+
+#### leaf_changed
+
+Fired when the active tree leaf changes — on `/reroll` and `/tree` navigation, after state/schema restore to the new path completes.
+
+```typescript
+pi.on("leaf_changed", async (event, ctx) => {
+  // event.newLeafId - entry id of the new leaf
+  // event.oldLeafId - entry id of the previous leaf
+});
+```
+
+#### entry_edited
+
+Fired when a session entry is edited (e.g. the writer process rewrites a message).
+
+```typescript
+pi.on("entry_edited", async (event, ctx) => {
+  // event.entryId - id of the edited entry
+});
+```
+
+#### preset_activated
+
+Fired when the active prompt preset changes.
+
+```typescript
+pi.on("preset_activated", async (event, ctx) => {
+  // event.presetId - id of the newly activated preset
+});
+```
+
 #### session_shutdown
 
 Fired before a started session runtime is torn down. Use this to clean up resources opened from `session_start` or other session-scoped hooks.
@@ -1661,13 +1694,68 @@ pi.registerMacro({
 
 Macros registered without `static: true` are re-expanded each turn, giving a fresh value each time.
 
-### pi.subscribeState(handler)
+### pi.compilePreset(presetId, runtime)
 
-Subscribe to conversation state changes. The handler fires on every state mutation from `state_update` calls or programmatic writes.
+Compile a prompt preset to a concrete message array without activating it. Useful for previewing, testing, or reusing a preset's compiled prompt outside the active session.
 
 ```typescript
-pi.subscribeState((path, value, previousValue) => {
-  if (path === "character.hp" && value < 10) {
+const compiled = pi.compilePreset("writer", runtime);
+// compiled.messages      — the compiled message array (AgentMessage[])
+// compiled.systemPrompt  — the extracted system prompt string
+// compiled.diagnostics   — warnings/errors produced during compilation
+```
+
+Throws when the preset id is unknown. `runtime` is a `PromptRuntime` (options, messages, variables, state, skills) — build one that mirrors the context you want to compile against; the session's own runtime is available to event handlers via the preset compilation internals, but must be passed explicitly here.
+
+### pi.completeSideRequest(options)
+
+Make a one-shot LLM request outside the main agent loop — a side query that does not touch the session transcript. Requests are attributed to the request gateway with subagent-tier priority (unless `priority` is set) and are uncached.
+
+```typescript
+const result = await pi.completeSideRequest({
+  model,                          // defaults to the current model
+  context: { systemPrompt, messages }, // from @earendil-works/pi-ai/compat
+  maxTokens,
+  thinkingLevel,                  // defaults to the current thinking level
+  signal,
+  priority,                       // default 0 (subagent-tier); enforced when the gateway has maxConcurrency
+  label,                          // default "extension"
+  timeoutMs,
+});
+// result is an AssistantMessage
+```
+
+### pi.spawnAgent(options)
+
+Spawn an in-process subagent programmatically, reusing the same engine as the `subagent` LLM tool and `/subagent` command. Unlike the `subagent` tool, this path is not gated on the preset being `delegatable` and does not inherit the parent session's extension tools. State is seeded from the parent snapshot (optionally namespace-filtered), and the subagent runs in schema strict mode: writes to namespaces without a loaded schema are rejected as tool errors.
+
+```typescript
+const result = await pi.spawnAgent({
+  profileId: "code-reviewer",   // delegatable preset profile
+  task: "Review the diff in src/",
+  inheritMessages,              // explicit chat history
+  stateNamespaces,              // top-level namespaces fed to the subagent; default: all
+  schemas,                      // schema IDs loaded into the subagent; default: preset.schemas
+  tools,                        // tool names; default ["state_update", "get_state"]
+  model,                        // explicit model; default session model
+  thinkingLevel,
+  timeoutMs,
+  signal,
+});
+// result.status — "completed" | "failed" | "cancelled" | "timed-out"
+// result.text    — the subagent's final response text
+// result.stateOps — state_update calls that succeeded in the spawned session, in order
+//                   (always [] unless status === "completed")
+```
+
+### pi.onStateChange(handler)
+
+Subscribe to conversation state changes. The handler fires after every state mutation from `state_update` calls or programmatic writes (including session restore/rollback) and receives the **full state snapshot**. Returns an unsubscribe function.
+
+```typescript
+pi.onStateChange((snapshot) => {
+  const hp = (snapshot.character as any)?.hp;
+  if (typeof hp === "number" && hp < 10) {
     pi.once("before_agent_start", async (_event, ctx) => {
       ctx.ui.notify("Low HP warning!", "warn");
     });
@@ -1675,13 +1763,12 @@ pi.subscribeState((path, value, previousValue) => {
 });
 ```
 
-### pi.getState(path?)
+### pi.getState()
 
-Read the current conversation state snapshot. Returns the full state tree when called without arguments, or a subtree when a dot-notation path is given.
+Read the current conversation state snapshot. Takes no arguments and returns the full state tree (deep-cloned).
 
 ```typescript
-const fullState = pi.getState();           // { character: { hp: 100, ... }, ... }
-const hp = pi.getState("character.hp");    // 100
+const state = pi.getState(); // { character: { hp: 100, ... }, ... }
 ```
 ```
 

@@ -226,6 +226,44 @@ Emitted when the user changes the thinking/reasoning level.
 {"type":"thinking_level_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","thinkingLevel":"high"}
 ```
 
+### PresetChangeEntry
+
+Emitted when the active prompt preset changes via `/preset <id>` (or `setActivePreset`). `presetId` is `"none"`/`"off"`/`"default"` when presets are disabled.
+
+```json
+{"type":"preset_change","id":"f1g2h3i4","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","presetId":"writer"}
+```
+
+On session recovery, the latest `preset_change` is re-applied to restore the active preset.
+
+### StateEntry
+
+A full conversation-state snapshot. Written on state mutations when the session is idle (`state_update`, extension `updateState`, RPC `update_state`) and on session close. The `state` field is the complete state object.
+
+```json
+{"type":"state","id":"f2g3h4i5","parentId":"f1g2h3i4","timestamp":"2024-12-03T14:08:00.000Z","state":{"character":{"name":"无名","hp":80}}}
+```
+
+### SchemaChangeEntry
+
+Emitted when a state schema is loaded or unloaded via `/schema load <id>` / `/schema unload <ns>`.
+
+```json
+{"type":"schema_change","id":"f3g4h5i6","parentId":"f2g3h4i5","timestamp":"2024-12-03T14:09:00.000Z","action":"load","schemaId":"character","namespace":"character"}
+```
+
+`action` is `"load"` or `"unload"`, `schemaId` is the schema filename without extension, and `namespace` is the schema's state namespace. On recovery, the latest action per namespace wins.
+
+### StrictChangeEntry
+
+Emitted when schema strict mode is toggled via `/schema strict [off]`.
+
+```json
+{"type":"strict_change","id":"f4g5h6i7","parentId":"f3g4h5i6","timestamp":"2024-12-03T14:10:00.000Z","enabled":true}
+```
+
+On recovery, the latest `strict_change` entry determines strict mode.
+
 ### CompactionEntry
 
 Created when context is compacted. Stores a summary of earlier messages.
@@ -407,6 +445,10 @@ Key methods for working with sessions programmatically.
 - `appendMessage(message)` - Add message
 - `appendThinkingLevelChange(level)` - Record thinking change
 - `appendModelChange(provider, modelId)` - Record model change
+- `appendPresetChange(presetId)` - Record active preset change
+- `appendState(state, ts?)` - Record a full state snapshot
+- `appendSchemaChange(action, schemaId, namespace)` - Record schema load/unload
+- `appendStrictChange(enabled)` - Record strict-mode toggle
 - `appendCompaction(summary, firstKeptEntryId, tokensBefore, details?, fromHook?)` - Add compaction
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)
 - `appendSessionInfo(name)` - Set session display name

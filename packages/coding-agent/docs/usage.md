@@ -56,10 +56,12 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 | `/reroll` | Regenerate the last assistant reply |
 | `/continue` | Force the agent to keep generating |
-| `/preset` | List, switch, or reload prompt presets |
+| `/preset` | List loaded presets with no argument, or activate one with `/preset <id\|none>` (`none` disables). Re-read preset files with `/reload` |
 | `/prompt` | Show the compiled system prompt and messages sent to the provider |
 | `/schema` | List, load, unload, or toggle strict mode for state schemas |
 | `/state [path]` | Show conversation state, optionally at a specific path |
+| `/validator` | List loaded custom validators (namespace + path for each) |
+| `/subagent` | List delegatable subagent profiles, or run one: `/subagent <profileId> <task>` |
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |

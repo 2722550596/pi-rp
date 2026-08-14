@@ -8,6 +8,10 @@
 - Added `"previous-traces"` mode for the chat-history `stripAssistantThinking` preset option: strips `thinking` blocks from assistant messages in completed traces (agent start to agent end) while keeping the current trace's thinking intact.
 - Added `/validator` slash command to list loaded custom validators (namespace + path for each).
 - Added per-provider LLM request concurrency gating. Set `providers.<id>.maxConcurrency` (or the `requestGateway.defaultMaxConcurrency` default) in settings to limit concurrent requests per provider.
+- Added a unified slash-command registry: builtin, RP, and extension commands now register `name → {execute, autocomplete, usage}` in one place; dispatch, autocomplete, and `/hotkeys` all read it. Command bodies moved to a mode-agnostic `src/commands/` module shared by the TUI and headless modes.
+- Added path-change session events: `reroll()`, `editMessage()`, `navigateTree()`, and `setActivePreset()` now emit `leaf_changed` / `entry_edited` / `preset_activated` after their mutation + state restore completes (mirrored to extensions alongside the existing `session_tree`), replacing the TUI's hard-coded manual re-renders.
+- `reroll()` now rolls back state and schemas to the rewind path like tree navigation does, so in-memory state cannot diverge from the transcript after a reroll.
+- Added the `reroll` command to the RPC dialect (headless regeneration: branch + state restore, then the run streams agent events).
 
 ### Fixed
 
@@ -17,6 +21,7 @@
 - Fixed pi-generated compaction summaries not running the active preset's `finalize` regex rules before being persisted (extension-provided summaries are left as-is).
 - Fixed branch summaries ignoring the active preset's regex rules: `outgoing` rules now filter the summarized messages and `finalize` rules rewrite the raw LLM summary before it is stored.
 - Fixed HTML export (`/export` and `--export`) not applying the active preset's `display` regex rules to message text, so exported pages could show content the TUI redacts.
+- Fixed documentation claiming `/preset list`, `/preset use`, and `/preset reload` subcommands (from the 0.83.0 changelog entry). `/preset` takes no subcommands: no argument lists loaded presets, `/preset <id|none>` activates or disables a preset, and `/reload` re-reads preset files.
 
 ## [0.84.1] - 2026-08-07
 
