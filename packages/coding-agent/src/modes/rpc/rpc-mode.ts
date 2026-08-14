@@ -711,6 +711,28 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "clone", { cancelled: result.cancelled });
 			}
 
+			case "reroll": {
+				// Fire-and-forget like "prompt": reroll() branches + restores
+				// state synchronously (emitting leaf_changed); the regeneration
+				// run afterwards streams agent events to stdout.
+				void (async () => {
+					try {
+						const rerolled = await session.reroll();
+						if (!rerolled) {
+							output(error(id, "reroll", "Cannot reroll: session is busy or no user message to branch to"));
+							return;
+						}
+						output(success(id, "reroll"));
+					} catch (err) {
+						output(error(id, "reroll", err instanceof Error ? err.message : String(err)));
+						return;
+					}
+					// Run failures surface through agent events, not a second response.
+					await session.startRerollRun().catch(() => {});
+				})();
+				return undefined;
+			}
+
 			case "get_fork_messages": {
 				const messages = session.getUserMessagesForForking();
 				return success(id, "get_fork_messages", { messages });

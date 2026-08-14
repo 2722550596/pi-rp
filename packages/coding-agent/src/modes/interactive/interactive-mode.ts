@@ -28,7 +28,6 @@ import * as TuiLayouts from "@earendil-works/pi-tui";
 import {
 	CombinedAutocompleteProvider,
 	Container,
-	fuzzyFilter,
 	getCapabilities,
 	hyperlink,
 	Markdown,
@@ -44,7 +43,8 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
+import { dispatchCommand } from "../../commands/index.ts";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -53,18 +53,11 @@ import {
 	getDebugLogPath,
 	getDocsPath,
 	getProjectConfigDirName,
-	getShareViewerUrl,
 	VERSION,
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
-import {
-	CACHE_TTL_MS,
-	type CacheMiss,
-	collectCacheMisses,
-	computeCacheWaste,
-	detectCacheMiss,
-} from "../../core/cache-stats.ts";
+import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -81,11 +74,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import {
-	type CustomMessage,
-	convertToLlm as convertToLlmFn,
-	createCompactionSummaryMessage,
-} from "../../core/messages.ts";
+import { type CustomMessage, createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -98,7 +87,13 @@ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import type { TuiMode } from "../../core/settings-manager.ts";
-import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+import type { CommandContext, CommandEntry, CommandView } from "../../core/slash-commands.ts";
+import {
+	BUILTIN_SLASH_COMMANDS,
+	getCommandEntries,
+	getCommandEntry,
+	isBuiltinCommandName,
+} from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
@@ -106,6 +101,7 @@ import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
+import { formatTokens } from "../../utils/format.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
@@ -116,7 +112,6 @@ import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
-import { BorderedLoader } from "./components/bordered-loader.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
@@ -128,16 +123,12 @@ import { EarendilAnnouncementComponent } from "./components/earendil-announcemen
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
-import { FooterComponent, formatTokens } from "./components/footer.ts";
+import { FooterComponent } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
-import {
-	type AuthSelectorProvider,
-	formatAuthSelectorProviderType,
-	OAuthSelectorComponent,
-} from "./components/oauth-selector.ts";
+import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
@@ -156,7 +147,6 @@ import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
-import { getModelSearchText } from "./model-search.ts";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -258,59 +248,6 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 
 function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
 	return providerId in defaultModelPerProvider;
-}
-
-type LoginProviderCompletionOption = {
-	id: string;
-	name: string;
-	authTypes: AuthSelectorProvider["authType"][];
-};
-
-const AUTH_TYPE_ORDER = { oauth: 0, api_key: 1 } satisfies Record<AuthSelectorProvider["authType"], number>;
-
-function createFuzzyAutocompleteItems<T>(
-	items: T[],
-	prefix: string,
-	getSearchText: (item: T) => string,
-	toAutocompleteItem: (item: T) => AutocompleteItem,
-): AutocompleteItem[] | null {
-	const filtered = fuzzyFilter(items, prefix, getSearchText);
-	if (filtered.length === 0) return null;
-	return filtered.map(toAutocompleteItem);
-}
-
-function getLoginProviderCompletionOptions(
-	providerOptions: readonly AuthSelectorProvider[],
-): LoginProviderCompletionOption[] {
-	const byId = new Map<string, LoginProviderCompletionOption>();
-	for (const provider of providerOptions) {
-		const existing = byId.get(provider.id);
-		if (existing) {
-			if (!existing.authTypes.includes(provider.authType)) {
-				existing.authTypes.push(provider.authType);
-				existing.authTypes.sort((a, b) => AUTH_TYPE_ORDER[a] - AUTH_TYPE_ORDER[b]);
-			}
-			continue;
-		}
-		byId.set(provider.id, {
-			id: provider.id,
-			name: provider.name,
-			authTypes: [provider.authType],
-		});
-	}
-	return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function getLoginProviderSearchText(provider: LoginProviderCompletionOption): string {
-	const authTypes = provider.authTypes
-		.map((authType) => `${authType} ${formatAuthSelectorProviderType(authType)}`)
-		.join(" ");
-	return `${provider.id} ${provider.name} ${authTypes}`;
-}
-
-function formatLoginProviderCompletionDescription(provider: LoginProviderCompletionOption): string {
-	const authTypes = provider.authTypes.map(formatAuthSelectorProviderType).join("/");
-	return provider.name === provider.id ? authTypes : `${provider.name} · ${authTypes}`;
 }
 
 /**
@@ -640,196 +577,32 @@ export class InteractiveMode {
 	}
 
 	private createBaseAutocompleteProvider(): AutocompleteProvider {
-		// Define commands for autocomplete
+		// Builtin slash commands: metadata from BUILTIN_SLASH_COMMANDS, argument
+		// completions from the command registry (session-dependent).
+		const commandCtx = (): CommandContext => ({ args: [], session: this.session, view: this.commandView });
+		const argCompletions = (entry: CommandEntry | undefined) => {
+			if (!entry?.autocomplete) return undefined;
+			return async (prefix: string): Promise<AutocompleteItem[] | null> => {
+				const suggestions = await entry.autocomplete!(prefix, commandCtx());
+				if (!suggestions || suggestions.length === 0) return null;
+				return suggestions.map((suggestion) =>
+					typeof suggestion === "string"
+						? { value: suggestion, label: suggestion }
+						: {
+								value: suggestion.value,
+								label: suggestion.label ?? suggestion.value,
+								...(suggestion.description && { description: suggestion.description }),
+							},
+				);
+			};
+		};
+
 		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
 			name: command.name,
 			description: command.description,
 			...(command.argumentHint && { argumentHint: command.argumentHint }),
+			getArgumentCompletions: argCompletions(getCommandEntry(command.name)),
 		}));
-
-		const modelCommand = slashCommands.find((command) => command.name === "model");
-		if (modelCommand) {
-			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const models =
-					this.session.scopedModels.length > 0
-						? this.session.scopedModels.map((s) => s.model)
-						: this.session.modelRuntime.getAvailableSnapshot();
-
-				if (models.length === 0) return null;
-
-				// Create items with provider/id format
-				const items = models.map((m) => ({
-					id: m.id,
-					provider: m.provider,
-					name: m.name,
-					label: `${m.provider}/${m.id}`,
-				}));
-
-				return createFuzzyAutocompleteItems(items, prefix, getModelSearchText, (item) => ({
-					value: item.label,
-					label: item.id,
-					description: item.provider,
-				}));
-			};
-		}
-
-		const loginCommand = slashCommands.find((command) => command.name === "login");
-		if (loginCommand) {
-			loginCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const providers = getLoginProviderCompletionOptions(this.getLoginProviderOptions());
-				return createFuzzyAutocompleteItems(providers, prefix, getLoginProviderSearchText, (provider) => ({
-					value: provider.id,
-					label: provider.id,
-					description: formatLoginProviderCompletionDescription(provider),
-				}));
-			};
-		}
-
-		const presetCommand = slashCommands.find((command) => command.name === "preset");
-		if (presetCommand) {
-			presetCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const presets = this.session.getAllPresets();
-				const items = [
-					{ id: "none", description: "Disable prompt preset" },
-					...presets.map((p) => ({ id: p.preset.id, description: p.preset.description ?? "" })),
-				];
-				return createFuzzyAutocompleteItems(
-					items,
-					prefix,
-					(p) => p.id,
-					(p) => ({
-						value: p.id,
-						label: p.id,
-						description: p.description,
-					}),
-				);
-			};
-		}
-
-		const schemaCommand = slashCommands.find((command) => command.name === "schema");
-		if (schemaCommand) {
-			schemaCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				if (!prefix.includes(" ")) {
-					const subs = [
-						{ id: "list", description: "Show active schemas" },
-						{ id: "load", description: "Load a schema by ID" },
-						{ id: "unload", description: "Unload a schema by namespace" },
-						{ id: "strict", description: "Toggle strict mode" },
-					];
-					return createFuzzyAutocompleteItems(
-						subs,
-						prefix,
-						(s) => s.id,
-						(s) => ({
-							value: s.id,
-							label: s.id,
-							description: s.description,
-						}),
-					);
-				}
-				const spaceIdx = prefix.indexOf(" ");
-				const sub = prefix.slice(0, spaceIdx);
-				const argPrefix = prefix.slice(spaceIdx + 1);
-				if (sub === "load") {
-					const defs = this.session.getLoadedSchemaDefs();
-					if (defs.length === 0) return null;
-					const items = defs.map((d) => ({ id: d.schemaId, description: `ns: ${d.namespace}` }));
-					return createFuzzyAutocompleteItems(
-						items,
-						argPrefix,
-						(d) => d.id,
-						(d) => ({
-							value: `${sub} ${d.id}`,
-							label: d.id,
-							description: d.description,
-						}),
-					);
-				}
-				if (sub === "unload") {
-					const namespaces = this.session.schemaValidator.getActiveNamespaces();
-					if (namespaces.length === 0) return null;
-					const items = namespaces.map((n) => ({ id: n, description: "" }));
-					return createFuzzyAutocompleteItems(
-						items,
-						argPrefix,
-						(d) => d.id,
-						(d) => ({
-							value: `${sub} ${d.id}`,
-							label: d.id,
-						}),
-					);
-				}
-				if (sub === "strict") {
-					const items = [{ id: "off", description: "Disable strict mode" }];
-					return createFuzzyAutocompleteItems(
-						items,
-						argPrefix,
-						(d) => d.id,
-						(d) => ({
-							value: `${sub} ${d.id}`,
-							label: d.id,
-							description: d.description,
-						}),
-					);
-				}
-				return null;
-			};
-		}
-
-		const stateCommand = slashCommands.find((command) => command.name === "state");
-		if (stateCommand) {
-			stateCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const snapshot = this.session.stateManager.snapshot();
-				if (typeof snapshot !== "object" || snapshot === null) return null;
-				const parts = prefix.split(/[./]/);
-				const lastPart = parts[parts.length - 1];
-				const pathParts = parts.slice(0, -1);
-				let current: unknown = snapshot;
-				for (const p of pathParts) {
-					if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
-					current = (current as Record<string, unknown>)[p];
-					if (current === undefined) return null;
-				}
-				if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
-				const basePath = pathParts.join(".");
-				const obj = current as Record<string, unknown>;
-				const keys = Object.keys(obj).filter((k) => k.toLowerCase().startsWith(lastPart.toLowerCase()));
-				if (keys.length === 0) return null;
-				return keys.map((key) => {
-					const val = obj[key];
-					const fullKey = basePath ? `${basePath}.${key}` : key;
-					const isObj = typeof val === "object" && val !== null && !Array.isArray(val);
-					const isArray = Array.isArray(val);
-					let desc: string;
-					if (isObj) desc = "{...}";
-					else if (isArray) desc = `[${val.length}]`;
-					else {
-						const s = JSON.stringify(val);
-						desc = s !== undefined && s.length > 30 ? `${s.slice(0, 27)}...` : (s ?? "");
-					}
-					return { value: fullKey, label: key, description: desc };
-				});
-			};
-		}
-		const promptCommand = slashCommands.find((command) => command.name === "prompt");
-		if (promptCommand) {
-			promptCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const items = [
-					{ id: "tools", description: "Show active tool definitions" },
-					{ id: "messages", description: "Show compiled prompt messages" },
-				];
-				return createFuzzyAutocompleteItems(
-					items,
-					prefix,
-					(p) => p.id,
-					(p) => ({
-						value: p.id,
-						label: p.id,
-						description: p.description,
-					}),
-				);
-			};
-		}
 
 		// Convert prompt templates to SlashCommand format for autocomplete
 		const templateCommands: SlashCommand[] = this.session.promptTemplates.map((cmd) => ({
@@ -838,16 +611,18 @@ export class InteractiveMode {
 			...(cmd.argumentHint && { argumentHint: cmd.argumentHint }),
 		}));
 
-		// Convert extension commands to SlashCommand format
-		const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
-		const extensionCommands: SlashCommand[] = this.session.extensionRunner
-			.getRegisteredCommands()
-			.filter((cmd) => !builtinCommandNames.has(cmd.name))
-			.map((cmd) => ({
-				name: cmd.invocationName,
-				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
-				getArgumentCompletions: cmd.getArgumentCompletions,
-			}));
+		// Extension commands: names from the registry (invocation names with
+		// conflict suffixes), descriptions from the runner.
+		const extensionCommands: SlashCommand[] = getCommandEntries()
+			.filter(({ name }) => !isBuiltinCommandName(name))
+			.map(({ name, entry }) => {
+				const resolved = this.session.extensionRunner.getCommand(name);
+				return {
+					name,
+					description: this.prefixAutocompleteDescription(resolved?.description, resolved?.sourceInfo),
+					getArgumentCompletions: argCompletions(entry),
+				};
+			});
 
 		// Build skill commands from session.skills (if enabled)
 		this.skillCommands.clear();
@@ -2005,8 +1780,8 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
-					this.chatContainer.clear();
-					this.renderInitialMessages();
+					// The leaf_changed event (emitted by navigateTree after state
+					// restore) rebuilds the chat — no manual re-render.
 					if (result.editorText && !this.editor.getText().trim()) {
 						this.editor.setText(result.editorText);
 					}
@@ -2018,7 +1793,7 @@ export class InteractiveMode {
 					return this.handleResumeSession(sessionPath, options);
 				},
 				reload: async () => {
-					await this.handleReloadCommand();
+					await this.runReload();
 				},
 			},
 			shutdownHandler: () => {
@@ -2954,15 +2729,19 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.model.cycleBackward", () => this.cycleModel("backward"));
 
 		// Global debug handler on TUI (works regardless of focus)
-		this.ui.onDebug = () => this.handleDebugCommand();
+		this.ui.onDebug = () => this.runDebug();
 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
 		this.defaultEditor.onAction("app.editor.external", () => void this.handleOpenExternalEditor());
-		this.defaultEditor.onAction("app.message.copy", () => void this.handleCopyCommand());
+		this.defaultEditor.onAction("app.message.copy", () => void this.tryDispatchRegistryCommand("/copy"));
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
-		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
+		this.defaultEditor.onAction("app.session.new", () => {
+			// Matches the legacy handleClearCommand: clear the editor, then start a new session.
+			this.editor.setText("");
+			void this.tryDispatchRegistryCommand("/new");
+		});
 		this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
 		this.defaultEditor.onAction("app.session.fork", () => this.showUserMessageSelector());
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
@@ -3026,176 +2805,8 @@ export class InteractiveMode {
 			text = text.trim();
 			if (!text) return;
 
-			// Handle commands
-			if (text === "/settings") {
-				this.showSettingsSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/scoped-models") {
-				this.editor.setText("");
-				await this.showModelsSelector();
-				return;
-			}
-			if (text === "/model" || text.startsWith("/model ")) {
-				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
-				this.editor.setText("");
-				await this.handleModelCommand(searchTerm);
-				return;
-			}
-			if (text === "/export" || text.startsWith("/export ")) {
-				await this.handleExportCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/import" || text.startsWith("/import ")) {
-				await this.handleImportCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/share") {
-				await this.handleShareCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/copy") {
-				await this.handleCopyCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/name" || text.startsWith("/name ")) {
-				this.handleNameCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/session") {
-				this.handleSessionCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/changelog") {
-				this.handleChangelogCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/hotkeys") {
-				this.handleHotkeysCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/fork") {
-				this.showUserMessageSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/clone") {
-				this.editor.setText("");
-				await this.handleCloneCommand();
-				return;
-			}
-			if (text === "/tree") {
-				this.showTreeSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/trust") {
-				this.showTrustSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/login" || text.startsWith("/login ")) {
-				const providerRef = text.startsWith("/login ") ? text.slice(7).trim() : undefined;
-				this.editor.setText("");
-				await this.handleLoginCommand(providerRef);
-				return;
-			}
-			if (text === "/logout") {
-				this.showOAuthSelector("logout");
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/new") {
-				this.editor.setText("");
-				await this.handleClearCommand();
-				return;
-			}
-			if (text === "/compact" || text.startsWith("/compact ")) {
-				const customInstructions = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
-				this.editor.setText("");
-				await this.handleCompactCommand(customInstructions);
-				return;
-			}
-			if (text === "/continue") {
-				this.editor.setText("");
-				await this.handleContinueCommand();
-				return;
-			}
-			if (text === "/reroll") {
-				this.editor.setText("");
-				await this.handleRerollCommand();
-				return;
-			}
-			if (text.startsWith("/preset")) {
-				this.editor.setText("");
-				await this.handlePresetCommand(text);
-				return;
-			}
-			if (text === "/subagent" || text.startsWith("/subagent ")) {
-				this.editor.setText("");
-				await this.handleSubagentCommand(text);
-				return;
-			}
-			if (text === "/state" || text.startsWith("/state ")) {
-				this.editor.setText("");
-				await this.handleStateCommand(text);
-				return;
-			}
-			if (text === "/schema" || text.startsWith("/schema ")) {
-				this.editor.setText("");
-				await this.handleSchemaCommand(text);
-				return;
-			}
-			if (text === "/validator" || text.startsWith("/validator ")) {
-				this.editor.setText("");
-				await this.handleValidatorCommand(text);
-				return;
-			}
-			if (text.startsWith("/prompt")) {
-				this.editor.setText("");
-				const parts = text.split(/\s+/);
-				const sub = parts[1];
-				if (sub === "tools") {
-					this.handlePromptToolsCommand();
-				} else {
-					await this.handlePromptCommand();
-				}
-				return;
-			}
-			if (text === "/reload") {
-				this.editor.setText("");
-				await this.handleReloadCommand();
-				return;
-			}
-			if (text === "/debug") {
-				this.handleDebugCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/arminsayshi") {
-				this.handleArminSaysHi();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/dementedelves") {
-				this.handleDementedDelves();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/resume") {
-				this.showSessionSelector();
-				this.editor.setText("");
-				return;
-			}
+			// Mode-lifecycle routing (before registry dispatch): /quit shuts the
+			// mode down and is not a session command.
 			if (text === "/quit") {
 				this.editor.setText("");
 				await this.shutdown();
@@ -3220,26 +2831,36 @@ export class InteractiveMode {
 				}
 			}
 
-			// Queue input during compaction (extension commands execute immediately)
+			// Queue input during compaction (registry commands execute immediately)
 			if (this.session.isCompacting) {
-				if (this.isExtensionCommand(text)) {
-					this.editor.addToHistory?.(text);
+				if (await this.tryDispatchRegistryCommand(text)) {
 					this.editor.setText("");
-					await this.session.prompt(text);
-				} else {
-					this.queueCompactionMessage(text, "steer");
+					return;
 				}
+				this.queueCompactionMessage(text, "steer");
 				return;
 			}
 
 			// If streaming, use prompt() with steer behavior
-			// This handles extension commands (execute immediately), prompt template expansion, and queueing
+			// Registry commands execute immediately; other input is queued via
+			// steer (prompt template expansion and queueing stay in prompt()).
 			if (this.session.isStreaming) {
+				if (await this.tryDispatchRegistryCommand(text)) {
+					this.editor.setText("");
+					return;
+				}
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
 				await this.session.prompt(text, { streamingBehavior: "steer" });
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
+				return;
+			}
+
+			// Registry dispatch for idle submissions. Unknown /x falls through
+			// to a normal user message (current behavior — do not error).
+			if (await this.tryDispatchRegistryCommand(text)) {
+				this.editor.setText("");
 				return;
 			}
 
@@ -3254,6 +2875,128 @@ export class InteractiveMode {
 			}
 			this.editor.addToHistory?.(text);
 		};
+	}
+
+	/**
+	 * Dispatch a /command through the command registry.
+	 *
+	 * Returns true when the command was found and executed (or failed with an
+	 * error shown in the chat), false when the name is not registered — the
+	 * caller then falls through to normal user-message handling.
+	 */
+	private async tryDispatchRegistryCommand(text: string): Promise<boolean> {
+		if (!text.startsWith("/")) return false;
+		const spaceIndex = text.indexOf(" ");
+		const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+		const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
+		const args = argsString ? argsString.split(/\s+/).filter(Boolean) : [];
+		try {
+			return await dispatchCommand(name, args, this.session, this.commandView);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return true;
+		}
+	}
+
+	/** The CommandView adapter this mode implements for command bodies. */
+	private get commandView(): CommandView {
+		return {
+			renderMessage: (content, options) => this.renderCommandMessage(content, options?.markdown),
+			showSelector: (kind, payload) => this.handleViewSelector(kind, payload),
+			showStatus: (message, severity) => this.showCommandStatus(message, severity),
+			flash: (message) => this.showCommandFlash(message),
+			invalidateFooter: () => this.footer.invalidate(),
+			updateEditorBorder: () => this.updateEditorBorderColor(),
+		};
+	}
+
+	/** CommandView.renderMessage — render a text or markdown block into the chat. */
+	private renderCommandMessage(content: string, markdown?: boolean): void {
+		this.chatContainer.addChild(new Spacer(1));
+		if (markdown) {
+			this.chatContainer.addChild(new Markdown(content, 1, 1, this.getMarkdownThemeWithSettings()));
+		} else {
+			this.chatContainer.addChild(new Text(content, 1, 0));
+		}
+		this.ui.requestRender();
+	}
+
+	/** CommandView.showStatus — show a status/error/warning message. */
+	private showCommandStatus(message: string, severity: "info" | "warning" | "error" = "info"): void {
+		if (severity === "error") {
+			this.showError(message);
+		} else if (severity === "warning") {
+			this.showWarning(message);
+		} else {
+			this.showStatus(message);
+		}
+	}
+
+	/** CommandView.flash — transient confirmation: fullscreen flash, else status line. */
+	private showCommandFlash(message: string): void {
+		if (this.ui instanceof TuiAltScreen) {
+			this.ui.flash(message);
+		} else {
+			this.showStatus(message);
+		}
+	}
+
+	/**
+	 * CommandView.showSelector — dispatch a mode-coupled command to its
+	 * TUI implementation. Selectors and dialogs are a TUI concern; the RPC
+	 * adapter stubs them.
+	 */
+	private handleViewSelector(kind: string, payload?: unknown): void {
+		switch (kind) {
+			case "settings":
+				this.showSettingsSelector();
+				break;
+			case "models":
+				void this.showModelsSelector();
+				break;
+			case "model":
+				this.showModelSelectorCommand((payload as { searchTerm?: string } | undefined)?.searchTerm);
+				break;
+			case "fork":
+				this.showUserMessageSelector();
+				break;
+			case "tree":
+				this.showTreeSelector();
+				break;
+			case "trust":
+				this.showTrustSelector();
+				break;
+			case "login":
+				this.showLoginSelectorCommand((payload as { providerRef?: string } | undefined)?.providerRef);
+				break;
+			case "logout":
+				void this.showOAuthSelector("logout");
+				break;
+			case "resume":
+				this.showSessionSelector();
+				break;
+			case "import":
+				void this.runImportFlow((payload as { path?: string } | undefined)?.path);
+				break;
+			case "reload":
+				void this.runReload();
+				break;
+			case "hotkeys":
+				this.renderHotkeysIntoChat();
+				break;
+			case "debug":
+				this.runDebug();
+				break;
+			case "easterEgg":
+				if (payload === "arminsayshi") {
+					this.handleArminSaysHi();
+				} else if (payload === "dementedelves") {
+					this.handleDementedDelves();
+				}
+				break;
+			default:
+				this.showStatus(`Unknown selector: ${kind}`);
+		}
 	}
 
 	private subscribeToAgent(): void {
@@ -3602,6 +3345,27 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 			}
+
+			case "leaf_changed":
+				// Full chat rebuild: the active branch changed (reroll, tree
+				// navigation). Rendered from the new leaf path.
+				this.chatContainer.clear();
+				this.rebuildChatFromMessages();
+				this.ui.requestRender();
+				break;
+
+			case "entry_edited":
+				// Refresh the edited entry's rendered content. The chat is
+				// rebuilt from session entries (an entry->component index does
+				// not exist; a rebuild is the safe node refresh).
+				this.rebuildChatFromMessages();
+				this.ui.requestRender();
+				break;
+
+			case "preset_activated":
+				this.footer.invalidate();
+				this.updateEditorBorderColor();
+				break;
 		}
 	}
 
@@ -4803,12 +4567,16 @@ export class InteractiveMode {
 		});
 	}
 
-	private async handleModelCommand(searchTerm?: string): Promise<void> {
+	private showModelSelectorCommand(searchTerm?: string): void {
 		if (!searchTerm) {
 			this.showModelSelector();
 			return;
 		}
 
+		void this.runModelSearch(searchTerm);
+	}
+
+	private async runModelSearch(searchTerm: string): Promise<void> {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
@@ -5145,27 +4913,6 @@ export class InteractiveMode {
 		});
 	}
 
-	private async handleCloneCommand(): Promise<void> {
-		const leafId = this.sessionManager.getLeafId();
-		if (!leafId) {
-			this.showStatus("Nothing to clone yet");
-			return;
-		}
-
-		try {
-			const result = await this.runtimeHost.fork(leafId, { position: "at" });
-			if (result.cancelled) {
-				this.ui.requestRender();
-				return;
-			}
-
-			this.editor.setText("");
-			this.showStatus("Cloned to new session");
-		} catch (error: unknown) {
-			this.showError(error instanceof Error ? error.message : String(error));
-		}
-	}
-
 	private showTreeSelector(initialSelectedId?: string): void {
 		const tree = this.sessionManager.getTree();
 		const realLeafId = this.sessionManager.getLeafId();
@@ -5257,9 +5004,8 @@ export class InteractiveMode {
 							return;
 						}
 
-						// Update UI
-						this.chatContainer.clear();
-						this.renderInitialMessages();
+						// The leaf_changed event (emitted by navigateTree after
+						// state restore) rebuilds the chat — no manual re-render.
 						if (result.editorText && !this.editor.getText().trim()) {
 							this.editor.setText(result.editorText);
 						}
@@ -5336,9 +5082,8 @@ export class InteractiveMode {
 					return;
 				}
 
-				// Refresh chat if the edited entry is in the current branch
-				this.chatContainer.clear();
-				this.rebuildChatFromMessages();
+				// The entry_edited event (emitted by editMessage) refreshes the
+				// message node — no manual re-render.
 				this.showStatus("Message updated");
 			};
 			return { component: selector, focus: selector };
@@ -5476,7 +5221,7 @@ export class InteractiveMode {
 		);
 	}
 
-	private async handleLoginCommand(providerRef?: string): Promise<void> {
+	private showLoginSelectorCommand(providerRef?: string): void {
 		if (!providerRef) {
 			this.showLoginAuthTypeSelector();
 			return;
@@ -5484,7 +5229,7 @@ export class InteractiveMode {
 
 		const providerOptions = this.findLoginProviderOptions(providerRef);
 		if (providerOptions.length === 1) {
-			await this.startProviderLogin(providerOptions[0]!);
+			void this.startProviderLogin(providerOptions[0]!);
 			return;
 		}
 
@@ -5932,357 +5677,13 @@ export class InteractiveMode {
 	// Command handlers
 	// =========================================================================
 
-	private async handleRerollCommand(): Promise<void> {
-		if (this.session.isStreaming || this.session.isCompacting) {
-			this.showWarning("Wait for the current response to finish before rerolling.");
-			return;
-		}
-
-		// Phase 1: branch session tree to the last user message
-		if (!(await this.session.reroll())) {
-			this.showStatus("Nothing to reroll — no user message found.");
-			return;
-		}
-
-		// Phase 2: clear old trace from chat display
-		this.chatContainer.clear();
-		this.rebuildChatFromMessages();
-		this.showStatus("Rerolling last response...");
-
-		// Phase 3: start agent run (continue from user message)
-		await this.session.startRerollRun();
-	}
-
-	private async handlePresetCommand(text: string): Promise<void> {
-		const parts = text.split(/\s+/);
-		const arg = parts[1];
-
-		if (!arg) {
-			const presets = this.session.getAllPresets();
-			if (presets.length === 0) {
-				this.showStatus("No prompt presets found. Create a .json file in .pi/prompt-presets/.");
-				return;
-			}
-			const lines = presets.map((p) => {
-				const active = p.preset.id === this.session.activePreset.id ? " (active)" : "";
-				const errors = p.diagnostics.filter((d) => d.level === "error").length;
-				const warnings = p.diagnostics.filter((d) => d.level === "warning").length;
-				const badge = errors ? ` [${errors}e/${warnings}w]` : warnings ? ` [0e/${warnings}w]` : "";
-				return `  ${p.preset.id}${badge}${active}`;
-			});
-			this.showStatus(`Prompt presets:\n${lines.join("\n")}`);
-			return;
-		}
-
-		const result = await this.session.setActivePreset(arg);
-		if (!result.ok) {
-			this.showError(`Prompt preset "${arg}" not found. Use /preset to see available presets.`);
-			return;
-		}
-
-		this.footer.invalidate();
-		this.updateEditorBorderColor();
-
-		if (result.model) {
-			this.showStatus(`Active prompt preset: ${arg} · Model: ${result.model.id}`);
-		} else {
-			this.showStatus(`Active prompt preset: ${arg}`);
-		}
-
-		if (result.error) {
-			this.showError(result.error);
-		}
-	}
-
-	private async handleSubagentCommand(text: string): Promise<void> {
-		const parts = text.split(/\s+/);
-		const arg = parts[1];
-
-		// /subagent or /subagent list — list delegatable presets
-		if (!arg || arg === "list") {
-			const presets = this.session.getAllPresets().filter((p) => p.preset.delegatable === true);
-			if (presets.length === 0) {
-				this.showStatus('No delegatable subagent profiles found. Add "delegatable": true to a preset.');
-				return;
-			}
-			const lines = presets.map((p) => {
-				const preset = p.preset;
-				return `  ${preset.id} — ${preset.name ?? preset.id}: ${preset.description ?? "(no description)"}`;
-			});
-			this.showStatus(`Subagent profiles:\n${lines.join("\n")}`);
-			return;
-		}
-
-		// /subagent <profileId> <task...>
-		const profileId = arg;
-		const task = parts.slice(2).join(" ");
-
-		if (!task) {
-			this.showError("Usage: /subagent <profileId> <task>");
-			return;
-		}
-
-		const isDelegatable = this.session
-			.getAllPresets()
-			.some((p) => p.preset.id === profileId && p.preset.delegatable === true);
-		if (!isDelegatable) {
-			this.showError(`Profile "${profileId}" is not delegatable. Use /subagent list.`);
-			return;
-		}
-
-		this.showStatus(`Running subagent "${profileId}"...`);
-		const { prepareSubagentConversation, isPrepareError, runSubagent } = await import("../../core/subagent/index.ts");
-		const preparation = await prepareSubagentConversation({
-			cwd: this.session.sessionManager.getCwd(),
-			profileId,
-			task,
-			modelRuntime: this.session.modelRuntime,
-			session: this.session,
-		});
-		if (isPrepareError(preparation)) {
-			this.showError(`Subagent preparation failed: ${preparation.error}`);
-			return;
-		}
-		const result = await runSubagent(preparation, this.session.modelRuntime, {
-			requestGateway: this.session.requestGateway,
-		});
-		if (result.status === "completed") {
-			this.showStatus(`Subagent completed:\n${result.text}`);
-		} else {
-			this.showError(`Subagent ${result.status}: ${result.error ?? result.text}`);
-		}
-	}
-
-	private async handleStateCommand(text: string): Promise<void> {
-		const parts = text.split(/\s+/);
-		const path = parts[1]; // optional
-		let value: unknown;
-		if (path) {
-			value = this.session.stateManager.get(path);
-		} else {
-			value = this.session.stateManager.snapshot();
-		}
-		const formatted = JSON.stringify(value, null, 2);
-		this.showStatus(`State${path ? ` (${path})` : ""}:\n${formatted}`);
-	}
-
-	private async handleSchemaCommand(text: string): Promise<void> {
-		const parts = text.split(/\s+/);
-		const sub = parts[1];
-
-		if (!sub || sub === "list") {
-			const namespaces = this.session.schemaValidator.getActiveNamespaces();
-			if (namespaces.length === 0) {
-				this.showStatus("No schemas loaded. Use /schema load <id> to load a schema.");
-				return;
-			}
-			const strict = this.session.schemaValidator.isStrict() ? " [strict]" : "";
-			this.showStatus(`Active schemas${strict}:\n${namespaces.map((n) => `  ${n}`).join("\n")}`);
-			return;
-		}
-
-		if (sub === "load") {
-			const schemaId = parts[2];
-			if (!schemaId) {
-				// List available schemas
-				const defs = this.session.getLoadedSchemaDefs();
-				if (defs.length === 0) {
-					this.showStatus("No schema files found. Create a .ts file in .pi/schemas/ or ~/.pi/agent/schemas/.");
-					return;
-				}
-				this.showStatus(
-					`Available schemas:\n${defs.map((d) => `  ${d.schemaId} (ns: ${d.namespace})`).join("\n")}`,
-				);
-				return;
-			}
-			const result = this.session.loadSchema(schemaId);
-			if (result.ok) {
-				this.showStatus(`Schema "${schemaId}" loaded into namespace "${result.namespace}".`);
-			} else {
-				this.showError(result.error ?? `Schema "${schemaId}" not found.`);
-			}
-			return;
-		}
-
-		if (sub === "unload") {
-			const namespace = parts[2];
-			if (!namespace) {
-				this.showError("Usage: /schema unload <namespace>");
-				return;
-			}
-			this.session.unloadSchema(namespace);
-			this.showStatus(`Schema unloaded from namespace "${namespace}".`);
-			return;
-		}
-
-		if (sub === "strict") {
-			const enabled = parts[2] !== "off";
-			this.session.setStrictMode(enabled);
-			this.showStatus(`Strict mode ${enabled ? "enabled" : "disabled"}.`);
-			return;
-		}
-
-		this.showError("Usage: /schema [list|load <id>|unload <ns>|strict [off]]");
-	}
-
-	private async handleValidatorCommand(text: string): Promise<void> {
-		const sub = text.split(/\s+/)[1];
-
-		if (!sub || sub === "list") {
-			const validators = this.session.getLoadedCustomValidators();
-			if (validators.length === 0) {
-				this.showStatus(
-					"No custom validators loaded. Create a .ts file in .pi/validators/ or ~/.pi/agent/validators/. Use /reload after changes.",
-				);
-				return;
-			}
-			const lines = validators.map((v) => `  ${v.namespace}.${v.path}`);
-			this.showStatus(`Custom validators (${validators.length}):\n${lines.join("\n")}`);
-			return;
-		}
-
-		this.showError("Usage: /validator [list]");
-	}
-
-	private async handlePromptCommand(): Promise<void> {
-		this.chatContainer.addChild(new Spacer(1));
-		const parts: string[] = [];
-
-		// Show captured system prompt (extension-modified or empty)
-		const sysPrompt = this.session.lastCompiledSystemPrompt;
-		if (sysPrompt) {
-			parts.push(`[system]\n${sysPrompt}`);
-		}
-
-		const messages = await this.session.previewPrompt();
-
-		if (!sysPrompt && messages.length === 0) {
-			this.showStatus("No prompt is active.");
-			return;
-		}
-
-		const llmMessages = convertToLlmFn(messages as AgentMessage[]);
-
-		// Merge adjacent messages with the same role for cleaner display
-		const merged: typeof llmMessages = [];
-		const extractText = (c: string | readonly { type: string; text?: string }[]): string => {
-			if (typeof c === "string") return c;
-			return c
-				.filter((b) => b.type === "text")
-				.map((b) => b.text ?? "")
-				.join("\n");
-		};
-		for (const msg of llmMessages) {
-			const last = merged[merged.length - 1];
-			if (last && last.role === msg.role) {
-				const t1 = extractText(last.content);
-				const t2 = extractText(msg.content);
-				last.content = t1 ? (t2 ? `${t1}\n\n${t2}` : t1) : t2;
-			} else {
-				merged.push(msg);
-			}
-		}
-		const displayMessages = merged.length > 0 ? merged : llmMessages;
-
-		for (const msg of displayMessages) {
-			const lines: string[] = [];
-			const role = msg.role;
-			const content = msg.content;
-
-			if (typeof content === "string") {
-				if (!content.trim()) continue;
-				lines.push(content);
-			} else if (Array.isArray(content)) {
-				for (const block of content) {
-					if (!block || typeof block !== "object") continue;
-					const type = "type" in block ? String(block.type) : "";
-					switch (type) {
-						case "text":
-							if ("text" in block && typeof block.text === "string") {
-								lines.push(`[text] ${block.text}`);
-							}
-							break;
-						case "thinking":
-							if ("thinking" in block) lines.push(`[thinking] ${String(block.thinking)}`);
-							break;
-						case "toolCall":
-							if ("name" in block) {
-								const name = String(block.name ?? "");
-								const args = "arguments" in block ? JSON.stringify(block.arguments) : "";
-								lines.push(`[toolCall: ${name}] ${args}`);
-							}
-							break;
-						case "image":
-							lines.push(`[image]`);
-							break;
-						default:
-							lines.push(`[${type}] ${JSON.stringify(block)}`);
-							break;
-					}
-				}
-			}
-
-			if (lines.length === 0) continue;
-			parts.push(`\n[${role}]\n${lines.join("\n")}`);
-		}
-
-		if (parts.length === 0) {
-			this.showStatus("No prompt is active.");
-			return;
-		}
-
-		const component = new UserMessageComponent(parts.join("\n"), this.getMarkdownThemeWithSettings(), this.outputPad);
-		this.chatContainer.addChild(component);
-		this.ui.requestRender();
-		this.showStatus("Full prompt shown above.");
-	}
-
-	private handlePromptToolsCommand(): void {
-		const tools = this.session.agent.state.tools;
-		if (!tools || tools.length === 0) {
-			this.showStatus("No tools are active.");
-			return;
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		const parts: string[] = [];
-
-		for (const tool of tools) {
-			parts.push(`## ${tool.name}`);
-			if (tool.description) {
-				parts.push(`\n${tool.description}`);
-			}
-			if (tool.parameters) {
-				parts.push(`\n\`\`\`json\n${JSON.stringify(tool.parameters, null, 2)}\n\`\`\``);
-			}
-			parts.push("");
-		}
-		parts.push(`---\nAvailable: ${tools.map((t) => t.name).join(", ")}`);
-
-		const component = new UserMessageComponent(
-			parts.join("\n").trim(),
-			this.getMarkdownThemeWithSettings(),
-			this.outputPad,
-		);
-		this.chatContainer.addChild(component);
-		this.ui.requestRender();
-	}
-
-	private async handleContinueCommand(): Promise<void> {
-		if (this.session.isStreaming || this.session.isCompacting) {
-			this.showWarning("Wait for the current response to finish before continuing.");
-			return;
-		}
-
-		const started = await this.session.continueSession();
-		if (started) {
-			this.showStatus("Continuing...");
-		} else {
-			this.showStatus("Nothing to continue from.");
-		}
-	}
-
-	private async handleReloadCommand(): Promise<void> {
+	/**
+	 * Reload keybindings, extensions, skills, prompts, themes, and context
+	 * files. View-side flow for the /reload command (registry body dispatches
+	 * here via CommandView.showSelector): session.reload() plus the TUI-only
+	 * refresh that follows it.
+	 */
+	private async runReload(): Promise<void> {
 		if (this.session.isStreaming) {
 			this.showWarning("Wait for the current response to finish before reloading.");
 			return;
@@ -6386,53 +5787,12 @@ export class InteractiveMode {
 		}
 	}
 
-	private async handleExportCommand(text: string): Promise<void> {
-		const outputPath = this.getPathCommandArgument(text, "/export");
-
-		try {
-			if (outputPath?.endsWith(".jsonl")) {
-				const filePath = this.session.exportToJsonl(outputPath);
-				this.showStatus(`Session exported to: ${filePath}`);
-			} else {
-				const filePath = await this.session.exportToHtml(outputPath);
-				this.showStatus(`Session exported to: ${filePath}`);
-			}
-		} catch (error: unknown) {
-			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
-		}
-	}
-
-	private getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined {
-		if (text === command) {
-			return undefined;
-		}
-		if (!text.startsWith(`${command} `)) {
-			return undefined;
-		}
-
-		const argsString = text.slice(command.length + 1).trimStart();
-		if (!argsString) {
-			return undefined;
-		}
-
-		const firstChar = argsString[0];
-		if (firstChar === '"' || firstChar === "'") {
-			const closingQuoteIndex = argsString.indexOf(firstChar, 1);
-			if (closingQuoteIndex < 0) {
-				return undefined;
-			}
-			return argsString.slice(1, closingQuoteIndex);
-		}
-
-		const firstWhitespaceIndex = argsString.search(/\s/);
-		if (firstWhitespaceIndex < 0) {
-			return argsString;
-		}
-		return argsString.slice(0, firstWhitespaceIndex);
-	}
-
-	private async handleImportCommand(text: string): Promise<void> {
-		const inputPath = this.getPathCommandArgument(text, "/import");
+	/**
+	 * Import a session from a JSONL file. View-side flow for the /import
+	 * command (the registry body parses the path and dispatches here via
+	 * CommandView.showSelector): confirm dialog + runtime-host import.
+	 */
+	private async runImportFlow(inputPath?: string): Promise<void> {
 		if (!inputPath) {
 			this.showError("Usage: /import <path.jsonl>");
 			return;
@@ -6475,241 +5835,6 @@ export class InteractiveMode {
 		}
 	}
 
-	private async handleShareCommand(): Promise<void> {
-		// Check if gh is available and logged in
-		try {
-			const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
-			if (authResult.status !== 0) {
-				this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
-				return;
-			}
-		} catch {
-			this.showError("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/");
-			return;
-		}
-
-		// Export to a temp file
-		const tmpFile = path.join(os.tmpdir(), "session.html");
-		try {
-			await this.session.exportToHtml(tmpFile);
-		} catch (error: unknown) {
-			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
-			return;
-		}
-
-		// Show cancellable loader, replacing the editor
-		const loader = new BorderedLoader(this.ui, theme, "Creating gist...");
-		this.editorContainer.clear();
-		this.editorContainer.addChild(loader);
-		this.ui.setFocus(loader);
-		this.ui.requestRender();
-
-		const restoreEditor = () => {
-			loader.dispose();
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.ui.setFocus(this.editor);
-			try {
-				fs.unlinkSync(tmpFile);
-			} catch {
-				// Ignore cleanup errors
-			}
-		};
-
-		// Create a secret gist asynchronously
-		let proc: ReturnType<typeof spawn> | null = null;
-
-		loader.onAbort = () => {
-			proc?.kill();
-			restoreEditor();
-			this.showStatus("Share cancelled");
-		};
-
-		try {
-			const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-				proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
-				let stdout = "";
-				let stderr = "";
-				proc.stdout?.on("data", (data) => {
-					stdout += data.toString();
-				});
-				proc.stderr?.on("data", (data) => {
-					stderr += data.toString();
-				});
-				proc.on("close", (code) => resolve({ stdout, stderr, code }));
-			});
-
-			if (loader.signal.aborted) return;
-
-			restoreEditor();
-
-			if (result.code !== 0) {
-				const errorMsg = result.stderr?.trim() || "Unknown error";
-				this.showError(`Failed to create gist: ${errorMsg}`);
-				return;
-			}
-
-			// Extract gist ID from the URL returned by gh
-			// gh returns something like: https://gist.github.com/username/GIST_ID
-			const gistUrl = result.stdout?.trim();
-			const gistId = gistUrl?.split("/").pop();
-			if (!gistId) {
-				this.showError("Failed to parse gist ID from gh output");
-				return;
-			}
-
-			// Create the preview URL
-			const previewUrl = getShareViewerUrl(gistId);
-			this.showStatus(`Share URL: ${previewUrl}\nGist: ${gistUrl}`);
-		} catch (error: unknown) {
-			if (!loader.signal.aborted) {
-				restoreEditor();
-				this.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
-			}
-		}
-	}
-
-	private async handleCopyCommand(options: { flashConfirmation?: boolean } = {}): Promise<void> {
-		const text = this.session.getLastAssistantText();
-		if (!text) {
-			this.showError("No agent messages to copy yet.");
-			return;
-		}
-
-		try {
-			await copyToClipboard(text);
-			if (options.flashConfirmation && this.ui instanceof TuiAltScreen) {
-				this.ui.flash("Copied!");
-			} else {
-				this.showStatus("Copied last agent message to clipboard");
-			}
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-		}
-	}
-
-	private handleNameCommand(text: string): void {
-		const name = text.replace(/^\/name\s*/, "").trim();
-		if (!name) {
-			const currentName = this.sessionManager.getSessionName();
-			if (currentName) {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(theme.fg("dim", `Session name: ${currentName}`), 1, 0));
-			} else {
-				this.showWarning("Usage: /name <name>");
-			}
-			this.ui.requestRender();
-			return;
-		}
-
-		this.session.setSessionName(name);
-		const sessionName = this.sessionManager.getSessionName();
-		if (sessionName !== name) {
-			this.showWarning(`Session name was normalized from ${JSON.stringify(name)} to ${JSON.stringify(sessionName)}`);
-		}
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${sessionName ?? name}`), 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleSessionCommand(): void {
-		const stats = this.session.getSessionStats();
-		const sessionName = this.sessionManager.getSessionName();
-		const entries = this.sessionManager.getEntries();
-		const cacheWaste = computeCacheWaste(entries, this.session.modelRuntime);
-
-		// Cost/token totals per provider/model actually used (e.g. OpenRouter `auto`
-		// resolves to a concrete responseModel), sorted by cost descending.
-		const perModelMap = new Map<string, { key: string; cost: number; tokens: number }>();
-		for (const entry of entries) {
-			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-			const message = entry.message;
-			if (!message.usage || !message.provider) continue;
-			const usage = message.usage;
-			const key = `${message.provider}/${message.responseModel ?? message.model}`;
-			let bucket = perModelMap.get(key);
-			if (!bucket) {
-				bucket = { key, cost: 0, tokens: 0 };
-				perModelMap.set(key, bucket);
-			}
-			bucket.cost += usage.cost.total;
-			bucket.tokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-		}
-		const perModel = Array.from(perModelMap.values()).sort((a, b) => b.cost - a.cost);
-
-		let info = `${theme.bold("Session Info")}\n\n`;
-		if (sessionName) {
-			info += `${theme.fg("dim", "Name:")} ${sessionName}\n`;
-		}
-		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
-		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n\n`;
-		info += `${theme.bold("Messages")}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n`;
-		info += `${theme.fg("dim", "User:")} ${stats.userMessages}\n`;
-		info += `${theme.fg("dim", "Assistant:")} ${stats.assistantMessages}\n`;
-		info += `${theme.fg("dim", "Tools:")} ${stats.toolCalls} calls, ${stats.toolResults} results\n\n`;
-		info += `${theme.bold("Tokens")}\n`;
-		// "Input" is the full prompt volume. With cache activity, split it into
-		// cached (served from cache) vs uncached (everything else) - the only
-		// provider-independent split. Cache writes, where reported, are a detail
-		// of the uncached portion.
-		const { input, cacheRead, cacheWrite } = stats.tokens;
-		const promptTokens = input + cacheRead + cacheWrite;
-		info += `${theme.fg("dim", "Input:")} ${promptTokens.toLocaleString()}\n`;
-		if (promptTokens > 0 && (cacheRead > 0 || cacheWrite > 0)) {
-			const hitRate = theme.fg("dim", `(${((cacheRead / promptTokens) * 100).toFixed(1)}%)`);
-			info += `  ${theme.fg("dim", "Cached:")} ${cacheRead.toLocaleString()} ${hitRate}\n`;
-			const written =
-				cacheWrite > 0 ? ` ${theme.fg("dim", `(${cacheWrite.toLocaleString()} written to cache)`)}` : "";
-			info += `  ${theme.fg("dim", "Uncached:")} ${(input + cacheWrite).toLocaleString()}${written}\n`;
-		}
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-
-		if (stats.cost > 0 || cacheWaste.missedTokens > 0) {
-			info += `\n${theme.bold("Cost")}\n`;
-			info += `${theme.fg("dim", "Total:")} $${stats.cost.toFixed(3)}`;
-			if (perModel.length > 1) {
-				for (const entry of perModel) {
-					info += `\n  ${theme.fg("dim", `${entry.key}:`)} $${entry.cost.toFixed(3)} ${theme.fg("dim", `(${formatTokens(entry.tokens)} tokens)`)}`;
-				}
-			}
-			if (cacheWaste.missedTokens > 0) {
-				const missLabel = cacheWaste.missCount === 1 ? "1 miss" : `${cacheWaste.missCount} misses`;
-				const detail = `${cacheWaste.missedTokens.toLocaleString()} tokens, ${missLabel}`;
-				info +=
-					cacheWaste.missedCost >= 0.0001
-						? `\n${theme.fg("dim", "Cache Re-billed:")} $${cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `(${detail})`)}`
-						: `\n${theme.fg("dim", "Cache Re-billed:")} ${detail}`;
-			}
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleChangelogCommand(): void {
-		const changelogPath = getChangelogPath();
-		const allEntries = parseChangelog(changelogPath);
-
-		const changelogMarkdown =
-			allEntries.length > 0
-				? allEntries
-						.reverse()
-						.map((e) => normalizeChangelogLinks(e.content, e))
-						.join("\n\n")
-				: "No changelog entries found.";
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder());
-		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Markdown(changelogMarkdown, 1, 1, this.getMarkdownThemeWithSettings()));
-		this.chatContainer.addChild(new DynamicBorder());
-		this.ui.requestRender();
-	}
-
 	/**
 	 * Get capitalized display string for an app keybinding action.
 	 */
@@ -6724,7 +5849,7 @@ export class InteractiveMode {
 		return keyDisplayText(action);
 	}
 
-	private handleHotkeysCommand(): void {
+	private renderHotkeysIntoChat(): void {
 		// Navigation keybindings
 		const cursorUp = this.getEditorKeyDisplay("tui.editor.cursorUp");
 		const cursorDown = this.getEditorKeyDisplay("tui.editor.cursorDown");
@@ -6841,22 +5966,7 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private async handleClearCommand(): Promise<void> {
-		this.clearStatusIndicator();
-		try {
-			const result = await this.runtimeHost.newSession();
-			if (result.cancelled) {
-				return;
-			}
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1));
-			this.ui.requestRender();
-		} catch (error: unknown) {
-			await this.handleFatalRuntimeError("Failed to create session", error);
-		}
-	}
-
-	private handleDebugCommand(): void {
+	private runDebug(): void {
 		const width = this.ui.terminal.columns;
 		const height = this.ui.terminal.rows;
 		const allLines = this.ui.render(width);
@@ -6998,16 +6108,6 @@ export class InteractiveMode {
 
 		this.bashComponent = undefined;
 		this.ui.requestRender();
-	}
-
-	private async handleCompactCommand(customInstructions?: string): Promise<void> {
-		this.clearStatusIndicator();
-
-		try {
-			await this.session.compact(customInstructions);
-		} catch {
-			// Ignore, will be emitted as an event
-		}
 	}
 
 	stop(): void {

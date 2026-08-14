@@ -5,6 +5,7 @@ import { applyResourcePolicy } from "./policy.ts";
 import type {
 	PromptPreset,
 	PromptPresetDiagnostic,
+	PromptPresetItem,
 	PromptPresetSlotItem,
 	PromptRuntime,
 	SlotDefinition,
@@ -29,6 +30,16 @@ export function getSlot(name: string): SlotDefinition | undefined {
 
 export function getAllSlots(): SlotDefinition[] {
 	return [...builtInSlots.values(), ...customSlots.values()];
+}
+
+/**
+ * True when the item is a slot whose registered definition marks the
+ * chat-history position. The compiler dispatches on position, so a custom
+ * slot registered with `position: "chat-history"` is the insertion point
+ * regardless of its name.
+ */
+export function isChatHistoryPosition(item: PromptPresetItem): boolean {
+	return item.kind === "slot" && getSlot(item.slot)?.position === "chat-history";
 }
 
 /** Set of built-in slot names for validation. */
@@ -253,6 +264,7 @@ registerSlot(
 	{
 		name: "chat-history",
 		description: "Conversation history insertion point.",
+		position: "chat-history",
 		render: (_ctx: SlotRenderContext): string => {
 			return "";
 		},

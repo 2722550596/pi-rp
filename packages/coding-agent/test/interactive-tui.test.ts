@@ -2,7 +2,9 @@ import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import { registerBuiltinCommandEntries } from "../src/commands/builtins.ts";
 import type { TuiMode } from "../src/core/settings-manager.ts";
+import { getCommandEntries } from "../src/core/slash-commands.ts";
 import {
 	createInteractiveTui,
 	createInteractiveTuiReference,
@@ -149,20 +151,40 @@ describe("InteractiveMode right-click paste", () => {
 	});
 });
 
-type CopyCommandContext = {
-	session: { getLastAssistantText: () => string | undefined };
-	ui: ReturnType<typeof createInteractiveTui>;
-	showStatus: (message: string) => void;
-	showError: (message: string) => void;
+type CopyCommandView = {
+	flash: (message: string) => void;
+	showStatus: (message: string, severity?: "info" | "warning" | "error") => void;
+	showSelector: (kind: string, payload?: unknown) => void;
+	renderMessage: (content: string, options?: { markdown?: boolean }) => void;
+	invalidateFooter: () => void;
+	updateEditorBorder: () => void;
 };
 
-type CopyCommandOptions = { flashConfirmation?: boolean };
+function createCopyCommandView(overrides: Partial<CopyCommandView> = {}): CopyCommandView {
+	return {
+		flash: vi.fn(),
+		showStatus: vi.fn(),
+		showSelector: vi.fn(),
+		renderMessage: vi.fn(),
+		invalidateFooter: vi.fn(),
+		updateEditorBorder: vi.fn(),
+		...overrides,
+	};
+}
 
-type CopyCommandPrototype = {
-	handleCopyCommand(this: CopyCommandContext, options?: CopyCommandOptions): Promise<void>;
-};
-
-const copyCommandPrototype = InteractiveMode.prototype as unknown as CopyCommandPrototype;
+async function runCopyCommand(
+	session: { getLastAssistantText: () => string | undefined },
+	view: CopyCommandView,
+): Promise<void> {
+	registerBuiltinCommandEntries();
+	const entry = getCommandEntries().find(({ name }) => name === "copy")?.entry;
+	if (!entry) throw new Error("copy command not registered");
+	await entry.execute({
+		args: [],
+		session: session as never,
+		view: view as never,
+	});
+}
 
 describe("InteractiveMode copy confirmation", () => {
 	beforeEach(() => {
@@ -170,39 +192,45 @@ describe("InteractiveMode copy confirmation", () => {
 		clipboardMocks.copyToClipboard.mockResolvedValue(undefined);
 	});
 
-	it("flashes Copied! for the copy shortcut in fullscreen mode", async () => {
-		const terminal = new RecordingTerminal(40, 4);
+	it("copies the last assistant message and delegates the confirmation to view.flash", async () => {
+		const view = createCopyCommandView();
+		await runCopyCommand({ getLastAssistantText: () => "assistant response" }, view);
+
+		expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
+		expect(view.flash).toHaveBeenCalledWith("Copied!");
+		expect(view.showStatus).not.toHaveBeenCalled();
+	});
+
+	it("reports an error status when there is nothing to copy", async () => {
+		const view = createCopyCommandView();
+		await runCopyCommand({ getLastAssistantText: () => undefined }, view);
+
+		expect(clipboardMocks.copyToClipboard).not.toHaveBeenCalled();
+		expect(view.showStatus).toHaveBeenCalledWith("No agent messages to copy yet.", "error");
+	});
+
+	it("flashes the confirmation in fullscreen mode via the view adapter", async () => {
 		const ui = createInteractiveTui({
 			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
-			terminal,
+			terminal: new RecordingTerminal(),
 		});
+		const flash = vi
+			.spyOn(ui as unknown as { flash: (message: string) => void }, "flash")
+			.mockImplementation(() => {});
 		const showStatus = vi.fn();
-		const showError = vi.fn();
-		const context: CopyCommandContext = {
-			session: { getLastAssistantText: () => "assistant response" },
-			ui,
-			showStatus,
-			showError,
+		const prototype = InteractiveMode.prototype as unknown as {
+			showCommandFlash(this: { ui: typeof ui; showStatus: (message: string) => void }, message: string): void;
 		};
 
-		ui.start();
-		try {
-			await terminal.waitForRender();
-			await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true });
-			await terminal.waitForRender();
+		prototype.showCommandFlash.call({ ui, showStatus }, "Copied!");
 
-			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
-			expect(showStatus).not.toHaveBeenCalled();
-			expect(showError).not.toHaveBeenCalled();
-			expect(terminal.getViewport().some((line) => line.includes("Copied!"))).toBe(true);
-		} finally {
-			ui.stop();
-		}
+		expect(flash).toHaveBeenCalledWith("Copied!");
+		expect(showStatus).not.toHaveBeenCalled();
 	});
 
-	it("keeps the status-line confirmation for the copy shortcut in regular mode", async () => {
+	it("falls back to a status line in regular mode via the view adapter", async () => {
 		const ui = createInteractiveTui({
 			tuiMode: "regular",
 			showHardwareCursor: false,
@@ -210,18 +238,13 @@ describe("InteractiveMode copy confirmation", () => {
 			terminal: new RecordingTerminal(),
 		});
 		const showStatus = vi.fn();
-		const showError = vi.fn();
-		const context: CopyCommandContext = {
-			session: { getLastAssistantText: () => "assistant response" },
-			ui,
-			showStatus,
-			showError,
+		const prototype = InteractiveMode.prototype as unknown as {
+			showCommandFlash(this: { ui: typeof ui; showStatus: (message: string) => void }, message: string): void;
 		};
 
-		await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true });
+		prototype.showCommandFlash.call({ ui, showStatus }, "Copied!");
 
-		expect(showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");
-		expect(showError).not.toHaveBeenCalled();
+		expect(showStatus).toHaveBeenCalledWith("Copied!");
 	});
 });
 

@@ -1,0 +1,256 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { describe, expect, it } from "vitest";
+import {
+	compileMessages,
+	compileSystemPrompt,
+	deriveSystemPrompt,
+	deriveSystemPromptString,
+} from "../src/core/prompt-preset/compiler.ts";
+import {
+	expandContentMacros,
+	expandMacros,
+	getAllMacros,
+	registerMacro,
+} from "../src/core/prompt-preset/macro-engine.ts";
+import { getAllSlots, getSlot, registerSlot } from "../src/core/prompt-preset/slot-renderers.ts";
+import type { PromptPreset, PromptRuntime, SlotDefinition } from "../src/core/prompt-preset/types.ts";
+
+function userMessage(text: string): AgentMessage {
+	return { role: "user", content: [{ type: "text", text }], timestamp: 0 };
+}
+
+function assistantMessage(text: string): AgentMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-4o-mini",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 0,
+	};
+}
+
+function runtime(messages: AgentMessage[], extra?: Partial<PromptRuntime>): PromptRuntime {
+	return {
+		options: { cwd: "" },
+		messages,
+		now: new Date(0),
+		variables: {},
+		skills: [],
+		...extra,
+	};
+}
+
+function messageText(message: AgentMessage): string {
+	if (!("content" in message) || !Array.isArray(message.content)) return "";
+	const parts: string[] = [];
+	for (const block of message.content) {
+		if (typeof block !== "object" || block === null) continue;
+		const part = block as { type?: string; text?: string };
+		if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
+	}
+	return parts.join("\n");
+}
+
+function presetWithItems(items: PromptPreset["items"], defaults?: PromptPreset["defaults"]): PromptPreset {
+	return { schemaVersion: 1, id: "test", defaults, items };
+}
+
+describe("{{lastUserMessage}} derivation", () => {
+	const lastUserPreset = presetWithItems([
+		{ kind: "block", id: "persona", content: "You are a helpful assistant." },
+		{ kind: "block", id: "latest", role: "user", content: "{{lastUserMessage}}" },
+	]);
+
+	it("derives the last user message when latestUserMessage is unset", () => {
+		const messages = [userMessage("first"), assistantMessage("answer 1"), userMessage("second")];
+		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		// No chat-history slot, so only the preset items compile.
+		expect(compiled).toHaveLength(2);
+		expect(compiled[0].role).toBe("system");
+		expect(compiled[1].role).toBe("user");
+		expect(messageText(compiled[1])).toBe("second");
+	});
+
+	it("prefers an explicitly provided latestUserMessage", () => {
+		const messages = [userMessage("first"), userMessage("second")];
+		const compiled = compileMessages(lastUserPreset, runtime(messages, { latestUserMessage: "explicit" })).messages;
+		expect(messageText(compiled[compiled.length - 1])).toBe("explicit");
+	});
+
+	it("skips trailing empty-text user messages", () => {
+		const messages = [userMessage("first"), userMessage("")];
+		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		expect(messageText(compiled[compiled.length - 1])).toBe("first");
+	});
+
+	it("renders the derived message through compileSystemPrompt too", () => {
+		const messages = [userMessage("hello"), assistantMessage("hi"), userMessage("world")];
+		const systemResult = compileSystemPrompt(lastUserPreset, runtime(messages), "");
+		expect(systemResult.systemPrompt).toContain("You are a helpful assistant.");
+		// The user-role item is not part of the system string.
+		expect(systemResult.systemPrompt).not.toContain("world");
+		// But the derived message array carries it:
+		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		expect(messageText(compiled[compiled.length - 1])).toBe("world");
+	});
+
+	it("keeps the synthetic Continue. edge case documented: a trailing continue-style user message is picked up", () => {
+		// continueSession injects { role: "user", content: [{type:"text", text:"Continue."}] }
+		// with no marker field, so it is indistinguishable from a real user message.
+		const messages = [userMessage("real question"), userMessage("Continue.")];
+		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		expect(messageText(compiled[compiled.length - 1])).toBe("Continue.");
+	});
+});
+
+describe("chat-history position contract", () => {
+	const positionedPreset = presetWithItems([
+		{ kind: "block", id: "a", content: "System A" },
+		{ kind: "slot", id: "chat", slot: "chat-history" },
+		{ kind: "block", id: "b", role: "user", content: "Tail" },
+	]);
+
+	it("injects runtime.messages at the built-in chat-history slot position", () => {
+		const history = [userMessage("h1"), assistantMessage("a1"), userMessage("h2")];
+		const compiled = compileMessages(positionedPreset, runtime(history)).messages;
+		// The trailing user block merges with the adjacent history user message.
+		expect(compiled.map(messageText)).toEqual(["System A", "h1", "a1", "h2\n\nTail"]);
+	});
+
+	it("treats a custom slot with position chat-history as the insertion point", () => {
+		registerSlot({
+			name: "custom-history",
+			description: "Custom history insertion point",
+			position: "chat-history",
+			render: () => "should never render",
+		});
+		const preset = presetWithItems([
+			{ kind: "block", id: "a", content: "System A" },
+			{ kind: "slot", id: "chat", slot: "custom-history" },
+			{ kind: "block", id: "b", role: "user", content: "Tail" },
+		]);
+		const history = [userMessage("h1"), userMessage("h2")];
+		const compiled = compileMessages(preset, runtime(history)).messages;
+		expect(compiled.map(messageText)).toEqual(["System A", "h1\n\nh2\n\nTail"]);
+		expect(messageText(compiled[0])).toBe("System A");
+	});
+
+	it("keeps the built-in chat-history slot name working (preset JSON format unchanged)", () => {
+		const slot = getSlot("chat-history");
+		expect(slot?.position).toBe("chat-history");
+	});
+
+	it("renders a custom slot without a position at its position", () => {
+		registerSlot({
+			name: "plain-slot",
+			description: "Plain content slot",
+			render: () => "custom content",
+		});
+		const preset = presetWithItems([
+			{ kind: "block", id: "a", content: "System A" },
+			{ kind: "slot", id: "custom", slot: "plain-slot" },
+		]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		// Adjacent system-role messages merge (documented squash behavior).
+		expect(compiled.map(messageText)).toEqual(["System A\n\ncustom content"]);
+	});
+});
+
+describe("unresolvedMacroPolicy", () => {
+	const unresolvedPreset = (policy: "warn" | "keep" | "error") =>
+		presetWithItems([{ kind: "block", id: "b", content: "Hello {{doesNotExist}}" }], {
+			unresolvedMacroPolicy: policy,
+		});
+
+	it("keeps the placeholder and reports no diagnostics by default", () => {
+		const result = compileMessages(unresolvedPreset("keep"), runtime([]));
+		expect(result.diagnostics.filter((d) => d.message.includes("doesNotExist"))).toHaveLength(0);
+		expect(messageText(result.messages[0])).toBe("Hello {{doesNotExist}}");
+	});
+
+	it("adds a warning diagnostic under warn and keeps the placeholder", () => {
+		const result = compileMessages(unresolvedPreset("warn"), runtime([]));
+		const diags = result.diagnostics.filter((d) => d.message.includes("doesNotExist"));
+		expect(diags).toHaveLength(1);
+		expect(diags[0].level).toBe("warning");
+		expect(messageText(result.messages[0])).toBe("Hello {{doesNotExist}}");
+	});
+
+	it("adds an error diagnostic under error (compile fails where error diagnostics are honored)", () => {
+		const result = compileMessages(unresolvedPreset("error"), runtime([]));
+		const diags = result.diagnostics.filter((d) => d.message.includes("doesNotExist"));
+		expect(diags).toHaveLength(1);
+		expect(diags[0].level).toBe("error");
+	});
+
+	it("does not flag deferred dynamic macros (mode static) as unresolved", () => {
+		// {{user}} is a known non-static macro; with mode "static" it is
+		// intentionally left as a placeholder, not an unresolved macro.
+		registerMacro({ name: "testVarMacro", description: "test", render: () => "x" });
+		const expanded = expandMacros("{{testVarMacro}}", runtime([]), {
+			mode: "static",
+			unresolvedPolicy: "error",
+			diagnostics: [],
+		});
+		expect(expanded).toBe("{{testVarMacro}}");
+	});
+});
+
+describe("derived compileSystemPrompt (single compile entry)", () => {
+	const preset = presetWithItems([
+		{ kind: "block", id: "a", content: "System A" },
+		{ kind: "block", id: "b", role: "user", content: "Not system" },
+		{ kind: "block", id: "c", content: "System C" },
+	]);
+
+	it("is the system-role view of the same compileMessages output", () => {
+		const compiled = compileMessages(preset, runtime([]));
+		const systemResult = compileSystemPrompt(preset, runtime([]), "fallback");
+		const derived = deriveSystemPrompt(compiled, preset, "fallback");
+		expect(systemResult.systemPrompt).toBe("System A\n\nSystem C");
+		expect(derived.systemPrompt).toBe(systemResult.systemPrompt);
+		expect(deriveSystemPromptString(compiled.messages, preset)).toBe("System A\n\nSystem C");
+	});
+
+	it("falls back to baseSystemPrompt when the preset produces no system content", () => {
+		const noSystem = presetWithItems([{ kind: "block", id: "u", role: "user", content: "only user" }]);
+		expect(compileSystemPrompt(noSystem, runtime([]), "base").systemPrompt).toBe("base");
+	});
+
+	it("keeps diagnostics from the shared pipeline", () => {
+		const withUnknownSlot = presetWithItems([{ kind: "slot", id: "s", slot: "no-such-slot" }]);
+		const systemResult = compileSystemPrompt(withUnknownSlot, runtime([]), "");
+		expect(systemResult.diagnostics.some((d) => d.message.includes("no-such-slot"))).toBe(true);
+	});
+});
+
+describe("public extension surface stays intact", () => {
+	it("exports the slot/macro introspection surface", () => {
+		expect(typeof getAllSlots).toBe("function");
+		expect(typeof getAllMacros).toBe("function");
+		expect(typeof expandContentMacros).toBe("function");
+		expect(getAllSlots().some((s) => s.name === "chat-history")).toBe(true);
+		expect(getAllMacros().some((m) => m.name === "lastUserMessage")).toBe(true);
+	});
+
+	it("registerSlot accepts the position field without breaking the signature", () => {
+		const def: SlotDefinition = {
+			name: "position-probe",
+			description: "probe",
+			position: "content",
+			render: () => "probe",
+		};
+		registerSlot(def);
+		expect(getSlot("position-probe")?.position).toBe("content");
+	});
+});

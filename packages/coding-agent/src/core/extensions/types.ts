@@ -669,6 +669,25 @@ export interface SessionTreeEvent {
 	fromExtension?: boolean;
 }
 
+/** Fired when the session leaf moves to another tree position (reroll, navigateTree). */
+export interface LeafChangedEvent {
+	type: "leaf_changed";
+	newLeafId: string | null;
+	oldLeafId: string | null;
+}
+
+/** Fired when a session entry's text content is edited in place (editMessage). */
+export interface EntryEditedEvent {
+	type: "entry_edited";
+	entryId: string;
+}
+
+/** Fired when a prompt preset is activated (setActivePreset). */
+export interface PresetActivatedEvent {
+	type: "preset_activated";
+	presetId: string;
+}
+
 export type SessionEvent =
 	| SessionStartEvent
 	| SessionInfoChangedEvent
@@ -678,7 +697,10 @@ export type SessionEvent =
 	| SessionCompactEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
-	| SessionTreeEvent;
+	| SessionTreeEvent
+	| LeafChangedEvent
+	| EntryEditedEvent
+	| PresetActivatedEvent;
 
 // ============================================================================
 // Agent Events
@@ -1248,6 +1270,9 @@ export interface ExtensionAPI {
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
+	on(event: "leaf_changed", handler: ExtensionHandler<LeafChangedEvent>): void;
+	on(event: "entry_edited", handler: ExtensionHandler<EntryEditedEvent>): void;
+	on(event: "preset_activated", handler: ExtensionHandler<PresetActivatedEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
 	on(
 		event: "before_provider_request",

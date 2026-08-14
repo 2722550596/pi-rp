@@ -156,27 +156,6 @@ export function applyDisplayRegexToString(
 	return result;
 }
 
-/** Apply both outgoing and display effects to a message array. */
-export function applyAllRegexEffects(
-	preset: PromptPreset,
-	messages: AgentMessage[],
-	stage: PromptRegexStage,
-	diagnostics: PromptPresetDiagnostic[],
-): AgentMessage[] {
-	let result = messages;
-	for (const rule of regexRulesFor(preset, stage, "messages", "outgoing", diagnostics)) {
-		const stats: RegexStats = { matches: 0, changedSegments: 0 };
-		result = transformMessages(result, rule, stats);
-		addRuleStats(diagnostics, rule, stage, "messages", stats);
-	}
-	for (const rule of regexRulesFor(preset, stage, "messages", "display", diagnostics)) {
-		const stats: RegexStats = { matches: 0, changedSegments: 0 };
-		result = transformMessages(result, rule, stats);
-		addRuleStats(diagnostics, rule, stage, "messages", stats);
-	}
-	return result;
-}
-
 // =========================================================================
 // Internal: Validation
 // =========================================================================

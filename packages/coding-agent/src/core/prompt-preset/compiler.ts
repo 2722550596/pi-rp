@@ -7,7 +7,7 @@ export type {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { expandMacros } from "./macro-engine.ts";
 import { applyRegexRulesToMessages, applyRegexRulesToString } from "./regex-engine.ts";
-import { renderSlot } from "./slot-renderers.ts";
+import { isChatHistoryPosition, renderSlot } from "./slot-renderers.ts";
 import type {
 	CompileMessageSource,
 	CompileMessagesResult,
@@ -24,20 +24,53 @@ export function compileSystemPrompt(
 	runtime: PromptRuntime,
 	baseSystemPrompt: string,
 ): CompileSystemPromptResult {
+	// Derived view of the single compile pipeline: compileMessages is the one
+	// real compile path, and the system prompt is the system-role portion of
+	// its output. The LLM-visible message array is byte-identical to a direct
+	// compileMessages call.
+	const compiled = compileMessages(preset, runtime);
+	const derived = deriveSystemPrompt(compiled, preset, baseSystemPrompt);
+	return {
+		systemPrompt: derived.systemPrompt,
+		diagnostics: [...compiled.diagnostics, ...derived.diagnostics],
+	};
+}
+
+/**
+ * Derive the system-prompt string from an already-compiled message array
+ * (the same pipeline that produced the LLM context). System-role messages
+ * are extracted in order and joined the same way squashMessages merges
+ * adjacent same-role messages, then compiled-stage regex rules targeting
+ * "system" are applied. Falls back to `baseSystemPrompt` when the preset
+ * produces no system content.
+ */
+export function deriveSystemPrompt(
+	compiled: CompileMessagesResult,
+	preset: PromptPreset,
+	baseSystemPrompt: string,
+): CompileSystemPromptResult {
 	const diagnostics: PromptPresetDiagnostic[] = [];
+	const systemPrompt = deriveSystemPromptString(compiled.messages, preset, diagnostics);
+	return { systemPrompt: systemPrompt || baseSystemPrompt, diagnostics };
+}
+
+/**
+ * Extract and join the system-role text of a compiled message array, applying
+ * compiled-stage "system"-target regex rules. Used by /prompt to display the
+ * derived system string of the actual payload without re-compiling.
+ */
+export function deriveSystemPromptString(
+	messages: AgentMessage[],
+	preset: PromptPreset,
+	diagnostics: PromptPresetDiagnostic[] = [],
+): string {
 	const parts: string[] = [];
-
-	for (const item of enabledItems(preset)) {
-		if (item.role !== "system" && item.role !== undefined) continue;
-		if (item.kind === "slot" && item.slot === "chat-history") continue;
-
-		const text = renderItemText(item, preset, runtime, diagnostics);
+	for (const msg of messages) {
+		if (msg.role !== "system") continue;
+		const text = contentToText(msg);
 		if (text) parts.push(text);
 	}
-
-	const compiled = parts.join("\n\n");
-	const systemPrompt = applyRegexRulesToString(preset, compiled, "compiled", "system", "outgoing", diagnostics);
-	return { systemPrompt: systemPrompt || baseSystemPrompt, diagnostics };
+	return applyRegexRulesToString(preset, parts.join("\n\n"), "compiled", "system", "outgoing", diagnostics);
 }
 
 // =========================================================================
@@ -50,13 +83,21 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	let result: AgentMessage[] = [];
 	const items = enabledItems(preset);
 
-	const chatHistoryIndex = items.findIndex((item) => item.kind === "slot" && item.slot === "chat-history");
+	// The chat-history position is a slot-registry property, not a name match:
+	// any slot registered with position "chat-history" (built-in or custom)
+	// is the conversation insertion point.
+	const chatHistoryIndex = items.findIndex(isChatHistoryPosition);
 
 	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
 	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
 
+	// {{lastUserMessage}} resolves from the last real user-role message when
+	// PromptRuntime.latestUserMessage is unset. All construction sites pass
+	// undefined; the derivation happens here in the compile path.
+	const effectiveRuntime = withDerivedLatestUserMessage(runtime);
+
 	for (const item of beforeItems) {
-		addSyntheticMessage(result, item, preset, runtime, sources, diagnostics);
+		addSyntheticMessage(result, item, preset, effectiveRuntime, sources, diagnostics);
 	}
 
 	if (chatHistoryIndex !== -1) {
@@ -127,7 +168,7 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	}
 
 	for (const item of afterItems) {
-		addSyntheticMessage(result, item, preset, runtime, sources, diagnostics);
+		addSyntheticMessage(result, item, preset, effectiveRuntime, sources, diagnostics);
 	}
 
 	// Squash consecutive same-role messages: merge adjacent messages with the same role
@@ -201,7 +242,7 @@ function renderItemText(
 	if (runtime.skipMacroExpansion) return raw;
 
 	const policy = preset.defaults?.unresolvedMacroPolicy;
-	return expandMacros(raw, runtime, { unresolvedPolicy: policy });
+	return expandMacros(raw, runtime, { unresolvedPolicy: policy, diagnostics });
 }
 
 function addSyntheticMessage(
@@ -234,6 +275,39 @@ function findLastUserMessageIndex(messages: AgentMessage[]): number {
 		if (messages[i].role === "user") return i;
 	}
 	return -1;
+}
+
+/**
+ * Resolve `latestUserMessage` for the compile: an explicitly provided value
+ * wins; otherwise derive it from the last user-role message with non-empty
+ * text in `runtime.messages`. Returns a shallow copy so `setvar`/`addvar`
+ * macro mutations still land on the caller's variables object.
+ */
+function withDerivedLatestUserMessage(runtime: PromptRuntime): PromptRuntime {
+	if (runtime.latestUserMessage !== undefined) return runtime;
+	return { ...runtime, latestUserMessage: deriveLatestUserMessage(runtime.messages) };
+}
+
+/**
+ * Find the text of the last user-role message in `messages`.
+ *
+ * Edge case: the synthetic non-persisted "Continue." message injected by
+ * continueSession is a plain `{ role: "user", content: [{type:"text", ...}] }`
+ * with no marker field, so it is indistinguishable from a real user message
+ * and cannot be excluded here. After a /continue, the derived value may be the
+ * continue text (e.g. "Continue."). Presets that re-insert the latest user
+ * message should pair {{lastUserMessage}} with the chat-history
+ * `omitLatestUser` option; excluding the continue injection would require the
+ * session to tag the message, which is out of scope for the compiler.
+ */
+function deriveLatestUserMessage(messages: AgentMessage[]): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role !== "user") continue;
+		const text = contentToText(msg);
+		if (text.trim()) return text;
+	}
+	return undefined;
 }
 
 function takeRecentMessagesWithinChars(messages: AgentMessage[], maxChars: number): AgentMessage[] {
@@ -298,13 +372,6 @@ function isSummaryMessage(message: AgentMessage): boolean {
 
 function isToolResultMessage(message: AgentMessage): boolean {
 	return message.role === "toolResult";
-}
-
-function _hasToolCallParts(message: AgentMessage): boolean {
-	if (message.role !== "assistant") return false;
-	const content = (message as { content?: unknown }).content;
-	if (!Array.isArray(content)) return false;
-	return content.some((part: { type?: string }) => part?.type === "toolCall");
 }
 
 function stripToolCallParts(message: AgentMessage): { message: AgentMessage | null; removedCalls: number } {

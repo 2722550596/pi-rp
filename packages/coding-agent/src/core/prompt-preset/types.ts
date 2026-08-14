@@ -272,6 +272,15 @@ export type SlotRenderer = (context: SlotRenderContext) => string;
 export interface SlotDefinition {
 	name: string;
 	description: string;
+	/**
+	 * Where the slot participates in the compiled output.
+	 * - `"chat-history"` marks the conversation insertion point: the compiler
+	 *   injects `runtime.messages` at this slot's position instead of rendering
+	 *   the slot. The built-in `chat-history` slot uses this.
+	 * - `"content"` (default) renders normally via `render`.
+	 * The compiler dispatches on this field, not on the slot name.
+	 */
+	position?: "chat-history" | "content";
 	render: SlotRenderer;
 }
 

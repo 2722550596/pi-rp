@@ -5,9 +5,9 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type Component, Container, type Focusable, type TUI } from "../../tui/src/tui.ts";
 import { TuiMainScreen } from "../../tui/src/tui-main-screen.ts";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import { registerBuiltinCommandEntries } from "../src/commands/builtins.ts";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
-import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -75,6 +75,10 @@ describe("InteractiveMode.showStatus", () => {
 	beforeAll(() => {
 		// showStatus uses the global theme instance
 		initTheme("dark");
+		// The registry is populated at runtime (_buildRuntime); the autocomplete
+		// tests below drive the prototype directly with a fake session, so
+		// register the builtin entries up front (idempotent).
+		registerBuiltinCommandEntries();
 	});
 
 	test("coalesces immediately-sequential status messages", () => {
@@ -429,10 +433,15 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 	});
 
 	test("matches login command arguments by provider id and name", async () => {
+		type TestProvider = {
+			id: string;
+			name: string;
+			auth: { oauth?: unknown; apiKey?: unknown };
+		};
 		type FakeInteractiveMode = {
 			session: {
 				scopedModels: [];
-				modelRuntime: { getAvailableSnapshot: () => [] };
+				modelRuntime: { getAvailableSnapshot: () => []; getProviders: () => TestProvider[] };
 				promptTemplates: [];
 				extensionRunner: { getRegisteredCommands: () => [] };
 				resourceLoader: { getSkills: () => { skills: [] } };
@@ -441,7 +450,6 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: Map<string, string>;
 			sessionManager: { getCwd: () => string };
 			fdPath: null;
-			getLoginProviderOptions: () => AuthSelectorProvider[];
 		};
 
 		const createBaseAutocompleteProvider = (
@@ -452,7 +460,13 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		const fakeThis: FakeInteractiveMode = {
 			session: {
 				scopedModels: [],
-				modelRuntime: { getAvailableSnapshot: () => [] },
+				modelRuntime: {
+					getAvailableSnapshot: () => [],
+					getProviders: () => [
+						{ id: "anthropic", name: "Anthropic", auth: { oauth: {}, apiKey: {} } },
+						{ id: "openai", name: "OpenAI", auth: { apiKey: {} } },
+					],
+				},
 				promptTemplates: [],
 				extensionRunner: { getRegisteredCommands: () => [] },
 				resourceLoader: { getSkills: () => ({ skills: [] }) },
@@ -461,11 +475,6 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: new Map(),
 			sessionManager: { getCwd: () => "/tmp" },
 			fdPath: null,
-			getLoginProviderOptions: () => [
-				{ id: "anthropic", name: "Anthropic", authType: "oauth" },
-				{ id: "anthropic", name: "Anthropic", authType: "api_key" },
-				{ id: "openai", name: "OpenAI", authType: "api_key" },
-			],
 		};
 
 		const provider = createBaseAutocompleteProvider.call(fakeThis);

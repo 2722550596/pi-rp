@@ -135,7 +135,7 @@ type InteractiveModePrototype = {
 		options?: { extensions?: Array<{ path: string }>; force?: boolean; showDiagnosticsWhenQuiet?: boolean },
 	): void;
 	rebindCurrentSession(this: RebindContext, options?: { renderBeforeBind?: boolean }): Promise<void>;
-	handleReloadCommand(this: ReloadCommandContext): Promise<void>;
+	runReload(this: ReloadCommandContext): Promise<void>;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
@@ -466,7 +466,7 @@ describe("regression #5943: session_start transient UI", () => {
 			},
 		});
 
-		await interactiveModePrototype.handleReloadCommand.call(context);
+		await interactiveModePrototype.runReload.call(context);
 
 		expect(context.hideThinkingBlock).toBe(true);
 		expect(events).toEqual(["reload", "rebuild:true", "start:true"]);
@@ -505,7 +505,7 @@ describe("regression #5943: session_start transient UI", () => {
 			},
 		});
 
-		const reloadPromise = interactiveModePrototype.handleReloadCommand.call(context);
+		const reloadPromise = interactiveModePrototype.runReload.call(context);
 		await reloadWaiting;
 
 		expect(chatRestored).toBe(true);

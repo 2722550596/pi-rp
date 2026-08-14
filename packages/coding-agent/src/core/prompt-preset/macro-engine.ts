@@ -1,5 +1,5 @@
 import { contentToText } from "./content-utils.ts";
-import type { MacroDefinition, PromptRuntime } from "./types.ts";
+import type { MacroDefinition, PromptPresetDiagnostic, PromptRuntime } from "./types.ts";
 
 // =========================================================================
 // Macro Registry
@@ -186,6 +186,8 @@ registerMacro(
 export interface ExpandMacrosOptions {
 	resolveVariable?: (name: string) => string | undefined;
 	unresolvedPolicy?: "warn" | "keep" | "error";
+	/** Receives a diagnostic for each unresolved macro when `unresolvedPolicy` is "warn" or "error". */
+	diagnostics?: PromptPresetDiagnostic[];
 	/**
 	 * "all" (default): expand every macro.
 	 * "static": only expand macros with `static: true` in their definition.
@@ -259,6 +261,18 @@ export function expandMacros(text: string, runtime: PromptRuntime, _options?: Ex
 						} else if (name in variables) {
 							result += String(variables[name]);
 						} else {
+							// Unresolved macro: apply the preset's unresolvedMacroPolicy.
+							// "warn" records a warning diagnostic (placeholder kept),
+							// "error" records an error diagnostic (compile fails where
+							// error-level diagnostics are honored, e.g. subagent
+							// preparation and preset usability checks).
+							const policy = options.unresolvedPolicy ?? "keep";
+							if (policy !== "keep") {
+								options.diagnostics?.push({
+									level: policy === "error" ? "error" : "warning",
+									message: `Unresolved macro "{{${expandedContent}}}"`,
+								});
+							}
 							result += `{{${expandedContent}}}`;
 						}
 					} else {

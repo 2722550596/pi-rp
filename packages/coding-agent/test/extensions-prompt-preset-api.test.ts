@@ -139,6 +139,26 @@ describe("ExtensionAPI - prompt preset registration", () => {
 			slot = getSlot("overwrite-slot");
 			expect(slot!.render(slotContext())).toBe("second");
 		});
+
+		it("custom slot can opt into the chat-history position without changing the registerSlot signature", async () => {
+			const { harness: _harness, pi } = await setup();
+
+			pi.registerSlot({
+				name: "positioned-history",
+				description: "A custom history insertion point",
+				position: "chat-history",
+				render: () => "should not render",
+			});
+
+			const slot = getSlot("positioned-history");
+			expect(slot).toBeDefined();
+			expect(slot!.position).toBe("chat-history");
+
+			// The built-in chat-history slot keeps its name and position.
+			const builtIn = getSlot("chat-history");
+			expect(builtIn).toBeDefined();
+			expect(builtIn!.position).toBe("chat-history");
+		});
 	});
 
 	describe("pi.registerMacro", () => {

@@ -56,6 +56,7 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
+import { registerBuiltinCommandEntries, syncExtensionCommands } from "../commands/index.ts";
 import { getAgentDir, getProjectConfigDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { type LoadedSchemaDef, loadCustomValidators, loadSchemaDefs } from "../state/schema-loader.ts";
@@ -119,7 +120,12 @@ import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
-import { compileMessages, compileSystemPrompt } from "./prompt-preset/compiler.ts";
+import {
+	compileMessages,
+	compileSystemPrompt,
+	deriveSystemPrompt,
+	deriveSystemPromptString,
+} from "./prompt-preset/compiler.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
@@ -132,6 +138,7 @@ import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loa
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
+import { isChatHistoryPosition } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { RequestGateway } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -221,7 +228,10 @@ export type AgentSessionEvent =
 	  }
 	| { type: "summarization_retry_finished" }
 	| { type: "bash_execution_update"; id?: string; delta: string }
-	| { type: "custom_message_update"; message: CustomMessage };
+	| { type: "custom_message_update"; message: CustomMessage }
+	| { type: "leaf_changed"; newLeafId: string | null; oldLeafId: string | null }
+	| { type: "entry_edited"; entryId: string }
+	| { type: "preset_activated"; presetId: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -681,6 +691,17 @@ export class AgentSession {
 		for (const l of this._eventListeners) {
 			l(event);
 		}
+	}
+
+	/** Emit a session event to local listeners and mirror it to extensions. */
+	private _emitSessionEvent(
+		event:
+			| { type: "leaf_changed"; newLeafId: string | null; oldLeafId: string | null }
+			| { type: "entry_edited"; entryId: string }
+			| { type: "preset_activated"; presetId: string },
+	): void {
+		this._emit(event);
+		void this._extensionRunner.emit(event);
 	}
 
 	private _emitQueueUpdate(): void {
@@ -1362,12 +1383,8 @@ export class AgentSession {
 			skills: loadedSkills,
 		};
 		const systemResult = compileSystemPrompt(this._activePreset, staticRuntime, "");
-		this._rebuildPresetTemplates();
 		return expandMacros(systemResult.systemPrompt, staticRuntime, { mode: "static" });
 	}
-
-	/** No-op — template caching removed; getPresetInjectMessages uses compileMessages directly. */
-	private _rebuildPresetTemplates(): void {}
 
 	// =========================================================================
 	// Prompt Preset Management
@@ -1457,6 +1474,10 @@ export class AgentSession {
 		id: string,
 		options?: { persistSettings?: boolean; record?: boolean },
 	): Promise<SetActivePresetResult> {
+		const emitPresetActivated = (): void => {
+			this._emitSessionEvent({ type: "preset_activated", presetId: id });
+		};
+
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
 			this._presetExplicitlyActivated = true;
@@ -1464,6 +1485,7 @@ export class AgentSession {
 			if (options?.record !== false) this.sessionManager.appendPresetChange(id);
 			if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
 			// _restoreToolPolicy calls setActiveToolsByName which rebuilds the prompt
+			emitPresetActivated();
 			return { ok: true };
 		}
 		const found = this._loadedPresets.find((p) => p.preset.id === id);
@@ -1487,22 +1509,29 @@ export class AgentSession {
 		// _syncActiveToolPolicy calls setActiveToolsByName which rebuilds the prompt
 
 		const modelRef = found.preset.model;
-		if (!modelRef) return { ok: true };
+		if (!modelRef) {
+			emitPresetActivated();
+			return { ok: true };
+		}
 
 		const available = [...this._modelRuntime.getModels()];
 		const model = findExactModelReferenceMatch(modelRef, available);
 		if (!model) {
+			emitPresetActivated();
 			return { ok: true, error: `Preset model "${modelRef}" not found among available models.` };
 		}
 
 		if (this.model && modelsAreEqual(this.model, model)) {
+			emitPresetActivated();
 			return { ok: true, model };
 		}
 
 		try {
 			await this.setModel(model);
+			emitPresetActivated();
 			return { ok: true, model };
 		} catch (error) {
+			emitPresetActivated();
 			return {
 				ok: true,
 				error: `Failed to switch to preset model "${modelRef}": ${error instanceof Error ? error.message : String(error)}`,
@@ -1527,26 +1556,6 @@ export class AgentSession {
 			this._toolPolicyBaseline = undefined;
 		}
 	}
-	/**
-	 * Compile the full message array including system prompt and chat-history
-	 * as the active preset positions them. Returns the messages that would be sent to the model.
-	 */
-	compilePromptMessages(): AgentMessage[] {
-		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const runtime: PromptRuntime = {
-			options: this._baseSystemPromptOptions,
-			messages: this.agent.state.messages,
-			currentTraceStartIndex: this._currentTraceStartIndex,
-			latestUserMessage: undefined,
-			now: new Date(),
-			variables: { user: this.settingsManager.getUserName() },
-			skills: loadedSkills,
-			state: this._stateManager.snapshot(),
-		};
-		const result = compileMessages(this._activePreset, runtime);
-		return result.messages;
-	}
-
 	/**
 	 * Run the real prompt-building pipeline (preset injection + extensions) without sending to LLM.
 	 * Captures result in lastTransformedMessages for /prompt inspection.
@@ -1616,9 +1625,13 @@ export class AgentSession {
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
-		if (!msg) return false;
+		if (!msg) {
+			return false;
+		}
 
-		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) return true;
+		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
+			return true;
+		}
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
 			this._emit({
@@ -1630,9 +1643,12 @@ export class AgentSession {
 			this._retryAttempt = 0;
 		}
 
-		if (await this._checkCompaction(msg)) return true;
+		if (await this._checkCompaction(msg)) {
+			return true;
+		}
 
-		return this.agent.hasQueuedMessages();
+		const queued = this.agent.hasQueuedMessages();
+		return queued;
 	}
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
@@ -1818,7 +1834,12 @@ export class AgentSession {
 
 		// Capture the actual messages sent to the LLM (post context event / preset injection)
 		this._lastCompiledMessages = [...(this._extensionRunner.lastContextMessages ?? [])];
-		this._lastCompiledSystemPrompt = this.agent.state.systemPrompt;
+		// /prompt reads the derived system string (a view of the same compiled
+		// payload), not a separate re-compile. In the preset path
+		// agent.state.systemPrompt is "" by design (_applyDynamicSystemPrompt),
+		// so the LLM context is unchanged; the derived string is display-only.
+		this._lastCompiledSystemPrompt =
+			this.agent.state.systemPrompt || deriveSystemPromptString(this._lastCompiledMessages, this._activePreset);
 	}
 
 	/**
@@ -2130,11 +2151,11 @@ export class AgentSession {
 	}
 
 	/**
-	 * Prepare a reroll: branch the session tree to the last user message
-	 * and sync agent state. Does NOT start the agent run.
+	 * Prepare a reroll: branch the session tree to the last user message,
+	 * restore agent state / StateManager state / schemas to the new path, and
+	 * emit leaf_changed so the UI rebuilds. Does NOT start the agent run.
 	 *
-	 * The caller must rebuild UI after this, then call startRerollRun()
-	 * to begin the agent loop.
+	 * Callers then call startRerollRun() to begin the agent loop.
 	 *
 	 * @returns true if a user message was found and branch performed
 	 */
@@ -2147,12 +2168,68 @@ export class AgentSession {
 		for (let i = path.length - 1; i >= 0; i--) {
 			const entry = path[i];
 			if (entry.type === "message" && entry.message.role === "user") {
-				this.sessionManager.branch(entry.id);
-				this._syncAgentStateFromSession();
+				const oldLeafId = this.sessionManager.getLeafId();
+				// Branch to the user message itself: the regenerated response
+				// appends as a sibling of the old response, and the active path
+				// (and the state restored from it) still includes the message.
+				this._moveLeafAndRestoreState(entry.id);
+				this._emitSessionEvent({
+					type: "leaf_changed",
+					newLeafId: this.sessionManager.getLeafId(),
+					oldLeafId,
+				});
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Move the session leaf to a target entry and roll back agent state,
+	 * StateManager state, and schemas to the new active path. Shared by
+	 * reroll() and navigateTree() — the two path-changing leaf moves.
+	 *
+	 * @param targetLeafId Entry id to branch to, or null to reset to root.
+	 * @param options.summaryText Attach a branch_summary entry at the target
+	 *   (navigateTree summarization) instead of a bare branch.
+	 * @returns The branch summary entry id when a summary was attached.
+	 */
+	private _moveLeafAndRestoreState(
+		targetLeafId: string | null,
+		options?: {
+			summaryText?: string;
+			summaryDetails?: unknown;
+			fromExtension?: boolean;
+			summaryUsage?: Usage;
+		},
+	): string | undefined {
+		let summaryId: string | undefined;
+		if (options?.summaryText) {
+			summaryId = this.sessionManager.branchWithSummary(
+				targetLeafId,
+				options.summaryText,
+				options.summaryDetails,
+				options.fromExtension,
+				options.summaryUsage,
+			);
+		} else if (targetLeafId === null) {
+			this.sessionManager.resetLeaf();
+		} else {
+			this.sessionManager.branch(targetLeafId);
+		}
+
+		// Update agent state
+		this._syncAgentStateFromSession();
+
+		// Restore StateManager state + schemas to the target branch (rollback)
+		this._restoreStateFromSessionEntries();
+
+		// Rolled-back memory is older than the shared files: commit owned
+		// namespaces so the next apply replays onto the rolled-back baseline
+		// instead of the stale (ahead) file revision.
+		this._stateManager.commitOwnedToStore();
+
+		return summaryId;
 	}
 
 	/**
@@ -2224,6 +2301,9 @@ export class AgentSession {
 		if (onCurrentPath) {
 			this._syncAgentStateFromSession();
 		}
+
+		// Notify listeners so the UI can refresh the edited message node.
+		this._emitSessionEvent({ type: "entry_edited", entryId });
 
 		return true;
 	}
@@ -2692,10 +2772,8 @@ export class AgentSession {
 		);
 		turnPrefixMessages = applyRegexRulesToMessages(preset, turnPrefixMessages, "compiled", "outgoing", diags);
 
-		// Check for stripAssistantThinking on the chat-history slot
-		const chatHistoryItem = preset.items.find(
-			(item): item is PromptPresetSlotItem => item.kind === "slot" && item.slot === "chat-history",
-		);
+		// Check for stripAssistantThinking on the chat-history position slot
+		const chatHistoryItem = preset.items.find((item): item is PromptPresetSlotItem => isChatHistoryPosition(item));
 		// "previous-traces" also strips everything here: the summarized messages
 		// are replaced by the summary regardless, and the current trace's retained
 		// tail keeps its thinking verbatim.
@@ -3329,8 +3407,10 @@ export class AgentSession {
 							`Preset not found: ${presetId}. Available presets: ${presets.map((p) => p.preset.id).join(", ")}`,
 						);
 					}
+					// Single pipeline run: compileMessages is the one compile path;
+					// the system prompt is derived from its output, not re-compiled.
 					const messages = compileMessages(loaded.preset, runtime);
-					const system = compileSystemPrompt(loaded.preset, runtime, "");
+					const system = deriveSystemPrompt(messages, loaded.preset, "");
 					return {
 						messages: messages.messages,
 						systemPrompt: system.systemPrompt,
@@ -3510,6 +3590,11 @@ export class AgentSession {
 		}
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
+		// Ensure builtin command entries are registered, then mirror extension
+		// commands into the command registry (re-registered on every rebuild,
+		// so a reload drops stale entries).
+		registerBuiltinCommandEntries();
+		syncExtensionCommands(this._extensionRunner);
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
@@ -3966,30 +4051,20 @@ export class AgentSession {
 				newLeafId = targetId;
 			}
 
-			// Switch leaf (with or without summary)
-			// Summary is attached at the navigation target position (newLeafId), not the old branch
+			// Switch leaf (with or without summary) and roll back agent state,
+			// StateManager state, and schemas to the target branch.
+			// Summary is attached at the navigation target position (newLeafId), not the old branch.
 			let summaryEntry: BranchSummaryEntry | undefined;
-			if (summaryText) {
-				// Create summary at target position (can be null for root)
-				const summaryId = this.sessionManager.branchWithSummary(
-					newLeafId,
-					summaryText,
-					summaryDetails,
-					fromExtension,
-					summaryUsage,
-				);
+			const summaryId = this._moveLeafAndRestoreState(newLeafId, {
+				...(summaryText ? { summaryText, summaryDetails, fromExtension, summaryUsage } : {}),
+			});
+			if (summaryId) {
 				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 
 				// Attach label to the summary entry
 				if (label) {
 					this.sessionManager.appendLabelChange(summaryId, label);
 				}
-			} else if (newLeafId === null) {
-				// No summary, navigating to root - reset leaf
-				this.sessionManager.resetLeaf();
-			} else {
-				// No summary, navigating to non-root
-				this.sessionManager.branch(newLeafId);
 			}
 
 			// Attach label to target entry when not summarizing (no summary entry to label)
@@ -3997,18 +4072,15 @@ export class AgentSession {
 				this.sessionManager.appendLabelChange(targetId, label);
 			}
 
-			// Update agent state
-			this._syncAgentStateFromSession();
+			// Notify session listeners + extensions that the leaf moved (after
+			// mutation + state/schema restore completes).
+			this._emitSessionEvent({
+				type: "leaf_changed",
+				newLeafId: this.sessionManager.getLeafId(),
+				oldLeafId,
+			});
 
-			// Restore StateManager state + schemas to the target branch (rollback)
-			this._restoreStateFromSessionEntries();
-
-			// Rolled-back memory is older than the shared files: commit owned
-			// namespaces so the next apply replays onto the rolled-back baseline
-			// instead of the stale (ahead) file revision.
-			this._stateManager.commitOwnedToStore();
-
-			// Emit session_tree event
+			// Emit session_tree event (extension-only; retires in a later cycle)
 			await this._extensionRunner.emit({
 				type: "session_tree",
 				newLeafId: this.sessionManager.getLeafId(),

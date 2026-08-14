@@ -218,6 +218,7 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 			if (typeof c.initialPrompt === "string") compaction.initialPrompt = c.initialPrompt;
 			if (typeof c.updatePrompt === "string") compaction.updatePrompt = c.updatePrompt;
 			if (typeof c.turnPrefixPrompt === "string") compaction.turnPrefixPrompt = c.turnPrefixPrompt;
+			if (typeof c.branchSummaryPrompt === "string") compaction.branchSummaryPrompt = c.branchSummaryPrompt;
 			if (Object.keys(compaction).length > 0) overrides.compaction = compaction;
 		}
 		if (Object.keys(overrides).length > 0) {
