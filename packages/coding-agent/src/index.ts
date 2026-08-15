@@ -394,6 +394,7 @@ export {
 	RpcClient,
 	type RpcClientOptions,
 	type RpcCommand,
+	type RpcContextRequestEvent,
 	type RpcEventListener,
 	type RpcExtensionUIRequest,
 	type RpcExtensionUIResponse,

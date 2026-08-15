@@ -32,6 +32,7 @@ import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcCommand,
+	RpcContextRequestEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -43,6 +44,7 @@ import type {
 // Re-export types for consumers
 export type {
 	RpcCommand,
+	RpcContextRequestEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -56,6 +58,13 @@ interface WatchStateSubscription {
 	notify: () => void;
 	unsubscribe: () => void;
 	timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+/** 父进程经 context_response 返回的数据（affiliated-session B 活体读取）。 */
+interface RpcContextResponseData {
+	messages?: Array<{ role: string; content: unknown }>;
+	state?: Record<string, unknown>;
+	error?: string;
 }
 
 /**
@@ -95,6 +104,41 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		string,
 		{ resolve: (value: any) => void; reject: (error: Error) => void }
 	>();
+
+	// Pending parent-context requests (affiliated-session B) waiting for context_response
+	const pendingContextRequests = new Map<
+		string,
+		{ resolve: (value: RpcContextResponseData) => void; reject: (error: Error) => void }
+	>();
+	const CONTEXT_REQUEST_TIMEOUT_MS = 10_000;
+
+	/**
+	 * 子进程扩展调用的「活体读取父会话」：挂起 promise、向客户端发 context_request，
+	 * 等 context_response（stdin 命令通道）回来解析。超时或父进程显式 error → reject
+	 * （调用方按需回退，如世界线角色更新器回退磁盘解析）。
+	 */
+	function requestParentContext(request: { since?: string; namespaces?: string[] }): Promise<RpcContextResponseData> {
+		const requestId = crypto.randomUUID();
+		return new Promise<RpcContextResponseData>((resolve, reject) => {
+			const timeoutId = setTimeout(() => {
+				pendingContextRequests.delete(requestId);
+				reject(new Error("context_request timeout: parent did not respond"));
+			}, CONTEXT_REQUEST_TIMEOUT_MS);
+			pendingContextRequests.set(requestId, {
+				resolve: (value: RpcContextResponseData) => {
+					clearTimeout(timeoutId);
+					pendingContextRequests.delete(requestId);
+					resolve(value);
+				},
+				reject: (error: Error) => {
+					clearTimeout(timeoutId);
+					pendingContextRequests.delete(requestId);
+					reject(error);
+				},
+			});
+			output({ type: "context_request", requestId, ...request } as RpcContextRequestEvent);
+		});
+	}
 
 	// Shutdown request flag
 	let shutdownRequested = false;
@@ -333,6 +377,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		await session.bindExtensions({
 			uiContext: createExtensionUIContext(),
 			mode: "rpc",
+			// 子进程扩展的「活体读取父会话」：RPC 通道实现（TUI/print 无父会话，不绑定）。
+			parentContextRequest: requestParentContext,
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
 				newSession: async (options) => runtimeHost.newSession(options),
@@ -751,6 +797,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_entries", { entries, leafId: sessionManager.getLeafId() });
 			}
 
+			case "init_context": {
+				// 出生继承（affiliated-session A）：spawn 后、首次 prompt 前，把父会话的
+				// 历史切片（LLM 消息）与 state 命名空间子集播种进本会话。只影响 LLM 上下文
+				// 与 stateManager，不写 session 文件——子进程自己的会话内容保持独立。
+				if (command.history && command.history.length > 0) {
+					session.agent.state.messages = [...command.history];
+				}
+				if (command.state) {
+					session.stateManager.load(command.state);
+				}
+				return success(id, "init_context", { ok: true });
+			}
+
 			case "get_tree": {
 				const sessionManager = session.sessionManager;
 				return success(id, "get_tree", { tree: sessionManager.getTree(), leafId: sessionManager.getLeafId() });
@@ -897,6 +956,27 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			if (pending) {
 				pendingExtensionRequests.delete(response.id);
 				pending.resolve(response);
+			}
+			return;
+		}
+
+		// Handle parent-context responses (affiliated-session B): resolve the
+		// child extension's pending requestParentContext promise.
+		if (typeof parsed === "object" && parsed !== null && "type" in parsed && parsed.type === "context_response") {
+			const response = parsed as unknown as {
+				requestId: string;
+				messages?: Array<{ role: string; content: unknown }>;
+				state?: Record<string, unknown>;
+				error?: string;
+			};
+			const pending = pendingContextRequests.get(response.requestId);
+			if (pending) {
+				pendingContextRequests.delete(response.requestId);
+				if (response.error) {
+					pending.reject(new Error(response.error));
+				} else {
+					pending.resolve({ messages: response.messages, state: response.state });
+				}
 			}
 			return;
 		}

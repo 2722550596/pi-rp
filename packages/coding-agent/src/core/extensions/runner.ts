@@ -277,6 +277,12 @@ export class ExtensionRunner {
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
 	private mode: ExtensionMode = "print";
+	private parentContextRequestFn:
+		| ((request: { since?: string; namespaces?: string[] }) => Promise<{
+				messages?: Array<{ role: string; content: unknown }>;
+				state?: Record<string, unknown>;
+		  }>)
+		| undefined = undefined;
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
@@ -466,6 +472,18 @@ export class ExtensionRunner {
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
 		this.uiContext = uiContext ?? noOpUIContext;
 		this.mode = mode;
+	}
+
+	/** 绑定子进程扩展的「活体读取父会话」实现（RPC 模式经 context_request 通道；其余模式不绑定）。 */
+	setParentContextRequest(
+		fn:
+			| ((request: { since?: string; namespaces?: string[] }) => Promise<{
+					messages?: Array<{ role: string; content: unknown }>;
+					state?: Record<string, unknown>;
+			  }>)
+			| undefined,
+	): void {
+		this.parentContextRequestFn = fn;
 	}
 
 	getUIContext(): ExtensionUIContext {
@@ -711,6 +729,10 @@ export class ExtensionRunner {
 			get ui() {
 				runner.assertActive();
 				return runner.uiContext;
+			},
+			get requestParentContext() {
+				runner.assertActive();
+				return runner.parentContextRequestFn;
 			},
 			get mode() {
 				runner.assertActive();

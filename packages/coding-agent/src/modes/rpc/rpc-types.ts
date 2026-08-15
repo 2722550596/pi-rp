@@ -70,6 +70,28 @@ export type RpcCommand =
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
 
+	// Affiliated session (parent↔child coordination)
+	| {
+			id?: string;
+			type: "init_context";
+			/** 出生继承：父会话历史切片（LLM 消息），首次 prompt 前播种进本会话 agent state。 */
+			history?: AgentMessage[];
+			/** 出生继承：父会话 state 命名空间子集快照，load 进本会话 stateManager。 */
+			state?: Record<string, unknown>;
+	  }
+	| {
+			id?: string;
+			type: "context_response";
+			/** 对应子进程发出的 context_request.requestId。 */
+			requestId: string;
+			/** 父进程扩展过滤后的 LLM 消息（投影方向策略由父扩展决定）。 */
+			messages?: Array<{ role: string; content: unknown }>;
+			/** 父进程 state 快照（请求携带 namespaces 白名单时按需返回）。 */
+			state?: Record<string, unknown>;
+			/** 父进程无法提供时的错误（子进程侧快速失败，不走超时）。 */
+			error?: string;
+	  }
+
 	// Messages
 	| { id?: string; type: "get_messages" }
 
@@ -247,6 +269,10 @@ export type RpcResponse =
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
 
+	// Affiliated session
+	| { id?: string; type: "response"; command: "init_context"; success: true; data: { ok: boolean } }
+	| { id?: string; type: "response"; command: "context_response"; success: true }
+
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
 
@@ -274,6 +300,20 @@ export interface RpcStateChangedEvent {
 	path?: string;
 	/** Value at the watched path (subtree when path given, full snapshot otherwise). */
 	value?: Record<string, unknown> | undefined;
+}
+
+/**
+ * Emitted by a child process when its extension requests the parent session's
+ * current context (affiliated-session "B 活体读取"). The parent serves the
+ * request via `context_response` (过滤规则是父进程扩展的责任，pi-rp 只做路由)。
+ */
+export interface RpcContextRequestEvent {
+	type: "context_request";
+	requestId: string;
+	/** 父会话锚点 entry id：只取它之后的历史（P2 锚点语义）；省略 = 全分支。 */
+	since?: string;
+	/** 需要的 state 命名空间白名单；省略 = 不要求 state。 */
+	namespaces?: string[];
 }
 
 /** Emitted when an extension needs user input */

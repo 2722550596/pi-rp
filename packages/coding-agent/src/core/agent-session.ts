@@ -289,6 +289,14 @@ export interface ExtensionBindings {
 	abortHandler?: () => void;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+	/**
+	 * 子进程扩展的「活体读取父会话」（affiliated-session B）：RPC 模式绑定走
+	 * context_request/response 通道的实现；TUI/print 无父会话，不绑定（ctx.requestParentContext 为 undefined）。
+	 */
+	parentContextRequest?: (request: { since?: string; namespaces?: string[] }) => Promise<{
+		messages?: Array<{ role: string; content: unknown }>;
+		state?: Record<string, unknown>;
+	}>;
 }
 
 /** Options for AgentSession.prompt() */
@@ -436,6 +444,7 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _extensionParentContextRequest?: ExtensionBindings["parentContextRequest"];
 	private _modelRuntime: ModelRuntime;
 	private _requestGateway?: RequestGateway;
 	private _attachStateStore = true;
@@ -3134,6 +3143,9 @@ export class AgentSession {
 		if (bindings.onError !== undefined) {
 			this._extensionErrorListener = bindings.onError;
 		}
+		if (bindings.parentContextRequest !== undefined) {
+			this._extensionParentContextRequest = bindings.parentContextRequest;
+		}
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
@@ -3196,6 +3208,7 @@ export class AgentSession {
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
 		runner.setUIContext(this._extensionUIContext, this._extensionMode);
 		runner.bindCommandContext(this._extensionCommandContextActions);
+		runner.setParentContextRequest(this._extensionParentContextRequest);
 
 		this._extensionErrorUnsubscriber?.();
 		this._extensionErrorUnsubscriber = this._extensionErrorListener

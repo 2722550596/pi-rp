@@ -13,7 +13,14 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand, RpcStateChangedEvent } from "./rpc-types.ts";
+import type {
+	RpcCommand,
+	RpcContextRequestEvent,
+	RpcResponse,
+	RpcSessionState,
+	RpcSlashCommand,
+	RpcStateChangedEvent,
+} from "./rpc-types.ts";
 
 // ============================================================================
 // Types
@@ -57,6 +64,7 @@ export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private contextRequestListeners: Array<(request: RpcContextRequestEvent) => void | Promise<void>> = [];
 	private stateWatchListeners = new Set<(event: RpcStateChangedEvent) => void>();
 	/** Last delivered stateRevision per watch listener (dedup). */
 	private stateWatchLastRevisions = new Map<(event: RpcStateChangedEvent) => void, number>();
@@ -169,6 +177,7 @@ export class RpcClient {
 		this.pendingRequests.clear();
 		this.stateWatchListeners.clear();
 		this.stateWatchLastRevisions.clear();
+		this.contextRequestListeners = [];
 	}
 
 	/**
@@ -182,6 +191,38 @@ export class RpcClient {
 				this.eventListeners.splice(index, 1);
 			}
 		};
+	}
+
+	/**
+	 * Subscribe to context_request events (affiliated-session B 活体读取):
+	 * the child process's extension asks for the parent session's current
+	 * context; the listener serves filtered data via respondContextRequest().
+	 * 过滤规则由父进程扩展决定（pi-rp 只做路由）。无监听器时 context_request
+	 * 会被自动以 error 应答，让子进程快速失败（不走超时）。
+	 */
+	onContextRequest(listener: (request: RpcContextRequestEvent) => void | Promise<void>): () => void {
+		this.contextRequestListeners.push(listener);
+		return () => {
+			const index = this.contextRequestListeners.indexOf(listener);
+			if (index !== -1) {
+				this.contextRequestListeners.splice(index, 1);
+			}
+		};
+	}
+
+	/**
+	 * Respond to a child process's context_request (stdin command channel).
+	 * @param error 父进程无法提供时的错误（子进程侧快速失败）。
+	 */
+	async respondContextRequest(
+		requestId: string,
+		data: {
+			messages?: Array<{ role: string; content: unknown }>;
+			state?: Record<string, unknown>;
+			error?: string;
+		},
+	): Promise<void> {
+		await this.send({ type: "context_response", requestId, ...data });
 	}
 
 	/**
@@ -457,6 +498,15 @@ export class RpcClient {
 	}
 
 	/**
+	 * 出生继承（affiliated-session A）：spawn 后、首次 prompt 前，把父会话的历史切片
+	 * （LLM 消息）与 state 命名空间子集播种进子进程会话（只影响 LLM 上下文与 stateManager，
+	 * 不写 session 文件）。TUI 角色子进程的 wl-opening 自播种场景不需要调用。
+	 */
+	async initContext(history?: AgentMessage[], state?: Record<string, unknown>): Promise<void> {
+		await this.send({ type: "init_context", history, state });
+	}
+
+	/**
 	 * Get the session entry tree.
 	 */
 	async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
@@ -587,6 +637,35 @@ export class RpcClient {
 					if (event.stateRevision <= last) continue;
 					this.stateWatchLastRevisions.set(listener, event.stateRevision);
 					listener(event);
+				}
+				return;
+			}
+
+			// context_request (affiliated-session B) goes to onContextRequest
+			// listeners; 无监听器时自动以 error 应答，让子进程快速失败（不走超时）。
+			if (data.type === "context_request") {
+				const event = data as RpcContextRequestEvent;
+				if (this.contextRequestListeners.length === 0) {
+					void this.respondContextRequest(event.requestId, {
+						error: "no onContextRequest handler registered in parent",
+					}).catch(() => {});
+					return;
+				}
+				for (const listener of this.contextRequestListeners) {
+					const respondError = (err: unknown): void => {
+						void this.respondContextRequest(event.requestId, {
+							error: err instanceof Error ? err.message : String(err),
+						}).catch(() => {});
+					};
+					// 同步分发（与 onEvent 一致）；同步抛错与异步拒绝都自动以 error 应答
+					try {
+						const result = listener(event);
+						if (result && typeof (result as Promise<void>).catch === "function") {
+							void (result as Promise<void>).catch(respondError);
+						}
+					} catch (err) {
+						respondError(err);
+					}
 				}
 				return;
 			}

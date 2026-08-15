@@ -364,6 +364,15 @@ export interface ExtensionContext {
 	};
 	/** Spawn an in-process subagent (runSubagent engine) and replay its successful state_update calls. */
 	spawnAgent(options: SpawnAgentOptions): Promise<SpawnAgentResult>;
+	/**
+	 * 活体读取父会话的当前上下文（affiliated-session B）：RPC 子进程专属
+	 * （经 context_request/response 通道）；TUI/print 无父会话 → undefined。
+	 * 过滤规则由父进程扩展提供，pi-rp 只做路由；父进程未应答时按实现超时 reject。
+	 */
+	requestParentContext?: (request: { since?: string; namespaces?: string[] }) => Promise<{
+		messages?: Array<{ role: string; content: unknown }>;
+		state?: Record<string, unknown>;
+	}>;
 }
 
 /**
