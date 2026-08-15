@@ -258,6 +258,8 @@ export function convertToLlm(messages: AgentMessage[], resolveCustomType?: Custo
 				}
 				// Custom content may carry images, which pi-ai's AssistantMessage type
 				// excludes (it models tool/thinking blocks); we never produce those.
+				// (A renderContent returning ImageContent blocks is the caller's
+				// responsibility — the cast below passes them through as-is.)
 				converted = {
 					role: policy.llmRole,
 					content,

@@ -440,7 +440,9 @@ const promptCommand: CommandEntry = {
 			return;
 		}
 
-		const llmMessages = convertToLlm(messages);
+		// Thread the extension custom-type policies so the preview shows the same
+		// rendered view as the real payload (seam renderContent markers included).
+		const llmMessages = convertToLlm(messages, (ct) => ctx.session.extensionRunner.getCustomTypePolicy(ct));
 
 		// Merge adjacent messages with the same role for cleaner display
 		const merged: typeof llmMessages = [];

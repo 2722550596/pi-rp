@@ -1367,13 +1367,21 @@ export interface ExtensionAPI {
 	 *   but never reaches the LLM (notifications, transient chatter).
 	 * - `{ context: "include", llmRole: "assistant" }` — the message enters
 	 *   the context as an assistant turn (another agent's speech).
+	 * - `renderContent` — seam rendering for the LLM view of a single custom
+	 *   message (see `CustomTypePolicy`): returning a value replaces the
+	 *   message content in the converted output, `undefined` passes the stored
+	 *   content through unchanged. The single production point for source
+	 *   markers that live outside the stored content.
 	 *
 	 * Omitted fields keep the default (`{ context: "include", llmRole: "user" }`),
 	 * so registering with no arguments is a no-op declaration that documents
 	 * intent. The first declaration per type wins; registering from an event
-	 * handler or command takes effect for subsequent conversions. Note: the
-	 * exclusion applies to the live context path (`convertToLlm`); compaction
-	 * summaries may still include excluded types.
+	 * handler or command takes effect for subsequent conversions. Declared
+	 * policies (exclusion / assistant role / renderContent) apply wherever a
+	 * resolver is threaded — the live context path (`convertToLlm`), extension
+	 * message conversion, and agent-session-driven compaction / branch
+	 * summarization. Non-extension callers that omit the resolver keep the
+	 * default passthrough.
 	 */
 	registerCustomType(customType: string, policy?: Partial<CustomTypePolicy>): void;
 

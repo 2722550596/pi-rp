@@ -229,4 +229,31 @@ describe("convertToLlm renderContent seam", () => {
 		expect(out.map((m) => m.role)).toEqual(["user"]);
 		expect(out[0]).toMatchObject({ content: [{ type: "text", text: "你好" }] });
 	});
+
+	test("renderContent returning a content array is used as-is (blocks branch)", () => {
+		const blocksResolver: CustomTypeResolver = (customType) => {
+			if (customType === "character_reply") {
+				return {
+					context: "include",
+					llmRole: "user",
+					renderContent: () => [{ type: "text", text: "数组渲染" }],
+				};
+			}
+			return undefined;
+		};
+		const out = convertToLlm([replyWithDetails("你好", { character_id: "lin" })], blocksResolver);
+		expect(out[0]).toMatchObject({ content: [{ type: "text", text: "数组渲染" }] });
+	});
+
+	test("rendered custom stays held during a tool window, then flushes with rendered content", () => {
+		const out = convertToLlm(
+			[toolCallAssistant("c1"), replyWithDetails("你好", { character_id: "lin" }), toolResult("c1")],
+			renderResolver,
+		);
+		expect(out.map((m) => m.role)).toEqual(["assistant", "toolResult", "user"]);
+		expect(out[2]).toMatchObject({
+			role: "user",
+			content: [{ type: "text", text: '<character_reply character="lin">\n你好\n</character_reply>' }],
+		});
+	});
 });
