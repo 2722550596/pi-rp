@@ -53,6 +53,15 @@ export interface BashExecutionMessage {
  * - `llmRole: "assistant"` — the message enters the context as an assistant
  *   turn (e.g. another agent's speech that the model should treat as already
  *   said, not as new user input).
+ * - `renderContent` — seam rendering for the LLM view of a single custom
+ *   message: returning a value replaces the message content in the converted
+ *   output; returning `undefined` passes the stored content through unchanged.
+ *   This is the single production point for source markers that live outside
+ *   the stored content (e.g. an XML wrapper carrying `details.character_id`
+ *   that would otherwise be lost when a custom message collapses to a plain
+ *   `user` message). Markers rendered here are a WorldLines-layer protocol;
+ *   the render happens at the seam, so storage stays clean and every consumer
+ *   that goes through {@link convertToLlm} sees the same view.
  *
  * The default policy (`{ context: "include", llmRole: "user" }`) reproduces
  * the historical behavior exactly.
@@ -60,6 +69,8 @@ export interface BashExecutionMessage {
 export interface CustomTypePolicy {
 	context: "include" | "exclude";
 	llmRole: "user" | "assistant";
+	/** custom → LLM 的 seam 渲染：返回内容则用之；undefined = 原样透传。 */
+	renderContent?: (message: CustomMessage) => string | (TextContent | ImageContent)[] | undefined;
 }
 
 export const DEFAULT_CUSTOM_TYPE_POLICY: CustomTypePolicy = {
@@ -194,9 +205,12 @@ function hasToolCallBlocks(m: AgentMessage): boolean {
  * `resolveCustomType` optionally supplies the per-type policy (see
  * {@link CustomTypePolicy}); when omitted (or when the resolver returns
  * undefined) the default policy applies — every custom message converts to
- * `user`. Note: compaction/branch-summary paths call this without a resolver,
- * so declared exclusions apply to the live context path; summarization may
- * still include excluded types.
+ * `user`. Declared policies (exclude / assistant role / renderContent) apply
+ * wherever a resolver is threaded: the live context path (sdk), agent_end
+ * contextMessages, extension message conversion, and compaction /
+ * branch-summary summarization (agent-session threads the same resolver into
+ * all of them). Non-extension callers that omit the resolver keep the default
+ * passthrough behavior.
  *
  * Ordering invariant: OpenAI-completions requires every role:"tool" message to
  * immediately follow the assistant message that carried its tool_calls. Custom
@@ -232,7 +246,16 @@ export function convertToLlm(messages: AgentMessage[], resolveCustomType?: Custo
 			case "custom": {
 				const policy = resolveCustomType?.(m.customType) ?? DEFAULT_CUSTOM_TYPE_POLICY;
 				if (policy.context === "exclude") continue; // persisted/rendered, never in LLM context
-				const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
+				let content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
+				// Seam rendering: a declared renderContent may replace the LLM view of
+				// this message (e.g. re-attach a source marker that storage no longer
+				// carries); undefined keeps the stored content unchanged.
+				if (policy.renderContent) {
+					const rendered = policy.renderContent(m);
+					if (rendered !== undefined) {
+						content = typeof rendered === "string" ? [{ type: "text" as const, text: rendered }] : rendered;
+					}
+				}
 				// Custom content may carry images, which pi-ai's AssistantMessage type
 				// excludes (it models tool/thinking blocks); we never produce those.
 				converted = {

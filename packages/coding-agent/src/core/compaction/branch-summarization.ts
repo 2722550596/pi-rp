@@ -10,6 +10,7 @@ import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import { contentText } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import {
+	type CustomTypeResolver,
 	convertToLlm,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
@@ -95,6 +96,9 @@ export interface GenerateBranchSummaryOptions {
 	 * messages and its finalize rules rewrite the raw LLM summary before the preamble and
 	 * file operations are appended. */
 	preset?: PromptPreset;
+	/** Per-type custom-message policy resolver, forwarded to convertToLlm so declared
+	 * renderContent / exclusion / assistant-role policies apply to branch summaries too. */
+	resolveCustomType?: CustomTypeResolver;
 }
 
 // ============================================================================
@@ -342,7 +346,7 @@ export async function generateBranchSummary(
 
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue
-	const llmMessages = convertToLlm(filteredMessages);
+	const llmMessages = convertToLlm(filteredMessages, options.resolveCustomType);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build prompt — use override if provided, otherwise default

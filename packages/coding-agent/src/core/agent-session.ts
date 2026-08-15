@@ -2674,6 +2674,7 @@ export class AgentSession {
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
 					this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined,
+					(customType) => this._extensionRunner.getCustomTypePolicy(customType),
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
@@ -3019,6 +3020,7 @@ export class AgentSession {
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
 					this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined,
+					(customType) => this._extensionRunner.getCustomTypePolicy(customType),
 				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
@@ -4028,6 +4030,7 @@ export class AgentSession {
 						this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default"
 							? this._activePreset
 							: undefined,
+					resolveCustomType: (customType) => this._extensionRunner.getCustomTypePolicy(customType),
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };

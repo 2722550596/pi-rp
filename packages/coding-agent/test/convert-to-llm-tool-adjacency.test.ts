@@ -173,3 +173,60 @@ describe("convertToLlm custom type policy", () => {
 		expect(out.map((m) => m.role)).toEqual(["assistant", "toolResult"]);
 	});
 });
+
+describe("convertToLlm renderContent seam", () => {
+	// Mirrors the WorldLines seam: storage carries raw text, the policy re-attaches
+	// the <character_reply character=...> marker at conversion time. Idempotent:
+	// content already carrying the prefix tag passes through untouched.
+	function wrapReply(message: CustomMessage): string | undefined {
+		const text = typeof message.content === "string" ? message.content : "";
+		if (text.trimStart().startsWith("<character_reply")) return text;
+		const characterId = (message.details as { character_id?: string } | undefined)?.character_id;
+		const attr = characterId ? ` character="${characterId}"` : "";
+		return `<character_reply${attr}>\n${text}\n</character_reply>`;
+	}
+
+	const renderResolver: CustomTypeResolver = (customType) => {
+		if (customType === "character_reply") {
+			return { context: "include", llmRole: "user", renderContent: wrapReply };
+		}
+		return undefined; // → default policy
+	};
+
+	function replyWithDetails(text: string, details?: { character_id?: string }): CustomMessage {
+		return { role: "custom", customType: "character_reply", content: text, display: true, details, timestamp: 3 };
+	}
+
+	test("renderContent replaces the LLM view; role follows the policy", () => {
+		const out = convertToLlm([user("玩家"), replyWithDetails("你好", { character_id: "lin" })], renderResolver);
+		expect(out.map((m) => m.role)).toEqual(["user", "user"]);
+		expect(out[1]).toMatchObject({
+			role: "user",
+			content: [{ type: "text", text: '<character_reply character="lin">\n你好\n</character_reply>' }],
+		});
+	});
+
+	test("renderContent result is used verbatim when content is already wrapped (idempotency)", () => {
+		const wrapped = '<character_reply character="lin">\n你好\n</character_reply>';
+		const out = convertToLlm([replyWithDetails(wrapped, { character_id: "lin" })], renderResolver);
+		expect(out[0]).toMatchObject({ content: [{ type: "text", text: wrapped }] });
+	});
+
+	test("renderContent returning undefined passes the stored content through", () => {
+		const passthroughResolver: CustomTypeResolver = (customType) => {
+			if (customType === "character_reply") {
+				return { context: "include", llmRole: "assistant", renderContent: () => undefined };
+			}
+			return undefined;
+		};
+		const out = convertToLlm([replyWithDetails("原样", { character_id: "lin" })], passthroughResolver);
+		expect(out.map((m) => m.role)).toEqual(["assistant"]);
+		expect(out[0]).toMatchObject({ content: [{ type: "text", text: "原样" }] });
+	});
+
+	test("no resolver keeps default passthrough even for a type with a declared policy elsewhere", () => {
+		const out = convertToLlm([replyWithDetails("你好", { character_id: "lin" })]);
+		expect(out.map((m) => m.role)).toEqual(["user"]);
+		expect(out[0]).toMatchObject({ content: [{ type: "text", text: "你好" }] });
+	});
+});

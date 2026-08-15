@@ -9,7 +9,7 @@ import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-a
 import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { convertToLlm } from "../messages.ts";
+import { type CustomTypeResolver, convertToLlm } from "../messages.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
@@ -617,6 +617,7 @@ export async function generateSummary(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	resolveCustomType?: CustomTypeResolver,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -633,6 +634,8 @@ export async function generateSummary(
 			env,
 			retry,
 			callbacks,
+			undefined,
+			resolveCustomType,
 		)
 	).text;
 }
@@ -651,6 +654,7 @@ export async function generateSummaryWithUsage(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	overrides?: CompactionPromptOverrides,
+	resolveCustomType?: CustomTypeResolver,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -666,7 +670,7 @@ export async function generateSummaryWithUsage(
 
 	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
+	const llmMessages = convertToLlm(currentMessages, resolveCustomType);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build the prompt with placeholder substitution
@@ -844,6 +848,7 @@ export async function compact(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	overrides?: CompactionPromptOverrides,
+	resolveCustomType?: CustomTypeResolver,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -879,6 +884,7 @@ export async function compact(
 				retry,
 				callbacks,
 				overrides,
+				resolveCustomType,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -896,6 +902,7 @@ export async function compact(
 			retry,
 			callbacks,
 			overrides,
+			resolveCustomType,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -917,6 +924,7 @@ export async function compact(
 			retry,
 			callbacks,
 			overrides,
+			resolveCustomType,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -952,12 +960,13 @@ async function generateTurnPrefixSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	overrides?: CompactionPromptOverrides,
+	resolveCustomType?: CustomTypeResolver,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
+	const llmMessages = convertToLlm(messages, resolveCustomType);
 	const conversationText = serializeConversation(llmMessages);
 	const promptText = (overrides?.turnPrefixPrompt ?? TURN_PREFIX_SUMMARIZATION_PROMPT).replace(
 		/\{conversation\}/g,
