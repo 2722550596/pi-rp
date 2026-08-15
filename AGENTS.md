@@ -131,3 +131,7 @@ Attribution:
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## 补充
+
+文档在./packages/coding-agent/docs/目录下
