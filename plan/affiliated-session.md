@@ -65,12 +65,21 @@
 ### 2.3 协议增量（RPC transport）
 
 ```
-parent→child  init_context {history, state, forbidden}      // spawn 后、首次 prompt 前；不用 CLI flags（历史可能很大）
-child→parent  context_request {requestId, what, since?, namespaces?}   // 走现有 stdout 事件通道
-parent→child  context_response {requestId, history?, state?}           // 走现有 stdin 命令通道
+parent→child  init_context {history, state}                // spawn 后、首次 prompt 前；不用 CLI flags（历史可能很大）
+child→parent  context_request {requestId, since?, namespaces?}   // 走现有 stdout 事件通道
+parent→child  context_response {requestId, messages?, state?, error?}  // 走现有 stdin 命令通道；与其他命令一样回 success ack
 ```
 
 `context_response` 的数据由父进程扩展提供过滤（RpcClient 暴露钩子）；pi-rp 侧只做路由，不定义过滤规则。
+
+**实现偏差（2026-08-15，commit 7ab3e793f 已落地，本节为对齐后的形状）**：
+
+- `init_context` 省略 `forbidden`——约束已沉预设层（§7-3 探针 D 组结论：手写约束可退役，角色预设信息边界规则 + scene_brief + 通用约束足够）；
+- `context_request` 省略 `what`——方向策略（原样全分支 vs 过滤切片）由父扩展按请求自决，第二个消费方出现前不加线；
+- `context_response` 的 `history` 改名 `messages`、新增 `error`（父侧无法提供时的快速失败通道，子进程侧立即 reject 而非等超时）；
+- 回包语义：context_response 与所有命令一致回 `{id, type:"response", command:"context_response", success:true}` ack——父侧 `send()` 依赖它 resolve，不回会让每次活体读取在父进程挂满 30s 超时。
+
+**init_context 的 ephemeral 契约（接线消费方前必须记录）**：继承的历史只进子进程 `agent.state.messages`，**不写 session 文件**（刻意如此，避免污染子进程持久记忆）；子进程压缩 / 回滚 / 条目编辑会从 session 条目重建 messages（`_syncAgentStateFromSession`），继承内容随之蒸发。需要持久继承时由消费方把继承内容落成 session 条目，或按 §5 的「持久的记忆走播种」路径处理。
 
 ## 3. scene_brief 的"共创"改造（继承策略层）
 

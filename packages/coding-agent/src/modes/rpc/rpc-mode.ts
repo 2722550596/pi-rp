@@ -61,10 +61,39 @@ interface WatchStateSubscription {
 }
 
 /** 父进程经 context_response 返回的数据（affiliated-session B 活体读取）。 */
-interface RpcContextResponseData {
+export interface RpcContextResponseData {
 	messages?: Array<{ role: string; content: unknown }>;
 	state?: Record<string, unknown>;
 	error?: string;
+}
+
+/**
+ * 子进程侧处理父进程 context_response 的纯逻辑（单测 seam，rpc-mode 闭包外）：
+ * 解析挂起的 requestParentContext promise，并**回发 ack**——父侧 `send()` 依赖
+ * 这个 ack 才 resolve，不回会让每次 context_request 在父进程挂满 30s 超时
+ * （rpc-types 声明了 context_response 的 success 变体）。requestId 未知时照常 ack
+ * （父侧总是在等待），只是没有 promise 可解析。
+ */
+export function handleParentContextResponse(
+	parsed: unknown,
+	pending: Map<string, { resolve: (value: RpcContextResponseData) => void; reject: (error: Error) => void }>,
+	emit: (obj: RpcResponse) => void,
+): void {
+	if (typeof parsed !== "object" || parsed === null) return;
+	const response = parsed as {
+		id?: string;
+		requestId?: string;
+		messages?: Array<{ role: string; content: unknown }>;
+		state?: Record<string, unknown>;
+		error?: string;
+	};
+	const req = response.requestId ? pending.get(response.requestId) : undefined;
+	if (req) {
+		pending.delete(response.requestId!);
+		if (response.error) req.reject(new Error(response.error));
+		else req.resolve({ messages: response.messages, state: response.state });
+	}
+	emit({ id: response.id, type: "response", command: "context_response", success: true } as RpcResponse);
 }
 
 /**
@@ -961,23 +990,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 
 		// Handle parent-context responses (affiliated-session B): resolve the
-		// child extension's pending requestParentContext promise.
+		// child extension's pending requestParentContext promise, and ack the
+		// parent's send() — rpc-types 声明了 context_response 的 success 变体，
+		// 不回 ack 会让父侧 send() 挂满 30s 超时（每次 context_request 烧一个僵尸 pending）。
 		if (typeof parsed === "object" && parsed !== null && "type" in parsed && parsed.type === "context_response") {
-			const response = parsed as unknown as {
-				requestId: string;
-				messages?: Array<{ role: string; content: unknown }>;
-				state?: Record<string, unknown>;
-				error?: string;
-			};
-			const pending = pendingContextRequests.get(response.requestId);
-			if (pending) {
-				pendingContextRequests.delete(response.requestId);
-				if (response.error) {
-					pending.reject(new Error(response.error));
-				} else {
-					pending.resolve({ messages: response.messages, state: response.state });
-				}
-			}
+			handleParentContextResponse(parsed, pendingContextRequests, (obj) => {
+				output(obj);
+			});
+			await waitForRawStdoutBackpressure();
 			return;
 		}
 

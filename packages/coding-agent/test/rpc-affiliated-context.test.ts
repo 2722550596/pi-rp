@@ -1,7 +1,8 @@
 // affiliated-session A/B（init_context + context_request/response）协议级单测。
 // 不 spawn 真实 cli 子进程（dist 在 CI 不构建）：客户端侧 mock send / 直驱 handleLine，
-// 扩展能力侧直接构造 ExtensionRunner。子进程级行为（init_context handler /
-// context_response 分发）由本地活体验证覆盖（rpc-mode 闭包无单测 seam）。
+// 扩展能力侧直接构造 ExtensionRunner。子进程级 context_response 分发走 rpc-mode 的
+// handleParentContextResponse seam（解析挂起 promise + 回发 ack）；init_context
+// handler 由本地活体验证覆盖。
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
+import { handleParentContextResponse, type RpcContextResponseData } from "../src/modes/rpc/rpc-mode.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 type RpcClientPrivate = {
@@ -112,5 +114,68 @@ describe("ExtensionRunner parentContextRequest binding", () => {
 		};
 		runner.setParentContextRequest(fn);
 		expect(runner.createContext().requestParentContext).toBe(fn);
+	});
+});
+
+describe("handleParentContextResponse（子进程侧 ack seam）", () => {
+	type PendingEntry = { resolve: (value: RpcContextResponseData) => void; reject: (error: Error) => void };
+	type PendingMap = Map<string, PendingEntry>;
+	function makePending(): {
+		pending: PendingMap;
+		resolve: (value: RpcContextResponseData) => void;
+		reject: (error: Error) => void;
+	} {
+		const pending: PendingMap = new Map();
+		const resolve = vi.fn<(value: RpcContextResponseData) => void>();
+		const reject = vi.fn<(error: Error) => void>();
+		pending.set("req-1", { resolve, reject });
+		return { pending, resolve, reject };
+	}
+
+	it("解析挂起的 requestParentContext 并回发声明的 success ack（不回 ack 父侧 send() 挂 30s）", () => {
+		const { pending, resolve, reject } = makePending();
+		const emitted: unknown[] = [];
+		handleParentContextResponse(
+			{ id: "req_7", type: "context_response", requestId: "req-1", messages: [{ role: "user", content: "hi" }] },
+			pending,
+			(o) => emitted.push(o),
+		);
+		expect(resolve).toHaveBeenCalledWith({ messages: [{ role: "user", content: "hi" }], state: undefined });
+		expect(reject).not.toHaveBeenCalled();
+		expect(pending.has("req-1")).toBe(false);
+		expect(emitted).toEqual([{ id: "req_7", type: "response", command: "context_response", success: true }]);
+	});
+
+	it("error 载荷 → reject 挂起请求，且照常回 ack", () => {
+		const { pending, resolve, reject } = makePending();
+		const emitted: unknown[] = [];
+		handleParentContextResponse(
+			{ id: "req_8", type: "context_response", requestId: "req-1", error: "since anchor gone" },
+			pending,
+			(o) => emitted.push(o),
+		);
+		expect(reject).toHaveBeenCalledWith(new Error("since anchor gone"));
+		expect(resolve).not.toHaveBeenCalled();
+		expect(emitted).toEqual([{ id: "req_8", type: "response", command: "context_response", success: true }]);
+	});
+
+	it("requestId 未知 → 无 promise 可解析，但仍回 ack（父侧总是在等待）", () => {
+		const { pending } = makePending();
+		const emitted: unknown[] = [];
+		handleParentContextResponse(
+			{ id: "req_9", type: "context_response", requestId: "no-such-request" },
+			pending,
+			(o) => emitted.push(o),
+		);
+		expect(pending.has("req-1")).toBe(true); // 挂起的 req-1 不受影响
+		expect(emitted).toEqual([{ id: "req_9", type: "response", command: "context_response", success: true }]);
+	});
+
+	it("非对象输入 → 静默忽略（不 ack 不解析）", () => {
+		const { pending } = makePending();
+		const emitted: unknown[] = [];
+		handleParentContextResponse("garbage", pending, (o) => emitted.push(o));
+		expect(pending.has("req-1")).toBe(true);
+		expect(emitted).toEqual([]);
 	});
 });
