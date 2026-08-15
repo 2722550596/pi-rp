@@ -426,7 +426,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): Promise<void>;
 }
 
@@ -1404,10 +1404,11 @@ export interface ExtensionAPI {
 	/**
 	 * Send a user message to the agent. Always triggers a turn.
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
+	 * Set expandPromptTemplates to dispatch extension commands and expand skill commands and prompt templates.
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): void;
 
 	/** Start a live (streamable) custom message. Returns a handle to stream updates and finalize. */
@@ -1702,7 +1703,7 @@ export type SendMessageHandler = <T = unknown>(
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 ) => void;
 
 export type StartLiveMessageHandler = <T = unknown>(

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createJiti } from "jiti/static";
 import { getAgentDir, getProjectConfigDir, isBunBinary } from "../config.ts";
@@ -39,10 +39,15 @@ export function loadSchemaDefs(cwd: string, agentDir?: string): LoadedSchemaDefs
 		if (!existsSync(dir)) continue;
 		const files = readdirSync(dir);
 		for (const file of files) {
+			const filePath = join(dir, file);
 			if (file.endsWith(".ts")) {
-				const result = loadSchemaFile(join(dir, file));
+				const result = loadSchemaFile(filePath);
 				if (result) schemas.push(result);
-				else errors.push({ filePath: join(dir, file), message: "Failed to load schema" });
+				else errors.push({ filePath, message: "Failed to load schema" });
+			} else if (file.endsWith(".json")) {
+				const result = loadJsonSchemaFile(filePath);
+				if (result) schemas.push(result);
+				else errors.push({ filePath, message: "Failed to load schema" });
 			}
 		}
 	}
@@ -77,6 +82,34 @@ function loadSchemaFile(filePath: string): LoadedSchemaDef | null {
 
 	if (!schema || typeof schema !== "object") return null;
 	return { schemaId: basename(filePath, ".ts"), namespace, schema, filePath };
+}
+
+/**
+ * Load a JSON Schema file (.json) from a schemas/ directory.
+ * Accepts the same two shapes as the .ts loader:
+ * - default: { namespace: string, schema: JSON Schema }
+ * - default: bare JSON Schema object (namespace defaults to filename)
+ */
+function loadJsonSchemaFile(filePath: string): LoadedSchemaDef | null {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(filePath, "utf-8"));
+	} catch {
+		return null; // unparseable JSON
+	}
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const obj = raw as Record<string, unknown>;
+	let namespace: string;
+	let schema: unknown;
+	if ("schema" in obj) {
+		namespace = typeof obj.namespace === "string" ? obj.namespace : basename(filePath, ".json");
+		schema = obj.schema;
+	} else {
+		namespace = basename(filePath, ".json");
+		schema = obj;
+	}
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return null;
+	return { schemaId: basename(filePath, ".json"), namespace, schema, filePath };
 }
 
 /** Discover and load custom validators from standard locations. */

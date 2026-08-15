@@ -81,15 +81,22 @@ export class SchemaValidator {
 		return this._schemas.get(ns);
 	}
 
-	/** Generate the initial state object from a loaded schema's `default` values (TypeBox Create). */
+	/**
+	 * Generate the initial state object from a loaded schema's `default` values.
+	 * TypeBox-constructed schematics (.ts files) go through TypeBox Value.Create;
+	 * raw JSON Schema objects (.json files) carry no TypeBox markers, so Create is
+	 * a no-op there and the JSON Schema `default` annotations are walked instead.
+	 */
 	getDefaultValue(namespace: string): JsonValue | undefined {
 		const loaded = this._schemas.get(namespace);
 		if (!loaded || !loaded.raw || typeof loaded.raw !== "object") return undefined;
 		try {
-			return Create(loaded.raw as TSchema) as unknown as JsonValue;
+			const created = Create(loaded.raw as TSchema);
+			if (created !== undefined) return created as unknown as JsonValue;
 		} catch {
-			return undefined;
+			// fall through to the JSON Schema default walker
 		}
+		return collectJsonSchemaDefaults(loaded.raw) as JsonValue | undefined;
 	}
 
 	/**
@@ -292,6 +299,41 @@ function projectMutation(
 	}
 
 	return projected;
+}
+
+/**
+ * Walk a raw JSON Schema object and collect `default` annotations into a value
+ * shape: object properties recurse (an explicit default wins over recursion),
+ * arrays become [] when they carry no default, primitives without a default
+ * stay absent (their presence is the creator's job — `required` validation
+ * fails loudly rather than inventing values). Root-level `default` short-circuits
+ * the whole walk. Not a general JSON Schema implementation: $ref/$defs/allOf/
+ * anyOf are intentionally unsupported (flat state schemas only).
+ */
+function collectJsonSchemaDefaults(schema: unknown, depth = 0): unknown {
+	if (depth > 8 || !schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
+	const s = schema as Record<string, unknown>;
+	if ("default" in s) return s.default;
+	if (s.type === "object") {
+		const props = s.properties;
+		if (!props || typeof props !== "object" || Array.isArray(props)) return undefined;
+		const out: Record<string, unknown> = {};
+		for (const [key, propSchema] of Object.entries(props)) {
+			if (!propSchema || typeof propSchema !== "object" || Array.isArray(propSchema)) continue;
+			const p = propSchema as Record<string, unknown>;
+			if ("default" in p) {
+				out[key] = p.default;
+			} else if (p.type === "object") {
+				const nested = collectJsonSchemaDefaults(p, depth + 1);
+				if (nested !== undefined) out[key] = nested;
+			} else if (p.type === "array") {
+				out[key] = [];
+			}
+		}
+		return out;
+	}
+	if (s.type === "array") return [];
+	return undefined;
 }
 
 /**

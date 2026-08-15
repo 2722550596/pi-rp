@@ -428,16 +428,25 @@ describe("SettingsManager", () => {
 		});
 	});
 
-	it("validates and persists the fullscreen scrollbar mode", async () => {
+	it("validates and persists fullscreen settings", async () => {
 		const manager = SettingsManager.create(projectDir, agentDir);
+		expect(manager.getFullscreenExitOutput()).toBe("transcript");
 		expect(manager.getFullscreenScrollbar()).toBe("auto");
 
+		manager.setFullscreenExitOutput("resume-hint");
 		manager.setFullscreenScrollbar("hidden");
 		await manager.flush();
-		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")).fullscreenScrollbar).toBe("hidden");
+		const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+		expect(savedSettings.fullscreenExitOutput).toBe("resume-hint");
+		expect(savedSettings.fullscreenScrollbar).toBe("hidden");
 
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ fullscreenScrollbar: "sometimes" }));
-		expect(SettingsManager.create(projectDir, agentDir).getFullscreenScrollbar()).toBe("auto");
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ fullscreenExitOutput: "nothing", fullscreenScrollbar: "sometimes" }),
+		);
+		const reloadedManager = SettingsManager.create(projectDir, agentDir);
+		expect(reloadedManager.getFullscreenExitOutput()).toBe("transcript");
+		expect(reloadedManager.getFullscreenScrollbar()).toBe("auto");
 	});
 
 	describe("outputPad", () => {
@@ -514,6 +523,23 @@ describe("SettingsManager", () => {
 			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
 			expect(savedSettings.shellCommandPrefix).toBe("shopt -s expand_aliases");
 			expect(savedSettings.theme).toBe("light");
+		});
+	});
+
+	describe("defaultTools", () => {
+		it("loads global defaults and lets project settings replace them", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["read", "bash"]);
+
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["grep"] }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["grep"]);
+		});
+
+		it("preserves an empty tool list", () => {
+			expect(SettingsManager.inMemory({ defaultTools: [] }).getDefaultTools()).toEqual([]);
+			expect(SettingsManager.inMemory().getDefaultTools()).toBeUndefined();
 		});
 	});
 

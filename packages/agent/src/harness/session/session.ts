@@ -147,7 +147,7 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.storage.getName();
 	}
 
-	async setName(name: string): Promise<void> {
+	async setName(name: string | undefined): Promise<void> {
 		await this.storage.setName(name);
 	}
 

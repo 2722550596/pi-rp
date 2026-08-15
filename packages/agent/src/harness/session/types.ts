@@ -279,7 +279,7 @@ export type LogItem =
 	| { kind: "entry"; seq: number; entry: Entry }
 	| { kind: "record"; seq: number; record: LaneRecord }
 	| { kind: "lane"; seq: number; lane: string; leafId: string | null }
-	| { kind: "fact"; seq: number; fact: "name"; name: string }
+	| { kind: "fact"; seq: number; fact: "name"; name: string | undefined }
 	| { kind: "fact"; seq: number; fact: "label"; targetId: string; label: string | undefined };
 
 export interface LogOptions {
@@ -319,7 +319,7 @@ export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetad
 
 	// Global facts
 	getName(): Promise<string | undefined>;
-	setName(name: string): Promise<void>;
+	setName(name: string | undefined): Promise<void>;
 	getLabel(id: string): Promise<string | undefined>;
 	setLabel(id: string, label: string | undefined): Promise<void>;
 	getStats(): Promise<SessionStats>;
@@ -333,7 +333,7 @@ export interface SessionTree {
 	// Global facts. Latest wins; not branch-scoped. "set", not "append":
 	// append vocabulary is reserved for tree writes.
 	getName(): Promise<string | undefined>;
-	setName(name: string): Promise<void>;
+	setName(name: string | undefined): Promise<void>;
 	getLabel(targetId: string): Promise<string | undefined>;
 	setLabel(targetId: string, label: string | undefined): Promise<void>;
 

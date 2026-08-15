@@ -163,3 +163,53 @@ describe("SchemaValidator.clearSchemas", () => {
 		expect(res.ok).toBe(true);
 	});
 });
+
+describe("SchemaValidator.getDefaultValue", () => {
+	it("collects defaults from a raw JSON Schema object (.json path)", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "world", {
+			type: "object",
+			properties: {
+				day: { type: "number", default: 1 },
+				scene: { type: "string", default: "午后" },
+				present: { type: "array", items: { type: "string" } },
+				empty: { type: "object", properties: { a: { type: "number", default: 2 } } },
+			},
+		});
+
+		expect(v.getDefaultValue("world")).toEqual({
+			day: 1,
+			scene: "午后",
+			present: [],
+			empty: { a: 2 },
+		});
+	});
+
+	it("short-circuits on a root-level default", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "world", {
+			type: "object",
+			default: { day: 9 },
+			properties: { day: { type: "number" } },
+		});
+
+		expect(v.getDefaultValue("world")).toEqual({ day: 9 });
+	});
+
+	it("leaves primitives without defaults absent instead of inventing values", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "world", {
+			type: "object",
+			properties: { hp: { type: "number" }, mood: { type: "string" } },
+		});
+
+		expect(v.getDefaultValue("world")).toEqual({});
+	});
+
+	it("still materializes TypeBox schematics via Value.Create (.ts path regression)", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "world", Type.Object({ day: Type.Number({ default: 1 }), mood: Type.String() }));
+
+		expect(v.getDefaultValue("world")).toEqual({ day: 1, mood: "" });
+	});
+});
