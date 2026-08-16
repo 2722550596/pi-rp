@@ -16,6 +16,7 @@ type SubmitContext = {
 	flushPendingBashComponents: () => void;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
+	tryDispatchRegistryCommand: (text: string) => Promise<boolean>;
 };
 
 type InputContext = {
@@ -51,6 +52,7 @@ function createSubmitContext(): SubmitContext {
 		},
 		flushPendingBashComponents: vi.fn(),
 		pendingUserInputs: [],
+		tryDispatchRegistryCommand: vi.fn(async () => false),
 	};
 }
 
