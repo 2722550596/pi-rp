@@ -58,6 +58,7 @@ import type { CustomMessage, CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { MacroDefinition, PromptPresetDiagnostic, PromptRuntime, SlotDefinition } from "../prompt-preset/types.ts";
+import type { Settings } from "../settings-manager.ts";
 import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
 
 export type { PromptPresetDiagnostic, PromptRuntime } from "../prompt-preset/types.ts";
@@ -331,6 +332,9 @@ export interface ExtensionContext {
 	 *  the `/scoped-models` command shows. Empty when no scoping is
 	 *  configured (all available models are usable). Read-only snapshot. */
 	scopedModels: readonly ScopedModel[];
+	/** 合并后的生效 settings（global ← project ← process overlay），只读快照。
+	 *  overlay 由 --settings-file / PI_SETTINGS_FILE 提供（消费方持有该文件）。 */
+	settings: Readonly<Settings>;
 	/** Current thinking level, when provided by the session runtime. */
 	thinkingLevel?: ThinkingLevel;
 	/** Whether the agent is idle (not streaming) */

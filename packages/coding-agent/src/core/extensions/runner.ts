@@ -14,6 +14,7 @@ import type { ScopedModel } from "../model-resolver.ts";
 import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
 import type { SessionManager } from "../session-manager.ts";
+import type { SettingsManager } from "../settings-manager.ts";
 import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
@@ -285,6 +286,7 @@ export class ExtensionRunner {
 		| undefined = undefined;
 	private cwd: string;
 	private sessionManager: SessionManager;
+	private settingsManager: SettingsManager;
 	private modelRegistry: ModelRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
@@ -333,6 +335,7 @@ export class ExtensionRunner {
 		cwd: string,
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
+		settingsManager: SettingsManager,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -340,6 +343,7 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
+		this.settingsManager = settingsManager;
 		this.runtime.registerSlot = (definition) => registerCustomSlot(definition, false);
 		this.runtime.registerMacro = (definition) => registerCustomMacro(definition, false);
 	}
@@ -761,6 +765,10 @@ export class ExtensionRunner {
 			get scopedModels() {
 				runner.assertActive();
 				return runner.getScopedModels();
+			},
+			get settings() {
+				runner.assertActive();
+				return runner.settingsManager.getSettings();
 			},
 			get thinkingLevel() {
 				runner.assertActive();

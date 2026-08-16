@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
-import { getAgentDir, getProjectConfigDir } from "../config.ts";
+import { ENV_SETTINGS_FILE, getAgentDir, getProjectConfigDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import type { RequestGatewayConfig } from "./request-gateway.ts";
@@ -188,10 +188,12 @@ function parseTimeoutSetting(value: unknown, settingName: string): number | unde
 	return undefined;
 }
 
-export type SettingsScope = "global" | "project";
+export type SettingsScope = "global" | "project" | "overlay";
 
 export interface SettingsManagerCreateOptions {
 	projectTrusted?: boolean;
+	/** 进程级覆盖层（只读；消费方拥有该文件）。优先级最高：overlay > project > global。 */
+	overlay?: Settings;
 }
 
 export interface SettingsStorage {
@@ -206,12 +208,15 @@ export interface SettingsError {
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
+	private overlaySettingsPath: string | undefined;
 
-	constructor(cwd: string, agentDir: string) {
+	constructor(cwd: string, agentDir: string, overlayPath?: string) {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
 		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
 		this.projectSettingsPath = getProjectConfigDir(resolvedCwd, "settings.json");
+		// 进程级覆盖层：--settings-file 语义与 --config-dir/--session-dir 同构（相对 cwd 拼接）。
+		this.overlaySettingsPath = overlayPath ? join(resolvedCwd, overlayPath) : undefined;
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -242,6 +247,14 @@ export class FileSettingsStorage implements SettingsStorage {
 	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
+		// overlay 是消费方拥有的只读覆盖层：不建锁、不写（引擎侧无写入路径；写请求静默丢弃）。
+		if (scope === "overlay") {
+			const path = this.overlaySettingsPath;
+			const current = path && existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+			fn(current);
+			return;
+		}
+
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const dir = dirname(path);
 
@@ -275,15 +288,18 @@ export class FileSettingsStorage implements SettingsStorage {
 export class InMemorySettingsStorage implements SettingsStorage {
 	private global: string | undefined;
 	private project: string | undefined;
+	private overlay: string | undefined;
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
-		const current = scope === "global" ? this.global : this.project;
+		const current = scope === "global" ? this.global : scope === "project" ? this.project : this.overlay;
 		const next = fn(current);
 		if (next !== undefined) {
 			if (scope === "global") {
 				this.global = next;
-			} else {
+			} else if (scope === "project") {
 				this.project = next;
+			} else {
+				this.overlay = next;
 			}
 		}
 	}
@@ -293,6 +309,7 @@ export class SettingsManager {
 	private storage: SettingsStorage;
 	private globalSettings: Settings;
 	private projectSettings: Settings;
+	private overlaySettings: Settings;
 	private settings: Settings;
 	private projectTrusted: boolean;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
@@ -308,6 +325,7 @@ export class SettingsManager {
 		storage: SettingsStorage,
 		initialGlobal: Settings,
 		initialProject: Settings,
+		initialOverlay: Settings = {},
 		globalLoadError: Error | null = null,
 		projectLoadError: Error | null = null,
 		initialErrors: SettingsError[] = [],
@@ -316,11 +334,15 @@ export class SettingsManager {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
 		this.projectSettings = initialProject;
+		this.overlaySettings = initialOverlay;
 		this.projectTrusted = projectTrusted;
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.settings = deepMergeSettings(
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+			this.overlaySettings,
+		);
 	}
 
 	/** Create a SettingsManager that loads from files */
@@ -329,7 +351,9 @@ export class SettingsManager {
 		agentDir: string = getAgentDir(),
 		options: SettingsManagerCreateOptions = {},
 	): SettingsManager {
-		const storage = new FileSettingsStorage(cwd, agentDir);
+		// --settings-file（PI_SETTINGS_FILE env）：进程级只读覆盖层，与 --config-dir/--session-dir 同构。
+		const overlayPath = process.env[ENV_SETTINGS_FILE];
+		const storage = new FileSettingsStorage(cwd, agentDir, overlayPath);
 		return SettingsManager.fromStorage(storage, options);
 	}
 
@@ -346,10 +370,22 @@ export class SettingsManager {
 			initialErrors.push({ scope: "project", error: projectLoad.error });
 		}
 
+		let overlay: Settings;
+		if (options.overlay !== undefined) {
+			overlay = options.overlay;
+		} else {
+			const overlayLoad = SettingsManager.tryLoadFromStorage(storage, "overlay");
+			overlay = overlayLoad.settings;
+			if (overlayLoad.error) {
+				initialErrors.push({ scope: "overlay", error: overlayLoad.error });
+			}
+		}
+
 		return new SettingsManager(
 			storage,
 			globalLoad.settings,
 			projectLoad.settings,
+			overlay,
 			globalLoad.error,
 			projectLoad.error,
 			initialErrors,
@@ -481,7 +517,10 @@ export class SettingsManager {
 		if (!trusted) {
 			this.projectSettings = {};
 			this.projectSettingsLoadError = null;
-			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+			this.settings = deepMergeSettings(
+				deepMergeSettings(this.globalSettings, this.projectSettings),
+				this.overlaySettings,
+			);
 			return;
 		}
 
@@ -491,7 +530,10 @@ export class SettingsManager {
 		if (projectLoad.error) {
 			this.recordError("project", projectLoad.error);
 		}
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.settings = deepMergeSettings(
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+			this.overlaySettings,
+		);
 	}
 
 	async reload(): Promise<void> {
@@ -519,7 +561,10 @@ export class SettingsManager {
 			this.recordError("project", projectLoad.error);
 		}
 
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.settings = deepMergeSettings(
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+			this.overlaySettings,
+		);
 	}
 
 	/** Apply additional overrides on top of current settings */
@@ -625,7 +670,10 @@ export class SettingsManager {
 	}
 
 	private save(): void {
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.settings = deepMergeSettings(
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+			this.overlaySettings,
+		);
 
 		if (this.globalSettingsLoadError) {
 			return;
@@ -643,7 +691,10 @@ export class SettingsManager {
 	private saveProjectSettings(settings: Settings): void {
 		this.assertProjectTrustedForWrite();
 		this.projectSettings = structuredClone(settings);
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.settings = deepMergeSettings(
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+			this.overlaySettings,
+		);
 
 		if (this.projectSettingsLoadError) {
 			return;
@@ -723,8 +774,14 @@ export class SettingsManager {
 	}
 
 	getUserName(): string {
-		// 宿主进程 env 覆盖（与 PI_OPENING 同构的通用宿主覆盖通道；worldlines launch.mjs 注入 save 级 userName）
-		return process.env.PI_USER_NAME?.trim() || this.settings.userName || "user";
+		// 值类配置走 settings 合并链（overlay > project > global），不再读 env——
+		// 进程级覆盖由 --settings-file（PI_SETTINGS_FILE）提供，消费方持有该文件。
+		return this.settings.userName ?? "user";
+	}
+
+	/** 当前生效的合并后 settings（global ← project ← overlay）。 */
+	getSettings(): Readonly<Settings> {
+		return structuredClone(this.settings);
 	}
 
 	setDefaultPreset(presetId: string): void {

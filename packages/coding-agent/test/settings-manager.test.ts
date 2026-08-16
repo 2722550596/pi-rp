@@ -646,42 +646,82 @@ describe("SettingsManager", () => {
 	});
 
 	describe("getUserName", () => {
-		it("prefers process.env.PI_USER_NAME (通用宿主 env 覆盖，worldlines launch.mjs 注入 save 级 userName)", () => {
+		it("prefers overlay (process-level) userName over project and global scopes", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "周明瑞" }));
-			process.env.PI_USER_NAME = "宋砚";
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ userName: "白造" }));
+			// overlay 路径相对 create() 的 cwd（与 --config-dir/--session-dir 同语义）
+			writeFileSync(join(projectDir, "overlay.json"), JSON.stringify({ userName: "宋砚" }));
+			process.env.PI_SETTINGS_FILE = "overlay.json";
 			try {
 				const manager = SettingsManager.create(projectDir, agentDir);
 				expect(manager.getUserName()).toBe("宋砚");
 			} finally {
-				delete process.env.PI_USER_NAME;
+				delete process.env.PI_SETTINGS_FILE;
 			}
 		});
 
-		it("falls back to settings.userName when PI_USER_NAME unset", () => {
-			delete process.env.PI_USER_NAME;
+		it("falls back to project settings.userName when overlay has no userName", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "周明瑞" }));
-			const manager = SettingsManager.create(projectDir, agentDir);
-			expect(manager.getUserName()).toBe("周明瑞");
-		});
-
-		it("falls back to settings.userName when PI_USER_NAME is empty/whitespace", () => {
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "周明瑞" }));
-			for (const value of ["", "   "]) {
-				process.env.PI_USER_NAME = value;
-				try {
-					const manager = SettingsManager.create(projectDir, agentDir);
-					expect(manager.getUserName()).toBe("周明瑞");
-				} finally {
-					delete process.env.PI_USER_NAME;
-				}
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ userName: "白造" }));
+			writeFileSync(join(projectDir, "overlay.json"), JSON.stringify({ theme: "dark" }));
+			process.env.PI_SETTINGS_FILE = "overlay.json";
+			try {
+				const manager = SettingsManager.create(projectDir, agentDir);
+				expect(manager.getUserName()).toBe("白造");
+			} finally {
+				delete process.env.PI_SETTINGS_FILE;
 			}
 		});
 
-		it('falls back to "user" when neither env nor settings present', () => {
-			delete process.env.PI_USER_NAME;
+		it("falls back to global settings.userName when overlay file is missing", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "周明瑞" }));
+			process.env.PI_SETTINGS_FILE = "no-such-overlay.json";
+			try {
+				const manager = SettingsManager.create(projectDir, agentDir);
+				expect(manager.getUserName()).toBe("周明瑞");
+			} finally {
+				delete process.env.PI_SETTINGS_FILE;
+			}
+		});
+
+		it('falls back to "user" when no scope provides userName', () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
 			const manager = SettingsManager.create(projectDir, agentDir);
 			expect(manager.getUserName()).toBe("user");
+		});
+	});
+
+	describe("process overlay scope (--settings-file / PI_SETTINGS_FILE)", () => {
+		it("overlay overrides both project and global for merged settings", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark", userName: "甲" }));
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ theme: "light", userName: "乙" }));
+			writeFileSync(join(projectDir, "overlay.json"), JSON.stringify({ userName: "丙" }));
+			process.env.PI_SETTINGS_FILE = "overlay.json";
+			try {
+				const manager = SettingsManager.create(projectDir, agentDir);
+				expect(manager.getSettings().userName).toBe("丙");
+				expect(manager.getSettings().theme).toBe("light"); // project scope still applies under overlay
+			} finally {
+				delete process.env.PI_SETTINGS_FILE;
+			}
+		});
+
+		it("invalid overlay JSON is recorded as an error and ignored", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "甲" }));
+			writeFileSync(join(projectDir, "overlay.json"), "{ not json");
+			process.env.PI_SETTINGS_FILE = "overlay.json";
+			try {
+				const manager = SettingsManager.create(projectDir, agentDir);
+				expect(manager.getUserName()).toBe("甲");
+				expect(manager.drainErrors().some((e) => e.scope === "overlay")).toBe(true);
+			} finally {
+				delete process.env.PI_SETTINGS_FILE;
+			}
+		});
+
+		it("in-memory overlay via create options", () => {
+			const manager = SettingsManager.inMemory({ userName: "甲" }, { overlay: { userName: "丙" } });
+			expect(manager.getUserName()).toBe("丙");
 		});
 	});
 });

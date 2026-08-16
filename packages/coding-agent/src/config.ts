@@ -490,6 +490,8 @@ export const APP_NAME: string = piConfigName || "pi";
 export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
 export const ENV_PROJECT_CONFIG_DIR = `${APP_NAME.toUpperCase()}_PROJECT_CONFIG_DIR`;
+/** --settings-file 进程级只读 settings 覆盖层（相对 cwd 拼接，同 --config-dir/--session-dir 语义）。 */
+export const ENV_SETTINGS_FILE = `${APP_NAME.toUpperCase()}_SETTINGS_FILE`;
 
 /**
  * Get the project-local config directory name for a given cwd.

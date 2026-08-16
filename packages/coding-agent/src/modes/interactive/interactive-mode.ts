@@ -1943,6 +1943,7 @@ export class InteractiveMode {
 			model: this.session.model,
 			thinkingLevel: this.session.thinkingLevel,
 			scopedModels: this.session.scopedModels,
+			settings: this.settingsManager.getSettings(),
 			isIdle: () => this.session.isIdle,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,

@@ -36,6 +36,7 @@ import {
 	APP_NAME,
 	ENV_PROJECT_CONFIG_DIR,
 	ENV_SESSION_DIR,
+	ENV_SETTINGS_FILE,
 	expandTildePath,
 	getAgentDir,
 	getPackageDir,
@@ -634,6 +635,10 @@ export async function main(args: string[], options?: MainOptions) {
 	// Apply --config-dir override before any config discovery happens.
 	if (parsed.configDir) {
 		process.env[ENV_PROJECT_CONFIG_DIR] = parsed.configDir;
+	}
+	// --settings-file：进程级只读 settings 覆盖层（SettingsManager.create 读取）。
+	if (parsed.settingsFile) {
+		process.env[ENV_SETTINGS_FILE] = parsed.settingsFile;
 	}
 
 	if (parsed.version) {

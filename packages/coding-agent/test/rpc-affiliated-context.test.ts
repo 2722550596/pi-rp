@@ -10,6 +10,7 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { handleParentContextResponse, type RpcContextResponseData } from "../src/modes/rpc/rpc-mode.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
@@ -105,7 +106,14 @@ describe("ExtensionRunner parentContextRequest binding", () => {
 	it("未绑定 → ctx.requestParentContext 为 undefined；绑定后按 getter 暴露", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
-		const runner = new ExtensionRunner([], createExtensionRuntime(), process.cwd(), sessionManager, registry);
+		const runner = new ExtensionRunner(
+			[],
+			createExtensionRuntime(),
+			process.cwd(),
+			sessionManager,
+			registry,
+			SettingsManager.inMemory(),
+		);
 
 		expect(runner.createContext().requestParentContext).toBeUndefined();
 

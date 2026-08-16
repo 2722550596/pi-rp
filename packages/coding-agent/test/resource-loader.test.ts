@@ -285,6 +285,7 @@ export default function(pi) {
 				cwd,
 				sessionManager,
 				modelRegistry,
+				SettingsManager.inMemory(),
 			);
 
 			expect(runner.getCommand("deploy:1")?.description).toBe("project deploy");
@@ -949,6 +950,7 @@ export default function(pi: ExtensionAPI) {
 				cwd,
 				sessionManager,
 				modelRegistry,
+				SettingsManager.inMemory(),
 			);
 
 			expect(runner.getCommand("deploy:1")?.description).toBe("explicit command");

@@ -3605,6 +3605,7 @@ export class AgentSession {
 			this._cwd,
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
+			this.settingsManager,
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
