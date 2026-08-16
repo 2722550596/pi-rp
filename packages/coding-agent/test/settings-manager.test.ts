@@ -644,4 +644,31 @@ describe("SettingsManager", () => {
 			expect(cfg.storeDir).toBeUndefined();
 		});
 	});
+
+	describe("getUserName", () => {
+		it("prefers process.env.WL_USER_NAME (save 级 env 链，worldlines launch.mjs 注入)", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "周明瑞" }));
+			process.env.WL_USER_NAME = "宋砚";
+			try {
+				const manager = SettingsManager.create(projectDir, agentDir);
+				expect(manager.getUserName()).toBe("宋砚");
+			} finally {
+				delete process.env.WL_USER_NAME;
+			}
+		});
+
+		it("falls back to settings.userName when WL_USER_NAME unset", () => {
+			delete process.env.WL_USER_NAME;
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "周明瑞" }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getUserName()).toBe("周明瑞");
+		});
+
+		it('falls back to "user" when neither env nor settings present', () => {
+			delete process.env.WL_USER_NAME;
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getUserName()).toBe("user");
+		});
+	});
 });
