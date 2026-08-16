@@ -54,6 +54,21 @@ describe("auto-activate preset selection", () => {
 		session.dispose();
 	});
 
+	it("prefers an explicit autoActivate: true preset over earlier non-opted-out ones", async () => {
+		writeFileSync(
+			join(tempDir, ".pi", "prompt-presets", "hero.json"),
+			JSON.stringify({ schemaVersion: 1, id: "hero", items: [] }),
+		);
+		writeFileSync(
+			join(tempDir, ".pi", "prompt-presets", "writer.json"),
+			JSON.stringify({ schemaVersion: 1, id: "writer", autoActivate: true, items: [] }),
+		);
+
+		const { session } = await createAgentSession(baseOptions());
+		expect(session.activePreset.id).toBe("writer");
+		session.dispose();
+	});
+
 	it("stays on the built-in default when every preset opts out of auto-activation", async () => {
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "hero.json"),

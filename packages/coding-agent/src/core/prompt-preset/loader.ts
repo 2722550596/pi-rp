@@ -69,13 +69,21 @@ export function chooseDefaultPreset(
 		if (preferred) return preferred;
 	}
 
+	// An explicit opt-in (autoActivate: true) is the designated main preset
+	// and wins regardless of scan order.
+	const optedIn = presets.find(
+		(p) => !p.diagnostics.some((d) => d.level === "error") && p.preset.autoActivate === true,
+	);
+	if (optedIn) return optedIn;
+
+	// Otherwise the first preset that did not opt out (autoActivate !== false).
 	for (const p of presets) {
 		if (p.diagnostics.some((d) => d.level === "error")) continue;
 		if (p.preset.autoActivate !== false) return p;
 	}
 
-	// Every usable preset opted out of auto-activation (or none loaded):
-	// return nothing so callers fall back to the built-in default stack.
+	// Every usable preset opted out (or none loaded): return nothing so
+	// callers fall back to the built-in default stack.
 	return undefined;
 }
 
@@ -168,6 +176,7 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 	if (typeof obj.name === "string") preset.name = obj.name;
 	if (typeof obj.description === "string") preset.description = obj.description;
 	if (obj.autoActivate === false) preset.autoActivate = false;
+	else if (obj.autoActivate === true) preset.autoActivate = true;
 	if (typeof obj.model === "string" && obj.model.trim().length > 0) {
 		preset.model = obj.model;
 	}
