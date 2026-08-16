@@ -134,7 +134,7 @@ import type {
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
 import { defaultPreset } from "./prompt-preset/index.ts";
-import { isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
+import { chooseDefaultPreset, isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
@@ -1337,6 +1337,11 @@ export class AgentSession {
 				if (restoreId && !isDisabledPromptPresetId(restoreId) && restoreId !== "default") {
 					const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
 					if (found) this._activePreset = found.preset;
+				} else if (!restoreId) {
+					// No recorded restore target (fresh session, no settings default):
+					// fall back to the first auto-activatable preset on disk.
+					const chosen = chooseDefaultPreset(this._loadedPresets);
+					if (chosen) this._activePreset = chosen.preset;
 				}
 			}
 

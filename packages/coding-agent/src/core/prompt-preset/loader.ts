@@ -74,7 +74,9 @@ export function chooseDefaultPreset(
 		if (p.preset.autoActivate !== false) return p;
 	}
 
-	return presets.find((p) => !p.diagnostics.some((d) => d.level === "error"));
+	// Every usable preset opted out of auto-activation (or none loaded):
+	// return nothing so callers fall back to the built-in default stack.
+	return undefined;
 }
 
 export function isUsablePromptPreset(loaded: LoadedPromptPreset): boolean {

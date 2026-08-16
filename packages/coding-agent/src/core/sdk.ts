@@ -11,6 +11,7 @@ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefi
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
+import { chooseDefaultPreset, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { RequestIdentity } from "./request-gateway.ts";
 import { RequestGateway } from "./request-gateway.ts";
@@ -466,7 +467,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 		if (!options.preset) {
-			sessionManager.appendPresetChange(settingsManager.getDefaultPreset() ?? "default");
+			// New sessions record the actually-effective default preset:
+			// settings default → first auto-activatable preset on disk → built-in default.
+			const defaultPresetId =
+				settingsManager.getDefaultPreset() ??
+				chooseDefaultPreset(loadPromptPresets(cwd, agentDir))?.preset.id ??
+				"default";
+			sessionManager.appendPresetChange(defaultPresetId);
 		}
 	}
 
