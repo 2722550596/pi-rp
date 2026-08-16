@@ -664,6 +664,19 @@ describe("SettingsManager", () => {
 			expect(manager.getUserName()).toBe("周明瑞");
 		});
 
+		it("falls back to settings.userName when WL_USER_NAME is empty/whitespace", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ userName: "周明瑞" }));
+			for (const value of ["", "   "]) {
+				process.env.WL_USER_NAME = value;
+				try {
+					const manager = SettingsManager.create(projectDir, agentDir);
+					expect(manager.getUserName()).toBe("周明瑞");
+				} finally {
+					delete process.env.WL_USER_NAME;
+				}
+			}
+		});
+
 		it('falls back to "user" when neither env nor settings present', () => {
 			delete process.env.WL_USER_NAME;
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));

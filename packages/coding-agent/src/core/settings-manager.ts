@@ -723,7 +723,7 @@ export class SettingsManager {
 	}
 
 	getUserName(): string {
-		return process.env.WL_USER_NAME ?? this.settings.userName ?? "user";
+		return process.env.WL_USER_NAME?.trim() || this.settings.userName || "user";
 	}
 
 	setDefaultPreset(presetId: string): void {
