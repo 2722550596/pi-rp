@@ -723,7 +723,8 @@ export class SettingsManager {
 	}
 
 	getUserName(): string {
-		return process.env.WL_USER_NAME?.trim() || this.settings.userName || "user";
+		// 宿主进程 env 覆盖（与 PI_OPENING 同构的通用宿主覆盖通道；worldlines launch.mjs 注入 save 级 userName）
+		return process.env.PI_USER_NAME?.trim() || this.settings.userName || "user";
 	}
 
 	setDefaultPreset(presetId: string): void {
