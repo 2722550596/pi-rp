@@ -4,9 +4,11 @@ import type { StateStore } from "./state-store.ts";
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 export type StateOp = "add" | "remove" | "replace" | "merge";
+/** Internal store-seeding op (schema defaults, fillMissing semantics). Never user-facing. */
+export type SeedOp = "seed";
 
 export interface StateDiffResult {
-	op: StateOp;
+	op: StateOp | SeedOp;
 	path: string;
 	oldValue?: JsonValue;
 	newValue?: JsonValue;
@@ -20,7 +22,7 @@ interface ApplyCallArg {
 
 /** A store-bound op: namespace-relative path ("" = whole namespace). */
 interface StoreOp {
-	op: StateOp;
+	op: StateOp | SeedOp;
 	path: string;
 	value?: JsonValue;
 }
@@ -135,7 +137,7 @@ function getPath(root: Record<string, JsonValue>, path: string): JsonValue | und
  */
 export function applyOp(
 	root: Record<string, JsonValue>,
-	op: StateOp,
+	op: StateOp | SeedOp,
 	path: string,
 	value: JsonValue | undefined,
 ): StateDiffResult {
@@ -204,6 +206,14 @@ export function applyOp(
 				oldValue: oldSnapshot,
 				newValue: structuredClone(root) as JsonValue,
 			};
+		}
+
+		case "seed": {
+			// Fill missing keys from schema defaults (existing values win).
+			// Idempotent — safe to re-apply on a CAS retry against a foreign baseline.
+			const oldSnapshot = structuredClone(root) as JsonValue;
+			if (isObject(value)) fillMissing(root, value);
+			return { op: "seed", path: "", oldValue: oldSnapshot, newValue: root };
 		}
 
 		default:
@@ -335,12 +345,14 @@ export class StateManager {
 			watchDebounceMs?: number;
 			canLoadNamespace?: (ns: string) => boolean;
 			/**
-			 * Called after a namespace is replaced from the store. Files are
-			 * authoritative but often partial (only explicitly written keys),
-			 * so the owner re-applies schema defaults to keep validation-visible
-			 * required keys present.
+			 * Return the namespace's schema-default values (and, for legacy
+			 * callers, optionally apply them to memory — the manager merges the
+			 * return value into memory idempotently either way). Used to seed
+			 * absent keys both in memory (loadNamespace) and on the file side
+			 * (flushStore seed op), so `add` on a defaulted array never degrades
+			 * to a bare replace on a file baseline that lacks the key.
 			 */
-			fillDefaults?: (ns: string) => void;
+			fillDefaults?: (ns: string) => JsonValue | undefined;
 		},
 	): void {
 		if (this._store) this.detachStore();
@@ -399,7 +411,11 @@ export class StateManager {
 	 */
 	loadNamespace(ns: string, state: JsonValue): void {
 		this._data[ns] = state;
-		this._storeFillDefaults?.(ns);
+		const defaults = this._storeFillDefaults?.(ns);
+		if (defaults !== undefined && isObject(this._data[ns]) && isObject(defaults)) {
+			// 幂等：legacy 回调可能已自行 apply，这里按返回值再补一遍（existing wins）。
+			fillMissing(this._data[ns] as Record<string, JsonValue>, defaults);
+		}
 		this._notify();
 		this._revision++;
 	}
@@ -415,7 +431,16 @@ export class StateManager {
 		this._storePendingOps = new Map();
 		for (const [ns, ops] of pending) {
 			const expected = this._storeSeenRevs.get(ns) ?? 0;
-			const result = this._store.commitNamespace(ns, expected, ops, { maxRetries: 3 });
+			// 文件侧没有 schema-default 播种，逐条 replay 会在缺失键上把 add 退化成
+			// replace（数组字段写成字符串——旧版 .ts schema 时代已实锤漂移，冒烟抓到）。
+			// 用 seed op 先补齐缺省键：fillMissing 语义（existing wins）幂等，CAS 重试
+			// 时对他人新基线安全；首次提交（无文件）与 schema 演化（文件缺新键）同路径。
+			const defaults = this._storeFillDefaults?.(ns);
+			const commitOps =
+				defaults !== undefined && isObject(defaults) && Object.keys(defaults).length > 0
+					? [{ op: "seed" as const, path: "", value: defaults }, ...ops]
+					: ops;
+			const result = this._store.commitNamespace(ns, expected, commitOps, { maxRetries: 3 });
 			if (result.ok) {
 				this._storeSeenRevs.set(ns, result.revision);
 			} else {
@@ -468,7 +493,9 @@ export class StateManager {
 	 * Split a full-state op into per-namespace store ops. Paths in store ops
 	 * are namespace-relative.
 	 */
-	private _splitStoreOp(op: StoreOp): Array<{ ns: string; op: StateOp; path: string; value: JsonValue | undefined }> {
+	private _splitStoreOp(
+		op: StoreOp,
+	): Array<{ ns: string; op: StateOp | SeedOp; path: string; value: JsonValue | undefined }> {
 		if (op.path === "") {
 			if (op.op === "merge") {
 				// Root merge: one merge op per namespace (top-level key).

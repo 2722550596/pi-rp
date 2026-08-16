@@ -39,6 +39,67 @@ describe("StateManager store integration", () => {
 		});
 	});
 
+	it("seeds schema defaults into the file before replaying ops (add on defaulted array appends)", () => {
+		const sm = new StateManager();
+		const store = new StateStore(dir);
+		sm.attachStore(store, { fillDefaults: (_ns) => ({ present: [], situation: "开局" }) });
+		sm.loadNamespace("world", { present: [], situation: "开局" });
+		sm.apply("world.present", "add", "lizeyan");
+		sm.flushStore();
+
+		// 旧行为：文件基线 {} 上 replay add → present 写成字符串 "lizeyan"
+		expect(store.readNamespace("world")).toEqual({
+			revision: 1,
+			state: { present: ["lizeyan"], situation: "开局" },
+		});
+	});
+
+	it("seeds newly-added schema defaults into an existing file (schema evolution)", () => {
+		const sm = new StateManager();
+		const store = new StateStore(dir);
+		sm.attachStore(store, { fillDefaults: (_ns) => ({ present: [], situation: "开局" }) });
+		// 文件已存在（旧 schema 时代），缺 present 键；内存经 fillDefaults 有 present: []
+		store.commitNamespace("world", 0, [{ op: "replace", path: "", value: { situation: "旧档" } }]);
+		sm.loadNamespace("world", { situation: "旧档" });
+		sm.apply("world.present", "add", "lizeyan");
+		sm.flushStore();
+
+		expect(store.readNamespace("world")).toEqual({
+			revision: 2,
+			state: { situation: "旧档", present: ["lizeyan"] }, // 既有值保留，缺失键补 default
+		});
+	});
+
+	it("seed op is idempotent under a foreign-baseline CAS race (foreign keys kept)", () => {
+		const sm = new StateManager();
+		const store = new StateStore(dir);
+		sm.attachStore(store, { fillDefaults: (_ns) => ({ present: [], situation: "开局" }) });
+		sm.loadNamespace("world", { present: [] });
+		sm.apply("world.present", "add", "lizeyan");
+		// 他进程在 seed 提交前抢先写了 revision 1（本进程 _storeSeenRevs 仍为 0）
+		store.commitNamespace("world", 0, [{ op: "replace", path: "", value: { foreign: 1, situation: "他人档" } }]);
+		sm.flushStore();
+
+		// CAS 重读后 seed 只补缺失键、不覆盖他人值；本进程 op 落在 revision 2
+		expect(store.readNamespace("world")).toEqual({
+			revision: 2,
+			state: { foreign: 1, situation: "他人档", present: ["lizeyan"] },
+		});
+	});
+
+	it("does not seed when no defaults are provided (ops replay only)", () => {
+		const sm = new StateManager();
+		const store = new StateStore(dir);
+		sm.attachStore(store);
+		// 他人已写 revision 1
+		store.commitNamespace("world", 0, [{ op: "replace", path: "", value: { a: 1 } }]);
+		sm.loadNamespace("world", { a: 1 });
+		sm.apply("world.b", "replace", 2);
+		sm.flushStore();
+
+		expect(store.readNamespace("world")).toEqual({ revision: 2, state: { a: 1, b: 2 } });
+	});
+
 	it("reloads a namespace when the file changes externally and notifies subscribers", async () => {
 		const sm = new StateManager();
 		const store = new StateStore(dir);

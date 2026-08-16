@@ -1440,12 +1440,13 @@ export class AgentSession {
 	getLoadedCustomValidators(): CustomValidator[] {
 		return this._loadedCustomValidators;
 	}
-	/** Merge a loaded schema's default values into state (existing values win). */
-	private applySchemaDefaults(namespace: string): void {
+	/** Merge a loaded schema's default values into state (existing values win) and return them. */
+	private applySchemaDefaults(namespace: string): JsonValue | undefined {
 		const defaults = this._schemaValidator.getDefaultValue(namespace);
 		if (defaults !== undefined) {
 			this._stateManager.applyDefaults({ [namespace]: defaults });
 		}
+		return defaults;
 	}
 
 	/** Load a schema by ID and record it as a session entry. Pass `record: false` to apply in-memory only (e.g. resume dedup). */

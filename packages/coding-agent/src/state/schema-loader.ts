@@ -45,9 +45,15 @@ export function loadSchemaDefs(cwd: string, agentDir?: string): LoadedSchemaDefs
 				if (result) schemas.push(result);
 				else errors.push({ filePath, message: "Failed to load schema" });
 			} else if (file.endsWith(".json")) {
-				const result = loadJsonSchemaFile(filePath);
-				if (result) schemas.push(result);
-				else errors.push({ filePath, message: "Failed to load schema" });
+				try {
+					const result = loadJsonSchemaFile(filePath);
+					if (result) schemas.push(result);
+				} catch (e) {
+					errors.push({
+						filePath,
+						message: `Failed to load schema: ${e instanceof Error ? e.message : String(e)}`,
+					});
+				}
 			}
 		}
 	}
@@ -89,26 +95,35 @@ function loadSchemaFile(filePath: string): LoadedSchemaDef | null {
  * Accepts the same two shapes as the .ts loader:
  * - default: { namespace: string, schema: JSON Schema }
  * - default: bare JSON Schema object (namespace defaults to filename)
+ * Throws with a diagnostic message on any invalid shape (caller surfaces it
+ * in the errors list).
  */
 function loadJsonSchemaFile(filePath: string): LoadedSchemaDef | null {
 	let raw: unknown;
 	try {
 		raw = JSON.parse(readFileSync(filePath, "utf-8"));
-	} catch {
-		return null; // unparseable JSON
+	} catch (e) {
+		throw new Error(`unparseable JSON: ${e instanceof Error ? e.message : String(e)}`);
 	}
-	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+		throw new Error("root must be a JSON object");
+	}
 	const obj = raw as Record<string, unknown>;
 	let namespace: string;
 	let schema: unknown;
 	if ("schema" in obj) {
+		if (obj.namespace !== undefined && typeof obj.namespace !== "string") {
+			throw new Error('wrapper "namespace" must be a string');
+		}
 		namespace = typeof obj.namespace === "string" ? obj.namespace : basename(filePath, ".json");
 		schema = obj.schema;
 	} else {
 		namespace = basename(filePath, ".json");
 		schema = obj;
 	}
-	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return null;
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+		throw new Error('"schema" must be a JSON Schema object');
+	}
 	return { schemaId: basename(filePath, ".json"), namespace, schema, filePath };
 }
 

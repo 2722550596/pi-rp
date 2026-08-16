@@ -8,7 +8,7 @@ export interface NamespaceSnapshot {
 }
 
 export interface StateOp {
-	op: "add" | "remove" | "replace" | "merge";
+	op: "add" | "remove" | "replace" | "merge" | "seed";
 	/** Namespace-relative path ("" = whole namespace). */
 	path: string;
 	value?: JsonValue;
