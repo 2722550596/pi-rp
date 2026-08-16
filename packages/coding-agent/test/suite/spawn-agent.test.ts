@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, it } from "vitest";
 import { ENV_AGENT_DIR } from "../../src/config.ts";
+import { defineTool } from "../../src/core/extensions/types.ts";
 import { isPrepareError, prepareSubagentConversation } from "../../src/core/subagent/prepare.ts";
 import { spawnAgent } from "../../src/core/subagent/spawn.ts";
 import { createHarness, getMessageText } from "./harness.ts";
@@ -91,6 +92,47 @@ describe("spawnAgent", () => {
 			assert.equal(result.status, "completed", result.error ?? "");
 			assert.deepEqual(activeTools, ["state_update", "get_state"]);
 			assert.equal(peekCalls, 0, "parent extension tool must not execute inside the subagent");
+			assert.deepEqual(result.stateOps, []);
+		} finally {
+			restoreEnv(prev);
+			harness.cleanup();
+		}
+	});
+
+	it("injects explicit customTools into the subagent session (opt-in, by definition)", async () => {
+		let injectedCalls = 0;
+		const injectedTool = defineTool({
+			name: "kb_write",
+			label: "KB Write",
+			description: "Write a knowledge entry",
+			parameters: { type: "object", properties: {} },
+			promptSnippet: "kb_write: write a knowledge entry",
+			execute: async () => {
+				injectedCalls++;
+				return { content: [{ type: "text", text: "written" }], details: undefined };
+			},
+		});
+		const prev = process.env[ENV_AGENT_DIR];
+		const harness = await setupHarness();
+		try {
+			harness.faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("kb_write", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("DONE"),
+			]);
+			let activeTools: string[] | undefined;
+			const result = await spawnAgent(harness.session, {
+				profileId: "test-spawn",
+				task: "Write a knowledge entry.",
+				tools: ["state_update", "get_state", "kb_write"],
+				customTools: [injectedTool],
+				onSessionCreated: (sub) => {
+					activeTools = sub.getActiveToolNames();
+				},
+			});
+
+			assert.equal(result.status, "completed", result.error ?? "");
+			assert.deepEqual(activeTools, ["state_update", "get_state", "kb_write"]);
+			assert.equal(injectedCalls, 1, "explicit custom tool must execute inside the subagent");
 			assert.deepEqual(result.stateOps, []);
 		} finally {
 			restoreEnv(prev);

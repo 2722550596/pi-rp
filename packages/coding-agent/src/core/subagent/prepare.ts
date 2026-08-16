@@ -44,6 +44,8 @@ export interface PrepareSubagentOptions {
 	stateNamespaces?: string[];
 	/** Inherit the parent session's extension tools (customTools). Default true (existing behavior); spawnAgent passes false. */
 	inheritExtensionTools?: boolean;
+	/** Explicit custom tool definitions for the subagent session; wins over inherited extension tools. */
+	customTools?: ToolDefinition[];
 	/** Explicit model object (takes precedence over modelRef/preset.model/first available). */
 	model?: Model<any>;
 }
@@ -237,7 +239,8 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 		effectiveTools,
 		profile: preset,
 		schemas,
-		customTools: extensionTools.length > 0 ? extensionTools.map((t) => t.definition) : undefined,
+		customTools:
+			options.customTools ?? (extensionTools.length > 0 ? extensionTools.map((t) => t.definition) : undefined),
 	};
 }
 

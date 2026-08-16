@@ -2,6 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { JsonValue } from "../../state/state-manager.ts";
 import type { AgentSession } from "../agent-session.ts";
+import type { ToolDefinition } from "../extensions/types.ts";
 import { isPrepareError, pick, prepareSubagentConversation } from "./prepare.ts";
 import { runSubagent, type SubagentResultStatus } from "./run.ts";
 
@@ -30,6 +31,11 @@ export interface SpawnAgentOptions {
 	schemas?: string[];
 	/** Tool names for the subagent; default ["state_update", "get_state"]. */
 	tools?: string[];
+	/** Custom tool definitions injected into the subagent session (e.g. extension-registered
+	 *  tools). Names must also be listed in `tools` to be selectable. Without this, the
+	 *  subagent only has built-in tools (spawnAgent does not inherit the parent's
+	 *  extension tools). */
+	customTools?: ToolDefinition[];
 	/** Explicit model; default session.model. */
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
@@ -83,6 +89,7 @@ export async function spawnAgent(session: AgentSession, options: SpawnAgentOptio
 		schemas: options.schemas,
 		tools: options.tools ?? ["state_update", "get_state"],
 		inheritExtensionTools: false,
+		customTools: options.customTools,
 		model: options.model ?? session.model,
 		thinkingLevel: options.thinkingLevel,
 	});
