@@ -63,6 +63,7 @@ import type {
 	ResourcesDiscoverResult,
 	SessionBeforeCompactResult,
 	SessionBeforeForkResult,
+	SessionBeforeRerollResult,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
 	SessionShutdownEvent,
@@ -147,12 +148,20 @@ type RunnerEmitEvent = Exclude<
 
 type SessionBeforeEvent = Extract<
 	RunnerEmitEvent,
-	{ type: "session_before_switch" | "session_before_fork" | "session_before_compact" | "session_before_tree" }
+	{
+		type:
+			| "session_before_switch"
+			| "session_before_fork"
+			| "session_before_reroll"
+			| "session_before_compact"
+			| "session_before_tree";
+	}
 >;
 
 type SessionBeforeEventResult =
 	| SessionBeforeSwitchResult
 	| SessionBeforeForkResult
+	| SessionBeforeRerollResult
 	| SessionBeforeCompactResult
 	| SessionBeforeTreeResult;
 
@@ -162,9 +171,11 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 		? SessionBeforeForkResult | undefined
 		: TEvent extends { type: "session_before_compact" }
 			? SessionBeforeCompactResult | undefined
-			: TEvent extends { type: "session_before_tree" }
-				? SessionBeforeTreeResult | undefined
-				: undefined;
+			: TEvent extends { type: "session_before_reroll" }
+				? SessionBeforeRerollResult | undefined
+				: TEvent extends { type: "session_before_tree" }
+					? SessionBeforeTreeResult | undefined
+					: undefined;
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 

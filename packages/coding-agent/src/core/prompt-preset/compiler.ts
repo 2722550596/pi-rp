@@ -239,10 +239,57 @@ function renderItemText(
 	}
 	if (!raw) return "";
 
-	if (runtime.skipMacroExpansion) return raw;
+	let rendered: string;
+	if (runtime.skipMacroExpansion) {
+		rendered = raw;
+	} else {
+		const policy = preset.defaults?.unresolvedMacroPolicy;
+		rendered = expandMacros(raw, runtime, { unresolvedPolicy: policy, diagnostics });
+	}
+	return applyItemWrap(rendered, item, diagnostics);
+}
 
-	const policy = preset.defaults?.unresolvedMacroPolicy;
-	return expandMacros(raw, runtime, { unresolvedPolicy: policy, diagnostics });
+// =========================================================================
+// Item Wrap
+// =========================================================================
+
+/** Tag-name pattern: XML names — letter/underscore start, then letters,
+ * digits, `_`, `-`, `.`, `:`. */
+const XML_TAG_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.:-]*$/;
+
+/**
+ * Wrap an item's rendered text in a custom XML tag when the item declares
+ * `wrap` (a tag name or `{ tag, attrs }`). Applied after macro expansion;
+ * empty text stays empty (the item is skipped as usual). Invalid tag names
+ * push a warning diagnostic and leave the text unwrapped.
+ */
+function applyItemWrap(text: string, item: PromptPresetItem, diagnostics: PromptPresetDiagnostic[]): string {
+	const wrap = item.wrap;
+	if (!wrap || !text) return text;
+
+	const tag = typeof wrap === "string" ? wrap : wrap.tag;
+	if (!XML_TAG_NAME_PATTERN.test(tag)) {
+		diagnostics.push({
+			level: "warning",
+			message: `Item "${item.id}" has invalid wrap tag "${tag}"; wrapping skipped.`,
+			itemId: item.id,
+		});
+		return text;
+	}
+
+	let open = `<${tag}`;
+	if (typeof wrap === "object" && wrap.attrs) {
+		for (const [key, value] of Object.entries(wrap.attrs)) {
+			open += ` ${key}="${escapeXmlAttribute(value)}"`;
+		}
+	}
+	open += ">";
+	return `${open}${text}</${tag}>`;
+}
+
+/** Escape XML-significant characters inside attribute values. */
+function escapeXmlAttribute(value: string): string {
+	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function addSyntheticMessage(

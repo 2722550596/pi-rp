@@ -2179,6 +2179,15 @@ export class AgentSession {
 			return false;
 		}
 
+		// Allow extensions to intercept reroll (e.g. delegate to a character sub-session).
+		// If handled, skip the default reroll logic entirely.
+		try {
+			const result = await this._extensionRunner.emit({ type: "session_before_reroll" });
+			if (result?.handled) return true;
+		} catch {
+			// Extension error → fall through to default reroll logic
+		}
+
 		const path = this.sessionManager.getBranch();
 		for (let i = path.length - 1; i >= 0; i--) {
 			const entry = path[i];

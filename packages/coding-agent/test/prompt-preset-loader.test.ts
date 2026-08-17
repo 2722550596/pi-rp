@@ -40,6 +40,39 @@ describe("prompt preset loader", () => {
 		expect(loaded[0].preset.hiddenOverrides?.compaction?.systemPrompt).toBe("summarize");
 	});
 
+	it("normalizes wrap on block and slot items", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [
+				{ kind: "block", id: "b", content: "x", wrap: "context" },
+				{ kind: "slot", id: "s", slot: "tools", wrap: { tag: "tools_wrap", attrs: { lang: "zh" } } },
+			],
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].diagnostics).toEqual([]);
+		expect(loaded[0].preset.items[0]).toMatchObject({ wrap: "context" });
+		expect(loaded[0].preset.items[1]).toMatchObject({ wrap: { tag: "tools_wrap", attrs: { lang: "zh" } } });
+	});
+
+	it("warns and drops invalid wrap values", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [
+				{ kind: "block", id: "b", content: "x", wrap: 42 },
+				{ kind: "slot", id: "s", slot: "tools", wrap: { attrs: { lang: "zh" } } },
+			],
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		const warnings = loaded[0].diagnostics.filter((d) => d.level === "warning");
+		expect(warnings).toHaveLength(2);
+		expect(loaded[0].preset.items[0].wrap).toBeUndefined();
+		expect(loaded[0].preset.items[1].wrap).toBeUndefined();
+	});
+
 	it("keeps every documented compaction override field", () => {
 		const cwd = writePresetFile({
 			schemaVersion: 1,

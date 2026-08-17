@@ -682,7 +682,12 @@ export interface SessionTreeEvent {
 	fromExtension?: boolean;
 }
 
-/** Fired when the session leaf moves to another tree position (reroll, navigateTree). */
+/** Fired before rerolling, so extensions can intercept and delegate to a sub-session (e.g. character process in direct chat). Return { handled: true } to skip the default reroll logic. */
+export interface SessionBeforeRerollEvent {
+	type: "session_before_reroll";
+}
+
+export type SessionBeforeRerollResult = { handled: true; cancel?: false } | { handled?: false; cancel?: boolean };
 export interface LeafChangedEvent {
 	type: "leaf_changed";
 	newLeafId: string | null;
@@ -709,6 +714,7 @@ export type SessionEvent =
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
 	| SessionShutdownEvent
+	| SessionBeforeRerollEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent
 	| LeafChangedEvent
@@ -1281,6 +1287,10 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
+	on(
+		event: "session_before_reroll",
+		handler: ExtensionHandler<SessionBeforeRerollEvent, SessionBeforeRerollResult>,
+	): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "leaf_changed", handler: ExtensionHandler<LeafChangedEvent>): void;

@@ -31,12 +31,26 @@ export type PromptResourcePolicy = { allow?: string[]; deny?: never } | { allow?
 
 export type PromptPresetSlotFormat = "xml" | "json" | "plain" | "yaml";
 
+/** Custom XML wrapping for a block or slot item's rendered text. */
+export interface PromptPresetWrap {
+	/** XML tag name, e.g. "context" renders `<context>…</context>`. */
+	tag: string;
+	/** Optional attributes on the opening tag, e.g. `{ "lang": "zh" }`. */
+	attrs?: Record<string, string>;
+}
+
 export interface PromptPresetBaseItem {
 	kind: "block" | "slot";
 	id: string;
 	name?: string;
 	enabled?: boolean;
 	role?: PromptPresetRole;
+	/**
+	 * Wrap the rendered item text in a custom XML tag — a shorthand for
+	 * `<tag>…</tag>` (with optional `attrs`) around a block or slot. Applied
+	 * after macro expansion; skipped when the item renders empty.
+	 */
+	wrap?: string | PromptPresetWrap;
 }
 
 export interface PromptPresetBlockItem extends PromptPresetBaseItem {

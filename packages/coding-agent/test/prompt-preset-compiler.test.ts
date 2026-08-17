@@ -166,6 +166,56 @@ describe("chat-history position contract", () => {
 	});
 });
 
+describe("item wrap (custom XML tag)", () => {
+	it("wraps a block in a plain tag", () => {
+		const preset = presetWithItems([{ kind: "block", id: "b", content: "inner", wrap: "context" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(1);
+		expect(messageText(compiled[0])).toBe("<context>inner</context>");
+	});
+
+	it("wraps with attributes and escapes attribute values", () => {
+		const preset = presetWithItems([
+			{
+				kind: "block",
+				id: "b",
+				content: "x",
+				wrap: { tag: "note", attrs: { lang: "zh-CN", title: 'a "quoted" & <b>' } },
+			},
+		]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(messageText(compiled[0])).toBe('<note lang="zh-CN" title="a &quot;quoted&quot; &amp; &lt;b&gt;">x</note>');
+	});
+
+	it("wraps slot output", () => {
+		registerSlot({ name: "wrap-slot", description: "test", render: () => "slot content" });
+		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "wrap-slot", wrap: "slot_wrap" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(messageText(compiled[0])).toBe("<slot_wrap>slot content</slot_wrap>");
+	});
+
+	it("expands macros inside the wrapped content", () => {
+		registerMacro({ name: "wrapMacro", description: "test", render: () => "expanded" });
+		const preset = presetWithItems([{ kind: "block", id: "b", content: "Hello {{wrapMacro}}", wrap: "ctx" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(messageText(compiled[0])).toBe("<ctx>Hello expanded</ctx>");
+	});
+
+	it("skips wrapping when the item renders empty", () => {
+		registerSlot({ name: "wrap-empty-slot", description: "test", render: () => "" });
+		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "wrap-empty-slot", wrap: "ctx" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(0);
+	});
+
+	it("warns and leaves text unwrapped on an invalid tag name", () => {
+		const preset = presetWithItems([{ kind: "block", id: "b", content: "x", wrap: "bad tag!" }]);
+		const result = compileMessages(preset, runtime([]));
+		expect(messageText(result.messages[0])).toBe("x");
+		expect(result.diagnostics.some((d) => d.level === "warning" && d.message.includes("bad tag!"))).toBe(true);
+	});
+});
+
 describe("unresolvedMacroPolicy", () => {
 	const unresolvedPreset = (policy: "warn" | "keep" | "error") =>
 		presetWithItems([{ kind: "block", id: "b", content: "Hello {{doesNotExist}}" }], {

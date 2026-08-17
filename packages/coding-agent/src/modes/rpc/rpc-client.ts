@@ -267,6 +267,17 @@ export class RpcClient {
 	}
 
 	/**
+	 * Reroll: regenerate the last assistant response. Branches to the last
+	 * user message, restores state, and starts a regeneration run.
+	 * Returns true if reroll was performed, false if nothing to reroll
+	 * (session busy or no user message to branch to).
+	 */
+	async reroll(): Promise<boolean> {
+		const response = await this.send({ type: "reroll" });
+		return response.success;
+	}
+
+	/**
 	 * Start a new session, optionally with parent tracking.
 	 * @param parentSession - Optional parent session path for lineage tracking
 	 * @returns Object with `cancelled: true` if an extension cancelled the new session

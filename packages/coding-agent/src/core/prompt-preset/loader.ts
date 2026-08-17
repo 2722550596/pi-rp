@@ -272,7 +272,14 @@ function normalizeItem(
 		return undefined;
 	}
 
-	const base: { kind: "block" | "slot"; id: string; name?: string; enabled?: boolean; role?: PromptPresetRole } = {
+	const base: {
+		kind: "block" | "slot";
+		id: string;
+		name?: string;
+		enabled?: boolean;
+		role?: PromptPresetRole;
+		wrap?: string | { tag: string; attrs?: Record<string, string> };
+	} = {
 		kind: kind as "block" | "slot",
 		id: normalizeId(obj.id, `item[${index}]`),
 	};
@@ -281,6 +288,8 @@ function normalizeItem(
 	if (typeof obj.role === "string" && (VALID_ROLES as Set<string>).has(obj.role)) {
 		base.role = obj.role as PromptPresetRole;
 	}
+	const wrap = normalizeWrap(obj.wrap, base.id, diagnostics);
+	if (wrap) base.wrap = wrap;
 
 	if (kind === "block") {
 		if (typeof obj.content !== "string") {
@@ -376,6 +385,51 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 // =========================================================================
 // Helpers
 // =========================================================================
+
+function normalizeWrap(
+	value: unknown,
+	itemId: string,
+	diagnostics: PromptPresetDiagnostic[],
+): string | { tag: string; attrs?: Record<string, string> } | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "string") {
+		if (value.trim().length === 0) {
+			diagnostics.push({
+				level: "warning",
+				message: `Item "${itemId}" has an empty "wrap" tag; wrapping skipped.`,
+				itemId,
+			});
+			return undefined;
+		}
+		return value.trim();
+	}
+	if (isPlainObject(value)) {
+		const obj = value as Record<string, unknown>;
+		if (typeof obj.tag !== "string" || obj.tag.trim().length === 0) {
+			diagnostics.push({
+				level: "warning",
+				message: `Item "${itemId}" wrap must be a string or an object with a "tag" string; wrapping skipped.`,
+				itemId,
+			});
+			return undefined;
+		}
+		const wrap: { tag: string; attrs?: Record<string, string> } = { tag: obj.tag.trim() };
+		if (isPlainObject(obj.attrs)) {
+			const attrs: Record<string, string> = {};
+			for (const [key, val] of Object.entries(obj.attrs as Record<string, unknown>)) {
+				if (typeof val === "string") attrs[key] = val;
+			}
+			if (Object.keys(attrs).length > 0) wrap.attrs = attrs;
+		}
+		return wrap;
+	}
+	diagnostics.push({
+		level: "warning",
+		message: `Item "${itemId}" has an invalid "wrap" value; wrapping skipped.`,
+		itemId,
+	});
+	return undefined;
+}
 
 function normalizeId(value: unknown, fallback: string): string {
 	if (typeof value === "string" && value.trim().length > 0) return value.trim();

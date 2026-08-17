@@ -68,6 +68,7 @@ Each item is either a **block** (static text) or a **slot** (dynamic content ren
 | `enabled` | boolean | no | Set to `false` to skip. Default `true`. |
 | `role` | string | no | Message role: `"system"`, `"user"`, `"assistant"`, `"custom"`. Default `"system"` (when omitted). |
 | `content` | string | yes | Prompt text. Supports `{{macro}}` expansion. |
+| `wrap` | string or object | no | Wrap the rendered content in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
 
 #### Slot Item
 
@@ -83,6 +84,7 @@ Each item is either a **block** (static text) or a **slot** (dynamic content ren
 | `enabled` | boolean | no | Default `true`. |
 | `role` | string | no | Slot output role. Default `"system"`. |
 | `options` | object | no | Slot-specific options (see per-slot docs below). |
+| `wrap` | string or object | no | Wrap the slot's rendered output in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
 
 ### Compilation Model
 
@@ -106,6 +108,44 @@ output: [system(merged), user, assistant, system]
 items: [system, chat-history, user/assistant({{lastUserMessage}})]
 output: [system, <real conversation>, latest-user-message]
 ```
+
+## Wrapping Items
+
+Both `block` and `slot` items accept a `wrap` field that wraps the rendered text in a custom XML tag — a shorthand for adding structured context markers without hand-writing the tags around every item.
+
+```json
+{ "kind": "block", "id": "role", "content": "You are the world referee.", "wrap": "context" }
+```
+
+renders as:
+
+```xml
+<context>You are the world referee.</context>
+```
+
+An object form adds attributes to the opening tag:
+
+```json
+{
+  "kind": "slot",
+  "id": "state",
+  "slot": "state",
+  "wrap": { "tag": "world_state", "attrs": { "format": "yaml" } }
+}
+```
+
+renders as:
+
+```xml
+<world_state format="yaml">…slot output…</world_state>
+```
+
+Rules:
+
+- The wrap is applied **after** `{{macro}}` expansion, so macros inside the item expand normally.
+- Items that render empty are skipped entirely — no empty tag pair is emitted.
+- Attribute values are XML-escaped (`&`, `<`, `>`, `"`).
+- An invalid tag name (not an XML name) produces a warning diagnostic and leaves the text unwrapped.
 
 ## Built-in Slots
 
