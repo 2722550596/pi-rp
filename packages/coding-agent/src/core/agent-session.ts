@@ -2195,6 +2195,23 @@ export class AgentSession {
 				});
 				return true;
 			}
+			// Also match custom_message entries whose declared policy marks them
+			// as user turns (e.g. player_direct_input in WorldLines). The policy
+			// is registered by extensions via registerCustomType — pi-rp never
+			// hardcodes extension-specific customType values.
+			if (entry.type === "custom_message") {
+				const policy = this._extensionRunner.getCustomTypePolicy(entry.customType);
+				if (policy.llmRole === "user") {
+					const oldLeafId = this.sessionManager.getLeafId();
+					this._moveLeafAndRestoreState(entry.id);
+					this._emitSessionEvent({
+						type: "leaf_changed",
+						newLeafId: this.sessionManager.getLeafId(),
+						oldLeafId,
+					});
+					return true;
+				}
+			}
 		}
 		return false;
 	}
