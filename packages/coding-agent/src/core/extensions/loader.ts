@@ -665,7 +665,14 @@ function readPiManifest(packageJsonPath: string): PiManifest | null {
 }
 
 function isExtensionFile(name: string): boolean {
-	return name.endsWith(".ts") || name.endsWith(".js");
+	if (!name.endsWith(".ts") && !name.endsWith(".js")) {
+		return false;
+	}
+	// Skip test files (`foo.test.ts`, `foo.spec.js`, bare `test.ts`): they run
+	// under a test runner, not as extensions. Auto-loading them executes their
+	// top-level code (registerExtension side effects) on every startup.
+	const stem = name.slice(0, -3); // both ".ts" and ".js" are 3 chars
+	return stem !== "test" && stem !== "spec" && !stem.endsWith(".test") && !stem.endsWith(".spec");
 }
 
 /**

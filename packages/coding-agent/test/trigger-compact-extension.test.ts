@@ -7,6 +7,7 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
 		mode: "print",
 		hasUI: false,
 		ui: {} as ExtensionContext["ui"],
+		settings: {},
 		cwd: process.cwd(),
 		sessionManager: {} as ExtensionContext["sessionManager"],
 		modelRegistry: {} as ExtensionContext["modelRegistry"],

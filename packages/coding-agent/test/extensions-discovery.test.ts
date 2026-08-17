@@ -51,6 +51,19 @@ describe("extensions discovery", () => {
 		expect(result.extensions.map((e) => path.basename(e.path)).sort()).toEqual(["bar.ts", "foo.ts"]);
 	});
 
+	it("skips test files in extensions/", async () => {
+		fs.writeFileSync(path.join(extensionsDir, "foo.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "foo.test.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "bar.spec.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "test.ts"), extensionCode);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(path.basename(result.extensions[0].path)).toBe("foo.ts");
+	});
+
 	it("loads the coding-agent entrypoint without rewriting pi-ai provider subpaths", async () => {
 		fs.writeFileSync(
 			path.join(extensionsDir, "coding-agent-import.ts"),
