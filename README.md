@@ -24,7 +24,7 @@ The goal is not to replace Pi's extension model. It is to provide the layer that
 
 | Feature | Description |
 |---------|-------------|
-| **Prompt preset system** | JSON-based modular prompt stacks under `.pi/prompt-presets/`. Replace, append, or prepend system prompts. 13 built-in slots, macro engine (`{{date}}`, `{{lastUserMessage}}`, `{{tools}}`, custom macros), regex rules, hidden overrides for compaction and continue prompts. `/preset [id\|none]` to activate or disable, `/reload` to re-read preset files, `/prompt`. ExtensionAPI hooks for `registerSlot()` / `registerMacro()`. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md). |
+| **Prompt preset system** | JSON-based modular prompt stacks under `.pi/prompt-presets/`. Replace, append, or prepend system prompts. 13 built-in slots, macro engine (`{{date}}`, `{{tools}}`, custom macros), regex rules, hidden overrides for compaction and continue prompts. `/preset [id\|none]` to activate or disable, `/reload` to re-read preset files, `/prompt`. ExtensionAPI hooks for `registerSlot()` / `registerMacro()`. See [prompt-presets](packages/coding-agent/docs/prompt-presets.md). |
 | **`/reroll`** | Regenerate the last assistant reply. Works with branching and tree navigation. |
 | **`/continue`** | Force the agent to keep generating regardless of message state. |
 | **Live message editing** | Press `e` in `/tree` to edit any message content in-place. |

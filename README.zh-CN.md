@@ -24,7 +24,7 @@ Pi 的扩展系统非常强大，但有些能力太基础了，不适合放在�
 
 | 功能 | 描述 |
 |------|------|
-| **预设提示词系统** | 基于 JSON 的模块化提示词栈，放在 `.pi/prompt-presets/`。可替换、追加或前置系统提示词。内置 13 个 slot、宏引擎（`{{date}}`、`{{lastUserMessage}}`、`{{tools}}` 及自定义宏）、正则规则、针对 compact 和 continue 提示词的隐藏覆盖。`/preset [id\|none]` 激活或停用，`/reload` 重新读取预设文件，`/prompt`。ExtensionAPI 支持 `registerSlot()` / `registerMacro()`。详见 [prompt-presets](packages/coding-agent/docs/prompt-presets.md)。 |
+| **预设提示词系统** | 基于 JSON 的模块化提示词栈，放在 `.pi/prompt-presets/`。可替换、追加或前置系统提示词。内置 13 个 slot、宏引擎（`{{date}}`、`{{tools}}` 及自定义宏）、正则规则、针对 compact 和 continue 提示词的隐藏覆盖。`/preset [id\|none]` 激活或停用，`/reload` 重新读取预设文件，`/prompt`。ExtensionAPI 支持 `registerSlot()` / `registerMacro()`。详见 [prompt-presets](packages/coding-agent/docs/prompt-presets.md)。 |
 | **`/reroll`** | 重新生成上一条 assistant 回复，与分支、树形导航配合。 |
 | **`/continue`** | 无论最后消息处于什么状态，强制 agent 继续生成。 |
 | **实时消息编辑** | 在 `/tree` 中按 `e` 直接编辑任意消息内容。 |

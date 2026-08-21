@@ -74,16 +74,6 @@ registerMacro(
 
 registerMacro(
 	{
-		name: "lastUserMessage",
-		description: "The user's latest message.",
-		render: (ctx) => ctx.runtime.latestUserMessage ?? "",
-		static: true,
-	},
-	true,
-);
-
-registerMacro(
-	{
 		name: "tools",
 		description: "Comma-separated active tool names.",
 		render: (ctx) => (ctx.runtime.options.selectedTools ?? []).join(", "),

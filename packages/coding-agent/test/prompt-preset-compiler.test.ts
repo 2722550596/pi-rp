@@ -65,54 +65,6 @@ function presetWithItems(items: PromptPreset["items"], defaults?: PromptPreset["
 	return { schemaVersion: 1, id: "test", defaults, items };
 }
 
-describe("{{lastUserMessage}} derivation", () => {
-	const lastUserPreset = presetWithItems([
-		{ kind: "block", id: "persona", content: "You are a helpful assistant." },
-		{ kind: "block", id: "latest", role: "user", content: "{{lastUserMessage}}" },
-	]);
-
-	it("derives the last user message when latestUserMessage is unset", () => {
-		const messages = [userMessage("first"), assistantMessage("answer 1"), userMessage("second")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
-		// No chat-history slot, so only the preset items compile.
-		expect(compiled).toHaveLength(2);
-		expect(compiled[0].role).toBe("system");
-		expect(compiled[1].role).toBe("user");
-		expect(messageText(compiled[1])).toBe("second");
-	});
-
-	it("prefers an explicitly provided latestUserMessage", () => {
-		const messages = [userMessage("first"), userMessage("second")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages, { latestUserMessage: "explicit" })).messages;
-		expect(messageText(compiled[compiled.length - 1])).toBe("explicit");
-	});
-
-	it("skips trailing empty-text user messages", () => {
-		const messages = [userMessage("first"), userMessage("")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
-		expect(messageText(compiled[compiled.length - 1])).toBe("first");
-	});
-
-	it("renders the derived message through compileSystemPrompt too", () => {
-		const messages = [userMessage("hello"), assistantMessage("hi"), userMessage("world")];
-		const systemResult = compileSystemPrompt(lastUserPreset, runtime(messages), "");
-		expect(systemResult.systemPrompt).toContain("You are a helpful assistant.");
-		// The user-role item is not part of the system string.
-		expect(systemResult.systemPrompt).not.toContain("world");
-		// But the derived message array carries it:
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
-		expect(messageText(compiled[compiled.length - 1])).toBe("world");
-	});
-
-	it("keeps the synthetic Continue. edge case documented: a trailing continue-style user message is picked up", () => {
-		// continueSession injects { role: "user", content: [{type:"text", text:"Continue."}] }
-		// with no marker field, so it is indistinguishable from a real user message.
-		const messages = [userMessage("real question"), userMessage("Continue.")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
-		expect(messageText(compiled[compiled.length - 1])).toBe("Continue.");
-	});
-});
-
 describe("chat-history position contract", () => {
 	const positionedPreset = presetWithItems([
 		{ kind: "block", id: "a", content: "System A" },
@@ -290,7 +242,7 @@ describe("public extension surface stays intact", () => {
 		expect(typeof getAllMacros).toBe("function");
 		expect(typeof expandContentMacros).toBe("function");
 		expect(getAllSlots().some((s) => s.name === "chat-history")).toBe(true);
-		expect(getAllMacros().some((m) => m.name === "lastUserMessage")).toBe(true);
+		expect(getAllMacros().some((m) => m.name === "date")).toBe(true);
 	});
 
 	it("registerSlot accepts the position field without breaking the signature", () => {

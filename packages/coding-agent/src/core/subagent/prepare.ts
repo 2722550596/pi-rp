@@ -178,7 +178,6 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 			messages:
 				options.inheritMessages ??
 				(inheritHistory > 0 ? options.session.agent.state.messages.slice(-inheritHistory) : []),
-			latestUserMessage: undefined,
 			now: new Date(),
 			variables: {},
 			skills: options.session.systemPromptOptions.skills ?? [],
@@ -200,7 +199,6 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 		runtime = {
 			options: systemPromptOptions,
 			messages: [],
-			latestUserMessage: undefined,
 			now: new Date(),
 			variables: {},
 			skills: [],

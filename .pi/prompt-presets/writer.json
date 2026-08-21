@@ -43,15 +43,7 @@
     {
       "kind": "slot",
       "id": "chat-history",
-      "slot": "chat-history",
-      "options": { "omitLatestUser": true }
-    },
-    {
-      "kind": "block",
-      "id": "latest-user-msg",
-      "name": "Latest User Message",
-      "role": "user",
-      "content": "{{lastUserMessage}}"
+      "slot": "chat-history"
     }
   ]
 }
