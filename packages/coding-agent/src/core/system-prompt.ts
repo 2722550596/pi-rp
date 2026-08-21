@@ -73,6 +73,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const runtime: PromptRuntime = {
 		options,
 		messages: [],
+		latestUserMessage: undefined,
 		now: new Date(),
 		variables: {},
 		skills,

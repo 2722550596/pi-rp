@@ -344,6 +344,7 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 	if (options.onlyWithSnippets === false) result.onlyWithSnippets = false;
 	if (options.requireReadTool === false) result.requireReadTool = false;
 	if (options.includeTime === true) result.includeTime = true;
+	if (typeof options.omitLatestUser === "boolean") result.omitLatestUser = options.omitLatestUser;
 	if (typeof options.maxMessages === "number") result.maxMessages = options.maxMessages;
 	if (typeof options.maxChars === "number") result.maxChars = options.maxChars;
 	if (options.stripAssistantThinking === true || options.stripAssistantThinking === "previous-traces") {
@@ -364,6 +365,7 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 		"includeTime",
 		"omitNamespace",
 		"allowNamespace",
+		"omitLatestUser",
 		"maxMessages",
 		"maxChars",
 		"stripAssistantThinking",

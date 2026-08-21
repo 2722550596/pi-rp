@@ -103,6 +103,8 @@ export interface PromptPresetSlotOptions {
 	maxMessages?: number;
 	/** Keep only the most recent messages within an approximate character budget. */
 	maxChars?: number;
+	/** If true, skip the latest user message in history (for re-insertion via {{lastUserMessage}}). */
+	omitLatestUser?: boolean;
 	/**
 	 * Remove assistant thinking content blocks from inserted history.
 	 * `true` strips thinking from every assistant message; `"previous-traces"`
@@ -213,6 +215,7 @@ export interface PromptPreset {
 export interface PromptRuntime {
 	options: BuildSystemPromptOptions;
 	messages: AgentMessage[];
+	latestUserMessage?: string;
 	now: Date;
 	variables: Record<string, string>;
 	skills: Skill[];

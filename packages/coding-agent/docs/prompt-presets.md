@@ -105,8 +105,8 @@ output: [system(merged), user, assistant, system]
 ```
 
 ```
-items: [system, chat-history, user]
-output: [system, <real conversation>, user(merged)]
+items: [system, chat-history, user/assistant({{lastUserMessage}})]
+output: [system, <real conversation>, latest-user-message]
 ```
 
 ## Wrapping Items
@@ -216,6 +216,7 @@ The conversation insertion point. This slot determines WHERE in the message arra
 |---|---|---|---|
 | `maxMessages` | number | — | Keep only most recent N messages. |
 | `maxChars` | number | — | Keep only messages within this character budget. |
+| `omitLatestUser` | boolean | `false` | Drop latest user message (for re-insertion via `{{lastUserMessage}}`). |
 | `stripAssistantThinking` | `boolean`, `"previous-traces"` | `false` | Remove `thinking` blocks from assistant messages. `true` strips every assistant message; `"previous-traces"` strips only traces (agent start to agent end) completed before the current one, keeping the current trace's thinking intact — useful in the tool-calling loop where the current round's reasoning stays coherent across turns. |
 | `roles` | string[] | — | Only include these roles (e.g. `["user", "assistant"]`). |
 | `toolMode` | `"keep"`, `"drop"` | `"keep"` | Keep or discard tool call/result messages. |
@@ -248,6 +249,7 @@ In block `content` fields, wrap a macro name in `{{}}` to expand it at compile t
 | `{{date}}` | Current date (YYYY-MM-DD). | yes |
 | `{{time}}` | Current time (HH:MM:SS). | yes |
 | `{{cwd}}` | Current working directory. | yes |
+| `{{lastUserMessage}}` | The user's most recent message content. | yes |
 | `{{tools}}` / `{{selectedTools}}` | Comma-separated active tool names. | yes |
 | `{{activeModel}}` | Reserved. | yes |
 | `{{user}}` | User display name (from `settings.json` `userName`). | no |
@@ -616,7 +618,7 @@ Any field left undefined falls through to the built-in default, which wraps the 
 
 ### Full Replacement: Writer
 
-Replaces the default prompt with a dedicated writing persona:
+Places chat-history before the latest user message to simulate natural turn flow:
 
 ```json
 {
@@ -628,12 +630,13 @@ Replaces the default prompt with a dedicated writing persona:
     { "kind": "slot", "id": "tools", "slot": "tools", "options": { "onlyWithSnippets": true } },
     { "kind": "slot", "id": "context", "slot": "project-context" },
     { "kind": "slot", "id": "cwd", "slot": "date-cwd" },
-    { "kind": "slot", "id": "chat", "slot": "chat-history" }
+    { "kind": "slot", "id": "chat", "slot": "chat-history", "options": { "omitLatestUser": true } },
+    { "kind": "block", "id": "latest", "role": "user", "content": "{{lastUserMessage}}" }
   ]
 }
 ```
 
-Compiled output: `[system persona+tools+context+cwd] [real conversation]`
+Compiled output: `[system persona+tools+context+cwd] [real conversation] [user: lastUserMessage]`
 
 ### Read-Only: Code Reviewer
 

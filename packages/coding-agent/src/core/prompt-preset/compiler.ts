@@ -91,8 +91,13 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
 	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
 
+	// {{lastUserMessage}} resolves from the last real user-role message when
+	// PromptRuntime.latestUserMessage is unset. All construction sites pass
+	// undefined; the derivation happens here in the compile path.
+	const effectiveRuntime = withDerivedLatestUserMessage(runtime);
+
 	for (const item of beforeItems) {
-		addSyntheticMessage(result, item, preset, runtime, sources, diagnostics);
+		addSyntheticMessage(result, item, preset, effectiveRuntime, sources, diagnostics);
 	}
 
 	if (chatHistoryIndex !== -1) {
@@ -138,6 +143,16 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 			shouldRepairToolPairs = true;
 		}
 
+		// Omit latest user message
+		const omitLatestUser = options?.omitLatestUser;
+		if (omitLatestUser && limited.length > 0) {
+			const lastUserIdx = findLastUserMessageIndex(limited);
+			if (lastUserIdx !== -1) {
+				limited = limited.slice(0, lastUserIdx).concat(limited.slice(lastUserIdx + 1));
+				shouldRepairToolPairs = true;
+			}
+		}
+
 		// Repair dangling tool pairs after filtering
 		if (shouldRepairToolPairs && options?.toolMode !== "drop") {
 			limited = repairToolPairs(limited);
@@ -153,7 +168,7 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	}
 
 	for (const item of afterItems) {
-		addSyntheticMessage(result, item, preset, runtime, sources, diagnostics);
+		addSyntheticMessage(result, item, preset, effectiveRuntime, sources, diagnostics);
 	}
 
 	// Squash consecutive same-role messages: merge adjacent messages with the same role
@@ -300,6 +315,46 @@ function addSyntheticMessage(
 		itemName: item.name,
 		slot: item.kind === "slot" ? (item as PromptPresetSlotItem).slot : undefined,
 	});
+}
+
+function findLastUserMessageIndex(messages: AgentMessage[]): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "user") return i;
+	}
+	return -1;
+}
+
+/**
+ * Resolve `latestUserMessage` for the compile: an explicitly provided value
+ * wins; otherwise derive it from the last user-role message with non-empty
+ * text in `runtime.messages`. Returns a shallow copy so `setvar`/`addvar`
+ * macro mutations still land on the caller's variables object.
+ */
+function withDerivedLatestUserMessage(runtime: PromptRuntime): PromptRuntime {
+	if (runtime.latestUserMessage !== undefined) return runtime;
+	return { ...runtime, latestUserMessage: deriveLatestUserMessage(runtime.messages) };
+}
+
+/**
+ * Find the text of the last user-role message in `messages`.
+ *
+ * Edge case: the synthetic non-persisted "Continue." message injected by
+ * continueSession is a plain `{ role: "user", content: [{type:"text", ...}] }`
+ * with no marker field, so it is indistinguishable from a real user message
+ * and cannot be excluded here. After a /continue, the derived value may be the
+ * continue text (e.g. "Continue."). Presets that re-insert the latest user
+ * message should pair {{lastUserMessage}} with the chat-history
+ * `omitLatestUser` option; excluding the continue injection would require the
+ * session to tag the message, which is out of scope for the compiler.
+ */
+function deriveLatestUserMessage(messages: AgentMessage[]): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role !== "user") continue;
+		const text = contentToText(msg);
+		if (text.trim()) return text;
+	}
+	return undefined;
 }
 
 function takeRecentMessagesWithinChars(messages: AgentMessage[], maxChars: number): AgentMessage[] {

@@ -1391,6 +1391,7 @@ export class AgentSession {
 		const staticRuntime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: [],
+			latestUserMessage: undefined,
 			now: new Date(),
 			variables: {},
 			skills: loadedSkills,
@@ -1610,6 +1611,7 @@ export class AgentSession {
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
 			currentTraceStartIndex: this._currentTraceStartIndex,
+			latestUserMessage: undefined,
 			now: new Date(),
 			variables: { user: this.settingsManager.getUserName() },
 			skills: loadedSkills,
@@ -1625,6 +1627,7 @@ export class AgentSession {
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
+			latestUserMessage: undefined,
 			now: new Date(),
 			variables: {},
 			skills: loadedSkills,
