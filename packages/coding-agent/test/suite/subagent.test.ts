@@ -291,4 +291,95 @@ describe("Subagent", () => {
 			harness.cleanup();
 		}
 	});
+
+	it("Phase 6: peer completion resolves {{user}} from the parent session's user name", async () => {
+		const harness = await createHarness({ settings: { userName: "凌霜" } });
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-user-macro.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-user-macro",
+					delegatable: true,
+					items: [
+						{
+							kind: "block",
+							id: "role",
+							enabled: true,
+							role: "system",
+							content: "Player display name: {{user}}",
+						},
+					],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const result = prepareSubagentConversation({
+				cwd: harness.tempDir,
+				profileId: "test-user-macro",
+				task: "task",
+				modelRuntime: harness.session.modelRuntime,
+				session: harness.session,
+			});
+
+			assert.equal(isPrepareError(result), false);
+			if (!isPrepareError(result)) {
+				const allText = result.messages.map((m) => getMessageText(m)).join("\n");
+				assert.ok(allText.includes("Player display name: 凌霜"), `{{user}} unresolved in: ${allText}`);
+				assert.ok(
+					!allText.includes("Player display name: user"),
+					"{{user}} must not fall back to the literal 'user' when a parent session exists",
+				);
+			}
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("Phase 6b: preset static variables compile, and the session user name wins on collision", async () => {
+		const harness = await createHarness({ settings: { userName: "凌霜" } });
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-preset-vars.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-preset-vars",
+					delegatable: true,
+					variables: { era: "承平七年", user: "should-be-overridden" },
+					items: [
+						{
+							kind: "block",
+							id: "role",
+							enabled: true,
+							role: "system",
+							content: "Era: {{era}} / Player: {{user}}",
+						},
+					],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const result = prepareSubagentConversation({
+				cwd: harness.tempDir,
+				profileId: "test-preset-vars",
+				task: "task",
+				modelRuntime: harness.session.modelRuntime,
+				session: harness.session,
+			});
+
+			assert.equal(isPrepareError(result), false);
+			if (!isPrepareError(result)) {
+				const allText = result.messages.map((m) => getMessageText(m)).join("\n");
+				assert.ok(allText.includes("Era: 承平七年"), `preset variable unresolved in: ${allText}`);
+				assert.ok(allText.includes("Player: 凌霜"), "session user name must win over the preset static");
+				assert.ok(!allText.includes("should-be-overridden"));
+			}
+		} finally {
+			harness.cleanup();
+		}
+	});
 });

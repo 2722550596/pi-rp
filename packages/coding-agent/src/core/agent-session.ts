@@ -1599,6 +1599,15 @@ export class AgentSession {
 		}
 	}
 	/**
+	 * Variables for a preset compile: the active preset's static `variables`
+	 * first, then session facts (`user`) which win on key collision. Single
+	 * source for every compile site so `/prompt` display cannot diverge from
+	 * what is actually sent.
+	 */
+	private _buildRuntimeVariables(): Record<string, string> {
+		return { ...this._activePreset.variables, user: this.settingsManager.getUserName() };
+	}
+	/**
 	 * Get compiled preset messages for injection into the LLM context.
 	 * Uses compileMessages() which correctly handles chat-history slot positioning.
 	 * Returns [] when a custom prompt exists (system is in systemPrompt field).
@@ -1613,7 +1622,7 @@ export class AgentSession {
 			currentTraceStartIndex: this._currentTraceStartIndex,
 			latestUserMessage: undefined,
 			now: new Date(),
-			variables: { user: this.settingsManager.getUserName() },
+			variables: this._buildRuntimeVariables(),
 			skills: loadedSkills,
 			state: this._stateManager.snapshot(),
 		};
@@ -1629,7 +1638,7 @@ export class AgentSession {
 			messages: this.agent.state.messages,
 			latestUserMessage: undefined,
 			now: new Date(),
-			variables: {},
+			variables: this._buildRuntimeVariables(),
 			skills: loadedSkills,
 			state: this._stateManager.snapshot(),
 		};

@@ -180,7 +180,10 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 				(inheritHistory > 0 ? options.session.agent.state.messages.slice(-inheritHistory) : []),
 			latestUserMessage: undefined,
 			now: new Date(),
-			variables: {},
+			// Preset statics first, then the parent's session facts: a subagent
+			// preset writing {{user}} must resolve to the same display name the
+			// parent session shows, not the `user` fallback baked into the macro.
+			variables: { ...preset.variables, user: options.session.settingsManager.getUserName() },
 			skills: options.session.systemPromptOptions.skills ?? [],
 			state: options.stateNamespaces
 				? pick(options.session.stateManager.snapshot(), options.stateNamespaces)
@@ -202,7 +205,8 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 			messages: [],
 			latestUserMessage: undefined,
 			now: new Date(),
-			variables: {},
+			// No parent session: only the preset's own statics are available.
+			variables: { ...preset.variables },
 			skills: [],
 		};
 	}
