@@ -848,9 +848,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// Move the session tree leaf to the target's rollback position
 				// (no summarization: used by the writer process to rewind a
 				// character session in lockstep with its own rollback).
+				// editorText：目标为玩家输入条目时 = 该条目的文本（引擎语义
+				// 「text goes to editor」），供前端跳转后回填输入框继续该分支。
 				try {
 					const result = await session.navigateTree(command.targetId, { summarize: false });
-					return success(id, "navigate_tree", { cancelled: result.cancelled });
+					return success(id, "navigate_tree", { cancelled: result.cancelled, editorText: result.editorText });
 				} catch (err) {
 					return error(id, "navigate_tree", err instanceof Error ? err.message : String(err));
 				}

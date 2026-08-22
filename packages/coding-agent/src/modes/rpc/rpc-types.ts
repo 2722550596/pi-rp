@@ -258,7 +258,7 @@ export type RpcResponse =
 			type: "response";
 			command: "navigate_tree";
 			success: true;
-			data: { cancelled: boolean };
+			data: { cancelled: boolean; editorText?: string };
 	  }
 	| {
 			id?: string;
