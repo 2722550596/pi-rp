@@ -98,4 +98,43 @@ describe("prompt preset loader", () => {
 			branchSummaryPrompt: "b",
 		});
 	});
+
+	it("passes through chat-history toolMode drop + dropToolNames whitelist", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [
+				{
+					kind: "slot",
+					id: "chat",
+					slot: "chat-history",
+					options: { toolMode: "drop", dropToolNames: ["show_html"] },
+				},
+			],
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].diagnostics).toEqual([]);
+		expect(loaded[0].preset.items[0]).toMatchObject({
+			options: { toolMode: "drop", dropToolNames: ["show_html"] },
+		});
+	});
+
+	it("drops non-string dropToolNames entries instead of passing garbage through", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [
+				{
+					kind: "slot",
+					id: "chat",
+					slot: "chat-history",
+					options: { toolMode: "drop", dropToolNames: ["show_html", 42] },
+				},
+			],
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].preset.items[0]).toMatchObject({ options: { dropToolNames: ["show_html"] } });
+	});
 });

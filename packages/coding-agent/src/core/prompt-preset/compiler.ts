@@ -127,7 +127,7 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 
 		// Drop tool history
 		if (options?.toolMode === "drop") {
-			filtered = dropToolHistory(filtered);
+			filtered = dropToolHistory(filtered, options?.dropToolNames);
 		}
 
 		// Apply history limits
@@ -421,22 +421,40 @@ function isToolResultMessage(message: AgentMessage): boolean {
 	return message.role === "toolResult";
 }
 
-function stripToolCallParts(message: AgentMessage): { message: AgentMessage | null; removedCalls: number } {
+function stripToolCallParts(
+	message: AgentMessage,
+	dropNames?: Set<string>,
+): { message: AgentMessage | null; removedCalls: number } {
 	if (message.role !== "assistant") return { message, removedCalls: 0 };
 	const content = (message as { content?: unknown }).content;
 	if (!Array.isArray(content)) return { message, removedCalls: 0 };
-	const kept = content.filter((part: { type?: string }) => part?.type !== "toolCall");
+	const kept = content.filter((part: { type?: string; name?: string }) => {
+		if (part?.type !== "toolCall") return true;
+		// 无白名单 → 剥离全部 toolCall；有白名单 → 只剥离名单内工具
+		return dropNames ? !dropNames.has(part.name ?? "") : false;
+	});
 	const removed = content.length - kept.length;
 	if (removed === 0) return { message, removedCalls: 0 };
 	if (kept.length === 0) return { message: null, removedCalls: removed };
 	return { message: { ...message, content: kept } as AgentMessage, removedCalls: removed };
 }
 
-function dropToolHistory(messages: AgentMessage[]): AgentMessage[] {
+/**
+ * toolMode: "drop" 的删除实现。dropToolNames 提供白名单时只删除名单内工具的
+ * 历史（assistant 消息里的 toolCall 块 + 对应 toolResult 消息），其余工具历史
+ * 保留；缺省/空数组 = 删除全部工具历史（向后兼容现状）。
+ * toolResult 消息按 toolName 匹配，assistant 内 toolCall 块按 name 匹配。
+ */
+function dropToolHistory(messages: AgentMessage[], dropToolNames?: string[]): AgentMessage[] {
+	const names = dropToolNames && dropToolNames.length > 0 ? new Set(dropToolNames) : null;
 	const result: AgentMessage[] = [];
 	for (const msg of messages) {
-		if (isToolResultMessage(msg)) continue;
-		const stripped = stripToolCallParts(msg);
+		if (isToolResultMessage(msg)) {
+			if (!names || names.has((msg as { toolName?: unknown }).toolName as string)) continue;
+			result.push(msg);
+			continue;
+		}
+		const stripped = stripToolCallParts(msg, names ?? undefined);
 		if (!stripped.message) continue;
 		result.push(stripped.message);
 	}

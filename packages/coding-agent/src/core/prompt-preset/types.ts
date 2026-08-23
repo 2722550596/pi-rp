@@ -117,6 +117,12 @@ export interface PromptPresetSlotOptions {
 	roles?: string[];
 	/** Keep or drop prior tool call/result messages. */
 	toolMode?: "keep" | "drop";
+	/**
+	 * 与 `toolMode: "drop"` 配合：仅删除名单内工具的历史（assistant 消息里的
+	 * toolCall 块 + 对应 toolResult 消息），其余工具历史保留；缺省/空数组 =
+	 * 删除全部工具历史（向后兼容现状）。
+	 */
+	dropToolNames?: string[];
 	/** Include Pi branch/compaction summary messages. */
 	includeSummaries?: boolean;
 }

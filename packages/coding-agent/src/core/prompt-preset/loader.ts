@@ -352,6 +352,9 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 	}
 	if (Array.isArray(options.roles)) result.roles = options.roles.filter((r): r is string => typeof r === "string");
 	if (options.toolMode === "drop") result.toolMode = "drop";
+	if (Array.isArray(options.dropToolNames)) {
+		result.dropToolNames = options.dropToolNames.filter((n): n is string => typeof n === "string");
+	}
 	if (options.includeSummaries === false) result.includeSummaries = false;
 
 	// Pass through unknown keys so custom slots (registered by extensions) can
@@ -371,6 +374,7 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 		"stripAssistantThinking",
 		"roles",
 		"toolMode",
+		"dropToolNames",
 		"includeSummaries",
 	]);
 	for (const key of Object.keys(options)) {

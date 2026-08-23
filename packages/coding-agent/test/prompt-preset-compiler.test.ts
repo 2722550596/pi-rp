@@ -304,3 +304,126 @@ describe("public extension surface stays intact", () => {
 		expect(getSlot("position-probe")?.position).toBe("content");
 	});
 });
+
+describe("chat-history toolMode drop 与 dropToolNames 白名单", () => {
+	function toolCallMessage(
+		parts: Array<{ type: "toolCall"; name: string; id: string; arguments?: Record<string, unknown> }>,
+	): AgentMessage {
+		return {
+			role: "assistant",
+			content: parts.map((p) => ({ ...p, arguments: p.arguments ?? {} })),
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-4o-mini",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		};
+	}
+
+	function toolResultMessage(toolCallId: string, toolName: string): AgentMessage {
+		return {
+			role: "toolResult",
+			toolCallId,
+			toolName,
+			content: [{ type: "text", text: `result of ${toolName}` }],
+			isError: false,
+			timestamp: 0,
+		};
+	}
+
+	function dropPreset(options: Record<string, unknown>): PromptPreset {
+		return presetWithItems([
+			{ kind: "block", id: "a", content: "System A" },
+			{ kind: "slot", id: "chat", slot: "chat-history", options },
+		]);
+	}
+
+	function toolNamesOf(compiled: AgentMessage[]): string[] {
+		const names: string[] = [];
+		for (const msg of compiled) {
+			if (msg.role === "toolResult") {
+				names.push(`result:${(msg as { toolName?: string }).toolName}`);
+			} else if (msg.role === "assistant" && Array.isArray(msg.content)) {
+				for (const part of msg.content as Array<{ type?: string; name?: string }>) {
+					if (part?.type === "toolCall") names.push(`call:${part.name}`);
+				}
+			}
+		}
+		return names;
+	}
+
+	const history = (): AgentMessage[] => [
+		userMessage("请展示现场图片"),
+		toolCallMessage([
+			{ type: "toolCall", name: "show_html", id: "c1" },
+			{ type: "toolCall", name: "read_file", id: "c2" },
+		]),
+		toolResultMessage("c1", "show_html"),
+		toolResultMessage("c2", "read_file"),
+		assistantMessage("好的，图片已展示。"),
+	];
+
+	it("dropToolNames 白名单：只删名单内工具的 toolCall 块 + toolResult，其余历史保留", () => {
+		const compiled = compileMessages(
+			dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
+			runtime(history()),
+		).messages;
+		expect(toolNamesOf(compiled)).toEqual(["call:read_file", "result:read_file"]);
+		// 文本消息与 toolResult 之外的历史原样保留
+		expect(messageText(compiled[0])).toBe("System A");
+		expect(compiled.map(messageText)).toContain("好的，图片已展示。");
+	});
+
+	it("dropToolNames 名单外工具完整保留（含同一条 assistant 消息里的其他 toolCall 块）", () => {
+		const compiled = compileMessages(
+			dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
+			runtime([
+				userMessage("开电脑"),
+				toolCallMessage([
+					{ type: "toolCall", name: "show_html", id: "c1" },
+					{ type: "toolCall", name: "read_file", id: "c2" },
+					{ type: "toolCall", name: "bash", id: "c3" },
+				]),
+				toolResultMessage("c1", "show_html"),
+				toolResultMessage("c2", "read_file"),
+				toolResultMessage("c3", "bash"),
+			]),
+		).messages;
+		// show_html 的 toolCall 块被剥离；read_file/bash 的块原样保留
+		// （toolResult 相邻时会被 squash 合并，这里只按 call 块断言）
+		expect(toolNamesOf(compiled).filter((n) => n.startsWith("call:"))).toEqual(["call:read_file", "call:bash"]);
+		// show_html 的 toolResult 被删；其余工具结果内容保留（相邻 toolResult 被 squash 合并）
+		expect(JSON.stringify(compiled)).not.toContain("show_html");
+		expect(compiled.map(messageText).join("\n")).toContain("result of read_file");
+		expect(compiled.map(messageText).join("\n")).toContain("result of bash");
+	});
+
+	it("无 dropToolNames + toolMode drop = 全删（向后兼容回归）", () => {
+		const compiled = compileMessages(dropPreset({ toolMode: "drop" }), runtime(history())).messages;
+		expect(toolNamesOf(compiled)).toEqual([]);
+		// toolCall 块被剥离后 assistant 消息仍含文本 → 保留
+		expect(compiled.some((m) => m.role === "assistant" && messageText(m).length > 0)).toBe(true);
+	});
+
+	it("toolCall 块被全部剥离后 assistant 消息为空 → 整条删除", () => {
+		const compiled = compileMessages(
+			dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
+			runtime([
+				userMessage("开电脑"),
+				toolCallMessage([{ type: "toolCall", name: "show_html", id: "c1" }]),
+				toolResultMessage("c1", "show_html"),
+			]),
+		).messages;
+		expect(toolNamesOf(compiled)).toEqual([]);
+		// 仅剩 system 块与 user 消息
+		expect(compiled.map((m) => m.role)).toEqual(["system", "user"]);
+	});
+});
