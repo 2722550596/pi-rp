@@ -771,7 +771,7 @@ Extension prompt content`,
 name: test-skill
 description: A test skill
 ---
-Content`,
+Skill content here.`,
 			);
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir, noSkills: true });
@@ -803,6 +803,66 @@ Content`,
 
 			const { skills } = loader.getSkills();
 			expect(skills.some((s) => s.name === "custom")).toBe(true);
+		});
+	});
+
+	describe("reloadPromptTemplates", () => {
+		it("should re-scan last prompt paths after files change (narrow hot reload)", async () => {
+			const promptDir = join(tempDir, "custom-prompts");
+			mkdirSync(promptDir, { recursive: true });
+			const promptPath = join(promptDir, "jump.md");
+			writeFileSync(
+				promptPath,
+				`---
+description: 第一版
+---
+第一版正文`,
+			);
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				additionalPromptTemplatePaths: [promptDir],
+			});
+			await loader.reload();
+
+			const first = loader.getPrompts().prompts.find((p) => p.name === "jump");
+			expect(first?.content).toBe("第一版正文");
+			expect(first?.description).toBe("第一版");
+
+			// 修改文件 → 窄重载 → 内容更新（无需整会话 reload）
+			writeFileSync(
+				promptPath,
+				`---
+description: 第二版
+argument-hint: "[时长]"
+---
+第二版正文`,
+			);
+			loader.reloadPromptTemplates();
+
+			const second = loader.getPrompts().prompts.find((p) => p.name === "jump");
+			expect(second?.content).toBe("第二版正文");
+			expect(second?.description).toBe("第二版");
+			expect(second?.argumentHint).toBe("[时长]");
+		});
+
+		it("should drop templates whose files were removed", async () => {
+			const promptDir = join(tempDir, "custom-prompts-rm");
+			mkdirSync(promptDir, { recursive: true });
+			writeFileSync(join(promptDir, "gone.md"), "---\ndescription: 将删除\n---\n正文");
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				additionalPromptTemplatePaths: [promptDir],
+			});
+			await loader.reload();
+			expect(loader.getPrompts().prompts.some((p) => p.name === "gone")).toBe(true);
+
+			rmSync(join(promptDir, "gone.md"));
+			loader.reloadPromptTemplates();
+			expect(loader.getPrompts().prompts.some((p) => p.name === "gone")).toBe(false);
 		});
 	});
 

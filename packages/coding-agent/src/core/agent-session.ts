@@ -3285,6 +3285,7 @@ export class AgentSession {
 			const templates: SlashCommandInfo[] = this.promptTemplates.map((template) => ({
 				name: template.name,
 				description: template.description,
+				...(template.argumentHint && { argumentHint: template.argumentHint }),
 				source: "prompt",
 				sourceInfo: template.sourceInfo,
 			}));
@@ -3665,6 +3666,16 @@ export class AgentSession {
 		// Apply the restored/active preset's tools policy after re-registering tools,
 		// so extension tools added by includeAllExtensionTools are also filtered.
 		this._syncActiveToolPolicy();
+	}
+
+	/**
+	 * 窄重载：只重扫 prompt 模板（不重载扩展/runtime/事件），并广播
+	 * resources_discover(reason:"reload") 供宿主（handoff 等）转发给关联子进程。
+	 * 安装/编辑命令后调用，无需重启会话即生效。
+	 */
+	async reloadPromptTemplates(): Promise<void> {
+		this._resourceLoader.reloadPromptTemplates();
+		await this.extendResourcesFromExtensions("reload");
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {

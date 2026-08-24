@@ -89,6 +89,7 @@ export async function runSubagent(
 			getAppendSystemPrompt: () => [],
 			getAppendSystemPromptSources: () => [],
 			extendResources: () => {},
+			reloadPromptTemplates: () => {},
 			reload: async () => {},
 		},
 	});

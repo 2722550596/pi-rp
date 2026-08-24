@@ -900,6 +900,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					commands.push({
 						name: template.name,
 						description: template.description,
+						...(template.argumentHint && { argumentHint: template.argumentHint }),
 						source: "prompt",
 						sourceInfo: template.sourceInfo,
 					});
@@ -915,6 +916,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 
 				return success(id, "get_commands", { commands });
+			}
+
+			case "reload_prompts": {
+				// 窄重载：只重扫 prompt 模板（不碰扩展/runtime/事件）；rpc-mode 串行，
+				// 若当前有回合在生成，本命令排在回合后执行，下一句输入即用新模板。
+				await session.reloadPromptTemplates();
+				return success(id, "reload_prompts");
 			}
 
 			default: {

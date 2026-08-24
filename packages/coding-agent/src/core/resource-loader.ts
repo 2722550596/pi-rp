@@ -47,6 +47,8 @@ export interface ResourceLoader {
 	getAppendSystemPrompt(): string[];
 	getAppendSystemPromptSources(): Array<{ path: string }>;
 	extendResources(paths: ResourceExtensionPaths): void;
+	/** 窄重载：只重扫 prompt 模板（不碰扩展/runtime/事件）。用于命令安装/编辑后的热加载。 */
+	reloadPromptTemplates(): void;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
 }
 
@@ -374,6 +376,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 			);
 			this.updateThemesFromPaths(this.lastThemePaths, this.resourceMetadataByPath);
 		}
+	}
+
+	/** 窄重载：按 lastPromptPaths 重扫磁盘上的模板（新增/修改/删除文件即拾取）。 */
+	reloadPromptTemplates(): void {
+		this.updatePromptsFromPaths(this.lastPromptPaths, this.resourceMetadataByPath);
 	}
 
 	async loadProjectTrustExtensions(): Promise<LoadExtensionsResult> {

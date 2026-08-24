@@ -96,7 +96,10 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+
+	// Narrow hot reload: re-scan prompt templates only (no extension/runtime restart)
+	| { id?: string; type: "reload_prompts" };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -108,6 +111,8 @@ export interface RpcSlashCommand {
 	name: string;
 	/** Human-readable description */
 	description?: string;
+	/** Argument placeholder hint (e.g. "[时长]") — prompt templates only */
+	argumentHint?: string;
 	/** What kind of command this is */
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
@@ -284,6 +289,7 @@ export type RpcResponse =
 			success: true;
 			data: { commands: RpcSlashCommand[] };
 	  }
+	| { id?: string; type: "response"; command: "reload_prompts"; success: true }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };

@@ -569,6 +569,13 @@ export class RpcClient {
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
 	}
 
+	/**
+	 * 窄重载：只重扫 prompt 模板（不重载扩展/runtime），宿主进程经此转发给角色池。
+	 */
+	async reloadPromptTemplates(): Promise<void> {
+		await this.send({ type: "reload_prompts" });
+	}
+
 	// =========================================================================
 	// Helpers
 	// =========================================================================

@@ -41,6 +41,7 @@ describe("issue #7193 extension event-bus lifecycle", () => {
 			getAppendSystemPrompt: () => [],
 			getAppendSystemPromptSources: () => [],
 			extendResources: () => {},
+			reloadPromptTemplates: () => {},
 			reload: async () => {
 				extensionsResult = await loadExtensions();
 			},
