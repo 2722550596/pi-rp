@@ -69,6 +69,17 @@ export interface BashExecutionMessage {
 export interface CustomTypePolicy {
 	context: "include" | "exclude";
 	llmRole: "user" | "assistant";
+	/**
+	 * 是否参与 compaction / branch-summary 总结（缺省 "include"，可不填）。
+	 *
+	 * - "include"（缺省）：照常进入总结输入（叙事正文、玩家输入、工具结果都该被总结）。
+	 * - "exclude"：实时上下文照常可见（context 仍为 include），但 compaction 与分支总结
+	 *   的输入里被过滤掉——用于「注入式」消息（如 worldlines 的 knowledge 动态触发、
+	 *   state 增量快照）：模型下次请求要看到它们，但总结只关心正文，不应把动态注入
+	 *   层卷进摘要。live 上下文与总结输入用同一份 policy，靠 convertToLlm 的
+	 *   `forSummarization` 参数区分路径。省略时按缺省 include 处理（旧声明零改动）。
+	 */
+	compaction?: "include" | "exclude";
 	/** custom → LLM 的 seam 渲染：返回内容则用之；undefined = 原样透传。 */
 	renderContent?: (message: CustomMessage) => string | (TextContent | ImageContent)[] | undefined;
 }
@@ -76,6 +87,7 @@ export interface CustomTypePolicy {
 export const DEFAULT_CUSTOM_TYPE_POLICY: CustomTypePolicy = {
 	context: "include",
 	llmRole: "user",
+	compaction: "include",
 };
 
 /** Resolves the effective policy for a custom message type; undefined → default. */
@@ -212,13 +224,23 @@ function hasToolCallBlocks(m: AgentMessage): boolean {
  * all of them). Non-extension callers that omit the resolver keep the default
  * passthrough behavior.
  *
+ * `forSummarization` marks the compaction / branch-summary path: custom types
+ * with `compaction: "exclude"` participate in the live context but are dropped
+ * from summarization input (dynamic-injection layers like knowledge-triggered
+ * entries or state snapshots should not pollute the summary — the summary
+ * should capture the narrative body only).
+ *
  * Ordering invariant: OpenAI-completions requires every role:"tool" message to
  * immediately follow the assistant message that carried its tool_calls. Custom
  * messages injected between a tool call and its result (e.g. narration streamed
  * mid-turn) convert to role:"user" here; they are held back and emitted after
  * the tool result, preserving their relative order without breaking adjacency.
  */
-export function convertToLlm(messages: AgentMessage[], resolveCustomType?: CustomTypeResolver): Message[] {
+export function convertToLlm(
+	messages: AgentMessage[],
+	resolveCustomType?: CustomTypeResolver,
+	forSummarization?: boolean,
+): Message[] {
 	const out: Message[] = [];
 	// Custom-derived user messages while a tool call is pending; flushed after
 	// the tool result so role:"tool" stays adjacent to assistant(tool_calls).
@@ -245,7 +267,11 @@ export function convertToLlm(messages: AgentMessage[], resolveCustomType?: Custo
 				break;
 			case "custom": {
 				const policy = resolveCustomType?.(m.customType) ?? DEFAULT_CUSTOM_TYPE_POLICY;
-				if (policy.context === "exclude") continue; // persisted/rendered, never in LLM context
+				// Live context exclusion (persisted/rendered but never in LLM context).
+				if (policy.context === "exclude") continue;
+				// Summarization path: compaction:"exclude" types are dropped from the
+				// summary input (dynamic-injection layers), while staying in live context.
+				if (forSummarization && policy.compaction === "exclude") continue;
 				let content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
 				// Seam rendering: a declared renderContent may replace the LLM view of
 				// this message (e.g. re-attach a source marker that storage no longer

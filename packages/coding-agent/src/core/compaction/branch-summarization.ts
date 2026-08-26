@@ -346,7 +346,8 @@ export async function generateBranchSummary(
 
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue
-	const llmMessages = convertToLlm(filteredMessages, options.resolveCustomType);
+	// forSummarization=true: drop compaction:"exclude" types (dynamic injections) from summary input.
+	const llmMessages = convertToLlm(filteredMessages, options.resolveCustomType, true);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build prompt — use override if provided, otherwise default
