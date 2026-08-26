@@ -317,6 +317,41 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+### Presets
+
+#### set_preset
+
+Activate a prompt preset by ID. Use `"none"` to deactivate the current preset and restore defaults. Presets are loaded from `.pi/prompt-presets/`.
+
+```json
+{"type": "set_preset", "presetId": "code-review"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "set_preset",
+  "success": true,
+  "data": {
+    "presetId": "code-review",
+    "model": {"provider": "anthropic", "id": "claude-sonnet-4-20250514"}
+  }
+}
+```
+
+`data.model` is only present when the preset declared a model and it is now active. `data.error` is present when the preset activated but its declared model failed to apply. Activation also emits a `preset_activated` event (see [Event Types](#event-types)).
+
+Unknown preset ID:
+```json
+{
+  "type": "response",
+  "command": "set_preset",
+  "success": false,
+  "error": "Prompt preset \"nope\" not found."
+}
+```
+
 ### Thinking
 
 #### set_thinking_level

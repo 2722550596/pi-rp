@@ -392,6 +392,18 @@ export class RpcClient {
 	}
 
 	/**
+	 * Activate a prompt preset by ID ("none" deactivates).
+	 */
+	async setPreset(presetId: string): Promise<{
+		presetId: string;
+		model?: { provider: string; id: string };
+		error?: string;
+	}> {
+		const response = await this.send({ type: "set_preset", presetId });
+		return this.getData(response);
+	}
+
+	/**
 	 * Set steering mode.
 	 */
 	async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {

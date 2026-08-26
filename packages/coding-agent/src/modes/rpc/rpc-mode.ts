@@ -672,6 +672,22 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			// =================================================================
+			// Presets
+			// =================================================================
+
+			case "set_preset": {
+				const result = await session.setActivePreset(command.presetId);
+				if (!result.ok) {
+					return error(id, "set_preset", `Prompt preset "${command.presetId}" not found.`);
+				}
+				return success(id, "set_preset", {
+					presetId: command.presetId,
+					...(result.model ? { model: { provider: result.model.provider, id: result.model.id } } : {}),
+					...(result.error ? { error: result.error } : {}),
+				});
+			}
+
+			// =================================================================
 			// Queue Modes
 			// =================================================================
 

@@ -40,6 +40,9 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "get_available_thinking_levels" }
 
+	// Presets
+	| { id?: string; type: "set_preset"; presetId: string }
+
 	// Queue modes
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
 	| { id?: string; type: "set_follow_up_mode"; mode: "all" | "one-at-a-time" }
