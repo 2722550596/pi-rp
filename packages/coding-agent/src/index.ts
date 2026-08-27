@@ -188,6 +188,7 @@ export {
 } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
+	findExactModelReferenceMatch,
 	type ModelScopeDiagnostic,
 	type ResolveCliModelResult,
 	type ResolveModelScopeResult,
@@ -391,6 +392,7 @@ export {
 	type InteractiveModeOptions,
 	type JsonAgentSessionEvent,
 	type ModelInfo,
+	type OrchestrationAck,
 	type PrintModeOptions,
 	RpcClient,
 	type RpcClientOptions,
@@ -399,6 +401,7 @@ export {
 	type RpcEventListener,
 	type RpcExtensionUIRequest,
 	type RpcExtensionUIResponse,
+	type RpcOrchestrationRequestEvent,
 	type RpcResponse,
 	type RpcSessionState,
 	type RpcStateChangedEvent,

@@ -115,6 +115,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import type { OrchestrationAck } from "./extensions/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -297,6 +298,13 @@ export interface ExtensionBindings {
 		messages?: Array<{ role: string; content: unknown }>;
 		state?: Record<string, unknown>;
 	}>;
+	/**
+	 * 子进程扩展的「请求父会话编排」（pass_mic）：RPC 模式绑定走
+	 * orchestration_request/response 通道的实现；TUI/print 无父会话，不绑定（ctx.requestOrchestration 为 undefined）。
+	 */
+	orchestrationRequest?: (request: { kind: "pass_mic"; from: string; target: string }) => Promise<{
+		ack: OrchestrationAck;
+	}>;
 }
 
 /** Options for AgentSession.prompt() */
@@ -445,6 +453,7 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _extensionParentContextRequest?: ExtensionBindings["parentContextRequest"];
+	private _extensionOrchestrationRequest?: ExtensionBindings["orchestrationRequest"];
 	private _modelRuntime: ModelRuntime;
 	private _requestGateway?: RequestGateway;
 	private _attachStateStore = true;
@@ -3202,6 +3211,9 @@ export class AgentSession {
 		if (bindings.parentContextRequest !== undefined) {
 			this._extensionParentContextRequest = bindings.parentContextRequest;
 		}
+		if (bindings.orchestrationRequest !== undefined) {
+			this._extensionOrchestrationRequest = bindings.orchestrationRequest;
+		}
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
@@ -3265,6 +3277,7 @@ export class AgentSession {
 		runner.setUIContext(this._extensionUIContext, this._extensionMode);
 		runner.bindCommandContext(this._extensionCommandContextActions);
 		runner.setParentContextRequest(this._extensionParentContextRequest);
+		runner.setOrchestrationRequest(this._extensionOrchestrationRequest);
 
 		this._extensionErrorUnsubscriber?.();
 		this._extensionErrorUnsubscriber = this._extensionErrorListener
