@@ -57,6 +57,14 @@ Committing:
 - Message format: `{feat,fix,docs}[(ai,tui,agent,coding-agent)]: <commit message> (optionally multiple lines)`. Message is informative and concise.
 - Never `git commit --no-verify`.
 
+## Multi-Consumer Concurrency
+
+This repository is consumed by several projects at once (vendored git submodules and standalone clones); concurrent agent sessions are the norm.
+
+- Before pushing, `git fetch` and check divergence from `origin/main`; merge before pushing when behind. Never force-push `main`.
+- Before pushing, verify the remote URL and that the commits being pushed actually belong to this repository — commits from other repositories have been pushed to this `main` by mistake.
+- If you are working inside a consumer project's vendored copy, follow that project's submodule workflow (e.g. worldlines-rivet's `tools/pi-rp.mjs`) instead of committing here directly.
+
 ## Issues and PRs
 
 - For issue/PR comments, keep them concise and technical. End AI-generated comments with the AI-generated disclaimer line specified by the originating prompt.
