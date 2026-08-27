@@ -210,7 +210,9 @@ Reserved. Currently renders empty.
 
 ### `chat-history`
 
-The conversation insertion point. This slot determines WHERE in the message array the real conversation appears — it does not render text itself. Omit it and no conversation history is injected at all.
+The conversation insertion point. This slot determines WHERE in the message array the real conversation appears — it does not render text itself. Place it explicitly to control position and filtering.
+
+**Fallback:** if a preset declares no `chat-history` position slot at all, the real conversation is appended at the very end of the compiled message array instead of being dropped (source kind `implicit-history`). The only exception is the stateless one-shot pattern where an item re-inserts the latest user message via `{{lastUserMessage}}` without a slot — there history stays omitted, since injecting it would duplicate the latest user message. Presets that want a specific position or per-slot options should always declare the slot explicitly.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

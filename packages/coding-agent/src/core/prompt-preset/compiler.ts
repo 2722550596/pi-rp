@@ -165,6 +165,15 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 			result.push(msg);
 			sources.push({ kind: "chat-history" });
 		}
+	} else if (runtime.messages.length > 0 && !usesLastUserMessageMacro(items)) {
+		// Fallback: the preset declares no chat-history slot. Append the
+		// conversation at the end instead of silently dropping it, so a preset
+		// that omits the slot still carries its history. Tagged implicit-history
+		// so callers can tell it apart from an explicit slot injection.
+		for (const msg of runtime.messages) {
+			result.push(msg);
+			sources.push({ kind: "implicit-history" });
+		}
 	}
 
 	for (const item of afterItems) {
@@ -322,6 +331,18 @@ function findLastUserMessageIndex(messages: AgentMessage[]): number {
 		if (messages[i].role === "user") return i;
 	}
 	return -1;
+}
+
+/**
+ * True when any enabled block item references the {{lastUserMessage}} macro.
+ * Detects the stateless one-shot pattern (system + re-inserted latest user
+ * message, no chat-history slot). The implicit-history fallback must not fire
+ * there, or the latest user message would be injected twice (once in history,
+ * once as the synthetic block).
+ */
+function usesLastUserMessageMacro(items: PromptPresetItem[]): boolean {
+	const pattern = /\{\{\s*lastUserMessage\b/;
+	return items.some((item) => item.kind === "block" && pattern.test(item.content));
 }
 
 /**
