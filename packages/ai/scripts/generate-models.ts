@@ -1627,6 +1627,39 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// models.dev no longer lists workers-ai passthroughs inside the gateway catalog,
+		// but the gateway still routes them. Synthesize the passthrough entries from the
+		// workers-ai catalog so the generated gateway type keeps them.
+		if (data["cloudflare-workers-ai"]?.models) {
+			const gatewayModels = data["cloudflare-ai-gateway"]?.models ?? {};
+			for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"].models)) {
+				const prefixedId = `workers-ai/${modelId}`;
+				if (gatewayModels[prefixedId]) continue; // already listed by models.dev
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				models.push({
+					id: prefixedId,
+					name: m.name || prefixedId,
+					api: "openai-completions",
+					provider: "cloudflare-ai-gateway",
+					baseUrl: CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: { sendSessionAffinityHeaders: true },
+				});
+				recordModelsDevReasoningOptions("cloudflare-ai-gateway", prefixedId, m);
+			}
+		}
+
 		// Process xAi models
 		if (data.xai?.models) {
 			for (const [modelId, model] of Object.entries(data.xai.models)) {
