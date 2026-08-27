@@ -670,7 +670,8 @@ export async function generateSummaryWithUsage(
 
 	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages, resolveCustomType);
+	// forSummarization=true: drop compaction:"exclude" types (dynamic injections) from summary input.
+	const llmMessages = convertToLlm(currentMessages, resolveCustomType, true);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build the prompt with placeholder substitution
@@ -966,7 +967,7 @@ async function generateTurnPrefixSummary(
 		Math.floor(0.5 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages, resolveCustomType);
+	const llmMessages = convertToLlm(messages, resolveCustomType, true);
 	const conversationText = serializeConversation(llmMessages);
 	const promptText = (overrides?.turnPrefixPrompt ?? TURN_PREFIX_SUMMARIZATION_PROMPT).replace(
 		/\{conversation\}/g,
