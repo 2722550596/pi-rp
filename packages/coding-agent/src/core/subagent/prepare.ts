@@ -188,6 +188,10 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 			state: options.stateNamespaces
 				? pick(options.session.stateManager.snapshot(), options.stateNamespaces)
 				: options.session.stateManager.snapshot(),
+			// The subagent's own resolved model (may differ from the parent's via
+			// preset.model), so macros/slots see the model that will answer.
+			model,
+			thinkingLevel: effectiveThinkingLevel,
 		};
 	} else {
 		const systemPromptOptions: BuildSystemPromptOptions = {
@@ -208,6 +212,8 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 			// No parent session: only the preset's own statics are available.
 			variables: { ...preset.variables },
 			skills: [],
+			model,
+			thinkingLevel: effectiveThinkingLevel,
 		};
 	}
 

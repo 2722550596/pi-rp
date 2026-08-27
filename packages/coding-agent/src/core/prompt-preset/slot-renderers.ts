@@ -253,8 +253,10 @@ registerSlot(
 	{
 		name: "active-model",
 		description: "Current model provider/id.",
-		render: (_ctx: SlotRenderContext): string => {
-			return ""; // TODO: wire actual model info when available
+		render: (ctx: SlotRenderContext): string => {
+			const model = ctx.runtime.model;
+			if (!model) return "";
+			return `${model.provider}/${model.id}`;
 		},
 	},
 	true,

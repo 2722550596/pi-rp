@@ -1395,6 +1395,8 @@ export class AgentSession {
 			now: new Date(),
 			variables: {},
 			skills: loadedSkills,
+			model: this.model,
+			thinkingLevel: this.thinkingLevel,
 		};
 		const systemResult = compileSystemPrompt(this._activePreset, staticRuntime, "");
 		return expandMacros(systemResult.systemPrompt, staticRuntime, { mode: "static" });
@@ -1625,6 +1627,8 @@ export class AgentSession {
 			variables: this._buildRuntimeVariables(),
 			skills: loadedSkills,
 			state: this._stateManager.snapshot(),
+			model: this.model,
+			thinkingLevel: this.thinkingLevel,
 		};
 		return compileMessages(this._activePreset, runtime).messages;
 	}
@@ -1641,6 +1645,8 @@ export class AgentSession {
 			variables: this._buildRuntimeVariables(),
 			skills: loadedSkills,
 			state: this._stateManager.snapshot(),
+			model: this.model,
+			thinkingLevel: this.thinkingLevel,
 		};
 		const result = compileSystemPrompt(this._activePreset, runtime, "");
 		return result.systemPrompt;
