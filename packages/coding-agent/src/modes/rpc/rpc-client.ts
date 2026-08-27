@@ -523,7 +523,7 @@ export class RpcClient {
 	/**
 	 * 出生继承（affiliated-session A）：spawn 后、首次 prompt 前，把父会话的历史切片
 	 * （LLM 消息）与 state 命名空间子集播种进子进程会话（只影响 LLM 上下文与 stateManager，
-	 * 不写 session 文件）。TUI 角色子进程的 wl-opening 自播种场景不需要调用。
+	 * 不写 session 文件）。子进程若已由 opening 扩展自播种，则不需要调用。
 	 */
 	async initContext(history?: AgentMessage[], state?: Record<string, unknown>): Promise<void> {
 		await this.send({ type: "init_context", history, state });

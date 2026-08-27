@@ -1,4 +1,5 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai/compat";
 import type { Skill } from "../skills.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 
@@ -225,6 +226,14 @@ export interface PromptRuntime {
 	now: Date;
 	variables: Record<string, string>;
 	skills: Skill[];
+	/**
+	 * Currently selected model, if one is set. Live value: reflects mid-session
+	 * model switches, so dynamic macros/slots re-rendered each turn see the
+	 * model that will actually answer the current turn.
+	 */
+	model?: Model<any>;
+	/** Current thinking level ("off" when reasoning is disabled). */
+	thinkingLevel?: ThinkingLevel;
 	/**
 	 * Index into `messages` where the current trace (agent start to agent end) begins.
 	 * Used by chat-history `stripAssistantThinking: "previous-traces"` to decide which

@@ -206,7 +206,7 @@ Current date and working directory lines. Unlike `date` or `cwd` alone, this slo
 
 ### `active-model`
 
-Reserved. Currently renders empty.
+The currently selected model as `provider/id` (e.g. `anthropic/claude-sonnet-4-5`). Renders empty when no model is set yet.
 
 ### `chat-history`
 
@@ -333,7 +333,7 @@ export default function (pi: ExtensionAPI) {
 Macros registered without `static: true` (the default) are re-expanded each turn, giving a fresh value each time.
 
 **Slot render context** — custom macros receive a `MacroRenderContext` with:
-- `runtime` — the full `PromptRuntime` (options, messages, skills, variables)
+- `runtime` — the full `PromptRuntime` (options, messages, skills, variables, model, thinkingLevel)
 - `variables` — `Record<string, string>` of session variables
 - `params` — the string after `:` in `{{name:params}}`, or `undefined`
 

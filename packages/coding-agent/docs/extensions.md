@@ -1664,7 +1664,7 @@ pi.registerSlot({
   name: "my-slot",
   description: "Custom slot description",
   render: (ctx) => {
-    // ctx.runtime — PromptRuntime (options, messages, skills, variables)
+    // ctx.runtime — PromptRuntime (options, messages, skills, variables, model, thinkingLevel)
     // ctx.preset  — the active preset
     // ctx.item    — the slot item with its options
     return `<custom>dynamic content</custom>`;
@@ -1696,7 +1696,7 @@ pi.registerMacro({
 });
 ```
 
-Macros registered without `static: true` are re-expanded each turn, giving a fresh value each time.
+Macros registered without `static: true` are re-expanded each turn, giving a fresh value each time. `ctx.runtime.model` and `ctx.runtime.thinkingLevel` reflect the model that will answer the current turn, including mid-session model switches.
 
 ### pi.compilePreset(presetId, runtime)
 
@@ -1709,7 +1709,7 @@ const compiled = pi.compilePreset("writer", runtime);
 // compiled.diagnostics   — warnings/errors produced during compilation
 ```
 
-Throws when the preset id is unknown. `runtime` is a `PromptRuntime` (options, messages, variables, state, skills) — build one that mirrors the context you want to compile against; the session's own runtime is available to event handlers via the preset compilation internals, but must be passed explicitly here.
+Throws when the preset id is unknown. `runtime` is a `PromptRuntime` (options, messages, variables, state, skills, model, thinkingLevel) — build one that mirrors the context you want to compile against; the session's own runtime is available to event handlers via the preset compilation internals, but must be passed explicitly here.
 
 ### pi.completeSideRequest(options)
 

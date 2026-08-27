@@ -468,3 +468,54 @@ describe("chat-history toolMode drop 与 dropToolNames 白名单", () => {
 		expect(compiled.map((m) => m.role)).toEqual(["system", "user"]);
 	});
 });
+
+describe("runtime.model / runtime.thinkingLevel", () => {
+	const testModel = {
+		id: "test-model",
+		name: "Test Model",
+		api: "openai-responses",
+		provider: "test-provider",
+		baseUrl: "https://example.com",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1000,
+		maxTokens: 100,
+	} as PromptRuntime["model"];
+
+	it("active-model slot renders provider/id from runtime.model", () => {
+		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "active-model" }]);
+		const compiled = compileMessages(preset, runtime([], { model: testModel })).messages;
+		expect(messageText(compiled[0])).toBe("test-provider/test-model");
+	});
+
+	it("active-model slot renders empty when no model is set", () => {
+		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "active-model" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(0);
+	});
+
+	it("dynamic macros can read the live model from runtime", () => {
+		registerMacro({
+			name: "modelProbe",
+			description: "test",
+			render: (ctx) => (ctx.runtime.model ? `${ctx.runtime.model.provider}/${ctx.runtime.model.id}` : "none"),
+		});
+		const preset = presetWithItems([{ kind: "block", id: "b", content: "model={{modelProbe}}" }]);
+		const withModel = compileMessages(preset, runtime([], { model: testModel })).messages;
+		expect(messageText(withModel[0])).toBe("model=test-provider/test-model");
+		const withoutModel = compileMessages(preset, runtime([])).messages;
+		expect(messageText(withoutModel[0])).toBe("model=none");
+	});
+
+	it("dynamic macros can read the thinking level from runtime", () => {
+		registerMacro({
+			name: "thinkingProbe",
+			description: "test",
+			render: (ctx) => ctx.runtime.thinkingLevel ?? "unset",
+		});
+		const preset = presetWithItems([{ kind: "block", id: "b", content: "t={{thinkingProbe}}" }]);
+		const compiled = compileMessages(preset, runtime([], { thinkingLevel: "high" })).messages;
+		expect(messageText(compiled[0])).toBe("t=high");
+	});
+});
