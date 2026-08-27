@@ -59,7 +59,7 @@ export interface BashExecutionMessage {
  *   This is the single production point for source markers that live outside
  *   the stored content (e.g. an XML wrapper carrying `details.character_id`
  *   that would otherwise be lost when a custom message collapses to a plain
- *   `user` message). Markers rendered here are a WorldLines-layer protocol;
+ *   `user` message). Markers rendered here are a consumer-layer protocol;
  *   the render happens at the seam, so storage stays clean and every consumer
  *   that goes through {@link convertToLlm} sees the same view.
  *
@@ -74,7 +74,7 @@ export interface CustomTypePolicy {
 	 *
 	 * - "include"（缺省）：照常进入总结输入（叙事正文、玩家输入、工具结果都该被总结）。
 	 * - "exclude"：实时上下文照常可见（context 仍为 include），但 compaction 与分支总结
-	 *   的输入里被过滤掉——用于「注入式」消息（如 worldlines 的 knowledge 动态触发、
+	 *   的输入里被过滤掉——用于「注入式」消息（如消费方扩展动态触发的 knowledge、
 	 *   state 增量快照）：模型下次请求要看到它们，但总结只关心正文，不应把动态注入
 	 *   层卷进摘要。live 上下文与总结输入用同一份 policy，靠 convertToLlm 的
 	 *   `forSummarization` 参数区分路径。省略时按缺省 include 处理（旧声明零改动）。

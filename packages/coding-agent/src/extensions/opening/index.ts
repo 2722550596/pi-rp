@@ -4,8 +4,7 @@
  * Seeds a "cold open" into a session: opening messages + initial state from a
  * JSON preset, replacing a manually typed first prompt. This extension is the
  * generic core — no process-role concept, any customType passes through.
- * Deployments with role-specific seeding transform the preset before applying
- * (see worldlines wl-opening).
+ * Deployments with role-specific seeding transform the preset before applying.
  *
  * Entry points:
  * - `/opening [<id>]` command: list presets (no arg) or apply one (explicit —

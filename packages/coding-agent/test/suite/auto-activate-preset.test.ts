@@ -13,7 +13,7 @@ describe("auto-activate preset selection", () => {
 	const originalAgentDir = process.env[ENV_AGENT_DIR];
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `wl-auto-activate-${process.pid}-${Math.random().toString(36).slice(2)}`);
+		tempDir = join(tmpdir(), `auto-activate-${process.pid}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(join(tempDir, ".pi", "prompt-presets"), { recursive: true });
 		process.env[ENV_AGENT_DIR] = join(tempDir, "agent");
 	});

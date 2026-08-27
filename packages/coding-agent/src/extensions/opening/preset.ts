@@ -14,7 +14,7 @@
  * There is deliberately no process-role concept here: every message and every
  * state namespace applies to the current process. Consumers that need role
  * filtering (multi-process deployments) transform the preset before calling
- * `applyOpeningPreset` (see the worldlines wl-opening extension).
+ * `applyOpeningPreset`.
  */
 
 import { readdirSync, readFileSync } from "node:fs";

@@ -29,7 +29,7 @@ describe("StateManager.attachStore", () => {
 	it("attachStore 的 fs.watch 句柄调用 unref（不阻止进程退出）", () => {
 		const watchMock = watch as unknown as Mock;
 		watchMock.mockClear();
-		const dir = mkdtempSync(path.join(tmpdir(), "wl-store-unref-"));
+		const dir = mkdtempSync(path.join(tmpdir(), "state-store-unref-"));
 		try {
 			const manager = new StateManager();
 			manager.attachStore(new StateStore(dir));

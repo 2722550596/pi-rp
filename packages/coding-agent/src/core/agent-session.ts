@@ -2220,9 +2220,9 @@ export class AgentSession {
 				return true;
 			}
 			// Also match custom_message entries whose declared policy marks them
-			// as user turns (e.g. player_direct_input in WorldLines). The policy
-			// is registered by extensions via registerCustomType — pi-rp never
-			// hardcodes extension-specific customType values.
+			// as user turns (e.g. a consumer extension's direct player-input type).
+			// The policy is registered by extensions via registerCustomType — pi-rp
+			// never hardcodes extension-specific customType values.
 			if (entry.type === "custom_message") {
 				const policy = this._extensionRunner.getCustomTypePolicy(entry.customType);
 				if (policy.llmRole === "user") {

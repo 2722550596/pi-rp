@@ -175,7 +175,7 @@ describe("convertToLlm custom type policy", () => {
 });
 
 describe("convertToLlm renderContent seam", () => {
-	// Mirrors the WorldLines seam: storage carries raw text, the policy re-attaches
+	// Mirrors a consumer-layer seam: storage carries raw text, the policy re-attaches
 	// the <character_reply character=...> marker at conversion time. Idempotent:
 	// content already carrying the prefix tag passes through untouched.
 	function wrapReply(message: CustomMessage): string | undefined {

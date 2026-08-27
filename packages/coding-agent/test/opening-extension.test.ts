@@ -3,8 +3,8 @@
  *
  * The builtin opening extension is role-agnostic: every message (user/assistant
  * real entries, arbitrary customTypes) and every state namespace applies to the
- * current process. Role-filtered deployments (e.g. worldlines) transform the
- * preset before applying — out of scope here.
+ * current process. Role-filtered deployments transform the preset before
+ * applying — out of scope here.
  */
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -105,7 +105,7 @@ const PRESET = {
 const originalEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-	for (const key of ["PI_OPENING", "WL_OPENING", "PI_OPENINGS_DIR"]) {
+	for (const key of ["PI_OPENING", "CONSUMER_OPENING", "PI_OPENINGS_DIR"]) {
 		originalEnv[key] = process.env[key];
 	}
 });
@@ -156,10 +156,10 @@ describe("opening extension", () => {
 		expect(audit[0].args[1]).toMatchObject({ name: "test" });
 	});
 
-	it("ignores WL_OPENING (worldlines layer owns the legacy env)", () => {
-		const { cwd } = fixture("wl-env");
+	it("ignores consumer-owned opening env vars (only PI_OPENING is read)", () => {
+		const { cwd } = fixture("foreign-env");
 		writePreset(cwd, "test", { name: "T", messages: [] });
-		process.env.WL_OPENING = "test";
+		process.env.CONSUMER_OPENING = "test";
 		const { pi, calls, handlers } = createStub();
 		openingExtension(pi);
 		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
