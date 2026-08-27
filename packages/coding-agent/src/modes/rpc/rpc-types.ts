@@ -31,12 +31,12 @@ export type RpcCommand =
 	| { id?: string; type: "watch_state"; path?: string; ifVersion?: number }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string }
+	| { id?: string; type: "set_model"; provider: string; modelId: string; persistSettings?: boolean }
 	| { id?: string; type: "cycle_model" }
 	| { id?: string; type: "get_available_models" }
 
 	// Thinking
-	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
+	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel; persistSettings?: boolean }
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "get_available_thinking_levels" }
 
@@ -136,6 +136,8 @@ export interface RpcSessionState {
 	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
+	/** Active prompt preset id (e.g. "pi-default"); undefined when no preset is active. */
+	activePresetId?: string;
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;

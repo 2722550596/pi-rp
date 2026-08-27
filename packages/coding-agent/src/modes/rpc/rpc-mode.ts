@@ -557,6 +557,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					sessionFile: session.sessionFile,
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
+					activePresetId: session.activePreset?.id,
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
@@ -632,7 +633,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!model) {
 					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				// persistSettings 默认 true（既有行为不变）；false = 只改内存态 + 会话
+				// JSONL，不写全局 settings.json（共享 agent dir 的宿主用）。
+				await session.setModel(model, command.persistSettings ?? true);
 				return success(id, "set_model", model);
 			}
 
@@ -654,7 +657,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "set_thinking_level": {
-				session.setThinkingLevel(command.level);
+				session.setThinkingLevel(command.level, command.persistSettings ?? true);
 				return success(id, "set_thinking_level");
 			}
 

@@ -2430,7 +2430,7 @@ export class AgentSession {
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, persistSettings = true): Promise<void> {
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -2439,10 +2439,15 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		// persistSettings=false：只改内存态 + 写会话 JSONL（model_change 是 resume 的
+		// 事实源），不碰全局 settings.json——给"多会话共享一个 agent dir"的宿主
+		// （如 Nodesign RPC 模式）留的 opt-out，避免一个会话的热切换污染共享默认。
+		if (persistSettings) {
+			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		}
 
 		// Re-clamp thinking level for new model's capabilities
-		this.setThinkingLevel(thinkingLevel);
+		this.setThinkingLevel(thinkingLevel, persistSettings);
 
 		await this._emitModelSelect(model, previousModel, "set");
 	}
@@ -2528,7 +2533,7 @@ export class AgentSession {
 	 * Clamps to model capabilities based on available thinking levels.
 	 * Saves to session and settings only if the level actually changes.
 	 */
-	setThinkingLevel(level: ThinkingLevel): void {
+	setThinkingLevel(level: ThinkingLevel, persistSettings = true): void {
 		const availableLevels = this.getAvailableThinkingLevels();
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
@@ -2540,7 +2545,9 @@ export class AgentSession {
 
 		if (isChanging) {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel);
-			if (this.supportsThinking() || effectiveLevel !== "off") {
+			// persistSettings=false：会话 JSONL 照写（resume 恢复靠它），全局
+			// settings.json 不写——见 setModel 的同名参数说明。
+			if (persistSettings && (this.supportsThinking() || effectiveLevel !== "off")) {
 				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
 			}
 			this._emit({ type: "thinking_level_changed", level: effectiveLevel });
