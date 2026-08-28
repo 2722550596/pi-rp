@@ -377,7 +377,21 @@ export interface ExtensionContext {
 		messages?: Array<{ role: string; content: unknown }>;
 		state?: Record<string, unknown>;
 	}>;
+	/**
+	 * 请求父会话编排（pass_mic）：RPC 子进程专属（经 orchestration_request/response
+	 * 通道）；TUI/print 无父会话 → undefined。编排策略由父进程扩展提供，pi-rp 只做路由；
+	 * 父进程未应答时按实现超时 reject。
+	 */
+	requestOrchestration?: (request: { kind: "pass_mic"; from: string; target: string }) => Promise<{
+		ack: OrchestrationAck;
+	}>;
 }
+
+/**
+ * 编排裁决（父→子）：approved/blocked 为正常裁决，error 为父进程判定无法执行
+ * （子进程侧快速失败，不走超时）。
+ */
+export type OrchestrationAck = { status: "approved" | "blocked" } | { status: "error"; error: string };
 
 /**
  * Extended context for command handlers.

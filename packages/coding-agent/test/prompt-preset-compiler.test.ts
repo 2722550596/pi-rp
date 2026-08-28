@@ -166,6 +166,47 @@ describe("chat-history position contract", () => {
 	});
 });
 
+describe("implicit chat-history fallback", () => {
+	const noSlotPreset = presetWithItems([
+		{ kind: "block", id: "a", content: "System A" },
+		{ kind: "block", id: "b", role: "user", content: "Tail" },
+	]);
+
+	it("appends runtime.messages at the end when no chat-history slot exists", () => {
+		const history = [userMessage("h1"), assistantMessage("a1"), userMessage("h2")];
+		const compiled = compileMessages(noSlotPreset, runtime(history));
+		// History appends after all preset items; the user-role "Tail" block
+		// merges with the adjacent history user message (documented squash).
+		expect(compiled.messages.map(messageText)).toEqual(["System A", "Tail\n\nh1", "a1", "h2"]);
+		expect(compiled.sources.map((s) => s.kind)).toEqual([
+			"preset-item",
+			"preset-item",
+			"implicit-history",
+			"implicit-history",
+			"implicit-history",
+		]);
+	});
+
+	it("does not fire when the conversation is empty", () => {
+		const compiled = compileMessages(noSlotPreset, runtime([]));
+		expect(compiled.messages.map(messageText)).toEqual(["System A", "Tail"]);
+		expect(compiled.sources.some((s) => s.kind === "implicit-history")).toBe(false);
+	});
+
+	it("stays silent for the stateless {{lastUserMessage}} one-shot pattern", () => {
+		const oneShotPreset = presetWithItems([
+			{ kind: "block", id: "persona", content: "You are a translator." },
+			{ kind: "block", id: "latest", role: "user", content: "{{lastUserMessage}}" },
+		]);
+		const history = [userMessage("first"), assistantMessage("answer"), userMessage("second")];
+		const compiled = compileMessages(oneShotPreset, runtime(history));
+		// Injecting history here would duplicate the latest user message.
+		expect(compiled.messages).toHaveLength(2);
+		expect(compiled.sources.some((s) => s.kind === "implicit-history")).toBe(false);
+		expect(messageText(compiled.messages[1])).toBe("second");
+	});
+});
+
 describe("item wrap (custom XML tag)", () => {
 	it("wraps a block in a plain tag", () => {
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "inner", wrap: "context" }]);

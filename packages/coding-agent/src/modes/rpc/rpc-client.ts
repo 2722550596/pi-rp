@@ -14,8 +14,10 @@ import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.t
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
+	OrchestrationAck,
 	RpcCommand,
 	RpcContextRequestEvent,
+	RpcOrchestrationRequestEvent,
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
@@ -65,6 +67,7 @@ export class RpcClient {
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
 	private contextRequestListeners: Array<(request: RpcContextRequestEvent) => void | Promise<void>> = [];
+	private orchestrationRequestListeners: Array<(request: RpcOrchestrationRequestEvent) => void | Promise<void>> = [];
 	private stateWatchListeners = new Set<(event: RpcStateChangedEvent) => void>();
 	/** Last delivered stateRevision per watch listener (dedup). */
 	private stateWatchLastRevisions = new Map<(event: RpcStateChangedEvent) => void, number>();
@@ -223,6 +226,32 @@ export class RpcClient {
 		},
 	): Promise<void> {
 		await this.send({ type: "context_response", requestId, ...data });
+	}
+
+	/**
+	 * Subscribe to orchestration_request events (pass_mic 编排请求):
+	 * the child process's extension asks the parent session to orchestrate
+	 * (e.g. pass the mic to another character or the player); the listener
+	 * decides via respondOrchestrationRequest(). 编排策略由父进程扩展决定
+	 * （pi-rp 只做路由）。无监听器时 orchestration_request 会被自动以
+	 * error 应答，让子进程快速失败（不走超时）。
+	 */
+	onOrchestrationRequest(listener: (request: RpcOrchestrationRequestEvent) => void | Promise<void>): () => void {
+		this.orchestrationRequestListeners.push(listener);
+		return () => {
+			const index = this.orchestrationRequestListeners.indexOf(listener);
+			if (index !== -1) {
+				this.orchestrationRequestListeners.splice(index, 1);
+			}
+		};
+	}
+
+	/**
+	 * Respond to a child process's orchestration_request (stdin command channel).
+	 * @param ack 父进程扩展的裁决（approved/blocked）或 error（子进程侧快速失败）。
+	 */
+	async respondOrchestrationRequest(requestId: string, ack: OrchestrationAck): Promise<void> {
+		await this.send({ type: "orchestration_response", requestId, ack });
 	}
 
 	/**
@@ -689,6 +718,37 @@ export class RpcClient {
 				for (const listener of this.contextRequestListeners) {
 					const respondError = (err: unknown): void => {
 						void this.respondContextRequest(event.requestId, {
+							error: err instanceof Error ? err.message : String(err),
+						}).catch(() => {});
+					};
+					// 同步分发（与 onEvent 一致）；同步抛错与异步拒绝都自动以 error 应答
+					try {
+						const result = listener(event);
+						if (result && typeof (result as Promise<void>).catch === "function") {
+							void (result as Promise<void>).catch(respondError);
+						}
+					} catch (err) {
+						respondError(err);
+					}
+				}
+				return;
+			}
+
+			// orchestration_request (pass_mic) goes to onOrchestrationRequest
+			// listeners; 无监听器时自动以 error 应答，让子进程快速失败（不走超时）。
+			if (data.type === "orchestration_request") {
+				const event = data as RpcOrchestrationRequestEvent;
+				if (this.orchestrationRequestListeners.length === 0) {
+					void this.respondOrchestrationRequest(event.requestId, {
+						status: "error",
+						error: "no onOrchestrationRequest handler registered in parent",
+					}).catch(() => {});
+					return;
+				}
+				for (const listener of this.orchestrationRequestListeners) {
+					const respondError = (err: unknown): void => {
+						void this.respondOrchestrationRequest(event.requestId, {
+							status: "error",
 							error: err instanceof Error ? err.message : String(err),
 						}).catch(() => {});
 					};

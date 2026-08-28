@@ -49,6 +49,7 @@ import type {
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
+	OrchestrationAck,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
@@ -295,6 +296,9 @@ export class ExtensionRunner {
 				state?: Record<string, unknown>;
 		  }>)
 		| undefined = undefined;
+	private orchestrationRequestFn:
+		| ((request: { kind: "pass_mic"; from: string; target: string }) => Promise<{ ack: OrchestrationAck }>)
+		| undefined = undefined;
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private settingsManager: SettingsManager;
@@ -499,6 +503,15 @@ export class ExtensionRunner {
 			| undefined,
 	): void {
 		this.parentContextRequestFn = fn;
+	}
+
+	/** 绑定子进程扩展的「请求父会话编排」实现（RPC 模式经 orchestration_request 通道；其余模式不绑定）。 */
+	setOrchestrationRequest(
+		fn:
+			| ((request: { kind: "pass_mic"; from: string; target: string }) => Promise<{ ack: OrchestrationAck }>)
+			| undefined,
+	): void {
+		this.orchestrationRequestFn = fn;
 	}
 
 	getUIContext(): ExtensionUIContext {
@@ -748,6 +761,10 @@ export class ExtensionRunner {
 			get requestParentContext() {
 				runner.assertActive();
 				return runner.parentContextRequestFn;
+			},
+			get requestOrchestration() {
+				runner.assertActive();
+				return runner.orchestrationRequestFn;
 			},
 			get mode() {
 				runner.assertActive();

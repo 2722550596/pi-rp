@@ -72,6 +72,29 @@ pi-rp 是 [pi-coding-agent](https://github.com/earendil-works/pi) 的一个深�
 - ✅ **原生 Subagent** — 基于可委派 preset（`delegatable: true`）的进程内子代理：`subagent` / `subagent_profiles` 工具、`/subagent` 命令，扩展 API 的 `spawnAgent()`
 - **记忆系统** — 一套完整的记忆工具，agent 可主动记忆和检索
 
+### 工具历史细粒度控制（backlog，2026-08-28 记账）
+
+现状：chat-history 的 `toolMode: "drop"` + `dropToolNames` 只有「整对删」一种粒度——`dropToolHistory()`（`core/prompt-preset/compiler.ts`）把 assistant 消息里名单内工具的 toolCall part 和对应 toolResult 消息一起删掉。缺「只处理 result」「截断 args」等细粒度操作。
+
+触发场景（来自 worldlines-rivet 的 show_html 外包化设计讨论）：工具 result 冗长（大 JSON / 检索结果）但 toolCall 入参有保留价值时，整对删丢信息、全保留又烧 token。omp 的 shake 机制（只 drop tool result、保留 call）是参照语义。
+
+硬约束：**provider 消息配对**。Anthropic 要求 `tool_use` 后必须跟匹配 `tool_use_id` 的 `tool_result`，OpenAI tool message 同理——所以 result 侧操作只能是「替换内容为占位符」或「截断」，**不能纯删消息**（会留悬空 toolCall，API 400）；call 侧同理不能纯删留孤儿 result。整对删之所以安全正是因为配对一起消失。
+
+安全操作矩阵：整对删（现状）✅；result 替换占位符保留 call ✅（= shake 语义）；result 截断保留 call ✅；args 截断保留 result ✅；纯删 result 或纯删 call ❌。
+
+若实现，最小形态（不动现有 `dropToolNames`）：
+
+```ts
+// chat-history slot options 新增
+toolResultPolicy?: {
+	[toolName: string]: { placeholder?: string } | { truncateChars?: number };
+};
+```
+
+实现要点：result 消息命中即替换 `content`，不删消息，配对天然完整，不触发 `repairToolPairs` 误删。
+
+缓做理由：记账时 worldlines-rivet 没有任何 result 冗长的写手工具消费方（show_html 外包化后 args/result 都是百 token 级语义），纯为「也许将来用得上」动共享子模块不划算。等真出现返回大结果的写手工具再做。
+
 ## 代码结构
 
 参考 omp，所有新功能直接以子目录形式加入 `packages/coding-agent/src/`：

@@ -8,10 +8,12 @@ export { type PrintModeOptions, runPrintMode } from "./print-mode.ts";
 export { type ModelInfo, RpcClient, type RpcClientOptions, type RpcEventListener } from "./rpc/rpc-client.ts";
 export { runRpcMode } from "./rpc/rpc-mode.ts";
 export type {
+	OrchestrationAck,
 	RpcCommand,
 	RpcContextRequestEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcOrchestrationRequestEvent,
 	RpcResponse,
 	RpcSessionState,
 	RpcStateChangedEvent,

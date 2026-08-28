@@ -31,10 +31,12 @@ import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
+	OrchestrationAck,
 	RpcCommand,
 	RpcContextRequestEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcOrchestrationRequestEvent,
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
@@ -43,10 +45,12 @@ import type {
 
 // Re-export types for consumers
 export type {
+	OrchestrationAck,
 	RpcCommand,
 	RpcContextRequestEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcOrchestrationRequestEvent,
 	RpcResponse,
 	RpcSessionState,
 	RpcStateChangedEvent,
@@ -96,6 +100,34 @@ export function handleParentContextResponse(
 	emit({ id: response.id, type: "response", command: "context_response", success: true } as RpcResponse);
 }
 
+/** 父进程经 orchestration_response 返回的裁决（pass_mic 编排）。 */
+export interface RpcOrchestrationAckData {
+	ack: OrchestrationAck;
+}
+
+/**
+ * 子进程侧处理父进程 orchestration_response 的纯逻辑（单测 seam，rpc-mode 闭包外）：
+ * 解析挂起的 requestOrchestration promise，并**回发 ack**——父侧 `send()` 依赖
+ * 这个 ack 才 resolve，不回会让每次 orchestration_request 在父进程挂满 30s 超时
+ * （rpc-types 声明了 orchestration_response 的 success 变体）。requestId 未知时照常 ack
+ * （父侧总是在等待），只是没有 promise 可解析。
+ */
+export function handleParentOrchestrationResponse(
+	parsed: unknown,
+	pending: Map<string, { resolve: (value: RpcOrchestrationAckData) => void; reject: (error: Error) => void }>,
+	emit: (obj: RpcResponse) => void,
+): void {
+	if (typeof parsed !== "object" || parsed === null) return;
+	const response = parsed as { id?: string; requestId?: string; ack?: OrchestrationAck };
+	const req = response.requestId ? pending.get(response.requestId) : undefined;
+	if (req) {
+		pending.delete(response.requestId!);
+		if (!response.ack) req.reject(new Error("orchestration_response missing ack"));
+		else req.resolve({ ack: response.ack });
+	}
+	emit({ id: response.id, type: "response", command: "orchestration_response", success: true } as RpcResponse);
+}
+
 /**
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
@@ -141,6 +173,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	>();
 	const CONTEXT_REQUEST_TIMEOUT_MS = 10_000;
 
+	// Pending orchestration requests (pass_mic) waiting for orchestration_response
+	const pendingOrchestrationRequests = new Map<
+		string,
+		{ resolve: (value: RpcOrchestrationAckData) => void; reject: (error: Error) => void }
+	>();
+	const ORCHESTRATION_REQUEST_TIMEOUT_MS = 10_000;
+
 	/**
 	 * 子进程扩展调用的「活体读取父会话」：挂起 promise、向客户端发 context_request，
 	 * 等 context_response（stdin 命令通道）回来解析。超时或父进程显式 error → reject
@@ -167,6 +206,38 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			});
 			output({ type: "context_request", requestId, ...request } as RpcContextRequestEvent);
 		});
+	}
+
+	/**
+	 * 子进程扩展调用的「请求父会话编排」（pass_mic）：挂起 promise、向客户端发
+	 * orchestration_request，等 orchestration_response（stdin 命令通道）回来解析。
+	 * 超时或父进程显式 error → reject（调用方按需处理）。
+	 */
+	function requestOrchestration(request: {
+		kind: "pass_mic";
+		from: string;
+		target: string;
+	}): Promise<RpcOrchestrationAckData> {
+		const requestId = crypto.randomUUID();
+		const { promise, resolve, reject } = Promise.withResolvers<RpcOrchestrationAckData>();
+		const timeoutId = setTimeout(() => {
+			pendingOrchestrationRequests.delete(requestId);
+			reject(new Error("orchestration_request timeout: parent did not respond"));
+		}, ORCHESTRATION_REQUEST_TIMEOUT_MS);
+		pendingOrchestrationRequests.set(requestId, {
+			resolve: (value: RpcOrchestrationAckData) => {
+				clearTimeout(timeoutId);
+				pendingOrchestrationRequests.delete(requestId);
+				resolve(value);
+			},
+			reject: (error: Error) => {
+				clearTimeout(timeoutId);
+				pendingOrchestrationRequests.delete(requestId);
+				reject(error);
+			},
+		});
+		output({ type: "orchestration_request", requestId, ...request } as RpcOrchestrationRequestEvent);
+		return promise;
 	}
 
 	// Shutdown request flag
@@ -408,6 +479,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			mode: "rpc",
 			// 子进程扩展的「活体读取父会话」：RPC 通道实现（TUI/print 无父会话，不绑定）。
 			parentContextRequest: requestParentContext,
+			// 子进程扩展的「请求父会话编排」（pass_mic）：RPC 通道实现（TUI/print 无父会话，不绑定）。
+			orchestrationRequest: requestOrchestration,
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
 				newSession: async (options) => runtimeHost.newSession(options),
@@ -1024,6 +1097,23 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		// 不回 ack 会让父侧 send() 挂满 30s 超时（每次 context_request 烧一个僵尸 pending）。
 		if (typeof parsed === "object" && parsed !== null && "type" in parsed && parsed.type === "context_response") {
 			handleParentContextResponse(parsed, pendingContextRequests, (obj) => {
+				output(obj);
+			});
+			await waitForRawStdoutBackpressure();
+			return;
+		}
+
+		// Handle orchestration responses (pass_mic): resolve the child extension's
+		// pending requestOrchestration promise, and ack the parent's send() —
+		// rpc-types 声明了 orchestration_response 的 success 变体，不回 ack 会让
+		// 父侧 send() 挂满 30s 超时（每次 orchestration_request 烧一个僵尸 pending）。
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			"type" in parsed &&
+			parsed.type === "orchestration_response"
+		) {
+			handleParentOrchestrationResponse(parsed, pendingOrchestrationRequests, (obj) => {
 				output(obj);
 			});
 			await waitForRawStdoutBackpressure();

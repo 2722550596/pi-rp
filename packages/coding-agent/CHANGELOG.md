@@ -5,6 +5,7 @@
 ### Added
 
 - Added `pi.appendEntry("message", { role, content })` overload: extensions can now append real `user`/`assistant` message entries that persist in the session, participate in the LLM context, and render in the TUI like normal conversation messages (the existing `appendEntry(customType, data)` form still writes custom entries outside LLM context).
+- Presets without a `chat-history` slot no longer silently drop the conversation: the real messages are appended at the end of the compiled array as implicit history (source kind `implicit-history`). The exception is the stateless one-shot pattern that re-inserts the latest user message via `{{lastUserMessage}}` without a slot, where history stays omitted to avoid duplication.
 - Added `"previous-traces"` mode for the chat-history `stripAssistantThinking` preset option: strips `thinking` blocks from assistant messages in completed traces (agent start to agent end) while keeping the current trace's thinking intact.
 - Added `/validator` slash command to list loaded custom validators (namespace + path for each).
 - Added per-provider LLM request concurrency gating. Set `providers.<id>.maxConcurrency` (or the `requestGateway.defaultMaxConcurrency` default) in settings to limit concurrent requests per provider.

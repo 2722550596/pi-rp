@@ -10,6 +10,7 @@ import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { OrchestrationAck } from "../../core/extensions/types.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
@@ -93,6 +94,14 @@ export type RpcCommand =
 			state?: Record<string, unknown>;
 			/** 父进程无法提供时的错误（子进程侧快速失败，不走超时）。 */
 			error?: string;
+	  }
+	| {
+			id?: string;
+			type: "orchestration_response";
+			/** 对应子进程发出的 orchestration_request.requestId。 */
+			requestId: string;
+			/** 父进程扩展的编排裁决（approved/blocked）或 error（子进程侧快速失败）。 */
+			ack: OrchestrationAck;
 	  }
 
 	// Messages
@@ -282,6 +291,7 @@ export type RpcResponse =
 	// Affiliated session
 	| { id?: string; type: "response"; command: "init_context"; success: true; data: { ok: boolean } }
 	| { id?: string; type: "response"; command: "context_response"; success: true }
+	| { id?: string; type: "response"; command: "orchestration_response"; success: true }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
@@ -325,6 +335,26 @@ export interface RpcContextRequestEvent {
 	since?: string;
 	/** 需要的 state 命名空间白名单；省略 = 不要求 state。 */
 	namespaces?: string[];
+}
+
+// OrchestrationAck 的规范定义在 core/extensions/types.ts（扩展 ctx 与 RPC 协议共用）；
+// 此处 re-export 保持协议类型的既有消费路径。
+export type { OrchestrationAck } from "../../core/extensions/types.ts";
+
+/**
+ * Emitted by a child process when its extension requests orchestration from the
+ * parent session (pass_mic：角色把话筒递给另一个角色或玩家)。父进程经
+ * `orchestration_response` 应答（编排策略是父进程扩展的责任，pi-rp 只做路由）。
+ */
+export interface RpcOrchestrationRequestEvent {
+	type: "orchestration_request";
+	requestId: string;
+	/** 编排类别。 */
+	kind: "pass_mic";
+	/** 发起请求的子进程角色 id。 */
+	from: string;
+	/** 目标角色 id，或字面量 "player"。 */
+	target: string;
 }
 
 /** Emitted when an extension needs user input */
