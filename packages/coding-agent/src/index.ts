@@ -1,7 +1,10 @@
 // Core session management
 
+// YAML serialization (re-export of the `yaml` package the engine already uses for
+// the state slot renderer): extensions rendering state snapshots can match the
+// native slot's yaml format without a separate dependency.
+export { stringify as stringifyYaml } from "yaml";
 export { type Args, parseArgs } from "./cli/args.ts";
-
 // Config paths
 export {
 	CONFIG_DIR_NAME,
