@@ -541,12 +541,15 @@ export class RpcClient {
 	 * Move the session tree leaf to the rollback position of the given entry
 	 * (without summarization). Used to rewind this session in lockstep with
 	 * another session's rollback.
+	 * @param label Optional label persisted via appendLabelChange — a non-empty
+	 *   label makes the leaf move durable in the JSONL (without it the branch
+	 *   only lives in memory and is lost on reload).
 	 * @returns Object with `cancelled: true` if an extension cancelled the navigation,
 	 *   and `editorText` when the target was a player input entry (its text, for
 	 *   refilling the input after a branch jump).
 	 */
-	async navigateTree(targetId: string): Promise<{ cancelled: boolean; editorText?: string }> {
-		const response = await this.send({ type: "navigate_tree", targetId });
+	async navigateTree(targetId: string, label?: string): Promise<{ cancelled: boolean; editorText?: string }> {
+		const response = await this.send({ type: "navigate_tree", targetId, ...(label ? { label } : {}) });
 		return this.getData<{ cancelled: boolean; editorText?: string }>(response);
 	}
 
