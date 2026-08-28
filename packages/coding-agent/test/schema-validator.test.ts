@@ -140,6 +140,49 @@ describe("SchemaValidator.validate — merge", () => {
 	});
 });
 
+describe("SchemaValidator.validate — whole-namespace replace/add", () => {
+	it("rejects a JSON-encoded string value replacing a namespace root", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ mood: Type.String() }));
+		const state: Record<string, JsonValue> = { character: { mood: "calm" } };
+
+		const res = v.validate("character", "replace", '{"mood": "angry"}', state);
+
+		expect(res.ok).toBe(false);
+	});
+
+	it("rejects a JSON-encoded string value added at a namespace root", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "world", Type.Object({ time: Type.String() }));
+		const state: Record<string, JsonValue> = { world: { time: "day" } };
+
+		const res = v.validate("world", "add", '{"time": "night"}', state);
+
+		expect(res.ok).toBe(false);
+	});
+
+	it("validates the incoming object on a whole-namespace replace (not the old state)", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ name: Type.String(), hp: Type.Number() }));
+		const state: Record<string, JsonValue> = { character: { name: "A", hp: 1 } };
+
+		// hp missing in the replacement value → must fail even though the OLD state is valid
+		const res = v.validate("character", "replace", { name: "B" }, state);
+
+		expect(res.ok).toBe(false);
+	});
+
+	it("accepts a schema-valid whole-namespace replace", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ name: Type.String(), hp: Type.Number() }));
+		const state: Record<string, JsonValue> = { character: { name: "A", hp: 1 } };
+
+		const res = v.validate("character", "replace", { name: "B", hp: 2 }, state);
+
+		expect(res.ok).toBe(true);
+	});
+});
+
 describe("SchemaValidator.clearSchemas", () => {
 	it("removes all loaded schemas", () => {
 		const v = new SchemaValidator();

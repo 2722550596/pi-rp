@@ -271,6 +271,20 @@ function projectMutation(
 	if (op === "remove" && subPath === "") {
 		return {} as Record<string, JsonValue>;
 	}
+	if ((op === "replace" || op === "add") && subPath === "") {
+		// Whole-namespace set: the value replaces the entire namespace subtree.
+		// Without this branch the projection falls through with an empty key and
+		// returns the OLD state unchanged, so schema validation never sees the
+		// incoming value (e.g. a JSON-encoded string instead of an object passes
+		// and StateManager.applyOp writes it straight into memory).
+		if (value && typeof value === "object" && !Array.isArray(value)) {
+			return structuredClone(value) as Record<string, JsonValue>;
+		}
+		// Non-object value at namespace root: return a sentinel the schema can
+		// never accept so the tool call fails with a validation error instead of
+		// corrupting state.
+		return { __invalid_namespace_value__: value } as Record<string, JsonValue>;
+	}
 
 	const parts = subPath === "" ? [] : subPath.split(".");
 	let current = projected;
