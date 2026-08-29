@@ -1571,9 +1571,11 @@ export class AgentSession {
 			this._restoreToolPolicy();
 			return;
 		}
-		const baseline = this._toolPolicyBaseline ?? this.getActiveToolNames();
-		this._toolPolicyBaseline ??= [...baseline];
-		const filtered = applyResourcePolicy(baseline, policy);
+		// Use the full tool registry as the filter source so that tools
+		// registered after the preset was activated (e.g. via pi.setActiveTools
+		// from pi-mcp-adapter) are also subject to the preset's policy.
+		this._toolPolicyBaseline ??= this.getActiveToolNames();
+		const filtered = applyResourcePolicy([...this._toolRegistry.keys()], policy);
 		this.setActiveToolsByName(filtered);
 	}
 	private _restoreToolPolicy(): void {
@@ -3390,7 +3392,10 @@ export class AgentSession {
 				},
 				getActiveTools: () => this.getActiveToolNames(),
 				getAllTools: () => this.getAllTools(),
-				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
+				setActiveTools: (toolNames) => {
+					this.setActiveToolsByName(toolNames);
+					this._syncActiveToolPolicy();
+				},
 				refreshTools: () => this._refreshToolRegistry(),
 				getCommands,
 				setModel: async (model) => {
