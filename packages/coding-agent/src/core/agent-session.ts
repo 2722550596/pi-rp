@@ -125,7 +125,6 @@ import {
 	compileMessages,
 	compileSystemPrompt,
 	deriveSystemPrompt,
-	deriveSystemPromptString,
 } from "./prompt-preset/compiler.ts";
 import type {
 	LoadedPromptPreset,
@@ -1875,12 +1874,13 @@ export class AgentSession {
 
 		// Capture the actual messages sent to the LLM (post context event / preset injection)
 		this._lastCompiledMessages = [...(this._extensionRunner.lastContextMessages ?? [])];
-		// /prompt reads the derived system string (a view of the same compiled
-		// payload), not a separate re-compile. In the preset path
-		// agent.state.systemPrompt is "" by design (_applyDynamicSystemPrompt),
-		// so the LLM context is unchanged; the derived string is display-only.
-		this._lastCompiledSystemPrompt =
-			this.agent.state.systemPrompt || deriveSystemPromptString(this._lastCompiledMessages, this._activePreset);
+		// /prompt shows the legacy system-prompt string only when that path is in
+		// use. In the preset path agent.state.systemPrompt is "" by design
+		// (_applyDynamicSystemPrompt) and the preset-compiled message array —
+		// including preamble and chat-history, which are non-system roles — is
+		// rendered in full by previewPrompt(). Deriving a system-only string here
+		// would double-render the preset and hide preamble/chat-history.
+		this._lastCompiledSystemPrompt = this.agent.state.systemPrompt;
 	}
 
 	/**
