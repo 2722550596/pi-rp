@@ -11,6 +11,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_cwd_created_at ON sessions(cwd, created_
 
 CREATE TABLE IF NOT EXISTS entries (
 	session_id TEXT NOT NULL,
+	project_id TEXT NOT NULL DEFAULT '',
 	seq INTEGER NOT NULL,
 	id TEXT NOT NULL,
 	parent_id TEXT NULL,
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS entries (
 	PRIMARY KEY (session_id, id),
 	UNIQUE (session_id, seq)
 );
+CREATE INDEX IF NOT EXISTS idx_entries_project_id ON entries(project_id, seq);
 
 CREATE INDEX IF NOT EXISTS idx_entries_session_parent ON entries(session_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_entries_session_type_seq ON entries(session_id, type, seq);

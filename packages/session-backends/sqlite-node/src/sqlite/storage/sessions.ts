@@ -119,6 +119,7 @@ function parseSessionName(value: string | null, sessionId: string): string | und
 export function decodeSessionMetadata(row: SessionRow, path: string): SqliteSessionMetadata {
 	const metadata = parseMetadata(row.metadata, row.id);
 	const name = row.has_session_name === 0 ? undefined : parseSessionName(row.session_name, row.id);
+	const projectId = metadata?.projectId as string | undefined;
 	return {
 		id: row.id,
 		createdAt: row.created_at,
@@ -127,5 +128,6 @@ export function decodeSessionMetadata(row: SessionRow, path: string): SqliteSess
 		path,
 		parentSessionId: row.parent_session_id ?? undefined,
 		metadata,
+		projectId,
 	};
 }

@@ -31,6 +31,7 @@ import {
 	insertEntryRow,
 	readEntryRow,
 	readEntryRows,
+	readEntryRowsByProjectId,
 } from "./storage/entries.ts";
 import { appendFact, deleteFactRows, readFactRows, readLatestFact, readLatestLabelFacts } from "./storage/facts.ts";
 import {
@@ -175,8 +176,8 @@ function configureSqliteDatabase(db: SqliteDatabase): void {
 	sql`PRAGMA busy_timeout=5000`.exec(db);
 }
 
-function entryRowFromCached(row: CachedBranchEntryRow): EntryRow {
-	return { ...row, seq: row.entry_seq, type: row.type as Entry["type"] };
+function entryRowFromCached(row: CachedBranchEntryRow, projectId: string): EntryRow {
+	return { ...row, seq: row.entry_seq, type: row.type as Entry["type"], project_id: projectId };
 }
 
 function readObjectPayload(row: EntryRow): Record<string, unknown> {
@@ -466,6 +467,7 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 				type: committed.type,
 				timestamp: committed.timestamp,
 				payload: JSON.stringify(entryPayload(committed)),
+				projectId: this.metadata.projectId ?? '',
 			});
 			setLaneLeaf(this.db, this.metadata.id, lane, committed.id);
 			appendEntryToBranchCache(
@@ -542,7 +544,7 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 		const rows = queryCachedBranchRows(this.db, this.metadata.id, cached, query);
 		validateCachedBranchRows(rows, query);
 		const entries = rows
-			.map(entryRowFromCached)
+			.map((row) => entryRowFromCached(row, ''))
 			.map(decodeEntry)
 			.filter((entry) => matchesEntryQuery(entry, query));
 		return query.limit === undefined ? entries : entries.slice(0, query.limit);
@@ -730,7 +732,7 @@ export class SqliteSessionRepository
 					createdAt,
 					cwd: options.cwd,
 					parentSessionId: options.parentSessionId,
-					metadata: options.metadata,
+					metadata: options.projectId ? { ...options.metadata, projectId: options.projectId } : options.metadata,
 				});
 				createSequence(db, id);
 				createStats(db, id);
@@ -839,7 +841,7 @@ export class SqliteSessionRepository
 						);
 					}
 					const rows = queryCachedBranchRows(db, source.id, cached, { order: "oldestFirst" });
-					entries.push(...rows.map(entryRowFromCached));
+					entries.push(...rows.map((row) => entryRowFromCached(row, sourceMetadata.projectId ?? '')));
 					branchTips.push(branchForkTargetId);
 				}
 			}
@@ -852,6 +854,7 @@ export class SqliteSessionRepository
 			);
 			const createdAt = Date.now();
 			const metadata = options.metadata ?? sourceMetadata.metadata;
+			const projectId = options.projectId ?? sourceMetadata.projectId ?? '';
 			let lease: WriterLease;
 
 			try {
@@ -861,7 +864,7 @@ export class SqliteSessionRepository
 						createdAt,
 						cwd: options.cwd,
 						parentSessionId: options.parentSessionId ?? source.id,
-						metadata,
+						metadata: projectId ? { ...metadata, projectId } : metadata,
 					});
 					createSequence(db, id);
 					createStats(db, id, entries.filter((entry) => entry.type === "message").length);
@@ -876,6 +879,7 @@ export class SqliteSessionRepository
 							type: entry.type,
 							timestamp: entry.timestamp,
 							payload: entry.payload,
+							projectId,
 						});
 					}
 
@@ -906,6 +910,17 @@ export class SqliteSessionRepository
 			const row = requireSessionRow(db, id);
 			return this.sessionFromLease(db, decodeSessionMetadata(row, path), lease);
 		});
+	}
+	/**
+	 * Query all entries across sessions for a given project.
+	 * Useful for cross-session event queries (e.g. AIRP world agent looking up events by project_id).
+	 */
+	async queryEntriesByProjectId(
+		projectId: string,
+		options: { type?: Entry["type"]; afterSeq?: number; order?: "newestFirst" | "oldestFirst"; limit?: number } = {},
+	): Promise<Entry[]> {
+		const db = await this.getDatabase();
+		return readEntryRowsByProjectId(db, projectId, options).map(decodeEntry);
 	}
 
 	async close(): Promise<void> {

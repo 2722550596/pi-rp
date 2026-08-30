@@ -4,6 +4,7 @@ import type { SqliteDatabase } from "../types.ts";
 
 export interface EntryRow {
 	session_id: string;
+	project_id: string;
 	seq: number;
 	id: string;
 	parent_id: string | null;
@@ -19,6 +20,7 @@ export interface NewEntryRow {
 	type: Entry["type"];
 	timestamp: number;
 	payload: string;
+	projectId: string;
 }
 
 export function entryPayload(entry: Entry): Record<string, unknown> {
@@ -27,8 +29,8 @@ export function entryPayload(entry: Entry): Record<string, unknown> {
 }
 
 export function insertEntryRow(db: SqliteDatabase, sessionId: string, entry: NewEntryRow) {
-	sql`INSERT INTO entries (session_id, id, seq, parent_id, type, timestamp, payload)
-		VALUES (${sessionId}, ${entry.id}, ${entry.seq}, ${entry.parentId}, ${entry.type}, ${entry.timestamp}, ${entry.payload})`.run(
+	sql`INSERT INTO entries (session_id, project_id, id, seq, parent_id, type, timestamp, payload)
+		VALUES (${sessionId}, ${entry.projectId}, ${entry.id}, ${entry.seq}, ${entry.parentId}, ${entry.type}, ${entry.timestamp}, ${entry.payload})`.run(
 		db,
 	);
 }
@@ -64,6 +66,27 @@ export function readEntryRows(
 	return sql`SELECT session_id, seq, id, parent_id, type, timestamp, payload
 		FROM entries
 		WHERE session_id = ${sessionId}${after}${cursor}${type}
+		ORDER BY seq ${direction}${limit}`.all<EntryRow>(db);
+}
+
+export function readEntryRowsByProjectId(
+	db: SqliteDatabase,
+	projectId: string,
+	options: {
+		afterSeq?: number;
+		type?: Entry["type"];
+		order?: EntryOrder;
+		limit?: number;
+	} = {},
+) {
+	const oldestFirst = options.order === "oldestFirst";
+	const after = options.afterSeq === undefined ? sql`` : sql` AND seq > ${options.afterSeq}`;
+	const type = options.type === undefined ? sql`` : sql` AND type = ${options.type}`;
+	const direction = oldestFirst ? sql`ASC` : sql`DESC`;
+	const limit = options.limit === undefined ? sql`` : sql` LIMIT ${options.limit}`;
+	return sql`SELECT session_id, project_id, seq, id, parent_id, type, timestamp, payload
+		FROM entries
+		WHERE project_id = ${projectId}${after}${type}
 		ORDER BY seq ${direction}${limit}`.all<EntryRow>(db);
 }
 
