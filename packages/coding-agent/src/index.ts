@@ -1,7 +1,11 @@
 // Core session management
 
+// Clipboard utilities
+// YAML 序列化：扩展渲染 <state> 等块时需要与引擎原生 state slot 同款的输出
+// （slot-renderers.ts 用的就是 yaml 的 stringify）。不导出的话扩展只能自己引 yaml，
+// 而扩展的模块解析到不了 vendor 内的 node_modules。
+export { stringify as stringifyYaml } from "yaml";
 export { type Args, parseArgs } from "./cli/args.ts";
-
 // Config paths
 export {
 	CONFIG_DIR_NAME,
@@ -458,7 +462,6 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.ts";
-// Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { convertToPng } from "./utils/image-convert.ts";
