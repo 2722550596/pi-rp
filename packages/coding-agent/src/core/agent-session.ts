@@ -112,6 +112,8 @@ import {
 	type TreePreparation,
 	type TurnEndEvent,
 	type TurnStartEvent,
+	type UserBashEvent,
+	type UserBashEventResult,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
@@ -282,6 +284,7 @@ export interface ExtensionBindings {
 	uiContext?: ExtensionUIContext;
 	mode?: ExtensionMode;
 	commandContextActions?: ExtensionCommandContextActions;
+	reloadHandler?: RuntimeReloadHandler;
 	abortHandler?: () => void;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
@@ -368,6 +371,14 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 	return tokens;
 }
 
+export interface RuntimeReloadOptions {
+	beforeSessionStart?: () => void | Promise<void>;
+}
+
+export type RuntimeReloadCore = (options?: RuntimeReloadOptions) => Promise<void>;
+
+type RuntimeReloadHandler = (reloadCore: RuntimeReloadCore) => Promise<void>;
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -443,6 +454,8 @@ export class AgentSession {
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
+	private _runtimeReloadHandler?: RuntimeReloadHandler;
+	private _extensionsBound = false;
 	private _extensionAbortHandler?: () => void;
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
@@ -467,6 +480,11 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
 	private _systemPromptOverride?: string;
+
+	// Deferred runtime reload state
+	private _reloadDeferralDepth = 0;
+	private _reloadRequested = false;
+	private _reloadInProgress = false;
 
 	// Baseline tool set before the active preset's tools policy was applied
 	private _toolPolicyBaseline?: string[];
@@ -1037,6 +1055,7 @@ export class AgentSession {
 			// Dispose must succeed even if an abort hook throws.
 		}
 
+		this._reloadRequested = false;
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
@@ -1689,16 +1708,18 @@ export class AgentSession {
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._isAgentRunActive = true;
-		try {
-			await this.agent.prompt(messages);
-			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
+		await this.withReloadDeferred(async () => {
+			try {
+				await this.agent.prompt(messages);
+				while (await this._handlePostAgentRun()) {
+					await this.agent.continue();
+				}
+			} finally {
+				this._systemPromptOverride = undefined;
+				this._flushPendingBashMessages();
+				await this._emitAgentSettled();
 			}
-		} finally {
-			this._systemPromptOverride = undefined;
-			this._flushPendingBashMessages();
-			await this._emitAgentSettled();
-		}
+		});
 	}
 
 	/**
@@ -1713,6 +1734,8 @@ export class AgentSession {
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
+		let preflightAccepted = false;
+		let reloadDeferred = false;
 		let messages: AgentMessage[] | undefined;
 
 		try {
@@ -1723,9 +1746,13 @@ export class AgentSession {
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
+					preflightAccepted = true;
 					return;
 				}
 			}
+
+			this._reloadDeferralDepth++;
+			reloadDeferred = true;
 
 			if (this._compactionAbortController !== undefined) {
 				throw new Error(
@@ -1745,6 +1772,7 @@ export class AgentSession {
 				);
 				if (inputResult.action === "handled") {
 					preflightResult?.(true);
+					preflightAccepted = true;
 					return;
 				}
 				if (inputResult.action === "transform") {
@@ -1773,6 +1801,7 @@ export class AgentSession {
 					await this._queueSteer(expandedText, currentImages);
 				}
 				preflightResult?.(true);
+				preflightAccepted = true;
 				return;
 			}
 
@@ -1856,17 +1885,27 @@ export class AgentSession {
 				this._systemPromptOverride = undefined;
 				this._applyDynamicSystemPrompt();
 			}
+
+			if (!messages) {
+				return;
+			}
+
+			preflightResult?.(true);
+			preflightAccepted = true;
+			await this._runAgentPrompt(messages);
 		} catch (error) {
-			preflightResult?.(false);
+			if (!preflightAccepted) {
+				preflightResult?.(false);
+			}
 			throw error;
+		} finally {
+			if (reloadDeferred) {
+				this._reloadDeferralDepth--;
+				if (this._reloadDeferralDepth === 0) {
+					await this._flushRequestedReload();
+				}
+			}
 		}
-
-		if (!messages) {
-			return;
-		}
-		preflightResult?.(true);
-
-		await this._runAgentPrompt(messages);
 
 		// Capture the actual messages sent to the LLM (post context event / preset injection)
 		this._lastCompiledMessages = [...(this._extensionRunner.lastContextMessages ?? [])];
@@ -2420,6 +2459,71 @@ export class AgentSession {
 		await this._getIdleWaitPromise();
 	}
 
+	async withReloadDeferred<T>(callback: () => Promise<T>, options: { flush?: boolean } = {}): Promise<T> {
+		this._reloadDeferralDepth++;
+		try {
+			return await callback();
+		} finally {
+			this._reloadDeferralDepth--;
+			if (this._reloadDeferralDepth === 0 && options.flush !== false) {
+				await this._flushRequestedReload();
+			}
+		}
+	}
+
+	private _shouldDeferReload(): boolean {
+		return this._reloadDeferralDepth > 0 || this.isStreaming || this.isCompacting;
+	}
+
+	private async _runReloadHandler(options?: RuntimeReloadOptions): Promise<void> {
+		if (this._reloadInProgress) {
+			this._reloadRequested = true;
+			return;
+		}
+
+		this._reloadInProgress = true;
+		try {
+			do {
+				this._reloadRequested = false;
+				const reloadCore: RuntimeReloadCore = (coreOptions = options) => this._reloadCore(coreOptions);
+				await (this._runtimeReloadHandler ? this._runtimeReloadHandler(reloadCore) : reloadCore());
+			} while (this._reloadRequested && !this._shouldDeferReload());
+		} finally {
+			this._reloadInProgress = false;
+		}
+	}
+
+	private async _flushRequestedReload(): Promise<void> {
+		if (!this._reloadRequested || this._shouldDeferReload()) {
+			return;
+		}
+
+		try {
+			await this._runReloadHandler();
+		} catch (error) {
+			this._extensionRunner.emitError({
+				extensionPath: "<runtime>",
+				event: "reload",
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+			throw error;
+		}
+	}
+
+	/**
+	 * Request a runtime reload. If the agent or session is busy, reload is deferred
+	 * until the current prompt, compaction, or branch summary operation finishes.
+	 */
+	async requestReload(): Promise<void> {
+		this._reloadRequested = true;
+		if (this._shouldDeferReload() || this._reloadInProgress) {
+			return;
+		}
+
+		await this._flushRequestedReload();
+	}
+
 	// =========================================================================
 	// Model Management
 	// =========================================================================
@@ -2430,11 +2534,13 @@ export class AgentSession {
 		source: "set" | "cycle" | "restore",
 	): Promise<void> {
 		if (modelsAreEqual(previousModel, nextModel)) return;
-		await this._extensionRunner.emit({
-			type: "model_select",
-			model: nextModel,
-			previousModel,
-			source,
+		await this.withReloadDeferred(async () => {
+			await this._extensionRunner.emit({
+				type: "model_select",
+				model: nextModel,
+				previousModel,
+				source,
+			});
 		});
 	}
 
@@ -2564,10 +2670,15 @@ export class AgentSession {
 				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
 			}
 			this._emit({ type: "thinking_level_changed", level: effectiveLevel });
-			void this._extensionRunner.emit({
-				type: "thinking_level_select",
-				level: effectiveLevel,
-				previousLevel,
+			void this.withReloadDeferred(async () => {
+				await this._extensionRunner.emit({
+					type: "thinking_level_select",
+					level: effectiveLevel,
+					previousLevel,
+				});
+			}).catch(() => {
+				// _flushRequestedReload already emitted the extension error. setThinkingLevel
+				// is synchronous, so there is no caller to reject.
 			});
 		}
 	}
@@ -2808,6 +2919,7 @@ export class AgentSession {
 			throw error;
 		} finally {
 			this._compactionAbortController = undefined;
+			await this._flushRequestedReload();
 		}
 	}
 
@@ -3172,6 +3284,7 @@ export class AgentSession {
 			return false;
 		} finally {
 			this._autoCompactionAbortController = undefined;
+			await this._flushRequestedReload();
 		}
 	}
 
@@ -3188,6 +3301,7 @@ export class AgentSession {
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+		this._extensionsBound = true;
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
 		}
@@ -3196,6 +3310,9 @@ export class AgentSession {
 		}
 		if (bindings.commandContextActions !== undefined) {
 			this._extensionCommandContextActions = bindings.commandContextActions;
+		}
+		if (bindings.reloadHandler !== undefined) {
+			this._runtimeReloadHandler = bindings.reloadHandler;
 		}
 		if (bindings.abortHandler !== undefined) {
 			this._extensionAbortHandler = bindings.abortHandler;
@@ -3214,8 +3331,10 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
-		await this._extensionRunner.emit(this._sessionStartEvent);
-		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		await this.withReloadDeferred(async () => {
+			await this._extensionRunner.emit(this._sessionStartEvent);
+			await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		});
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -3273,7 +3392,14 @@ export class AgentSession {
 
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
 		runner.setUIContext(this._extensionUIContext, this._extensionMode);
-		runner.bindCommandContext(this._extensionCommandContextActions);
+		runner.bindCommandContext({
+			waitForIdle: this._extensionCommandContextActions?.waitForIdle ?? (() => this.agent.waitForIdle()),
+			newSession: this._extensionCommandContextActions?.newSession ?? (async () => ({ cancelled: false })),
+			fork: this._extensionCommandContextActions?.fork ?? (async () => ({ cancelled: false })),
+			navigateTree: this._extensionCommandContextActions?.navigateTree ?? (async () => ({ cancelled: false })),
+			switchSession: this._extensionCommandContextActions?.switchSession ?? (async () => ({ cancelled: false })),
+			reload: this._extensionCommandContextActions?.reload ?? (() => this.requestReload()),
+		});
 		runner.setParentContextRequest(this._extensionParentContextRequest);
 		runner.setOrchestrationRequest(this._extensionOrchestrationRequest);
 
@@ -3453,6 +3579,7 @@ export class AgentSession {
 						}
 					})();
 				},
+				reload: () => this.requestReload(),
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
 				completeSideRequest: async ({
@@ -3705,7 +3832,11 @@ export class AgentSession {
 		await this.extendResourcesFromExtensions("reload");
 	}
 
-	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+	async reload(options?: RuntimeReloadOptions): Promise<void> {
+		await this._runReloadHandler(options);
+	}
+
+	private async _reloadCore(options?: RuntimeReloadOptions): Promise<void> {
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
@@ -3724,6 +3855,7 @@ export class AgentSession {
 		this._initStateStore();
 
 		const hasBindings =
+			this._extensionsBound ||
 			this._extensionUIContext ||
 			this._extensionCommandContextActions ||
 			this._extensionShutdownHandler ||
@@ -3862,6 +3994,13 @@ export class AgentSession {
 	// =========================================================================
 	// Bash Execution
 	// =========================================================================
+
+	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
+		if (!this._extensionRunner.hasHandlers("user_bash")) {
+			return undefined;
+		}
+		return this.withReloadDeferred(() => this._extensionRunner.emitUserBash(event));
+	}
 
 	/**
 	 * Execute a bash command.
@@ -4190,6 +4329,7 @@ export class AgentSession {
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
 			this._branchSummaryAbortController = undefined;
+			await this._flushRequestedReload();
 		}
 	}
 

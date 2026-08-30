@@ -13,6 +13,8 @@
 - Added path-change session events: `reroll()`, `editMessage()`, `navigateTree()`, and `setActivePreset()` now emit `leaf_changed` / `entry_edited` / `preset_activated` after their mutation + state restore completes (mirrored to extensions alongside the existing `session_tree`), replacing the TUI's hard-coded manual re-renders.
 - `reroll()` now rolls back state and schemas to the rewind path like tree navigation does, so in-memory state cannot diverge from the transcript after a reroll.
 - Added the `reroll` command to the RPC dialect (headless regeneration: branch + state restore, then the run streams agent events).
+- Added `ExtensionContext.reload()`: tools, event handlers, and shortcuts can now request a runtime reload directly. Reload requests from busy contexts are deferred until the session reaches a safe boundary (agent idle), instead of tearing down the runtime mid-turn.
+- Changed syntax highlighting to initialize only twenty common languages eagerly and defer the remaining grammars until after the initial TUI render, reducing CLI startup time.
 
 ### Fixed
 

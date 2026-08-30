@@ -368,6 +368,8 @@ export interface ExtensionContext {
 	};
 	/** Spawn an in-process subagent (runSubagent engine) and replay its successful state_update calls. */
 	spawnAgent(options: SpawnAgentOptions): Promise<SpawnAgentResult>;
+	/** Reload the extension runtime. */
+	reload(): Promise<void>;
 	/**
 	 * 活体读取父会话的当前上下文（affiliated-session B）：RPC 子进程专属
 	 * （经 context_request/response 通道）；TUI/print 无父会话 → undefined。
@@ -1887,6 +1889,7 @@ export interface ExtensionContextActions {
 		diagnostics: PromptPresetDiagnostic[];
 	};
 	spawnAgent: (options: SpawnAgentOptions) => Promise<SpawnAgentResult>;
+	reload?: () => Promise<void>;
 }
 
 /** Options for ctx.completeSideRequest: a one-shot side LLM request outside the main loop. */
@@ -1930,7 +1933,7 @@ export interface ExtensionCommandContextActions {
 		sessionPath: string,
 		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	) => Promise<{ cancelled: boolean }>;
-	reload: () => Promise<void>;
+	reload?: () => Promise<void>;
 }
 
 /**

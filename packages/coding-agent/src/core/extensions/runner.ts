@@ -337,6 +337,7 @@ export class ExtensionRunner {
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
 	private switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
 	private reloadHandler: ReloadHandler = async () => {};
+	private commandReloadHandler: ReloadHandler | undefined;
 	private shutdownHandler: ShutdownHandler = () => {};
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
@@ -407,6 +408,7 @@ export class ExtensionRunner {
 		this.completeSideRequestFn = contextActions.completeSideRequest;
 		this.compilePresetFn = contextActions.compilePreset;
 		this.spawnAgentFn = contextActions.spawnAgent;
+		this.reloadHandler = contextActions.reload ?? (async () => {});
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
@@ -476,7 +478,7 @@ export class ExtensionRunner {
 			this.forkHandler = actions.fork;
 			this.navigateTreeHandler = actions.navigateTree;
 			this.switchSessionHandler = actions.switchSession;
-			this.reloadHandler = actions.reload;
+			this.commandReloadHandler = actions.reload;
 			return;
 		}
 
@@ -485,7 +487,7 @@ export class ExtensionRunner {
 		this.forkHandler = async () => ({ cancelled: false });
 		this.navigateTreeHandler = async () => ({ cancelled: false });
 		this.switchSessionHandler = async () => ({ cancelled: false });
-		this.reloadHandler = async () => {};
+		this.commandReloadHandler = undefined;
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
@@ -850,6 +852,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.spawnAgentFn(options);
 			},
+			reload: () => {
+				runner.assertActive();
+				return runner.reloadHandler();
+			},
 		};
 	}
 
@@ -887,7 +893,7 @@ export class ExtensionRunner {
 		};
 		context.reload = () => {
 			this.assertActive();
-			return this.reloadHandler();
+			return (this.commandReloadHandler ?? this.reloadHandler)();
 		};
 		return context;
 	}

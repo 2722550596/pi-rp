@@ -55,7 +55,12 @@ import {
 	getProjectConfigDirName,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	parseSkillBlock,
+	type RuntimeReloadCore,
+} from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
 import type {
@@ -107,6 +112,7 @@ import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
@@ -939,6 +945,13 @@ export class InteractiveMode {
 		// Initialize available provider count for footer display
 		// Fire-and-forget: provider count refreshes in background, don't block init
 		void this.updateAvailableProviderCount();
+		// Flush the completed startup state before loading the remaining syntax grammars.
+		this.ui.renderNow();
+		void loadAllHighlightLanguages().then(() => {
+			if (!this.isInitialized) return;
+			this.ui.invalidate();
+			this.ui.requestRender();
+		});
 	}
 
 	/**
@@ -1817,10 +1830,8 @@ export class InteractiveMode {
 				switchSession: async (sessionPath, options) => {
 					return this.handleResumeSession(sessionPath, options);
 				},
-				reload: async () => {
-					await this.runReload();
-				},
 			},
+			reloadHandler: (reloadCore) => this.performReload(reloadCore),
 			shutdownHandler: () => {
 				this.shutdownRequested = true;
 				if (this.session.isIdle) {
@@ -1966,6 +1977,7 @@ export class InteractiveMode {
 					}
 				})();
 			},
+			reload: () => this.session.requestReload(),
 			getSystemPrompt: () => this.session.systemPrompt,
 			completeSideRequest: (options) => extensionRunner.createContext().completeSideRequest(options),
 			compilePreset: (presetId, runtime) => extensionRunner.createContext().compilePreset(presetId, runtime),
@@ -3010,7 +3022,7 @@ export class InteractiveMode {
 				void this.runImportFlow((payload as { path?: string } | undefined)?.path);
 				break;
 			case "reload":
-				void this.runReload();
+				void this.handleReloadCommand();
 				break;
 			case "hotkeys":
 				this.renderHotkeysIntoChat();
@@ -5732,19 +5744,10 @@ export class InteractiveMode {
 	/**
 	 * Reload keybindings, extensions, skills, prompts, themes, and context
 	 * files. View-side flow for the /reload command (registry body dispatches
-	 * here via CommandView.showSelector): session.reload() plus the TUI-only
+	 * here via CommandView.showSelector): reloadCore() plus the TUI-only
 	 * refresh that follows it.
 	 */
-	private async runReload(): Promise<void> {
-		if (this.session.isStreaming) {
-			this.showWarning("Wait for the current response to finish before reloading.");
-			return;
-		}
-		if (this.session.isCompacting) {
-			this.showWarning("Wait for compaction to finish before reloading.");
-			return;
-		}
-
+	private async performReload(reloadCore: RuntimeReloadCore): Promise<void> {
 		this.resetExtensionUI();
 
 		const reloadBox = new Container();
@@ -5788,7 +5791,7 @@ export class InteractiveMode {
 		};
 
 		try {
-			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
+			await reloadCore({ beforeSessionStart: restoreChatBeforeSessionStart });
 			restoreChatBeforeSessionStart();
 			configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
 			this.keybindings.reload();
@@ -5835,6 +5838,23 @@ export class InteractiveMode {
 			if (!reloadBoxDismissed) {
 				dismissReloadBox(previousEditor as Component);
 			}
+			throw error;
+		}
+	}
+
+	private async handleReloadCommand(): Promise<void> {
+		if (this.session.isStreaming) {
+			this.showWarning("Wait for the current response to finish before reloading.");
+			return;
+		}
+		if (this.session.isCompacting) {
+			this.showWarning("Wait for compaction to finish before reloading.");
+			return;
+		}
+
+		try {
+			await this.session.reload();
+		} catch (error) {
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
@@ -6076,10 +6096,8 @@ export class InteractiveMode {
 	}
 
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
-		const extensionRunner = this.session.extensionRunner;
-
 		// Emit user_bash event to let extensions intercept
-		const eventResult = await extensionRunner.emitUserBash({
+		const eventResult = await this.session.emitUserBash({
 			type: "user_bash",
 			command,
 			excludeFromContext,
