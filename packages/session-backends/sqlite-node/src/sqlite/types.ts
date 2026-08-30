@@ -37,12 +37,15 @@ export interface SqliteSessionMetadata extends SessionMetadata {
 	name?: string;
 	/** Opaque application-owned metadata. */
 	metadata?: Record<string, unknown>;
+	/** Project identifier for cross-session querying. */
+	projectId?: string;
 }
 
 export interface SqliteSessionCreateOptions extends SessionCreateOptions {
 	cwd: string;
 	parentSessionId?: string;
 	metadata?: Record<string, unknown>;
+	projectId?: string;
 }
 
 export interface SqliteSessionListOptions {
