@@ -257,6 +257,63 @@ describe("item wrap (custom XML tag)", () => {
 	});
 });
 
+describe("item heading and ending", () => {
+	it("prepends heading to block content", () => {
+		const preset = presetWithItems([{ kind: "block", id: "b", content: "content", heading: "## Role" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(1);
+		expect(messageText(compiled[0])).toBe("## Role\ncontent");
+	});
+
+	it("appends ending to block content", () => {
+		const preset = presetWithItems([{ kind: "block", id: "b", content: "content", ending: "---" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(messageText(compiled[0])).toBe("content\n---");
+	});
+
+	it("renders heading + slot output + ending", () => {
+		registerSlot({ name: "he-slot", description: "test", render: () => "slot body" });
+		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "he-slot", heading: "## Tools", ending: "---" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(1);
+		expect(messageText(compiled[0])).toBe("## Tools\nslot body\n---");
+	});
+
+	it("renders heading alone when slot output is empty", () => {
+		registerSlot({ name: "he-empty-slot", description: "test", render: () => "" });
+		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "he-empty-slot", heading: "## Empty" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(1);
+		expect(messageText(compiled[0])).toBe("## Empty");
+	});
+
+	it("expands macros in heading and ending", () => {
+		registerMacro({ name: "heMacro", description: "test", render: () => "expanded" });
+		const preset = presetWithItems([
+			{ kind: "block", id: "b", content: "body", heading: "{{heMacro}}:", ending: "{{heMacro}}" },
+		]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(1);
+		expect(messageText(compiled[0])).toBe("expanded:\nbody\nexpanded");
+	});
+
+	it("wrap applies to heading + content + ending combined", () => {
+		const preset = presetWithItems([
+			{ kind: "block", id: "b", content: "body", heading: "## H", ending: "---", wrap: "ctx" },
+		]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(1);
+		expect(messageText(compiled[0])).toBe("<ctx>## H\nbody\n---</ctx>");
+	});
+
+	it("renders nothing when both heading and ending are empty and slot renders empty", () => {
+		registerSlot({ name: "he-all-empty", description: "test", render: () => "" });
+		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "he-all-empty" }]);
+		const compiled = compileMessages(preset, runtime([])).messages;
+		expect(compiled).toHaveLength(0);
+	});
+});
+
 describe("unresolvedMacroPolicy", () => {
 	const unresolvedPreset = (policy: "warn" | "keep" | "error") =>
 		presetWithItems([{ kind: "block", id: "b", content: "Hello {{doesNotExist}}" }], {

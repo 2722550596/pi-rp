@@ -278,6 +278,8 @@ function normalizeItem(
 		name?: string;
 		enabled?: boolean;
 		role?: PromptPresetRole;
+		heading?: string;
+		ending?: string;
 		wrap?: string | { tag: string; attrs?: Record<string, string> };
 	} = {
 		kind: kind as "block" | "slot",
@@ -288,6 +290,8 @@ function normalizeItem(
 	if (typeof obj.role === "string" && (VALID_ROLES as Set<string>).has(obj.role)) {
 		base.role = obj.role as PromptPresetRole;
 	}
+	if (typeof obj.heading === "string") base.heading = obj.heading;
+	if (typeof obj.ending === "string") base.ending = obj.ending;
 	const wrap = normalizeWrap(obj.wrap, base.id, diagnostics);
 	if (wrap) base.wrap = wrap;
 

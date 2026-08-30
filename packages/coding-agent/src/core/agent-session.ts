@@ -121,11 +121,7 @@ import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
-import {
-	compileMessages,
-	compileSystemPrompt,
-	deriveSystemPrompt,
-} from "./prompt-preset/compiler.ts";
+import { compileMessages, compileSystemPrompt, deriveSystemPrompt } from "./prompt-preset/compiler.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,

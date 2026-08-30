@@ -246,14 +246,23 @@ function renderItemText(
 	} else {
 		raw = renderSlot(item as PromptPresetSlotItem, preset, runtime, diagnostics);
 	}
-	if (!raw) return "";
+
+	// heading/ending are explicit user text; keep them even when the content
+	// itself renders empty (e.g. a slot with no output), so a declared heading
+	// is never silently dropped.
+	const parts: string[] = [];
+	if (item.heading) parts.push(item.heading);
+	if (raw) parts.push(raw);
+	if (item.ending) parts.push(item.ending);
+	const text = parts.join("\n");
+	if (!text) return "";
 
 	let rendered: string;
 	if (runtime.skipMacroExpansion) {
-		rendered = raw;
+		rendered = text;
 	} else {
 		const policy = preset.defaults?.unresolvedMacroPolicy;
-		rendered = expandMacros(raw, runtime, { unresolvedPolicy: policy, diagnostics });
+		rendered = expandMacros(text, runtime, { unresolvedPolicy: policy, diagnostics });
 	}
 	return applyItemWrap(rendered, item, diagnostics);
 }

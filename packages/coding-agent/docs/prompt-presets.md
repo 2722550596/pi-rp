@@ -60,31 +60,33 @@ Each item is either a **block** (static text) or a **slot** (dynamic content ren
 { "kind": "block", "id": "my-rule", "role": "system", "content": "Be concise." }
 ```
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `kind` | `"block"` | yes | Must be `"block"`. |
-| `id` | string | yes | Unique within the preset. |
-| `name` | string | no | Display name for diagnostics. |
-| `enabled` | boolean | no | Set to `false` to skip. Default `true`. |
-| `role` | string | no | Message role: `"system"`, `"user"`, `"assistant"`, `"custom"`. Default `"system"` (when omitted). |
-| `content` | string | yes | Prompt text. Supports `{{macro}}` expansion. |
-| `wrap` | string or object | no | Wrap the rendered content in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
+ | Field | Type | Required | Description |
+ |---|---|---|---|
+ | `kind` | `"block"` | yes | Must be `"block"`. |
+ | `id` | string | yes | Unique within the preset. |
+ | `name` | string | no | Display name for diagnostics. |
+ | `enabled` | boolean | no | Set to `false` to skip. Default `true`. |
+ | `role` | string | no | Message role: `"system"`, `"user"`, `"assistant"`, `"custom"`. Default `"system"` (when omitted). |
+ | `content` | string | yes | Prompt text. Supports `{{macro}}` expansion. |
+ | `heading` | string | no | Text inserted before the rendered content. Supports `{{macro}}` expansion. An item with a heading but empty content still renders (the heading alone). |
+ | `ending` | string | no | Text appended after the rendered content. Supports `{{macro}}` expansion. |
+ | `wrap` | string or object | no | Wrap the rendered content in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
 
 #### Slot Item
 
 ```json
 { "kind": "slot", "id": "tools", "slot": "tools", "options": { "onlyWithSnippets": true } }
-```
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `kind` | `"slot"` | yes | Must be `"slot"`. |
-| `slot` | string | yes | One of the [built-in slots](#built-in-slots) or a custom extension slot. |
-| `name` | string | no | Display name for diagnostics. |
-| `enabled` | boolean | no | Default `true`. |
-| `role` | string | no | Slot output role. Default `"system"`. |
-| `options` | object | no | Slot-specific options (see per-slot docs below). |
-| `wrap` | string or object | no | Wrap the slot's rendered output in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
+ | Field | Type | Required | Description |
+ |---|---|---|---|
+ | `kind` | `"slot"` | yes | Must be `"slot"`. |
+ | `slot` | string | yes | One of the [built-in slots](#built-in-slots) or a custom extension slot. |
+ | `name` | string | no | Display name for diagnostics. |
+ | `enabled` | boolean | no | Default `true`. |
+ | `role` | string | no | Slot output role. Default `"system"`. |
+ | `heading` | string | no | Text inserted before the slot's rendered output. Supports `{{macro}}` expansion. An item with a heading but empty slot output still renders (the heading alone). |
+ | `ending` | string | no | Text appended after the slot's rendered output. Supports `{{macro}}` expansion. |
+ | `options` | object | no | Slot-specific options (see per-slot docs below). |
+ | `wrap` | string or object | no | Wrap the slot's rendered output in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
 
 ### Compilation Model
 
@@ -146,6 +148,36 @@ Rules:
 - Items that render empty are skipped entirely — no empty tag pair is emitted.
 - Attribute values are XML-escaped (`&`, `<`, `>`, `"`).
 - An invalid tag name (not an XML name) produces a warning diagnostic and leaves the text unwrapped.
+
+## Per-Item Heading and Ending
+
+Both `block` and `slot` items accept `heading` and `ending` fields — a shorthand for
+adding text before or after the rendered content without writing a separate item.
+
+```json
+{
+  "kind": "slot", "id": "lore", "slot": "file",
+  "options": { "path": "docs/world/charter.md" },
+  "heading": "## Character Charter",
+  "ending": "---"
+}
+```
+
+renders as:
+
+```
+## Character Charter
+<charter content>
+---
+```
+
+Rules:
+
+- `heading` and `ending` support `{{macro}}` expansion, just like block `content`.
+- An item with a `heading` but empty content still renders (the heading alone),
+  so a declared heading is never silently dropped by an empty slot.
+- `wrap` applies to the combined text (heading + content + ending), so the
+  XML tag encloses everything.
 
 ## Built-in Slots
 
@@ -239,6 +271,47 @@ Renders the current conversation state (game stats, inventory, flags).
 | `format` | `"key-value"`, `"json"`, `"yaml"` | `"key-value"` | Output format. `"yaml"` renders a nested tree so values under the same key share one parent line; `"json"` renders pretty-printed JSON. |
 | `omitNamespace` | boolean | `false` | Drop the top-level namespace prefix: `magnolia.character.hp` renders as `character.hp`. Namespace contents are merged into the root, so identical inner keys from different namespaces overwrite each other (last one wins) — enable only when namespaces cannot collide (e.g. a single active schema). |
 | `allowNamespace` | string[] | — | Only render these top-level namespaces (e.g. `["magnolia"]`); others are omitted. Empty or unset renders all. |
+
+### `file`
+
+Reads file contents into the prompt. Supports glob patterns, YAML frontmatter
+stripping, and automatic XML wrapping with `path` attributes.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `path` | string \| string[] | (required) | File path(s) or glob pattern. |
+| `glob` | boolean | `false` | Treat `path` as a glob pattern. |
+| `baseDir` | string | `"cwd"` | Relative path base (`"cwd"` or an explicit directory). |
+| `xml` | boolean \| `{tag?, attrs?}` | `false` | Wrap each file in `<tag path="...">` (default tag: `"file"`). |
+| `stripFrontmatter` | boolean | `false` | Strip `---\n…\n---` YAML frontmatter from markdown files. |
+| `onlyFrontmatter` | boolean | `false` | Only output the frontmatter (discard body). |
+| `onMissing` | `"skip"`, `"error"`, `"placeholder"` | `"skip"` | Behavior when a file is not found. |
+| `missingText` | string | `""` | Placeholder text when `onMissing` is `"placeholder"`. |
+| `noMacros` | boolean | `false` | Escape `{{` in file content to prevent macro expansion. |
+| `maxContentChars` | number | — | Truncate each file's content to this many characters. |
+| `maxBytes` | number | `1048576` | Reject files larger than this (1 MiB). |
+| `maxFiles` | number | `50` | Maximum files from a glob match. |
+| `sort` | boolean | `true` | Sort glob results by path. |
+| `separator` | string | `"\n\n"` | Separator between multiple files. |
+| `allowBinary` | boolean | `false` | Allow files containing NUL bytes. |
+| `encoding` | string | `"utf-8"` | File read encoding. |
+
+Example with glob and XML wrapping:
+
+```json
+{
+  "kind": "slot", "id": "lore", "slot": "file",
+  "options": {
+    "path": "docs/world/lore/*.md",
+    "glob": true,
+    "stripFrontmatter": true,
+    "xml": { "tag": "lore_item" },
+    "onMissing": "skip"
+  },
+  "heading": "## Lore",
+  "wrap": { "tag": "lore", "attrs": { "source": "world" } }
+}
+```
 
 ## Macros
 

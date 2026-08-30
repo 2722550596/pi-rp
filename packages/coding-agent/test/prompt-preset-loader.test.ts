@@ -73,6 +73,35 @@ describe("prompt preset loader", () => {
 		expect(loaded[0].preset.items[1].wrap).toBeUndefined();
 	});
 
+	it("normalizes heading and ending on block and slot items", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [
+				{ kind: "block", id: "b", content: "x", heading: "## H", ending: "---" },
+				{ kind: "slot", id: "s", slot: "tools", heading: "Tools:", ending: "----" },
+			],
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].diagnostics).toEqual([]);
+		expect(loaded[0].preset.items[0]).toMatchObject({ heading: "## H", ending: "---" });
+		expect(loaded[0].preset.items[1]).toMatchObject({ heading: "Tools:", ending: "----" });
+	});
+
+	it("ignores numeric heading and ending values", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [{ kind: "block", id: "b", content: "x", heading: 42, ending: 99 }],
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].diagnostics).toEqual([]);
+		expect(loaded[0].preset.items[0].heading).toBeUndefined();
+		expect(loaded[0].preset.items[0].ending).toBeUndefined();
+	});
+
 	it("keeps every documented compaction override field", () => {
 		const cwd = writePresetFile({
 			schemaVersion: 1,

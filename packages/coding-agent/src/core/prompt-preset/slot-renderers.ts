@@ -1,3 +1,5 @@
+import { existsSync, globSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { stringify } from "yaml";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../../config.ts";
 import { formatSkillsForPrompt } from "../skills.ts";
@@ -57,6 +59,7 @@ export const SUPPORTED_SLOTS = new Set<string>([
 	"pi-docs",
 	"variables",
 	"state",
+	"file",
 ]);
 
 // =========================================================================
@@ -308,6 +311,102 @@ registerSlot(
 	true,
 );
 
+registerSlot(
+	{
+		name: "file",
+		description: "Read file contents into the prompt.",
+		render: (ctx: SlotRenderContext): string => {
+			const o = ctx.item.options ?? {};
+			const paths = o.path as string | string[] | undefined;
+			if (!paths || (Array.isArray(paths) && paths.length === 0)) {
+				ctx.diagnostics.push({ level: "warning", message: `File slot "${ctx.item.id}" has no path option.` });
+				return "";
+			}
+
+			const cwd = ctx.runtime.options.cwd;
+			const baseDir = (o.baseDir as string) ?? "cwd";
+			const useGlob = (o.glob as boolean) ?? false;
+			const shouldSort = (o.sort as boolean) ?? true;
+			const maxContentChars = o.maxContentChars as number | undefined;
+			const separator = (o.separator as string) ?? "\n\n";
+			const maxFiles = (o.maxFiles as number) ?? 50;
+			const maxBytes = (o.maxBytes as number) ?? 1_048_576;
+			const encoding = (o.encoding as string) ?? "utf-8";
+			const allowBinary = (o.allowBinary as boolean) ?? false;
+			const stripFm = (o.stripFrontmatter as boolean) ?? false;
+			const onlyFm = (o.onlyFrontmatter as boolean) ?? false;
+			const escapeMacros = (o.noMacros as boolean) ?? false;
+			const onMissing = (o.onMissing as string) ?? "skip";
+			const missingText = (o.missingText as string) ?? "";
+			const xml = o.xml as boolean | { tag?: string; attrs?: Record<string, string> } | undefined;
+
+			const filePaths = resolveFilePaths(paths, cwd, baseDir, useGlob, shouldSort, maxFiles, ctx);
+			if (filePaths.length === 0) return "";
+
+			const parts: string[] = [];
+			for (const fp of filePaths) {
+				if (!existsSync(fp)) {
+					switch (onMissing) {
+						case "error":
+							ctx.diagnostics.push({
+								level: "error",
+								message: `File slot "${ctx.item.id}": file not found "${fp}"`,
+								itemId: ctx.item.id,
+							});
+							break;
+						case "placeholder":
+							parts.push(wrapFileContent(missingText, fp, xml));
+							break;
+					}
+					continue;
+				}
+
+				const stat = statSync(fp);
+				if (stat.size > maxBytes) {
+					ctx.diagnostics.push({
+						level: "warning",
+						message: `File slot "${ctx.item.id}": file "${fp}" exceeds maxBytes (${stat.size} > ${maxBytes}); skipped.`,
+						itemId: ctx.item.id,
+					});
+					continue;
+				}
+
+				const buf = readFileSync(fp);
+				if (!allowBinary && isBinary(buf)) {
+					ctx.diagnostics.push({
+						level: "warning",
+						message: `File slot "${ctx.item.id}": file "${fp}" appears to be binary; skipped. Use allowBinary:true to force.`,
+						itemId: ctx.item.id,
+					});
+					continue;
+				}
+
+				let text = buf.toString(encoding as BufferEncoding);
+
+				if (onlyFm) {
+					text = extractFrontmatter(text);
+				} else if (stripFm) {
+					text = stripFrontmatter(text);
+				}
+
+				if (escapeMacros) {
+					text = text.replace(/\{\{/g, "{\u200b{");
+				}
+
+				if (maxContentChars && text.length > maxContentChars) {
+					text = `${text.slice(0, maxContentChars)}\n\u2026[truncated]`;
+				}
+
+				const relPath = fp.startsWith(cwd) ? fp.slice(cwd.length + 1) : fp;
+				parts.push(wrapFileContent(text, relPath, xml));
+			}
+
+			return parts.join(separator);
+		},
+	},
+	true,
+);
+
 /**
  * Keep only the top-level namespaces listed in `allow`. Undefined or an empty
  * array means no filtering (all namespaces render), matching chat-history
@@ -389,4 +488,91 @@ export function renderSlot(
 
 	const ctx: SlotRenderContext = { runtime, preset, item, diagnostics };
 	return slotDef.render(ctx);
+}
+
+// =========================================================================
+// File Slot Helpers
+// =========================================================================
+
+const FRONTMATTER_PATTERN = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+const DEFAULT_XML_TAG = "file";
+
+function escapeXmlAttr(value: string): string {
+	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function isBinary(buf: Buffer): boolean {
+	const slice = buf.subarray(0, 8192);
+	return slice.includes(0);
+}
+
+function extractFrontmatter(text: string): string {
+	const m = FRONTMATTER_PATTERN.exec(text);
+	if (!m) return "";
+	return m[0].replace(/^---\r?\n/, "").replace(/\r?\n---\r?\n?$/, "");
+}
+
+function wrapFileContent(
+	content: string,
+	filePath: string,
+	xml: boolean | { tag?: string; attrs?: Record<string, string> } | undefined,
+): string {
+	if (!xml) return content;
+	const tag = typeof xml === "object" && xml.tag ? xml.tag : DEFAULT_XML_TAG;
+	const attrs: Record<string, string> = typeof xml === "object" && xml.attrs ? { ...xml.attrs } : {};
+	attrs.path = filePath;
+	const attrStr = Object.entries(attrs)
+		.map(([k, v]) => ` ${k}="${escapeXmlAttr(v)}"`)
+		.join("");
+	return `<${tag}${attrStr}>${content}</${tag}>`;
+}
+
+function stripFrontmatter(text: string): string {
+	return text.replace(FRONTMATTER_PATTERN, "");
+}
+
+function resolveFilePaths(
+	paths: string | string[],
+	cwd: string,
+	baseDir: string,
+	useGlob: boolean,
+	sort: boolean,
+	maxFiles: number,
+	ctx: SlotRenderContext,
+): string[] {
+	const input = Array.isArray(paths) ? paths : [paths];
+	const resolved: string[] = [];
+
+	for (const p of input) {
+		let base = cwd;
+		if (baseDir !== "cwd") {
+			base = isAbsolute(baseDir) ? baseDir : resolve(cwd, baseDir);
+		}
+
+		const fullPath = isAbsolute(p) ? p : resolve(base, p);
+
+		if (useGlob) {
+			const matches = globSync(fullPath);
+			if (matches.length === 0) {
+				ctx.diagnostics.push({
+					level: "warning",
+					message: `File slot "${ctx.item.id}": glob "${fullPath}" matched no files.`,
+				});
+				continue;
+			}
+			const sorted = sort ? matches.sort() : matches;
+			const limited = sorted.slice(0, maxFiles);
+			if (sorted.length > maxFiles) {
+				ctx.diagnostics.push({
+					level: "info",
+					message: `File slot "${ctx.item.id}": glob matched ${sorted.length} files, limited to ${maxFiles}.`,
+				});
+			}
+			resolved.push(...limited);
+		} else {
+			resolved.push(fullPath);
+		}
+	}
+
+	return resolved;
 }

@@ -22,7 +22,8 @@ export type PromptPresetSlot =
 	| "active-model"
 	| "pi-docs"
 	| "variables"
-	| "state";
+	| "state"
+	| "file";
 
 // =========================================================================
 // Resource Policy (tools/skills allow/deny)
@@ -46,6 +47,17 @@ export interface PromptPresetBaseItem {
 	name?: string;
 	enabled?: boolean;
 	role?: PromptPresetRole;
+	/**
+	 * Optional text inserted before the rendered item content (block `content`
+	 * or slot output). Supports {{macro}} expansion like block content. Applies
+	 * to both block and slot items. An item that renders empty content but has
+	 * a heading is still rendered (the heading alone), so a declared heading
+	 * is never silently dropped.
+	 */
+	heading?: string;
+	/** Optional text appended after the rendered item content. Also supports
+	 * {{macro}} expansion. */
+	ending?: string;
 	/**
 	 * Wrap the rendered item text in a custom XML tag — a shorthand for
 	 * `<tag>…</tag>` (with optional `attrs`) around a block or slot. Applied
@@ -126,6 +138,40 @@ export interface PromptPresetSlotOptions {
 	dropToolNames?: string[];
 	/** Include Pi branch/compaction summary messages. */
 	includeSummaries?: boolean;
+
+	// file slot
+	/** File path(s) or glob pattern. */
+	path?: string | string[];
+	/** Treat path as a glob pattern. */
+	glob?: boolean;
+	/** Relative path base (cwd or explicit directory). */
+	baseDir?: string;
+	/** Wrap each file in `<tag path="...">`. */
+	xml?: boolean | { tag?: string; attrs?: Record<string, string> };
+	/** Strip `---\n...\n---` YAML frontmatter. */
+	stripFrontmatter?: boolean;
+	/** Only output frontmatter, discard body. */
+	onlyFrontmatter?: boolean;
+	/** Behavior when a file is missing. */
+	onMissing?: "skip" | "error" | "placeholder";
+	/** Placeholder text when onMissing is "placeholder". */
+	missingText?: string;
+	/** Escape `{{` in file content to prevent macro expansion. */
+	noMacros?: boolean;
+	/** Truncate each file's content to this many chars. */
+	maxContentChars?: number;
+	/** Reject files larger than this many bytes (default 1 MiB). */
+	maxBytes?: number;
+	/** Maximum files from a glob match. */
+	maxFiles?: number;
+	/** Sort glob results by path. */
+	sort?: boolean;
+	/** Separator between multiple files. */
+	separator?: string;
+	/** Allow files containing NUL bytes. */
+	allowBinary?: boolean;
+	/** File read encoding (default "utf-8"). */
+	encoding?: string;
 }
 
 export interface PromptPresetDefaults {
