@@ -467,7 +467,7 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 				type: committed.type,
 				timestamp: committed.timestamp,
 				payload: JSON.stringify(entryPayload(committed)),
-				projectId: this.metadata.projectId ?? '',
+				projectId: this.metadata.projectId ?? "",
 			});
 			setLaneLeaf(this.db, this.metadata.id, lane, committed.id);
 			appendEntryToBranchCache(
@@ -544,7 +544,7 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 		const rows = queryCachedBranchRows(this.db, this.metadata.id, cached, query);
 		validateCachedBranchRows(rows, query);
 		const entries = rows
-			.map((row) => entryRowFromCached(row, ''))
+			.map((row) => entryRowFromCached(row, ""))
 			.map(decodeEntry)
 			.filter((entry) => matchesEntryQuery(entry, query));
 		return query.limit === undefined ? entries : entries.slice(0, query.limit);
@@ -841,7 +841,7 @@ export class SqliteSessionRepository
 						);
 					}
 					const rows = queryCachedBranchRows(db, source.id, cached, { order: "oldestFirst" });
-					entries.push(...rows.map((row) => entryRowFromCached(row, sourceMetadata.projectId ?? '')));
+					entries.push(...rows.map((row) => entryRowFromCached(row, sourceMetadata.projectId ?? "")));
 					branchTips.push(branchForkTargetId);
 				}
 			}
@@ -854,7 +854,7 @@ export class SqliteSessionRepository
 			);
 			const createdAt = Date.now();
 			const metadata = options.metadata ?? sourceMetadata.metadata;
-			const projectId = options.projectId ?? sourceMetadata.projectId ?? '';
+			const projectId = options.projectId ?? sourceMetadata.projectId ?? "";
 			let lease: WriterLease;
 
 			try {
