@@ -26,6 +26,7 @@
 - Fixed branch summaries ignoring the active preset's regex rules: `outgoing` rules now filter the summarized messages and `finalize` rules rewrite the raw LLM summary before it is stored.
 - Fixed HTML export (`/export` and `--export`) not applying the active preset's `display` regex rules to message text, so exported pages could show content the TUI redacts.
 - Fixed documentation claiming `/preset list`, `/preset use`, and `/preset reload` subcommands (from the 0.83.0 changelog entry). `/preset` takes no subcommands: no argument lists loaded presets, `/preset <id|none>` activates or disables a preset, and `/reload` re-reads preset files.
+- Fixed `/preset <id>` after `/preset none` not updating the `defaultPreset` setting: the disabled branch persisted `"none"` to settings while the activation branch did not, so once disabled, every new session (and restart) restored the disabled state and the preset could never be switched back. Activating a preset now persists it as the settings default, mirroring the disable path.
 
 ## [0.84.2] - 2026-08-14
 

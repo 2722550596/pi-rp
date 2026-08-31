@@ -120,4 +120,34 @@ describe("auto-activate preset selection", () => {
 		expect(session.activePreset.id).toBe("hero");
 		session.dispose();
 	});
+
+	describe("setActivePreset persistence", () => {
+		it("persists an activated preset to settings so a /preset none can be switched back from", async () => {
+			writeFileSync(
+				join(tempDir, ".pi", "prompt-presets", "hero.json"),
+				JSON.stringify({ schemaVersion: 1, id: "hero", autoActivate: false, items: [] }),
+			);
+
+			const settingsManager = SettingsManager.inMemory();
+			const { session } = await createAgentSession({ ...baseOptions(), settingsManager });
+			expect(session.activePreset.id).toBe("pi-default");
+
+			// Disabling a preset persists "none" as the settings default.
+			await session.setActivePreset("none");
+			expect(settingsManager.getDefaultPreset()).toBe("none");
+
+			// Activating a real preset must also update the settings default,
+			// otherwise a restart would restore the disabled state forever.
+			const result = await session.setActivePreset("hero");
+			expect(result.ok).toBe(true);
+			expect(session.activePreset.id).toBe("hero");
+			expect(settingsManager.getDefaultPreset()).toBe("hero");
+			session.dispose();
+
+			// Simulate a restart: a fresh session on the same settings restores "hero".
+			const { session: restarted } = await createAgentSession({ ...baseOptions(), settingsManager });
+			expect(restarted.activePreset.id).toBe("hero");
+			restarted.dispose();
+		});
+	});
 });

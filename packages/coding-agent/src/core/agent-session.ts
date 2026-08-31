@@ -1534,6 +1534,10 @@ export class AgentSession {
 		this._presetExplicitlyActivated = true;
 		this._syncActiveToolPolicy();
 		if (options?.record !== false) this.sessionManager.appendPresetChange(id);
+		// Mirror the disabled branch: persist the activated preset as the settings
+		// default. Without this, a prior /preset none leaves settings.defaultPreset
+		// stuck at "none" and every restart restores the disabled state.
+		if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
 		// Apply preset thinking level (fail-soft)
 		const presetThinkingLevel = found.preset.thinkingLevel;
 		if (presetThinkingLevel) {
