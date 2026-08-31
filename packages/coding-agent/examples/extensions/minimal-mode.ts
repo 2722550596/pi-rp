@@ -81,7 +81,8 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, _context) {
-			const path = shortenPath(args.path || "");
+			const rawPath = Array.isArray(args.path) ? args.path.join(", ") : args.path;
+			const path = shortenPath(rawPath || "");
 			let pathDisplay = path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
 
 			// Show line range if specified

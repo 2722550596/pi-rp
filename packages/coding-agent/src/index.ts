@@ -356,6 +356,7 @@ export {
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
+	type ReadDirectoryEntry,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,

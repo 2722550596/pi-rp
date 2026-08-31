@@ -45,6 +45,7 @@ export {
 export {
 	createReadTool,
 	createReadToolDefinition,
+	type ReadDirectoryEntry,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,

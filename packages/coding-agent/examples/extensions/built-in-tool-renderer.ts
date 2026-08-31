@@ -46,7 +46,8 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme, _context) {
 			let text = theme.fg("toolTitle", theme.bold("read "));
-			text += theme.fg("accent", args.path);
+			const path = Array.isArray(args.path) ? args.path.join(", ") : args.path;
+			text += theme.fg("accent", path ?? "");
 			if (args.offset || args.limit) {
 				const parts: string[] = [];
 				if (args.offset) parts.push(`offset=${args.offset}`);

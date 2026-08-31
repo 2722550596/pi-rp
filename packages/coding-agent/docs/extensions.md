@@ -2232,6 +2232,8 @@ pi.registerTool({
 
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 
+`ReadOperations` additionally supports optional `stat` and `listDirectory` hooks: when provided, the `read` tool can tell files from directories and return directory entry listings (each entry as `{ name, isDirectory }`). Custom operations without these hooks keep the legacy behavior — `read` treats every path as a file and reports `EISDIR` for directories.
+
 For `user_bash`, extensions can reuse pi's local shell backend via `createLocalBashOperations()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.
 
 The bash tool also supports a spawn hook to adjust the command, cwd, or env before execution:

@@ -235,6 +235,108 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("definitely not a png");
 			expect(result.content.some((c: any) => c.type === "image")).toBe(false);
 		});
+
+		it("should read multiple files in one call", async () => {
+			const fileA = join(testDir, "a.txt");
+			const fileB = join(testDir, "b.txt");
+			writeFileSync(fileA, "content A");
+			writeFileSync(fileB, "content B");
+
+			const result = await readTool.execute("test-call-multi-1", { path: [fileA, fileB] });
+			const output = getTextOutput(result);
+
+			expect(output).toContain(`=== ${fileA} ===`);
+			expect(output).toContain("content A");
+			expect(output).toContain(`=== ${fileB} ===`);
+			expect(output).toContain("content B");
+		});
+
+		it("should truncate each file independently when reading multiple files", async () => {
+			const bigFile = join(testDir, "big.txt");
+			writeFileSync(bigFile, Array.from({ length: 2500 }, (_, i) => `Big line ${i + 1}`).join("\n"));
+			const smallFile = join(testDir, "small.txt");
+			writeFileSync(smallFile, "small content");
+
+			const result = await readTool.execute("test-call-multi-2", { path: [bigFile, smallFile] });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]");
+			expect(output).toContain("small content");
+		});
+
+		it("should report per-path errors when reading multiple files with partial failure", async () => {
+			const fileA = join(testDir, "a.txt");
+			const missing = join(testDir, "missing.txt");
+			writeFileSync(fileA, "content A");
+
+			const result = await readTool.execute("test-call-multi-3", { path: [fileA, missing] });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("content A");
+			expect(output).toContain(`[Error reading ${missing}:`);
+		});
+
+		it("should fail when all paths fail to read", async () => {
+			const missing1 = join(testDir, "missing1.txt");
+			const missing2 = join(testDir, "missing2.txt");
+
+			await expect(readTool.execute("test-call-multi-4", { path: [missing1, missing2] })).rejects.toThrow(
+				/ENOENT|not found/i,
+			);
+		});
+
+		it("should reject empty path arrays", async () => {
+			await expect(readTool.execute("test-call-multi-5", { path: [] })).rejects.toThrow(/No paths specified/);
+		});
+
+		it("should deduplicate repeated paths", async () => {
+			const fileA = join(testDir, "a.txt");
+			writeFileSync(fileA, "content A");
+
+			const result = await readTool.execute("test-call-multi-6", { path: [fileA, fileA] });
+			const output = getTextOutput(result);
+
+			expect(output.match(/content A/g)).toHaveLength(1);
+		});
+
+		it("should list directory contents when path is a directory", async () => {
+			mkdirSync(join(testDir, "subdir"));
+			writeFileSync(join(testDir, "alpha.txt"), "alpha");
+			writeFileSync(join(testDir, "beta.txt"), "beta");
+
+			const result = await readTool.execute("test-call-dir-1", { path: testDir });
+			const output = getTextOutput(result);
+
+			expect(output).toContain(`Directory listing of ${testDir} (3 entries):`);
+			expect(output).toContain("alpha.txt");
+			expect(output).toContain("beta.txt");
+			expect(output).toContain("subdir/");
+		});
+
+		it("should report empty directories", async () => {
+			const emptyDir = join(testDir, "empty");
+			mkdirSync(emptyDir);
+
+			const result = await readTool.execute("test-call-dir-2", { path: emptyDir });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("(empty directory)");
+		});
+
+		it("should cap directory entries with limit", async () => {
+			const dir = join(testDir, "many");
+			mkdirSync(dir);
+			for (let i = 0; i < 5; i++) {
+				writeFileSync(join(dir, `file-${i}.txt`), "x");
+			}
+
+			const result = await readTool.execute("test-call-dir-3", { path: dir, limit: 3 });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("(5 entries):");
+			expect(output).toContain("file-0.txt");
+			expect(output).toContain("[3 entries limit reached. Use limit=6 for more]");
+		});
 	});
 
 	describe("write tool", () => {

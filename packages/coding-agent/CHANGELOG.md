@@ -15,6 +15,7 @@
 - Added the `reroll` command to the RPC dialect (headless regeneration: branch + state restore, then the run streams agent events).
 - Added `ExtensionContext.reload()`: tools, event handlers, and shortcuts can now request a runtime reload directly. Reload requests from busy contexts are deferred until the session reaches a safe boundary (agent idle), instead of tearing down the runtime mid-turn.
 - Changed syntax highlighting to initialize only twenty common languages eagerly and defer the remaining grammars until after the initial TUI render, reducing CLI startup time.
+- The `read` tool now accepts an array of paths to read multiple files in one call (each file truncated independently), and returns a directory entry listing when the path is a directory. `ReadOperations` gained optional `stat` and `listDirectory` hooks for remote backends.
 
 ### Fixed
 
