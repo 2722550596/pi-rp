@@ -41,7 +41,7 @@
 
 | 原版设想 | 实际走向 | 结论 |
 |---|---|---|
-| 一个世界一个 pi daemon（4 进程 → 1 进程） | worldlines = 进程簇：writer 主进程 + N 角色子进程 + gateway 服务（§2） | **进程簇是主路线**；daemon 化降级为可选项（§5），不再作为默认目标 |
+| 一个世界一个 pi daemon（4 进程 → 1 进程） | worldlines = 进程簇：writer 主进程 + N 角色子进程 + gateway 服务（§2） | **进程簇是异构会话（配置/故障域/生命周期各不同）的正确粒度**；daemon 化不是被否定，而是收益集中在**同构批量会话**场景（见 §3）——当前无消费者，不设为目标 |
 | Phase 1 会话 + loops + usage 一起做 | assessment 拆 3 子阶段（1a loops / 1b 多会话 / 1c usage） | 拆分正确；多会话协议已被 worldlines 以「每进程单会话 + 进程池」绕开——RPC 侧不需要 sessionId 优先落地 |
 | subagent 是唯一副循环 | spawnAgent 已是通用原语（choice/state-updater 都在用） | spawnAgent 就是「进程内 side-request」；M2/M3 是对它的治理，不是新能力 |
 
@@ -110,7 +110,7 @@ gateway 服务（Node，一个）
 
 ### 明确不做（维持原判）
 
-- **Daemon/UDS**：进程簇已是生产形态；daemon 化只在「同进程多会话的启动延迟/内存收益被量化」时重提（high-concurrency-optimization.md 的指标）。
+- **Daemon/UDS**：进程簇已是异构会话的生产形态。daemon 化的收益集中在**同构、短生命周期、量级大**的批量会话场景（批量生成 / 评测流水线 / 多租户一次性任务），且有两个已验证的硬缺口做判据：① `sdk.ts:361` 每个 `createAgentSession` 默认新建 `RequestGateway` 实例——网关 per-会话，批量并发时无共享准入；② `agent_settled` 事件空载荷（`agent-session.ts:200`），客户端拿完整结果要累积 `message_update` + `get_last_assistant_text` 兜底——批量场景缺"一次调用返回完整结果"通道。**触发条件**：出现同构批量消费者，且这两个缺口成为痛点时重提；届时是现有 RPC 协议（`new_session` 已通）+ 常驻入口的事。同构批量会话无需配置/故障隔离，恰好消解 daemon 化的两个主要缺点。
 - **Worker 线程池**：正交，无消费者，随时可做。
 - **BackgroundLoopRuntime**（omp advisor 式 drain/coalesce/epoch）：触发式；第一个「常驻后台循环」需求（自动反思/异步记忆整理）出现时，以 state-updater 为第一个消费者抽骨架。
 
