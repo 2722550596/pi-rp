@@ -66,6 +66,16 @@ describe("Coding Agent Tools", () => {
 	});
 
 	describe("read tool", () => {
+		it("must declare the array branch first in the path union", () => {
+			// Vertex/Gemini function-declaration validation rejects `anyOf: [string, array]`
+			// ("For schema with items, schema type should be ARRAY"). Array-first passes;
+			// reordering this breaks gemini-*-backed providers (e.g. Vertex proxies).
+			const pathSchema = (readTool.parameters as { properties: { path: { anyOf: { type: string }[] } } })
+				.properties.path;
+			const branchTypes = pathSchema.anyOf.map((branch) => branch.type);
+			expect(branchTypes).toEqual(["array", "string"]);
+		});
+
 		it("should read file contents that fit within limits", async () => {
 			const testFile = join(testDir, "test.txt");
 			const content = "Hello, world!\nLine 2\nLine 3";

@@ -19,18 +19,21 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
 const readSchema = Type.Object({
+	// Array branch MUST come first: Vertex/Gemini function-declaration validation rejects
+	// `anyOf: [string, array]` with "For schema with items, schema type should be ARRAY"
+	// (its schema merger conflates the scalar branch with the array branch's `items`).
+	// Order is semantically irrelevant to JSON Schema, but array-first passes everywhere.
 	path: Type.Union([
+		Type.Array(
+			Type.String({
+				description: "Path to a file or directory to read (relative or absolute). Directories are returned as their entry listing.",
+			}),
+			{ description: "Read multiple paths in one call. Each path is read independently with its own truncation." },
+		),
 		Type.String({
 			description:
 				"Path to a file or directory to read (relative or absolute). Directories are returned as their entry listing.",
 		}),
-		Type.Array(
-			Type.String({
-				description:
-					"Path to a file or directory to read (relative or absolute). Directories are returned as their entry listing.",
-			}),
-			{ description: "Read multiple paths in one call. Each path is read independently with its own truncation." },
-		),
 	]),
 	offset: Type.Optional(
 		Type.Number({

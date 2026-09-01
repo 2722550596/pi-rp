@@ -19,7 +19,7 @@
 - The `read` tool now accepts an array of paths to read multiple files in one call (each file truncated independently), and returns a directory entry listing when the path is a directory. `ReadOperations` gained optional `stat` and `listDirectory` hooks for remote backends.
 
 ### Fixed
-
+- Fixed Vertex/Gemini-backed providers rejecting the `read` tool schema: the `path` union declared the `string` branch before the `array` branch, and Vertex function-declaration validation fails `anyOf: [string, array]` with "For schema with items, schema type should be ARRAY" (affecting e.g. `gemini-*` via Vertex-based OpenAI-compatible proxies). The union now declares the array branch first, which is semantically identical but passes all providers.
 - Fixed `/reload` not re-applying schemas loaded via `/schema load`; loaded schemas are now cleared and re-applied from `schema_change` session entries with freshly loaded schema definitions.
 - Fixed strict mode not persisting across session recovery; `/schema strict` is now recorded as a `strict_change` session entry and restored on resume/rollback.
 - Fixed documentation incorrectly stating that custom validators receive a post-write state snapshot; the `state` argument is a pre-write snapshot of the namespace subtree.
