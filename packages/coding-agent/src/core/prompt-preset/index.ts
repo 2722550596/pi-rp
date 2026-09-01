@@ -1,5 +1,5 @@
 export type { CompileMessageSource, CompileMessagesResult, CompileSystemPromptResult } from "./compiler.ts";
-export { compileMessages, compileSystemPrompt } from "./compiler.ts";
+export { compileMessages, compileMessagesSync, compileSystemPrompt, presetHasAsyncSlots } from "./compiler.ts";
 export { defaultPreset } from "./default-stack.ts";
 export type { ExpandMacrosOptions } from "./macro-engine.ts";
 

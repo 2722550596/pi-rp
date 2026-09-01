@@ -128,7 +128,7 @@ describe("Subagent", () => {
 				fauxAssistantMessage("Hi there"),
 			);
 
-			const result = prepareSubagentConversation({
+			const result = await prepareSubagentConversation({
 				cwd: harness.tempDir,
 				profileId: "test-peer",
 				task: "What is the world name?",
@@ -181,7 +181,7 @@ describe("Subagent", () => {
 				{ role: "user", content: [{ type: "text", text: "message-three" }], timestamp: Date.now() },
 			);
 
-			const result = prepareSubagentConversation({
+			const result = await prepareSubagentConversation({
 				cwd: harness.tempDir,
 				profileId: "test-peer-hist",
 				task: "task",
@@ -253,7 +253,7 @@ describe("Subagent", () => {
 			);
 			harness.session.reloadPresets();
 
-			const result = prepareSubagentConversation({
+			const result = await prepareSubagentConversation({
 				cwd: harness.tempDir,
 				profileId: "test-ext",
 				task: "task",
@@ -316,7 +316,7 @@ describe("Subagent", () => {
 			);
 			harness.session.reloadPresets();
 
-			const result = prepareSubagentConversation({
+			const result = await prepareSubagentConversation({
 				cwd: harness.tempDir,
 				profileId: "test-user-macro",
 				task: "task",
@@ -363,7 +363,7 @@ describe("Subagent", () => {
 			);
 			harness.session.reloadPresets();
 
-			const result = prepareSubagentConversation({
+			const result = await prepareSubagentConversation({
 				cwd: harness.tempDir,
 				profileId: "test-preset-vars",
 				task: "task",

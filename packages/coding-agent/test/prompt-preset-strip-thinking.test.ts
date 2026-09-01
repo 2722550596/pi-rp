@@ -85,27 +85,28 @@ function hasThinking(message: AgentMessage): boolean {
 }
 
 describe("chat-history stripAssistantThinking", () => {
-	it("strips thinking from every assistant message when true", () => {
+	it("strips thinking from every assistant message when true", async () => {
 		const messages = [
 			userMessage("first round"),
 			assistantMessage("first answer", "first reasoning"),
 			userMessage("second round"),
 			assistantMessage("second answer", "second reasoning"),
 		];
-		const compiled = compileMessages(chatHistoryPreset({ stripAssistantThinking: true }), runtime(messages)).messages;
+		const compiled = (await compileMessages(chatHistoryPreset({ stripAssistantThinking: true }), runtime(messages)))
+			.messages;
 
 		expect(compiled).toHaveLength(4);
 		expect(compiled.filter(hasThinking)).toHaveLength(0);
 	});
 
-	it("keeps thinking untouched when the option is unset", () => {
+	it("keeps thinking untouched when the option is unset", async () => {
 		const messages = [userMessage("round"), assistantMessage("answer", "reasoning")];
-		const compiled = compileMessages(chatHistoryPreset({}), runtime(messages)).messages;
+		const compiled = (await compileMessages(chatHistoryPreset({}), runtime(messages))).messages;
 
 		expect(compiled.filter(hasThinking)).toHaveLength(1);
 	});
 
-	it('strips only previous traces with "previous-traces" and keeps the current trace thinking', () => {
+	it('strips only previous traces with "previous-traces" and keeps the current trace thinking', async () => {
 		const messages = [
 			userMessage("first round"),
 			assistantMessage("first answer", "first reasoning"),
@@ -113,9 +114,8 @@ describe("chat-history stripAssistantThinking", () => {
 			assistantMessage("second answer", "second reasoning"),
 		];
 		// Current trace starts at index 2 (after the first completed trace).
-		const compiled = compileMessages(
-			chatHistoryPreset({ stripAssistantThinking: "previous-traces" }),
-			runtime(messages, 2),
+		const compiled = (
+			await compileMessages(chatHistoryPreset({ stripAssistantThinking: "previous-traces" }), runtime(messages, 2))
 		).messages;
 
 		expect(compiled).toHaveLength(4);
@@ -123,27 +123,25 @@ describe("chat-history stripAssistantThinking", () => {
 		expect(hasThinking(compiled[3])).toBe(true);
 	});
 
-	it("treats every message as previous when no trace boundary is provided", () => {
+	it("treats every message as previous when no trace boundary is provided", async () => {
 		const messages = [userMessage("round"), assistantMessage("answer", "reasoning")];
-		const compiled = compileMessages(
-			chatHistoryPreset({ stripAssistantThinking: "previous-traces" }),
-			runtime(messages),
+		const compiled = (
+			await compileMessages(chatHistoryPreset({ stripAssistantThinking: "previous-traces" }), runtime(messages))
 		).messages;
 
 		expect(compiled.filter(hasThinking)).toHaveLength(0);
 	});
 
-	it("keeps all thinking when the current trace starts at index 0", () => {
+	it("keeps all thinking when the current trace starts at index 0", async () => {
 		const messages = [userMessage("round"), assistantMessage("answer", "reasoning")];
-		const compiled = compileMessages(
-			chatHistoryPreset({ stripAssistantThinking: "previous-traces" }),
-			runtime(messages, 0),
+		const compiled = (
+			await compileMessages(chatHistoryPreset({ stripAssistantThinking: "previous-traces" }), runtime(messages, 0))
 		).messages;
 
 		expect(compiled.filter(hasThinking)).toHaveLength(1);
 	});
 
-	it("keeps trace membership intact when an earlier role filter drops messages", () => {
+	it("keeps trace membership intact when an earlier role filter drops messages", async () => {
 		const messages = [
 			userMessage("first round"),
 			assistantMessage("first answer", "first reasoning"),
@@ -151,9 +149,11 @@ describe("chat-history stripAssistantThinking", () => {
 			userMessage("second round"),
 			assistantMessage("second answer", "second reasoning"),
 		];
-		const compiled = compileMessages(
-			chatHistoryPreset({ stripAssistantThinking: "previous-traces", roles: ["user", "assistant"] }),
-			runtime(messages, 3),
+		const compiled = (
+			await compileMessages(
+				chatHistoryPreset({ stripAssistantThinking: "previous-traces", roles: ["user", "assistant"] }),
+				runtime(messages, 3),
+			)
 		).messages;
 
 		// toolResult dropped by the role filter; membership is by reference so stripping still targets the right messages.
@@ -162,9 +162,10 @@ describe("chat-history stripAssistantThinking", () => {
 		expect(hasThinking(compiled[3])).toBe(true);
 	});
 
-	it("never strips non-assistant messages", () => {
+	it("never strips non-assistant messages", async () => {
 		const messages = [userMessage("round"), assistantMessage("answer", "reasoning")];
-		const compiled = compileMessages(chatHistoryPreset({ stripAssistantThinking: true }), runtime(messages)).messages;
+		const compiled = (await compileMessages(chatHistoryPreset({ stripAssistantThinking: true }), runtime(messages)))
+			.messages;
 
 		expect(compiled[0]).toBe(messages[0]); // user message untouched
 		expect(compiled[0]).toEqual({ role: "user", content: [{ type: "text", text: "round" }], timestamp: 0 });

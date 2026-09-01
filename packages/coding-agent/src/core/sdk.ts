@@ -433,7 +433,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				if (sessionRef.current.isSealedContext()) {
 					return result;
 				}
-				const presetItems = sessionRef.current.getPresetInjectMessages();
+				const presetItems = await sessionRef.current.getPresetInjectMessages();
 				if (presetItems.length > 0) {
 					result = presetItems;
 				}

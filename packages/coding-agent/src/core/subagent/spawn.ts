@@ -78,7 +78,7 @@ export interface SpawnAgentResult {
 export async function spawnAgent(session: AgentSession, options: SpawnAgentOptions): Promise<SpawnAgentResult> {
 	const ops: SpawnedStateOp[] = [];
 
-	const preparation = prepareSubagentConversation({
+	const preparation = await prepareSubagentConversation({
 		cwd: session.sessionManager.getCwd(),
 		profileId: options.profileId,
 		task: options.task ?? "",

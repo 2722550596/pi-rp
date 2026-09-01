@@ -1,7 +1,7 @@
 /**
  * System prompt construction and project context loading
  */
-import { compileSystemPrompt } from "./prompt-preset/compiler.ts";
+import { compileMessagesSync, deriveSystemPrompt } from "./prompt-preset/compiler.ts";
 import { defaultPreset } from "./prompt-preset/default-stack.ts";
 import type { PromptRuntime } from "./prompt-preset/types.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
@@ -78,6 +78,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		variables: {},
 		skills,
 	};
-	const result = compileSystemPrompt(defaultPreset, runtime, "");
-	return result.systemPrompt;
+	// defaultPreset has no async slots, so the sync compile path is exact here.
+	const compiled = compileMessagesSync(defaultPreset, runtime);
+	const derived = deriveSystemPrompt(compiled, defaultPreset, "");
+	return derived.systemPrompt;
 }

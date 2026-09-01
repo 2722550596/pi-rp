@@ -246,7 +246,7 @@ describe("spawnAgent", () => {
 		try {
 			harness.session.stateManager.load({ world: { name: "TestWorld" }, secret: { plot: "hidden" } });
 
-			const result = prepareSubagentConversation({
+			const result = await prepareSubagentConversation({
 				cwd: harness.tempDir,
 				profileId: "test-spawn",
 				task: "task",

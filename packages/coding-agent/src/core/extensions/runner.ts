@@ -322,11 +322,11 @@ export class ExtensionRunner {
 	private compilePresetFn: (
 		presetId: string,
 		runtime: PromptRuntime,
-	) => {
+	) => Promise<{
 		messages: AgentMessage[];
 		systemPrompt: string;
 		diagnostics: PromptPresetDiagnostic[];
-	} = () => {
+	}> = async () => {
 		throw new Error("compilePreset: not bound");
 	};
 	private spawnAgentFn: (options: SpawnAgentOptions) => Promise<SpawnAgentResult> = async () => {

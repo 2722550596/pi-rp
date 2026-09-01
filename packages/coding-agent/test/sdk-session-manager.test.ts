@@ -78,7 +78,7 @@ describe("createAgentSession session manager defaults", () => {
 		});
 
 		expect(session.sessionManager).toBe(sessionManager);
-		expect(session.compileSystemPrompt()).toContain(`Current working directory: ${sessionCwd}`);
+		expect(await session.compileSystemPrompt()).toContain(`Current working directory: ${sessionCwd}`);
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
 		expect(bashTool).toBeTruthy();
@@ -104,7 +104,7 @@ describe("createAgentSession session manager defaults", () => {
 			thinkingLevel: "high",
 		});
 		expect(session.sessionFile).toBeTruthy();
-		expect(session.compileSystemPrompt()).toContain(
+		expect(await session.compileSystemPrompt()).toContain(
 			"You can inspect PI_* environment variables for current model and session details.",
 		);
 

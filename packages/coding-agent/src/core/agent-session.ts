@@ -123,7 +123,13 @@ import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
-import { compileMessages, compileSystemPrompt, deriveSystemPrompt } from "./prompt-preset/compiler.ts";
+import {
+	compileMessages,
+	compileMessagesSync,
+	compileSystemPrompt,
+	deriveSystemPrompt,
+	presetHasAsyncSlots,
+} from "./prompt-preset/compiler.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
@@ -1410,7 +1416,14 @@ export class AgentSession {
 			return buildSystemPrompt(this._baseSystemPromptOptions);
 		}
 
-		// Compile system prompt with static macros frozen, dynamic macros as {{...}} placeholders
+		// Compile system prompt with static macros frozen, dynamic macros as {{...}} placeholders.
+		// Presets with async slots skip this static rebuild: preset mode keeps
+		// agent.state.systemPrompt = "" (content lives in the compiled messages
+		// array), so this sync path must not attempt to await async slot
+		// renderers. The result feeds only extension-visible systemPrompt values.
+		if (presetHasAsyncSlots(this._activePreset)) {
+			return "";
+		}
 		const staticRuntime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: [],
@@ -1421,8 +1434,9 @@ export class AgentSession {
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
 		};
-		const systemResult = compileSystemPrompt(this._activePreset, staticRuntime, "");
-		return expandMacros(systemResult.systemPrompt, staticRuntime, { mode: "static" });
+		const compiled = compileMessagesSync(this._activePreset, staticRuntime);
+		const derived = deriveSystemPrompt(compiled, this._activePreset, "");
+		return expandMacros(derived.systemPrompt, staticRuntime, { mode: "static" });
 	}
 
 	// =========================================================================
@@ -1607,7 +1621,7 @@ export class AgentSession {
 	 * Captures result in lastTransformedMessages for /prompt inspection.
 	 */
 	async previewPrompt(): Promise<AgentMessage[]> {
-		const presetItems = this.getPresetInjectMessages();
+		const presetItems = await this.getPresetInjectMessages();
 		let result: AgentMessage[] = presetItems.length > 0 ? presetItems : [...this.agent.state.messages];
 		result = await this._extensionRunner.emitContext(result);
 
@@ -1643,7 +1657,7 @@ export class AgentSession {
 	 * Uses compileMessages() which correctly handles chat-history slot positioning.
 	 * Returns [] when a custom prompt exists (system is in systemPrompt field).
 	 */
-	getPresetInjectMessages(): AgentMessage[] {
+	async getPresetInjectMessages(): Promise<AgentMessage[]> {
 		const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
 		if (hasCustomPrompt) return [];
 		const loadedSkills = this._resourceLoader.getSkills().skills;
@@ -1659,12 +1673,12 @@ export class AgentSession {
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
 		};
-		return compileMessages(this._activePreset, runtime).messages;
+		return (await compileMessages(this._activePreset, runtime)).messages;
 	}
 	/**
 	 * Re-compile the system prompt from the active preset (for /prompt display).
 	 */
-	compileSystemPrompt(): string {
+	async compileSystemPrompt(): Promise<string> {
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
@@ -1677,7 +1691,7 @@ export class AgentSession {
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
 		};
-		const result = compileSystemPrompt(this._activePreset, runtime, "");
+		const result = await compileSystemPrompt(this._activePreset, runtime, "");
 		return result.systemPrompt;
 	}
 
@@ -3614,7 +3628,7 @@ export class AgentSession {
 					}
 					return completeSummarization(m, context, options, streamFn, this.settingsManager.getRetrySettings());
 				},
-				compilePreset: (presetId, runtime) => {
+				compilePreset: async (presetId, runtime) => {
 					const presets = this.getAllPresets();
 					const loaded = presets.find((p) => p.preset.id === presetId);
 					if (!loaded) {
@@ -3624,7 +3638,7 @@ export class AgentSession {
 					}
 					// Single pipeline run: compileMessages is the one compile path;
 					// the system prompt is derived from its output, not re-compiled.
-					const messages = compileMessages(loaded.preset, runtime);
+					const messages = await compileMessages(loaded.preset, runtime);
 					const system = deriveSystemPrompt(messages, loaded.preset, "");
 					return {
 						messages: messages.messages,

@@ -60,7 +60,7 @@ describe("regression #5109: exclude tools", () => {
 				"subagent_profiles",
 				"write",
 			]);
-			const compiledPrompt = harness.session.compileSystemPrompt();
+			const compiledPrompt = await harness.session.compileSystemPrompt();
 			expect(compiledPrompt).not.toContain("- read:");
 			expect(compiledPrompt).not.toContain("ask_question");
 			expect(compiledPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
@@ -81,7 +81,7 @@ describe("regression #5109: exclude tools", () => {
 
 			expect(toolNames(harness.session.getAllTools())).toEqual(["bash"]);
 			expect(harness.session.getActiveToolNames()).toEqual(["bash"]);
-			const compiledPrompt = harness.session.compileSystemPrompt();
+			const compiledPrompt = await harness.session.compileSystemPrompt();
 			expect(compiledPrompt).toContain("- bash:");
 			expect(compiledPrompt).not.toContain("- read:");
 			expect(compiledPrompt).not.toContain("ask_question");

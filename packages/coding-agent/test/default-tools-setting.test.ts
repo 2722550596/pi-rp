@@ -77,7 +77,7 @@ describe("defaultTools setting", () => {
 			"write",
 		]);
 		expect(session.getActiveToolNames()).toEqual(["grep", "find"]);
-		const prompt = session.compileSystemPrompt();
+		const prompt = await session.compileSystemPrompt();
 		expect(prompt).toContain("- grep:");
 		expect(prompt).not.toContain("- read:");
 		session.dispose();

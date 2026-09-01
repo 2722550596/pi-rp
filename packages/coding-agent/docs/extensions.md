@@ -1658,6 +1658,20 @@ pi.registerSlot({
 });
 ```
 
+Async renderers are supported: return a `Promise<string>` (subprocess, fetch, database queries) and declare `async: true` on the definition so the compiler uses the async compile path and renders async slot items in parallel:
+
+```typescript
+pi.registerSlot({
+  name: "memory-slot",
+  description: "Queries an external memory system",
+  async: true,
+  render: async (ctx) => {
+    const content = await fetchMemory(ctx.item.options?.namespace);
+    return `<memory>${content}</memory>`;
+  },
+});
+```
+
 Unknown options in the preset JSON are passed through to `ctx.item.options` — no changes to pi's core are needed to support new slot-specific options.
 
 ### pi.registerMacro(definition)
@@ -1689,11 +1703,13 @@ Macros registered without `static: true` are re-expanded each turn, giving a fre
 Compile a prompt preset to a concrete message array without activating it. Useful for previewing, testing, or reusing a preset's compiled prompt outside the active session.
 
 ```typescript
-const compiled = pi.compilePreset("writer", runtime);
+const compiled = await pi.compilePreset("writer", runtime);
 // compiled.messages      — the compiled message array (AgentMessage[])
 // compiled.systemPrompt  — the extracted system prompt string
 // compiled.diagnostics   — warnings/errors produced during compilation
 ```
+
+`compilePreset` is async (returns a `Promise`): presets containing async slots await their renderers internally.
 
 Throws when the preset id is unknown. `runtime` is a `PromptRuntime` (options, messages, variables, state, skills, model, thinkingLevel) — build one that mirrors the context you want to compile against; the session's own runtime is available to event handlers via the preset compilation internals, but must be passed explicitly here.
 

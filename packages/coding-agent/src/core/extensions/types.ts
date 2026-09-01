@@ -361,11 +361,11 @@ export interface ExtensionContext {
 	compilePreset(
 		presetId: string,
 		runtime: PromptRuntime,
-	): {
+	): Promise<{
 		messages: AgentMessage[];
 		systemPrompt: string;
 		diagnostics: PromptPresetDiagnostic[];
-	};
+	}>;
 	/** Spawn an in-process subagent (runSubagent engine) and replay its successful state_update calls. */
 	spawnAgent(options: SpawnAgentOptions): Promise<SpawnAgentResult>;
 	/** Reload the extension runtime. */
@@ -1883,11 +1883,11 @@ export interface ExtensionContextActions {
 	compilePreset: (
 		presetId: string,
 		runtime: PromptRuntime,
-	) => {
+	) => Promise<{
 		messages: AgentMessage[];
 		systemPrompt: string;
 		diagnostics: PromptPresetDiagnostic[];
-	};
+	}>;
 	spawnAgent: (options: SpawnAgentOptions) => Promise<SpawnAgentResult>;
 	reload?: () => Promise<void>;
 }

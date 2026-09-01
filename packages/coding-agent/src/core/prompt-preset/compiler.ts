@@ -7,7 +7,7 @@ export type {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { expandMacros } from "./macro-engine.ts";
 import { applyRegexRulesToMessages, applyRegexRulesToString } from "./regex-engine.ts";
-import { isChatHistoryPosition, renderSlot } from "./slot-renderers.ts";
+import { getSlot, isChatHistoryPosition, renderSlotAsync, renderSlotSync } from "./slot-renderers.ts";
 import type {
 	CompileMessageSource,
 	CompileMessagesResult,
@@ -19,16 +19,16 @@ import type {
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./types.ts";
-export function compileSystemPrompt(
+export async function compileSystemPrompt(
 	preset: PromptPreset,
 	runtime: PromptRuntime,
 	baseSystemPrompt: string,
-): CompileSystemPromptResult {
+): Promise<CompileSystemPromptResult> {
 	// Derived view of the single compile pipeline: compileMessages is the one
 	// real compile path, and the system prompt is the system-role portion of
 	// its output. The LLM-visible message array is byte-identical to a direct
 	// compileMessages call.
-	const compiled = compileMessages(preset, runtime);
+	const compiled = await compileMessages(preset, runtime);
 	const derived = deriveSystemPrompt(compiled, preset, baseSystemPrompt);
 	return {
 		systemPrompt: derived.systemPrompt,
@@ -77,7 +77,31 @@ export function deriveSystemPromptString(
 // Compile Messages
 // =========================================================================
 
-export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): CompileMessagesResult {
+/**
+ * Compile a preset to a concrete message array.
+ *
+ * Async entry point. Presets containing async slots (slot definitions with
+ * `async: true`) go through the async compile path, which renders slot items
+ * in parallel when no side-effecting macros (`{{setvar}}`/`{{addvar}}`) are
+ * present. Presets without async slots complete synchronously inside this
+ * call — no extra await tick or restructuring cost.
+ */
+export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): Promise<CompileMessagesResult> {
+	if (!presetHasAsyncSlots(preset)) {
+		return Promise.resolve(compileMessagesSync(preset, runtime));
+	}
+	return compileMessagesAsync(preset, runtime);
+}
+
+/**
+ * Synchronous compile path. Renders every slot through the sync renderer;
+ * slots registered with `async: true` render as empty (with an info
+ * diagnostic) because their Promise cannot be awaited here. Callers that
+ * need async-slot content must use {@link compileMessages}. Used by the
+ * static system-prompt rebuild path, which only feeds extension-visible
+ * `systemPrompt` values, never the LLM payload in preset mode.
+ */
+export function compileMessagesSync(preset: PromptPreset, runtime: PromptRuntime): CompileMessagesResult {
 	const diagnostics: PromptPresetDiagnostic[] = [];
 	const sources: CompileMessageSource[] = [];
 	let result: AgentMessage[] = [];
@@ -97,9 +121,99 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 	const effectiveRuntime = withDerivedLatestUserMessage(runtime);
 
 	for (const item of beforeItems) {
-		addSyntheticMessage(result, item, preset, effectiveRuntime, sources, diagnostics);
+		const text = renderItemTextSync(item, preset, effectiveRuntime, diagnostics);
+		addSyntheticMessage(result, item, text, sources);
 	}
 
+	addChatHistory(result, sources, preset, runtime, items, chatHistoryIndex, diagnostics);
+
+	for (const item of afterItems) {
+		const text = renderItemTextSync(item, preset, effectiveRuntime, diagnostics);
+		addSyntheticMessage(result, item, text, sources);
+	}
+
+	// Squash consecutive same-role messages: merge adjacent messages with the same role
+	result = squashMessages(result);
+
+	// Apply compiled-stage regex to the full message array (outgoing + display effects)
+	result = applyRegexRulesToMessages(preset, result, "compiled", "outgoing", diagnostics);
+
+	return { messages: result, sources, diagnostics };
+}
+
+/**
+ * Async compile path: renders slot items through the async renderer so a
+ * slot may await I/O (subprocess, fetch) without blocking the event loop.
+ * Items render in parallel when the preset has no side-effecting macros
+ * ({{setvar}}/{{addvar}} mutate the shared `variables` object, so their
+ * ordering is semantically meaningful); otherwise they render serially.
+ */
+async function compileMessagesAsync(preset: PromptPreset, runtime: PromptRuntime): Promise<CompileMessagesResult> {
+	const diagnostics: PromptPresetDiagnostic[] = [];
+	const sources: CompileMessageSource[] = [];
+	let result: AgentMessage[] = [];
+	const items = enabledItems(preset);
+
+	const chatHistoryIndex = items.findIndex(isChatHistoryPosition);
+	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
+	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
+
+	const effectiveRuntime = withDerivedLatestUserMessage(runtime);
+
+	// Serial when any item carries a side-effecting macro, parallel otherwise.
+	const serial = itemsHaveSideEffectMacros(items);
+
+	if (serial) {
+		for (const item of beforeItems) {
+			const text = await renderItemTextAsync(item, preset, effectiveRuntime, diagnostics);
+			addSyntheticMessage(result, item, text, sources);
+		}
+	} else {
+		const texts = await Promise.all(
+			beforeItems.map((item) => renderItemTextAsync(item, preset, effectiveRuntime, diagnostics)),
+		);
+		for (let i = 0; i < beforeItems.length; i++) {
+			addSyntheticMessage(result, beforeItems[i], texts[i], sources);
+		}
+	}
+
+	addChatHistory(result, sources, preset, runtime, items, chatHistoryIndex, diagnostics);
+
+	if (serial) {
+		for (const item of afterItems) {
+			const text = await renderItemTextAsync(item, preset, effectiveRuntime, diagnostics);
+			addSyntheticMessage(result, item, text, sources);
+		}
+	} else {
+		const texts = await Promise.all(
+			afterItems.map((item) => renderItemTextAsync(item, preset, effectiveRuntime, diagnostics)),
+		);
+		for (let i = 0; i < afterItems.length; i++) {
+			addSyntheticMessage(result, afterItems[i], texts[i], sources);
+		}
+	}
+
+	result = squashMessages(result);
+	result = applyRegexRulesToMessages(preset, result, "compiled", "outgoing", diagnostics);
+
+	return { messages: result, sources, diagnostics };
+}
+
+/**
+ * Shared chat-history insertion for both compile paths: applies role
+ * filters, summary/thinking/tool filtering, limits, tool-pair repair, and
+ * history-stage regex, then appends the surviving messages with their source
+ * tags. Pure and synchronous — the async path reuses it unchanged.
+ */
+function addChatHistory(
+	result: AgentMessage[],
+	sources: CompileMessageSource[],
+	preset: PromptPreset,
+	runtime: PromptRuntime,
+	items: PromptPresetItem[],
+	chatHistoryIndex: number,
+	diagnostics: PromptPresetDiagnostic[],
+): void {
 	if (chatHistoryIndex !== -1) {
 		const chatHistoryMessages = runtime.messages;
 		const options = (items[chatHistoryIndex] as PromptPresetSlotItem).options;
@@ -175,18 +289,28 @@ export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): C
 			sources.push({ kind: "implicit-history" });
 		}
 	}
+}
 
-	for (const item of afterItems) {
-		addSyntheticMessage(result, item, preset, effectiveRuntime, sources, diagnostics);
-	}
+/**
+ * True when the preset contains any enabled slot registered with
+ * `async: true`. The sync fast path and static system-prompt rebuild use
+ * this to decide whether a full async compile is required.
+ */
+export function presetHasAsyncSlots(preset: PromptPreset): boolean {
+	return enabledItems(preset).some((item) => item.kind === "slot" && getSlot(item.slot)?.async === true);
+}
 
-	// Squash consecutive same-role messages: merge adjacent messages with the same role
-	result = squashMessages(result);
+/** Side-effecting macro names: their render writes to the shared variables. */
+const SIDE_EFFECT_MACRO_PATTERN = /\{\{\s*(?:setvar|addvar)\b/;
 
-	// Apply compiled-stage regex to the full message array (outgoing + display effects)
-	result = applyRegexRulesToMessages(preset, result, "compiled", "outgoing", diagnostics);
-
-	return { messages: result, sources, diagnostics };
+/**
+ * True when any enabled block item references a side-effecting macro
+ * ({{setvar}}/{{addvar}}). Such macros mutate `runtime.variables` during
+ * expansion, so item rendering must stay serial: a later item may read a
+ * variable written by an earlier one.
+ */
+function itemsHaveSideEffectMacros(items: PromptPresetItem[]): boolean {
+	return items.some((item) => item.kind === "block" && SIDE_EFFECT_MACRO_PATTERN.test(item.content));
 }
 
 /**
@@ -234,7 +358,7 @@ function enabledItems(preset: PromptPreset): PromptPresetItem[] {
 	return preset.items.filter((item) => item.enabled !== false);
 }
 
-function renderItemText(
+function renderItemTextSync(
 	item: PromptPresetItem,
 	preset: PromptPreset,
 	runtime: PromptRuntime,
@@ -244,9 +368,37 @@ function renderItemText(
 	if (item.kind === "block") {
 		raw = (item as PromptPresetBlockItem).content;
 	} else {
-		raw = renderSlot(item as PromptPresetSlotItem, preset, runtime, diagnostics);
+		raw = renderSlotSync(item as PromptPresetSlotItem, preset, runtime, diagnostics);
 	}
+	return finalizeItemText(raw, item, preset, runtime, diagnostics);
+}
 
+async function renderItemTextAsync(
+	item: PromptPresetItem,
+	preset: PromptPreset,
+	runtime: PromptRuntime,
+	diagnostics: PromptPresetDiagnostic[],
+): Promise<string> {
+	let raw: string;
+	if (item.kind === "block") {
+		raw = (item as PromptPresetBlockItem).content;
+	} else {
+		raw = await renderSlotAsync(item as PromptPresetSlotItem, preset, runtime, diagnostics);
+	}
+	return finalizeItemText(raw, item, preset, runtime, diagnostics);
+}
+
+/**
+ * Shared tail of item rendering: heading/ending assembly, macro expansion,
+ * and item wrap. Pure and synchronous — both compile paths use it.
+ */
+function finalizeItemText(
+	raw: string,
+	item: PromptPresetItem,
+	preset: PromptPreset,
+	runtime: PromptRuntime,
+	diagnostics: PromptPresetDiagnostic[],
+): string {
 	// heading/ending are explicit user text; keep them even when the content
 	// itself renders empty (e.g. a slot with no output), so a declared heading
 	// is never silently dropped.
@@ -313,12 +465,9 @@ function escapeXmlAttribute(value: string): string {
 function addSyntheticMessage(
 	messages: AgentMessage[],
 	item: PromptPresetItem,
-	preset: PromptPreset,
-	runtime: PromptRuntime,
+	text: string,
 	sources: CompileMessageSource[],
-	diagnostics: PromptPresetDiagnostic[],
 ): void {
-	const text = renderItemText(item, preset, runtime, diagnostics);
 	if (!text) return;
 
 	const role = item.role ?? "system";

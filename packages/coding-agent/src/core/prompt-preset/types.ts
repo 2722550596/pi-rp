@@ -342,7 +342,7 @@ export interface SlotRenderContext {
 	diagnostics: PromptPresetDiagnostic[];
 }
 
-export type SlotRenderer = (context: SlotRenderContext) => string;
+export type SlotRenderer = (context: SlotRenderContext) => string | Promise<string>;
 
 export interface SlotDefinition {
 	name: string;
@@ -357,6 +357,16 @@ export interface SlotDefinition {
 	 */
 	position?: "chat-history" | "content";
 	render: SlotRenderer;
+	/**
+	 * Set to `true` when `render` returns a Promise (async slot). The compiler
+	 * then uses the async compile path (parallel rendering) for presets that
+	 * include this slot. Async slots are skipped by the synchronous fast path
+	 * (`compileMessagesSync` / static system-prompt rebuilds), which renders
+	 * them as empty — callers that need their content must use the async
+	 * `compileMessages`. Mandatory for async renderers so the sync fast path
+	 * never receives an unawaited Promise.
+	 */
+	async?: boolean;
 }
 
 export interface MacroRenderContext {

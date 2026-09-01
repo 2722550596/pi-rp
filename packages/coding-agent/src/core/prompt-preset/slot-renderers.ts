@@ -470,7 +470,13 @@ function formatStateKeyValue(obj: Record<string, unknown>, prefix = "", depth = 
 // Slot Rendering
 // =========================================================================
 
-export function renderSlot(
+/**
+ * Synchronous slot render. Slots declared `async: true` render as empty with
+ * an info diagnostic — their Promise cannot be awaited here. Returns a
+ * warning diagnostic if a non-async slot still returns a Promise (extension
+ * bug), rather than leaking an unawaited Promise.
+ */
+export function renderSlotSync(
 	item: PromptPresetSlotItem,
 	preset: PromptPreset,
 	runtime: PromptRuntime,
@@ -485,9 +491,50 @@ export function renderSlot(
 		});
 		return `[unknown slot: ${item.slot}]`;
 	}
-
+	if (slotDef.async === true) {
+		diagnostics.push({
+			level: "info",
+			message: `Async slot "${item.slot}" is not rendered by the synchronous compile path.`,
+			itemId: item.id,
+		});
+		return "";
+	}
 	const ctx: SlotRenderContext = { runtime, preset, item, diagnostics };
-	return slotDef.render(ctx);
+	const result = slotDef.render(ctx);
+	if (isPromiseLike(result)) {
+		diagnostics.push({
+			level: "warning",
+			message: `Slot "${item.slot}" returned a Promise but is not declared async:true; skipped in sync path.`,
+			itemId: item.id,
+		});
+		return "";
+	}
+	return result;
+}
+
+/** Asynchronous slot render: awaits the renderer so slots can do real I/O. */
+export async function renderSlotAsync(
+	item: PromptPresetSlotItem,
+	preset: PromptPreset,
+	runtime: PromptRuntime,
+	diagnostics: PromptPresetDiagnostic[],
+): Promise<string> {
+	const slotDef = getSlot(item.slot);
+	if (!slotDef) {
+		diagnostics.push({
+			level: "warning",
+			message: `Unknown slot "${item.slot}"`,
+			itemId: item.id,
+		});
+		return `[unknown slot: ${item.slot}]`;
+	}
+	const ctx: SlotRenderContext = { runtime, preset, item, diagnostics };
+	return await slotDef.render(ctx);
+}
+
+/** Type guard: a thenable render result (async renderer). */
+function isPromiseLike(value: unknown): value is Promise<string> {
+	return typeof value === "object" && value !== null && typeof (value as { then?: unknown }).then === "function";
 }
 
 // =========================================================================

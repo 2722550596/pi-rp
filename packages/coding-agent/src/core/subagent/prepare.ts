@@ -105,7 +105,7 @@ export function pick(obj: Record<string, unknown>, namespaces: string[]): Record
  * conversation history (up to `inheritHistory`), and full system-prompt
  * options. Without a session, a minimal empty runtime is used.
  */
-export function prepareSubagentConversation(options: PrepareSubagentOptions): PrepareSubagentResult {
+export async function prepareSubagentConversation(options: PrepareSubagentOptions): Promise<PrepareSubagentResult> {
 	const { cwd, profileId, task, modelRuntime, modelRef, thinkingLevel } = options;
 
 	// Preset discovery: parent session presets first (in-memory, up-to-date),
@@ -218,7 +218,7 @@ export function prepareSubagentConversation(options: PrepareSubagentOptions): Pr
 	}
 
 	// Compile preset messages (system prompt + preset items + chat history)
-	const compiled = compileMessages(preset, runtime);
+	const compiled = await compileMessages(preset, runtime);
 	if (compiled.diagnostics.some((d) => d.level === "error")) {
 		const errors = compiled.diagnostics
 			.filter((d) => d.level === "error")

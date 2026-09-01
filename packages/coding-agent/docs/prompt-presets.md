@@ -438,6 +438,22 @@ export default function (pi: ExtensionAPI) {
 
 The slot's render function receives `ctx.item.options` for the options passed in the preset.
 
+**Async slots** — A slot renderer may return a `Promise<string>` for real I/O (subprocess, HTTP fetch, database queries). Register it with `async: true` so the compiler routes presets containing it through the async compile path and never receives an unawaited Promise on the synchronous fast path:
+
+```ts
+pi.registerSlot({
+  name: "memory-slot",
+  description: "Queries an external memory system",
+  async: true,
+  render: async (ctx: SlotRenderContext): Promise<string> => {
+    const content = await fetchMemory(ctx.item.options?.namespace);
+    return `<memory>\n${content}\n</memory>`;
+  },
+});
+```
+
+Async slot items in the same preset render **in parallel** (total wall time ≈ the slowest slot, not the sum) as long as no block references a side-effecting macro (`{{setvar}}`/`{{addvar}}`, which mutate shared variables and force serial rendering to preserve ordering). The synchronous compile path (`compileMessagesSync`, used by the static system-prompt rebuild) renders async slots as empty with an info diagnostic — presets that need their content must go through the async `compileMessages`, which is what the live message path uses.
+
 **Custom options passthrough** — Options not in the built-in whitelist (`heading`, `format`, `onlyWithSnippets`, etc.) are no longer silently dropped. Any unknown key in `options` is passed through to the render function as-is. This lets extension-defined slots use arbitrary options:
 
 ```json

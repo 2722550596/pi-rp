@@ -13,7 +13,11 @@ function renderState(state: Record<string, unknown>, options?: PromptPresetSlotI
 		preset: { schemaVersion: 1, id: "test", items: [] },
 		diagnostics: [],
 	} as unknown as SlotRenderContext;
-	return slot.render(ctx);
+	const result = slot.render(ctx);
+	if (typeof result !== "string") {
+		throw new Error("state slot renderer must be synchronous");
+	}
+	return result;
 }
 
 describe("state slot", () => {

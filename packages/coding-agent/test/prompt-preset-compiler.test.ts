@@ -71,9 +71,9 @@ describe("{{lastUserMessage}} derivation", () => {
 		{ kind: "block", id: "latest", role: "user", content: "{{lastUserMessage}}" },
 	]);
 
-	it("derives the last user message when latestUserMessage is unset", () => {
+	it("derives the last user message when latestUserMessage is unset", async () => {
 		const messages = [userMessage("first"), assistantMessage("answer 1"), userMessage("second")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		const compiled = (await compileMessages(lastUserPreset, runtime(messages))).messages;
 		// No chat-history slot, so only the preset items compile.
 		expect(compiled).toHaveLength(2);
 		expect(compiled[0].role).toBe("system");
@@ -81,34 +81,35 @@ describe("{{lastUserMessage}} derivation", () => {
 		expect(messageText(compiled[1])).toBe("second");
 	});
 
-	it("prefers an explicitly provided latestUserMessage", () => {
+	it("prefers an explicitly provided latestUserMessage", async () => {
 		const messages = [userMessage("first"), userMessage("second")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages, { latestUserMessage: "explicit" })).messages;
+		const compiled = (await compileMessages(lastUserPreset, runtime(messages, { latestUserMessage: "explicit" })))
+			.messages;
 		expect(messageText(compiled[compiled.length - 1])).toBe("explicit");
 	});
 
-	it("skips trailing empty-text user messages", () => {
+	it("skips trailing empty-text user messages", async () => {
 		const messages = [userMessage("first"), userMessage("")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		const compiled = (await compileMessages(lastUserPreset, runtime(messages))).messages;
 		expect(messageText(compiled[compiled.length - 1])).toBe("first");
 	});
 
-	it("renders the derived message through compileSystemPrompt too", () => {
+	it("renders the derived message through compileSystemPrompt too", async () => {
 		const messages = [userMessage("hello"), assistantMessage("hi"), userMessage("world")];
-		const systemResult = compileSystemPrompt(lastUserPreset, runtime(messages), "");
+		const systemResult = await compileSystemPrompt(lastUserPreset, runtime(messages), "");
 		expect(systemResult.systemPrompt).toContain("You are a helpful assistant.");
 		// The user-role item is not part of the system string.
 		expect(systemResult.systemPrompt).not.toContain("world");
 		// But the derived message array carries it:
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		const compiled = (await compileMessages(lastUserPreset, runtime(messages))).messages;
 		expect(messageText(compiled[compiled.length - 1])).toBe("world");
 	});
 
-	it("keeps the synthetic Continue. edge case documented: a trailing continue-style user message is picked up", () => {
+	it("keeps the synthetic Continue. edge case documented: a trailing continue-style user message is picked up", async () => {
 		// continueSession injects { role: "user", content: [{type:"text", text:"Continue."}] }
 		// with no marker field, so it is indistinguishable from a real user message.
 		const messages = [userMessage("real question"), userMessage("Continue.")];
-		const compiled = compileMessages(lastUserPreset, runtime(messages)).messages;
+		const compiled = (await compileMessages(lastUserPreset, runtime(messages))).messages;
 		expect(messageText(compiled[compiled.length - 1])).toBe("Continue.");
 	});
 });
@@ -120,14 +121,14 @@ describe("chat-history position contract", () => {
 		{ kind: "block", id: "b", role: "user", content: "Tail" },
 	]);
 
-	it("injects runtime.messages at the built-in chat-history slot position", () => {
+	it("injects runtime.messages at the built-in chat-history slot position", async () => {
 		const history = [userMessage("h1"), assistantMessage("a1"), userMessage("h2")];
-		const compiled = compileMessages(positionedPreset, runtime(history)).messages;
+		const compiled = (await compileMessages(positionedPreset, runtime(history))).messages;
 		// The trailing user block merges with the adjacent history user message.
 		expect(compiled.map(messageText)).toEqual(["System A", "h1", "a1", "h2\n\nTail"]);
 	});
 
-	it("treats a custom slot with position chat-history as the insertion point", () => {
+	it("treats a custom slot with position chat-history as the insertion point", async () => {
 		registerSlot({
 			name: "custom-history",
 			description: "Custom history insertion point",
@@ -140,17 +141,17 @@ describe("chat-history position contract", () => {
 			{ kind: "block", id: "b", role: "user", content: "Tail" },
 		]);
 		const history = [userMessage("h1"), userMessage("h2")];
-		const compiled = compileMessages(preset, runtime(history)).messages;
+		const compiled = (await compileMessages(preset, runtime(history))).messages;
 		expect(compiled.map(messageText)).toEqual(["System A", "h1\n\nh2\n\nTail"]);
 		expect(messageText(compiled[0])).toBe("System A");
 	});
 
-	it("keeps the built-in chat-history slot name working (preset JSON format unchanged)", () => {
+	it("keeps the built-in chat-history slot name working (preset JSON format unchanged)", async () => {
 		const slot = getSlot("chat-history");
 		expect(slot?.position).toBe("chat-history");
 	});
 
-	it("renders a custom slot without a position at its position", () => {
+	it("renders a custom slot without a position at its position", async () => {
 		registerSlot({
 			name: "plain-slot",
 			description: "Plain content slot",
@@ -160,7 +161,7 @@ describe("chat-history position contract", () => {
 			{ kind: "block", id: "a", content: "System A" },
 			{ kind: "slot", id: "custom", slot: "plain-slot" },
 		]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		// Adjacent system-role messages merge (documented squash behavior).
 		expect(compiled.map(messageText)).toEqual(["System A\n\ncustom content"]);
 	});
@@ -172,9 +173,9 @@ describe("implicit chat-history fallback", () => {
 		{ kind: "block", id: "b", role: "user", content: "Tail" },
 	]);
 
-	it("appends runtime.messages at the end when no chat-history slot exists", () => {
+	it("appends runtime.messages at the end when no chat-history slot exists", async () => {
 		const history = [userMessage("h1"), assistantMessage("a1"), userMessage("h2")];
-		const compiled = compileMessages(noSlotPreset, runtime(history));
+		const compiled = await compileMessages(noSlotPreset, runtime(history));
 		// History appends after all preset items; the user-role "Tail" block
 		// merges with the adjacent history user message (documented squash).
 		expect(compiled.messages.map(messageText)).toEqual(["System A", "Tail\n\nh1", "a1", "h2"]);
@@ -187,19 +188,19 @@ describe("implicit chat-history fallback", () => {
 		]);
 	});
 
-	it("does not fire when the conversation is empty", () => {
-		const compiled = compileMessages(noSlotPreset, runtime([]));
+	it("does not fire when the conversation is empty", async () => {
+		const compiled = await compileMessages(noSlotPreset, runtime([]));
 		expect(compiled.messages.map(messageText)).toEqual(["System A", "Tail"]);
 		expect(compiled.sources.some((s) => s.kind === "implicit-history")).toBe(false);
 	});
 
-	it("stays silent for the stateless {{lastUserMessage}} one-shot pattern", () => {
+	it("stays silent for the stateless {{lastUserMessage}} one-shot pattern", async () => {
 		const oneShotPreset = presetWithItems([
 			{ kind: "block", id: "persona", content: "You are a translator." },
 			{ kind: "block", id: "latest", role: "user", content: "{{lastUserMessage}}" },
 		]);
 		const history = [userMessage("first"), assistantMessage("answer"), userMessage("second")];
-		const compiled = compileMessages(oneShotPreset, runtime(history));
+		const compiled = await compileMessages(oneShotPreset, runtime(history));
 		// Injecting history here would duplicate the latest user message.
 		expect(compiled.messages).toHaveLength(2);
 		expect(compiled.sources.some((s) => s.kind === "implicit-history")).toBe(false);
@@ -208,14 +209,14 @@ describe("implicit chat-history fallback", () => {
 });
 
 describe("item wrap (custom XML tag)", () => {
-	it("wraps a block in a plain tag", () => {
+	it("wraps a block in a plain tag", async () => {
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "inner", wrap: "context" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(1);
 		expect(messageText(compiled[0])).toBe("<context>inner</context>");
 	});
 
-	it("wraps with attributes and escapes attribute values", () => {
+	it("wraps with attributes and escapes attribute values", async () => {
 		const preset = presetWithItems([
 			{
 				kind: "block",
@@ -224,92 +225,92 @@ describe("item wrap (custom XML tag)", () => {
 				wrap: { tag: "note", attrs: { lang: "zh-CN", title: 'a "quoted" & <b>' } },
 			},
 		]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(messageText(compiled[0])).toBe('<note lang="zh-CN" title="a &quot;quoted&quot; &amp; &lt;b&gt;">x</note>');
 	});
 
-	it("wraps slot output", () => {
+	it("wraps slot output", async () => {
 		registerSlot({ name: "wrap-slot", description: "test", render: () => "slot content" });
 		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "wrap-slot", wrap: "slot_wrap" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(messageText(compiled[0])).toBe("<slot_wrap>slot content</slot_wrap>");
 	});
 
-	it("expands macros inside the wrapped content", () => {
+	it("expands macros inside the wrapped content", async () => {
 		registerMacro({ name: "wrapMacro", description: "test", render: () => "expanded" });
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "Hello {{wrapMacro}}", wrap: "ctx" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(messageText(compiled[0])).toBe("<ctx>Hello expanded</ctx>");
 	});
 
-	it("skips wrapping when the item renders empty", () => {
+	it("skips wrapping when the item renders empty", async () => {
 		registerSlot({ name: "wrap-empty-slot", description: "test", render: () => "" });
 		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "wrap-empty-slot", wrap: "ctx" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(0);
 	});
 
-	it("warns and leaves text unwrapped on an invalid tag name", () => {
+	it("warns and leaves text unwrapped on an invalid tag name", async () => {
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "x", wrap: "bad tag!" }]);
-		const result = compileMessages(preset, runtime([]));
+		const result = await compileMessages(preset, runtime([]));
 		expect(messageText(result.messages[0])).toBe("x");
 		expect(result.diagnostics.some((d) => d.level === "warning" && d.message.includes("bad tag!"))).toBe(true);
 	});
 });
 
 describe("item heading and ending", () => {
-	it("prepends heading to block content", () => {
+	it("prepends heading to block content", async () => {
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "content", heading: "## Role" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(1);
 		expect(messageText(compiled[0])).toBe("## Role\ncontent");
 	});
 
-	it("appends ending to block content", () => {
+	it("appends ending to block content", async () => {
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "content", ending: "---" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(messageText(compiled[0])).toBe("content\n---");
 	});
 
-	it("renders heading + slot output + ending", () => {
+	it("renders heading + slot output + ending", async () => {
 		registerSlot({ name: "he-slot", description: "test", render: () => "slot body" });
 		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "he-slot", heading: "## Tools", ending: "---" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(1);
 		expect(messageText(compiled[0])).toBe("## Tools\nslot body\n---");
 	});
 
-	it("renders heading alone when slot output is empty", () => {
+	it("renders heading alone when slot output is empty", async () => {
 		registerSlot({ name: "he-empty-slot", description: "test", render: () => "" });
 		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "he-empty-slot", heading: "## Empty" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(1);
 		expect(messageText(compiled[0])).toBe("## Empty");
 	});
 
-	it("expands macros in heading and ending", () => {
+	it("expands macros in heading and ending", async () => {
 		registerMacro({ name: "heMacro", description: "test", render: () => "expanded" });
 		const preset = presetWithItems([
 			{ kind: "block", id: "b", content: "body", heading: "{{heMacro}}:", ending: "{{heMacro}}" },
 		]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(1);
 		expect(messageText(compiled[0])).toBe("expanded:\nbody\nexpanded");
 	});
 
-	it("wrap applies to heading + content + ending combined", () => {
+	it("wrap applies to heading + content + ending combined", async () => {
 		const preset = presetWithItems([
 			{ kind: "block", id: "b", content: "body", heading: "## H", ending: "---", wrap: "ctx" },
 		]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(1);
 		expect(messageText(compiled[0])).toBe("<ctx>## H\nbody\n---</ctx>");
 	});
 
-	it("renders nothing when both heading and ending are empty and slot renders empty", () => {
+	it("renders nothing when both heading and ending are empty and slot renders empty", async () => {
 		registerSlot({ name: "he-all-empty", description: "test", render: () => "" });
 		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "he-all-empty" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(0);
 	});
 });
@@ -320,28 +321,28 @@ describe("unresolvedMacroPolicy", () => {
 			unresolvedMacroPolicy: policy,
 		});
 
-	it("keeps the placeholder and reports no diagnostics by default", () => {
-		const result = compileMessages(unresolvedPreset("keep"), runtime([]));
+	it("keeps the placeholder and reports no diagnostics by default", async () => {
+		const result = await compileMessages(unresolvedPreset("keep"), runtime([]));
 		expect(result.diagnostics.filter((d) => d.message.includes("doesNotExist"))).toHaveLength(0);
 		expect(messageText(result.messages[0])).toBe("Hello {{doesNotExist}}");
 	});
 
-	it("adds a warning diagnostic under warn and keeps the placeholder", () => {
-		const result = compileMessages(unresolvedPreset("warn"), runtime([]));
+	it("adds a warning diagnostic under warn and keeps the placeholder", async () => {
+		const result = await compileMessages(unresolvedPreset("warn"), runtime([]));
 		const diags = result.diagnostics.filter((d) => d.message.includes("doesNotExist"));
 		expect(diags).toHaveLength(1);
 		expect(diags[0].level).toBe("warning");
 		expect(messageText(result.messages[0])).toBe("Hello {{doesNotExist}}");
 	});
 
-	it("adds an error diagnostic under error (compile fails where error diagnostics are honored)", () => {
-		const result = compileMessages(unresolvedPreset("error"), runtime([]));
+	it("adds an error diagnostic under error (compile fails where error diagnostics are honored)", async () => {
+		const result = await compileMessages(unresolvedPreset("error"), runtime([]));
 		const diags = result.diagnostics.filter((d) => d.message.includes("doesNotExist"));
 		expect(diags).toHaveLength(1);
 		expect(diags[0].level).toBe("error");
 	});
 
-	it("does not flag deferred dynamic macros (mode static) as unresolved", () => {
+	it("does not flag deferred dynamic macros (mode static) as unresolved", async () => {
 		// {{user}} is a known non-static macro; with mode "static" it is
 		// intentionally left as a placeholder, not an unresolved macro.
 		registerMacro({ name: "testVarMacro", description: "test", render: () => "x" });
@@ -361,29 +362,30 @@ describe("derived compileSystemPrompt (single compile entry)", () => {
 		{ kind: "block", id: "c", content: "System C" },
 	]);
 
-	it("is the system-role view of the same compileMessages output", () => {
-		const compiled = compileMessages(preset, runtime([]));
-		const systemResult = compileSystemPrompt(preset, runtime([]), "fallback");
+	it("is the system-role view of the same compileMessages output", async () => {
+		const compiled = await compileMessages(preset, runtime([]));
+		const systemResult = await compileSystemPrompt(preset, runtime([]), "fallback");
 		const derived = deriveSystemPrompt(compiled, preset, "fallback");
 		expect(systemResult.systemPrompt).toBe("System A\n\nSystem C");
 		expect(derived.systemPrompt).toBe(systemResult.systemPrompt);
 		expect(deriveSystemPromptString(compiled.messages, preset)).toBe("System A\n\nSystem C");
 	});
 
-	it("falls back to baseSystemPrompt when the preset produces no system content", () => {
+	it("falls back to baseSystemPrompt when the preset produces no system content", async () => {
 		const noSystem = presetWithItems([{ kind: "block", id: "u", role: "user", content: "only user" }]);
-		expect(compileSystemPrompt(noSystem, runtime([]), "base").systemPrompt).toBe("base");
+		const result = await compileSystemPrompt(noSystem, runtime([]), "base");
+		expect(result.systemPrompt).toBe("base");
 	});
 
-	it("keeps diagnostics from the shared pipeline", () => {
+	it("keeps diagnostics from the shared pipeline", async () => {
 		const withUnknownSlot = presetWithItems([{ kind: "slot", id: "s", slot: "no-such-slot" }]);
-		const systemResult = compileSystemPrompt(withUnknownSlot, runtime([]), "");
+		const systemResult = await compileSystemPrompt(withUnknownSlot, runtime([]), "");
 		expect(systemResult.diagnostics.some((d) => d.message.includes("no-such-slot"))).toBe(true);
 	});
 });
 
 describe("public extension surface stays intact", () => {
-	it("exports the slot/macro introspection surface", () => {
+	it("exports the slot/macro introspection surface", async () => {
 		expect(typeof getAllSlots).toBe("function");
 		expect(typeof getAllMacros).toBe("function");
 		expect(typeof expandContentMacros).toBe("function");
@@ -391,7 +393,7 @@ describe("public extension surface stays intact", () => {
 		expect(getAllMacros().some((m) => m.name === "lastUserMessage")).toBe(true);
 	});
 
-	it("registerSlot accepts the position field without breaking the signature", () => {
+	it("registerSlot accepts the position field without breaking the signature", async () => {
 		const def: SlotDefinition = {
 			name: "position-probe",
 			description: "probe",
@@ -469,10 +471,9 @@ describe("chat-history toolMode drop 与 dropToolNames 白名单", () => {
 		assistantMessage("好的，图片已展示。"),
 	];
 
-	it("dropToolNames 白名单：只删名单内工具的 toolCall 块 + toolResult，其余历史保留", () => {
-		const compiled = compileMessages(
-			dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
-			runtime(history()),
+	it("dropToolNames 白名单：只删名单内工具的 toolCall 块 + toolResult，其余历史保留", async () => {
+		const compiled = (
+			await compileMessages(dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }), runtime(history()))
 		).messages;
 		expect(toolNamesOf(compiled)).toEqual(["call:read_file", "result:read_file"]);
 		// 文本消息与 toolResult 之外的历史原样保留
@@ -480,20 +481,22 @@ describe("chat-history toolMode drop 与 dropToolNames 白名单", () => {
 		expect(compiled.map(messageText)).toContain("好的，图片已展示。");
 	});
 
-	it("dropToolNames 名单外工具完整保留（含同一条 assistant 消息里的其他 toolCall 块）", () => {
-		const compiled = compileMessages(
-			dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
-			runtime([
-				userMessage("开电脑"),
-				toolCallMessage([
-					{ type: "toolCall", name: "show_html", id: "c1" },
-					{ type: "toolCall", name: "read_file", id: "c2" },
-					{ type: "toolCall", name: "bash", id: "c3" },
+	it("dropToolNames 名单外工具完整保留（含同一条 assistant 消息里的其他 toolCall 块）", async () => {
+		const compiled = (
+			await compileMessages(
+				dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
+				runtime([
+					userMessage("开电脑"),
+					toolCallMessage([
+						{ type: "toolCall", name: "show_html", id: "c1" },
+						{ type: "toolCall", name: "read_file", id: "c2" },
+						{ type: "toolCall", name: "bash", id: "c3" },
+					]),
+					toolResultMessage("c1", "show_html"),
+					toolResultMessage("c2", "read_file"),
+					toolResultMessage("c3", "bash"),
 				]),
-				toolResultMessage("c1", "show_html"),
-				toolResultMessage("c2", "read_file"),
-				toolResultMessage("c3", "bash"),
-			]),
+			)
 		).messages;
 		// show_html 的 toolCall 块被剥离；read_file/bash 的块原样保留
 		// （toolResult 相邻时会被 squash 合并，这里只按 call 块断言）
@@ -504,21 +507,23 @@ describe("chat-history toolMode drop 与 dropToolNames 白名单", () => {
 		expect(compiled.map(messageText).join("\n")).toContain("result of bash");
 	});
 
-	it("无 dropToolNames + toolMode drop = 全删（向后兼容回归）", () => {
-		const compiled = compileMessages(dropPreset({ toolMode: "drop" }), runtime(history())).messages;
+	it("无 dropToolNames + toolMode drop = 全删（向后兼容回归）", async () => {
+		const compiled = (await compileMessages(dropPreset({ toolMode: "drop" }), runtime(history()))).messages;
 		expect(toolNamesOf(compiled)).toEqual([]);
 		// toolCall 块被剥离后 assistant 消息仍含文本 → 保留
 		expect(compiled.some((m) => m.role === "assistant" && messageText(m).length > 0)).toBe(true);
 	});
 
-	it("toolCall 块被全部剥离后 assistant 消息为空 → 整条删除", () => {
-		const compiled = compileMessages(
-			dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
-			runtime([
-				userMessage("开电脑"),
-				toolCallMessage([{ type: "toolCall", name: "show_html", id: "c1" }]),
-				toolResultMessage("c1", "show_html"),
-			]),
+	it("toolCall 块被全部剥离后 assistant 消息为空 → 整条删除", async () => {
+		const compiled = (
+			await compileMessages(
+				dropPreset({ toolMode: "drop", dropToolNames: ["show_html"] }),
+				runtime([
+					userMessage("开电脑"),
+					toolCallMessage([{ type: "toolCall", name: "show_html", id: "c1" }]),
+					toolResultMessage("c1", "show_html"),
+				]),
+			)
 		).messages;
 		expect(toolNamesOf(compiled)).toEqual([]);
 		// 仅剩 system 块与 user 消息
@@ -540,39 +545,39 @@ describe("runtime.model / runtime.thinkingLevel", () => {
 		maxTokens: 100,
 	} as PromptRuntime["model"];
 
-	it("active-model slot renders provider/id from runtime.model", () => {
+	it("active-model slot renders provider/id from runtime.model", async () => {
 		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "active-model" }]);
-		const compiled = compileMessages(preset, runtime([], { model: testModel })).messages;
+		const compiled = (await compileMessages(preset, runtime([], { model: testModel }))).messages;
 		expect(messageText(compiled[0])).toBe("test-provider/test-model");
 	});
 
-	it("active-model slot renders empty when no model is set", () => {
+	it("active-model slot renders empty when no model is set", async () => {
 		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "active-model" }]);
-		const compiled = compileMessages(preset, runtime([])).messages;
+		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(0);
 	});
 
-	it("dynamic macros can read the live model from runtime", () => {
+	it("dynamic macros can read the live model from runtime", async () => {
 		registerMacro({
 			name: "modelProbe",
 			description: "test",
 			render: (ctx) => (ctx.runtime.model ? `${ctx.runtime.model.provider}/${ctx.runtime.model.id}` : "none"),
 		});
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "model={{modelProbe}}" }]);
-		const withModel = compileMessages(preset, runtime([], { model: testModel })).messages;
+		const withModel = (await compileMessages(preset, runtime([], { model: testModel }))).messages;
 		expect(messageText(withModel[0])).toBe("model=test-provider/test-model");
-		const withoutModel = compileMessages(preset, runtime([])).messages;
+		const withoutModel = (await compileMessages(preset, runtime([]))).messages;
 		expect(messageText(withoutModel[0])).toBe("model=none");
 	});
 
-	it("dynamic macros can read the thinking level from runtime", () => {
+	it("dynamic macros can read the thinking level from runtime", async () => {
 		registerMacro({
 			name: "thinkingProbe",
 			description: "test",
 			render: (ctx) => ctx.runtime.thinkingLevel ?? "unset",
 		});
 		const preset = presetWithItems([{ kind: "block", id: "b", content: "t={{thinkingProbe}}" }]);
-		const compiled = compileMessages(preset, runtime([], { thinkingLevel: "high" })).messages;
+		const compiled = (await compileMessages(preset, runtime([], { thinkingLevel: "high" }))).messages;
 		expect(messageText(compiled[0])).toBe("t=high");
 	});
 });
