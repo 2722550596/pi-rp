@@ -240,6 +240,34 @@ describe("spawnAgent", () => {
 		}
 	});
 
+	it("aborts an in-flight spawnAgent when the session is disposed (session-scoped side-request abort)", async () => {
+		const prev = process.env[ENV_AGENT_DIR];
+		const harness = await setupHarness();
+		try {
+			const hanging: FauxResponseFactory = () => new Promise<AssistantMessage>(() => {});
+			harness.faux.setResponses([hanging]);
+
+			const started = Promise.withResolvers<void>();
+			const pending = spawnAgent(harness.session, {
+				profileId: "test-spawn",
+				task: "Update the world.",
+				onSessionCreated: () => started.resolve(),
+			});
+			await started.promise;
+
+			// dispose() aborts the registered side-request controller; the subagent's
+			// continue() races the combined signal and settles as cancelled.
+			harness.session.dispose();
+
+			const result = await pending;
+			assert.equal(result.status, "cancelled");
+			assert.deepEqual(result.stateOps, []);
+		} finally {
+			restoreEnv(prev);
+			harness.cleanup();
+		}
+	});
+
 	it("prepare filters the state slot to stateNamespaces", async () => {
 		const prev = process.env[ENV_AGENT_DIR];
 		const harness = await setupHarness();

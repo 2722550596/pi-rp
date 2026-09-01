@@ -433,6 +433,31 @@ export class AgentSession {
 	private _bashAbortControllers = new Set<AbortController>();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
+	// Extension side requests (completeSideRequest / spawnAgent) registered for
+	// session-level abort: dispose() aborts them all, so side requests die with
+	// the session without each extension wiring session_shutdown itself.
+	private _sideRequestAbortControllers = new Set<AbortController>();
+
+	/**
+	 * Register a side request (completeSideRequest / spawnAgent) for session-level
+	 * abort: dispose() aborts every registered controller. A caller-supplied signal
+	 * is forwarded so explicit cancellation still works. Returns the controller the
+	 * caller should drive its request with (and pass to unregisterSideRequest).
+	 */
+	registerSideRequest(signal?: AbortSignal): AbortController {
+		const ctrl = new AbortController();
+		this._sideRequestAbortControllers.add(ctrl);
+		if (signal) {
+			signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+		}
+		return ctrl;
+	}
+
+	/** Remove a side request from session-level abort tracking. */
+	unregisterSideRequest(ctrl: AbortController): void {
+		this._sideRequestAbortControllers.delete(ctrl);
+	}
+
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
@@ -1056,6 +1081,9 @@ export class AgentSession {
 			this.abortCompaction();
 			this.abortBranchSummary();
 			this.abortBash();
+			for (const ctrl of this._sideRequestAbortControllers) {
+				ctrl.abort();
+			}
 			this.agent.abort();
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
@@ -3612,21 +3640,36 @@ export class AgentSession {
 				}) => {
 					const m = model ?? this.model;
 					if (!m) throw new Error("completeSideRequest: no model available");
-					const streamFn: StreamFn | undefined = this._requestGateway
-						? (mm, cc, oo) =>
-								this._requestGateway!.streamSimple(
-									mm,
-									cc,
-									oo,
-									{ sessionId: "?", priority: priority ?? 0, label: label ?? "extension" },
-									signal,
-								)
-						: undefined;
-					const options: SimpleStreamOptions = { maxTokens, signal, timeoutMs };
-					if (m.reasoning && thinkingLevel && thinkingLevel !== "off") {
-						options.reasoning = thinkingLevel;
+					// Session-scoped registration: the engine aborts every in-flight side
+					// request on dispose(), so side requests die with the session without
+					// each extension wiring session_shutdown itself. A caller-supplied
+					// signal is forwarded so explicit cancellation still works.
+					const ctrl = this.registerSideRequest(signal);
+					try {
+						const streamFn: StreamFn | undefined = this._requestGateway
+							? (mm, cc, oo) =>
+									this._requestGateway!.streamSimple(
+										mm,
+										cc,
+										oo,
+										{ sessionId: "?", priority: priority ?? 0, label: label ?? "extension" },
+										ctrl.signal,
+									)
+							: undefined;
+						const options: SimpleStreamOptions = { maxTokens, signal: ctrl.signal, timeoutMs };
+						if (m.reasoning && thinkingLevel && thinkingLevel !== "off") {
+							options.reasoning = thinkingLevel;
+						}
+						return await completeSummarization(
+							m,
+							context,
+							options,
+							streamFn,
+							this.settingsManager.getRetrySettings(),
+						);
+					} finally {
+						this.unregisterSideRequest(ctrl);
 					}
-					return completeSummarization(m, context, options, streamFn, this.settingsManager.getRetrySettings());
 				},
 				compilePreset: async (presetId, runtime) => {
 					const presets = this.getAllPresets();
@@ -3646,6 +3689,9 @@ export class AgentSession {
 						diagnostics: [...messages.diagnostics, ...system.diagnostics],
 					};
 				},
+				// Side-request registration lives inside spawnAgent() itself (spawn.ts),
+				// so every call path — the extension ctx binding and direct calls — gets
+				// session-scoped abort on dispose().
 				spawnAgent: (options) => spawnAgent(this, options),
 			},
 			{

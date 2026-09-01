@@ -101,25 +101,34 @@ export async function spawnAgent(session: AgentSession, options: SpawnAgentOptio
 		? (pick(session.stateManager.snapshot(), options.stateNamespaces) as Record<string, JsonValue>)
 		: (session.stateManager.snapshot() as Record<string, JsonValue>);
 
-	const result = await runSubagent(preparation, session.modelRuntime, {
-		timeoutMs: options.timeoutMs,
-		signal: options.signal,
-		requestGateway: session.requestGateway,
-		strict: true,
-		seedState,
-		onSessionCreated: (sub) => {
-			options.onSessionCreated?.(sub);
-			subscribeStateOps(sub, ops);
-		},
-	});
+	// Session-scoped registration: dispose() on the parent session aborts every
+	// in-flight spawnAgent (die with the session). The caller's signal, if any, is
+	// forwarded so explicit cancellation still works. Lives here — not in the
+	// extension ctx binding — so every call path gets the lifecycle.
+	const ctrl = session.registerSideRequest(options.signal);
+	try {
+		const result = await runSubagent(preparation, session.modelRuntime, {
+			timeoutMs: options.timeoutMs,
+			signal: ctrl.signal,
+			requestGateway: session.requestGateway,
+			strict: true,
+			seedState,
+			onSessionCreated: (sub) => {
+				options.onSessionCreated?.(sub);
+				subscribeStateOps(sub, ops);
+			},
+		});
 
-	return {
-		status: result.status,
-		text: result.text,
-		rawText: result.rawText,
-		error: result.error,
-		stateOps: result.status === "completed" ? ops : [],
-	};
+		return {
+			status: result.status,
+			text: result.text,
+			rawText: result.rawText,
+			error: result.error,
+			stateOps: result.status === "completed" ? ops : [],
+		};
+	} finally {
+		session.unregisterSideRequest(ctrl);
+	}
 }
 
 /**
