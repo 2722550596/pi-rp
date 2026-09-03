@@ -253,6 +253,37 @@ Response:
 
 Messages are `AgentMessage` objects (see [Message Types](#message-types)).
 
+#### append_message
+
+Append a custom message entry to the current active leaf of the session (used to write a character subprocess's own memory: `cast_profile`, background situations, etc.). Append-only at the leaf: the caller cannot specify a parent, an entry id, or modify existing records.
+
+```json
+{
+  "type": "append_message",
+  "customType": "cast_profile",
+  "content": "# 你的角色设定\n\n{{角色卡正文}}",
+  "display": false,
+  "details": {"cast_def_entry_id": "def-1"}
+}
+```
+
+- `customType` (required): extension message type. The per-type policy (context inclusion, LLM role, render) is **not** part of this protocol — it is registered by the process's own extensions or defaults to the built-in custom message semantics (enters the LLM context as a `user` message; hidden from the TUI when `display: false`). A subprocess running `--no-extensions` therefore still sees the message in context.
+- `content`: string or content-block array.
+- `display` (optional, default `false`): whether the message renders in the TUI.
+- `details` (optional): extension metadata, never sent to the LLM.
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "append_message",
+  "success": true,
+  "data": {"entryId": "entry-42"}
+}
+```
+
+`entryId` is the persisted entry id — the caller can use it to correlate the message with later session reads or navigation.
+
 ### Model
 
 #### set_model

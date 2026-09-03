@@ -972,6 +972,25 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_messages", { messages: session.messages });
 			}
 
+			case "append_message": {
+				// 通用 append_message（角色 session 记忆写入）：只追加到当前
+				// active leaf，不接受调用方指定 parent、entry id 或修改已有
+				// 记录（appendCustomMessageEntry 本身即该语义）。只负责持久化
+				// 消息；customType 的 policy 不写入协议——由进程扩展注册或
+				// 沿用默认 custom message 语义（user 角色进上下文，display:false
+				// 时 TUI 隐藏），角色子进程 --no-extensions 也能读取。
+				if (!command.customType) {
+					return error(id, "append_message", "customType is required");
+				}
+				const entryId = session.sessionManager.appendCustomMessageEntry(
+					command.customType,
+					command.content,
+					command.display ?? false,
+					command.details,
+				);
+				return success(id, "append_message", { entryId });
+			}
+
 			// =================================================================
 			// Commands (available for invocation via prompt)
 			// =================================================================

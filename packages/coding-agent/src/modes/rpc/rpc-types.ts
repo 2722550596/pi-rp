@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Model } from "@earendil-works/pi-ai";
+import type { ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -106,6 +106,18 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
+	| {
+			id?: string;
+			type: "append_message";
+			/** 扩展自定义消息类型（customType），policy 由进程扩展注册或沿用默认语义。 */
+			customType: string;
+			/** 消息内容（string 或 content 块数组）。 */
+			content: string | (TextContent | ImageContent)[];
+			/** 是否在 TUI 显示；false = 仅进上下文/持久化（默认 false）。 */
+			display?: boolean;
+			/** 扩展专用元数据（不进 LLM 上下文）。 */
+			details?: unknown;
+	  }
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
@@ -295,6 +307,13 @@ export type RpcResponse =
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "append_message";
+			success: true;
+			data: { entryId: string };
+	  }
 
 	// Commands
 	| {

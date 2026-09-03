@@ -129,7 +129,9 @@ function parseAttrs(headerBody: string): Record<string, string> {
 	}
 	ATTR_RE.lastIndex = 0;
 	let match: RegExpExecArray | null;
-	while ((match = ATTR_RE.exec(headerBody)) !== null) {
+	while (true) {
+		match = ATTR_RE.exec(headerBody);
+		if (match === null) break;
 		const key = match[1];
 		const value = match[2] ?? match[3] ?? match[4] ?? "";
 		attrs[key] = value;

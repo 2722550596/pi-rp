@@ -6,7 +6,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -603,6 +603,22 @@ export class RpcClient {
 	async getMessages(): Promise<AgentMessage[]> {
 		const response = await this.send({ type: "get_messages" });
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
+	}
+
+	/**
+	 * 追加一条 custom message 到当前 active leaf（角色 session 记忆写入）。
+	 * 只追加、不允许指定 parent/entry id 或修改已有记录；customType 的 policy
+	 * 不写入协议，由进程扩展注册或沿用默认 custom message 语义（user 角色进
+	 * 上下文，display:false 时 TUI 隐藏）。返回持久化 entry id。
+	 */
+	async appendMessage(args: {
+		customType: string;
+		content: string | (TextContent | ImageContent)[];
+		display?: boolean;
+		details?: unknown;
+	}): Promise<{ entryId: string }> {
+		const response = await this.send({ type: "append_message", ...args });
+		return this.getData<{ entryId: string }>(response);
 	}
 
 	/**
