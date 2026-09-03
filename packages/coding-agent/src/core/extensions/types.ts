@@ -1240,6 +1240,31 @@ export interface MarkdownTransformContext {
 
 export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;
 
+/**
+ * Context for message content transformers. Unlike {@link MarkdownTransformContext},
+ * this covers every message role that the framework renders as text content
+ * (including the default rendering of custom messages), and it carries the
+ * custom type for custom messages so a transformer can target a specific one.
+ */
+export interface MessageContentTransformContext {
+	messageType: "user" | "assistant" | "assistant-thinking" | "custom";
+	/** Present when `messageType === "custom"`. */
+	customType?: string;
+	isStreaming: boolean;
+	availableWidth: number;
+}
+
+/**
+ * Transforms the text content of a message before it is rendered. This is a
+ * display-time projection: it never changes what is stored in the session or
+ * what is sent to the model. Transformers are chained in registration order;
+ * a transformer that throws is skipped and the pipeline continues.
+ */
+export type MessageContentTransformer = (
+	content: string,
+	context: MessageContentTransformContext,
+) => string;
+
 export interface EntryRenderOptions {
 	expanded: boolean;
 }
@@ -1425,6 +1450,16 @@ export interface ExtensionAPI {
 
 	/** Register a markdown transformer for assistant and user messages. */
 	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
+
+	/**
+	 * Register a message content transformer. Unlike
+	 * {@link registerMarkdownTransformer}, this applies to every message role
+	 * the framework renders as text — assistant, assistant-thinking, user, and
+	 * the default rendering of custom messages (with `customType` set in the
+	 * context). Custom messages rendered through `registerMessageRenderer` are
+	 * fully owned by the renderer and do not pass through this pipeline.
+	 */
+	registerMessageContentTransformer(transformer: MessageContentTransformer): void;
 
 	// =========================================================================
 	// Actions
@@ -1953,6 +1988,7 @@ export interface Extension {
 	messageRenderers: Map<string, MessageRenderer>;
 	entryRenderers?: Map<string, EntryRenderer>;
 	markdownTransformer?: MarkdownTransformer;
+	messageContentTransformer?: MessageContentTransformer;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;

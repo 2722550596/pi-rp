@@ -63,18 +63,20 @@ import {
 } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
-import type {
-	AutocompleteProviderFactory,
-	EditorFactory,
-	ExtensionCommandContext,
-	ExtensionContext,
+import {
+	adaptMarkdownTransformer,
+	type AutocompleteProviderFactory,
+	type EditorFactory,
+	type ExtensionCommandContext,
+	type ExtensionContext,
 	ExtensionRunner,
-	ExtensionUIContext,
-	ExtensionUIDialogOptions,
-	ExtensionWidgetOptions,
-	MarkdownTransformer,
-	ProjectTrustContext,
-	WorkingIndicatorOptions,
+	type ExtensionUIContext,
+	type ExtensionUIDialogOptions,
+	type ExtensionWidgetOptions,
+	type MarkdownTransformer,
+	type MessageContentTransformer,
+	type ProjectTrustContext,
+	type WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
@@ -1933,8 +1935,11 @@ export class InteractiveMode {
 		return this.session.getToolDefinition(toolName);
 	}
 
-	private getMarkdownTransformers(): MarkdownTransformer[] {
-		return [this.mermaidMarkdownTransformer, ...this.session.extensionRunner.getMarkdownTransformers()];
+	private getMessageContentTransformers(): MessageContentTransformer[] {
+		return [
+			adaptMarkdownTransformer(this.mermaidMarkdownTransformer),
+			...this.session.extensionRunner.getMessageContentTransformers(),
+		];
 	}
 	/**
 	 * Set up keyboard shortcuts registered by extensions.
@@ -3111,6 +3116,7 @@ export class InteractiveMode {
 					// Key by the original message object so concurrent live messages don't clobber each other.
 					const lastChild = this.chatContainer.children[this.chatContainer.children.length - 1];
 					if (lastChild instanceof CustomMessageComponent) {
+						lastChild.setStreaming(true);
 						this.streamingCustomComponents.set(event.message, lastChild);
 					}
 					this.ui.requestRender();
@@ -3125,10 +3131,11 @@ export class InteractiveMode {
 						this.getMarkdownThemeWithSettings(),
 						this.hiddenThinkingLabel,
 						this.outputPad,
+						this.getMessageContentTransformers(),
 					);
 					this.streamingMessage = this._filterMessageForDisplay(event.message) as AssistantMessage;
 					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.ui.requestRender();
 				}
 				break;
@@ -3136,7 +3143,7 @@ export class InteractiveMode {
 			case "message_update":
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = this._filterMessageForDisplay(event.message) as AssistantMessage;
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.streamingComponent.updateContent(this.streamingMessage, true);
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
@@ -3171,7 +3178,7 @@ export class InteractiveMode {
 				{
 					const component = this.streamingCustomComponents.get(event.message);
 					if (component) {
-						component.updateMessage(this._filterMessageForDisplay(event.message) as CustomMessage<unknown>);
+						component.updateMessage(this._filterMessageForDisplay(event.message) as CustomMessage<unknown>, true);
 						this.ui.requestRender();
 					}
 				}
@@ -3190,7 +3197,7 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.streamingComponent.updateContent(this.streamingMessage, false);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
@@ -3215,6 +3222,10 @@ export class InteractiveMode {
 					this.footer.invalidate();
 				}
 				if (event.message.role === "custom") {
+					const component = this.streamingCustomComponents.get(event.message);
+					if (component) {
+						component.updateMessage(this._filterMessageForDisplay(event.message) as CustomMessage<unknown>, false);
+					}
 					this.streamingCustomComponents.delete(event.message);
 				}
 				this.ui.requestRender();
@@ -3538,7 +3549,13 @@ export class InteractiveMode {
 			case "custom": {
 				if (message.display) {
 					const renderer = this.session.extensionRunner.getMessageRenderer(message.customType);
-					const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
+					const component = new CustomMessageComponent(
+						message,
+						renderer,
+						this.getMarkdownThemeWithSettings(),
+						this.outputPad,
+						this.getMessageContentTransformers(),
+					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}
@@ -3578,6 +3595,7 @@ export class InteractiveMode {
 								skillBlock.userMessage,
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
+								this.getMessageContentTransformers(),
 							);
 							this.chatContainer.addChild(userComponent);
 						}
@@ -3586,6 +3604,7 @@ export class InteractiveMode {
 							textContent,
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
+							this.getMessageContentTransformers(),
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -3602,6 +3621,7 @@ export class InteractiveMode {
 					this.getMarkdownThemeWithSettings(),
 					this.hiddenThinkingLabel,
 					this.outputPad,
+					this.getMessageContentTransformers(),
 				);
 				this.chatContainer.addChild(assistantComponent);
 				break;

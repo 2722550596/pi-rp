@@ -1,8 +1,8 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
-import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+import type { MessageContentTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
-import { createMarkdownTransform } from "./markdown-transform.ts";
+import { createMessageContentTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -17,7 +17,7 @@ export class AssistantMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private hiddenThinkingLabel: string;
 	private outputPad: number;
-	private markdownTransformers: readonly MarkdownTransformer[];
+	private messageContentTransformers: readonly MessageContentTransformer[];
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
@@ -28,7 +28,7 @@ export class AssistantMessageComponent extends Container {
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		hiddenThinkingLabel = "Thinking...",
 		outputPad = 1,
-		markdownTransformers: readonly MarkdownTransformer[] = [],
+		messageContentTransformers: readonly MessageContentTransformer[] = [],
 	) {
 		super();
 
@@ -36,7 +36,7 @@ export class AssistantMessageComponent extends Container {
 		this.markdownTheme = markdownTheme;
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
 		this.outputPad = outputPad;
-		this.markdownTransformers = markdownTransformers;
+		this.messageContentTransformers = messageContentTransformers;
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
@@ -109,7 +109,11 @@ export class AssistantMessageComponent extends Container {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				this.contentContainer.addChild(
 					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
-						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+						transform: createMessageContentTransform(
+							"assistant",
+							this.isStreaming,
+							this.messageContentTransformers,
+						),
 					}),
 				);
 			} else if (content.type === "thinking") {
@@ -154,10 +158,10 @@ export class AssistantMessageComponent extends Container {
 								italic: true,
 							},
 							{
-								transform: createMarkdownTransform(
+								transform: createMessageContentTransform(
 									"assistant-thinking",
 									this.isStreaming,
-									this.markdownTransformers,
+									this.messageContentTransformers,
 								),
 							},
 						),

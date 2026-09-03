@@ -42,6 +42,7 @@ import type {
 	ExtensionRuntime,
 	LoadExtensionsResult,
 	MarkdownTransformer,
+	MessageContentTransformer,
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
@@ -328,6 +329,11 @@ function createExtensionAPI(
 		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
 			runtime.assertActive();
 			extension.markdownTransformer = transformer;
+		},
+
+		registerMessageContentTransformer(transformer: MessageContentTransformer): void {
+			runtime.assertActive();
+			extension.messageContentTransformer = transformer;
 		},
 
 		// Flag access - checks extension registered it, reads from runtime

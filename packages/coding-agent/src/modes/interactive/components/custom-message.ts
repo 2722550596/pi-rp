@@ -1,9 +1,10 @@
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { Component } from "@earendil-works/pi-tui";
 import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
-import type { MessageRenderer } from "../../../core/extensions/types.ts";
+import type { MessageContentTransformer, MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import { createMessageContentTransform } from "./markdown-transform.ts";
 
 /**
  * Component that renders a custom message entry from extensions.
@@ -17,18 +18,22 @@ export class CustomMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private _expanded = false;
 	private outputPad: number;
+	private messageContentTransformers: readonly MessageContentTransformer[];
+	private isStreaming = false;
 
 	constructor(
 		message: CustomMessage<unknown>,
 		customRenderer?: MessageRenderer,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
+		messageContentTransformers: readonly MessageContentTransformer[] = [],
 	) {
 		super();
 		this.message = message;
 		this.customRenderer = customRenderer;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
+		this.messageContentTransformers = messageContentTransformers;
 
 		this.addChild(new Spacer(1));
 
@@ -58,9 +63,20 @@ export class CustomMessageComponent extends Container {
 	}
 
 	/** Update the rendered message in place (for streaming custom messages). */
-	updateMessage(message: CustomMessage<unknown>): void {
+	updateMessage(message: CustomMessage<unknown>, isStreaming?: boolean): void {
 		this.message = message;
+		if (isStreaming !== undefined) {
+			this.isStreaming = isStreaming;
+		}
 		this.rebuild();
+	}
+
+	/** Mark this custom message as currently streaming (or done) and rebuild. */
+	setStreaming(isStreaming: boolean): void {
+		if (this.isStreaming !== isStreaming) {
+			this.isStreaming = isStreaming;
+			this.rebuild();
+		}
 	}
 
 	private rebuild(): void {
@@ -113,6 +129,13 @@ export class CustomMessageComponent extends Container {
 		this.box.addChild(
 			new Markdown(text, 0, 0, this.markdownTheme, {
 				color: (text: string) => theme.fg("customMessageText", text),
+			}, {
+				transform: createMessageContentTransform(
+					"custom",
+					this.isStreaming,
+					this.messageContentTransformers,
+					this.message.customType,
+				),
 			}),
 		);
 	}

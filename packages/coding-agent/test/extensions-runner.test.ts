@@ -793,6 +793,64 @@ describe("ExtensionRunner", () => {
 			expect(runner.getMarkdownTransformers()).toHaveLength(2);
 		});
 
+		it("collects message content transformers and adapts legacy ones", async () => {
+			const legacyCode = `
+				export default function(pi) {
+					pi.registerMarkdownTransformer((markdown, ctx) => {
+						return \`legacy[\${ctx.messageType}]\${markdown}\`;
+					});
+				}
+			`;
+			const newCode = `
+				export default function(pi) {
+					pi.registerMessageContentTransformer((content, ctx) => {
+						return \`new[\${ctx.messageType}]\${content}\`;
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "legacy-content.ts"), legacyCode);
+			fs.writeFileSync(path.join(extensionsDir, "new-content.ts"), newCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir,
+				sessionManager,
+				modelRegistry,
+				SettingsManager.inMemory(),
+			);
+
+			const transformers = runner.getMessageContentTransformers();
+			expect(transformers).toHaveLength(2);
+
+			// Legacy transformer runs for assistant…
+			const assistantOut = transformers[0]("hi", {
+				messageType: "assistant",
+				isStreaming: false,
+				availableWidth: 80,
+			});
+			expect(assistantOut).toBe("legacy[assistant]hi");
+
+			// …but is skipped for custom (legacy contract did not cover custom).
+			const customLegacyOut = transformers[0]("hi", {
+				messageType: "custom",
+				customType: "character_reply",
+				isStreaming: false,
+				availableWidth: 80,
+			});
+			expect(customLegacyOut).toBe("hi");
+
+			// New transformer handles custom and sees customType.
+			const customNewOut = transformers[1]("hi", {
+				messageType: "custom",
+				customType: "character_reply",
+				isStreaming: false,
+				availableWidth: 80,
+			});
+			expect(customNewOut).toBe("new[custom]hi");
+		});
+
 		it("gets message renderer by type", async () => {
 			const extCode = `
 				export default function(pi) {

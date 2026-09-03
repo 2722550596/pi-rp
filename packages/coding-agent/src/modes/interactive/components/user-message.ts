@@ -1,7 +1,7 @@
 import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
-import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+import type { MessageContentTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
-import { createMarkdownTransform } from "./markdown-transform.ts";
+import { createMessageContentTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -14,19 +14,19 @@ export class UserMessageComponent extends Container {
 	private text: string;
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
-	private markdownTransformers: readonly MarkdownTransformer[];
+	private messageContentTransformers: readonly MessageContentTransformer[];
 
 	constructor(
 		text: string,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
-		markdownTransformers: readonly MarkdownTransformer[] = [],
+		messageContentTransformers: readonly MessageContentTransformer[] = [],
 	) {
 		super();
 		this.text = text;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
-		this.markdownTransformers = markdownTransformers;
+		this.messageContentTransformers = messageContentTransformers;
 		this.rebuild();
 	}
 
@@ -50,7 +50,7 @@ export class UserMessageComponent extends Container {
 				{
 					preserveOrderedListMarkers: true,
 					preserveBackslashEscapes: true,
-					transform: createMarkdownTransform("user", false, this.markdownTransformers),
+					transform: createMessageContentTransform("user", false, this.messageContentTransformers),
 				},
 			),
 		);

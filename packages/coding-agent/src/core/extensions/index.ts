@@ -18,7 +18,7 @@ export type {
 	ShutdownHandler,
 	SwitchSessionHandler,
 } from "./runner.ts";
-export { ExtensionRunner } from "./runner.ts";
+export { ExtensionRunner, adaptMarkdownTransformer } from "./runner.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
@@ -98,6 +98,8 @@ export type {
 	LsToolResultEvent,
 	MarkdownTransformContext,
 	MarkdownTransformer,
+	MessageContentTransformContext,
+	MessageContentTransformer,
 	// Events - Message
 	MessageEndEvent,
 	MessageRenderer,

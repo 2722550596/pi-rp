@@ -46,6 +46,7 @@ import type {
 	InputSource,
 	LoadExtensionsResult,
 	MarkdownTransformer,
+	MessageContentTransformer,
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
@@ -1346,4 +1347,40 @@ export class ExtensionRunner {
 	getMarkdownTransformers(): MarkdownTransformer[] {
 		return this.extensions.flatMap((ext) => (ext.markdownTransformer ? [ext.markdownTransformer] : []));
 	}
+
+	/**
+	 * Collect all message content transformers in registration order. Legacy
+	 * `registerMarkdownTransformer` transformers are adapted so they keep their
+	 * original contract (they never receive `custom` contexts).
+	 */
+	getMessageContentTransformers(): MessageContentTransformer[] {
+		const transformers: MessageContentTransformer[] = [];
+		for (const ext of this.extensions) {
+			if (ext.markdownTransformer) {
+				transformers.push(adaptMarkdownTransformer(ext.markdownTransformer));
+			}
+			if (ext.messageContentTransformer) {
+				transformers.push(ext.messageContentTransformer);
+			}
+		}
+		return transformers;
+	}
+}
+
+/**
+ * Adapt a legacy {@link MarkdownTransformer} to the {@link MessageContentTransformer}
+ * signature. The legacy contract only covers user/assistant/assistant-thinking
+ * messages, so a `custom` context is passed through untouched.
+ */
+export function adaptMarkdownTransformer(transformer: MarkdownTransformer): MessageContentTransformer {
+	return (content, context) => {
+		if (context.messageType === "custom") {
+			return content;
+		}
+		return transformer(content, {
+			messageType: context.messageType,
+			isStreaming: context.isStreaming,
+			availableWidth: context.availableWidth,
+		});
+	};
 }
