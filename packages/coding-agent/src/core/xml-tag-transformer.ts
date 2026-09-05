@@ -16,10 +16,7 @@ export interface XmlTagRenderContext {
 	customType?: string;
 }
 
-export type XmlTagRenderer = (
-	tag: Extract<XmlTagSegment, { kind: "tag" }>,
-	context: XmlTagRenderContext,
-) => string;
+export type XmlTagRenderer = (tag: Extract<XmlTagSegment, { kind: "tag" }>, context: XmlTagRenderContext) => string;
 
 export interface XmlTagTransformerOptions {
 	/** Tag name → renderer. Only these tags are scanned and projected. */

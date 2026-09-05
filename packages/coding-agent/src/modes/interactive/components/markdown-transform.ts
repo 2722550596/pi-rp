@@ -1,7 +1,4 @@
-import type {
-	MessageContentTransformContext,
-	MessageContentTransformer,
-} from "../../../core/extensions/types.ts";
+import type { MessageContentTransformContext, MessageContentTransformer } from "../../../core/extensions/types.ts";
 
 /**
  * Build a transform function for {@link Markdown} from the unified message

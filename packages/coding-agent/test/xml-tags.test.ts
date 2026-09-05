@@ -35,11 +35,7 @@ describe("scanXmlTags", () => {
 	});
 
 	test("converges across frames as the closing tag arrives", () => {
-		const frames = [
-			`<speak from="elena">你`,
-			`<speak from="elena">你好`,
-			`<speak from="elena">你好。</speak>`,
-		];
+		const frames = [`<speak from="elena">你`, `<speak from="elena">你好`, `<speak from="elena">你好。</speak>`];
 		const states = frames.map((frame) => scanXmlTags(frame, SPEAK)[0]);
 		expect(states[0]).toMatchObject({ content: "你", closed: false, pending: true });
 		expect(states[1]).toMatchObject({ content: "你好", closed: false, pending: true });
@@ -101,10 +97,7 @@ describe("scanXmlTags", () => {
 	});
 
 	test("handles multiple tags and surrounding text", () => {
-		const segments = scanXmlTags(
-			`<ooc>作者按</ooc>然后 <speak from="gar">让让</speak>。`,
-			SPEAK,
-		);
+		const segments = scanXmlTags(`<ooc>作者按</ooc>然后 <speak from="gar">让让</speak>。`, SPEAK);
 		expect(segments).toEqual([
 			{ kind: "tag", name: "ooc", attrs: {}, content: "作者按", closed: true, pending: false },
 			{ kind: "text", text: "然后 " },
@@ -163,9 +156,7 @@ describe("createXmlTagTransformer", () => {
 	test("passes through text with no recognized tags unchanged", () => {
 		const transformer = createXmlTagTransformer({ tags: { speak: (t) => t.content } });
 		const input = "纯正文，没有标签。";
-		expect(
-			transformer(input, { messageType: "assistant", isStreaming: false, availableWidth: 80 }),
-		).toBe(input);
+		expect(transformer(input, { messageType: "assistant", isStreaming: false, availableWidth: 80 })).toBe(input);
 	});
 
 	test("falls back to raw rendering when a renderer throws", () => {

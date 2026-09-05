@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { convertToLlm } from "../src/core/messages.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
+import { createTestSession } from "./utilities.ts";
 
 type SendMock = Mock<(command: { type: string }) => Promise<unknown>>;
 
@@ -114,4 +115,40 @@ describe("append_message 服务端持久化语义（SessionManager）", () => {
 		const text = typeof llmLast.content === "string" ? llmLast.content : JSON.stringify(llmLast.content);
 		expect(text).toContain("人设正文");
 	});
+});
+
+describe("navigateTree no-op 分支重放 agent state（append_message 后的角色 session 记忆）", () => {
+	it("navigateTree 到当前 leaf 时同步 state.messages，cast_profile 进入上下文", async () => {
+		// 场景：角色子进程已通过 append_message 写入 cast_profile（append 推进
+		// leaf 到该条目，但不触碰 agent state）；随后作家调用 navigateTree 到
+		// 该条目（target === oldLeaf，走 no-op 分支）作为「重放上下文」信号。
+		// 修复前 no-op 分支直接返回，agent.state.messages 保持空，prompt 时
+		// cast_profile 不在 payload 里（两个角色收到相同上下文、丢人设）。
+		const { session, sessionManager, cleanup } = await createTestSession({ inMemory: true });
+		try {
+			// 构造：user 消息 → cast_profile custom message（leaf 推进到 cast_profile）
+			sessionManager.appendMessage({ role: "user", content: "玩家输入" });
+			const profileId = sessionManager.appendCustomMessageEntry(
+				"cast_profile",
+				"# 你的角色设定\n\n圣玛格丽特超能高中的学生会副会长。",
+				false,
+				{ cast_def_entry_id: "def-1" },
+			);
+			expect(sessionManager.getLeafId()).toBe(profileId);
+
+			// navigateTree 到当前 leaf（no-op 分支）：修复后应重放 session 上下文
+			const result = await session.navigateTree(profileId, { summarize: false });
+			expect(result.cancelled).toBe(false);
+
+			const messages = session.agent.state.messages;
+			// 修复前为 0 条（no-op 短路，未重放）；修复后包含 user + cast_profile
+			expect(messages.length).toBeGreaterThanOrEqual(2);
+			const profile = messages.find((m) => m.role === "custom" && m.customType === "cast_profile");
+			expect(profile).toBeDefined();
+			const text = typeof profile?.content === "string" ? profile.content : JSON.stringify(profile?.content);
+			expect(text).toContain("学生会副会长");
+		} finally {
+			cleanup();
+		}
+	}, 30000);
 });

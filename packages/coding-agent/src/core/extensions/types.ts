@@ -335,6 +335,13 @@ export interface ExtensionContext {
 	/** 合并后的生效 settings（global ← project ← process overlay），只读快照。
 	 *  overlay 由 --settings-file / PI_SETTINGS_FILE 提供（消费方持有该文件）。 */
 	settings: Readonly<Settings>;
+	/** Read a persisted per-extension setting (see Settings.extensionSettings).
+	 *  Returns undefined when the key or namespace is absent. */
+	getExtensionSetting<T = unknown>(extensionId: string, key: string): T | undefined;
+	/** Persist a per-extension setting to the global settings file. Passing
+	 *  undefined removes the key. Written through SettingsManager so the change
+	 *  survives restart and is visible to every session in the agent dir. */
+	setExtensionSetting(extensionId: string, key: string, value: unknown): void;
 	/** Current thinking level, when provided by the session runtime. */
 	thinkingLevel?: ThinkingLevel;
 	/** Whether the agent is idle (not streaming) */
@@ -1260,10 +1267,7 @@ export interface MessageContentTransformContext {
  * what is sent to the model. Transformers are chained in registration order;
  * a transformer that throws is skipped and the pipeline continues.
  */
-export type MessageContentTransformer = (
-	content: string,
-	context: MessageContentTransformContext,
-) => string;
+export type MessageContentTransformer = (content: string, context: MessageContentTransformContext) => string;
 
 export interface EntryRenderOptions {
 	expanded: boolean;
@@ -1289,7 +1293,10 @@ export interface RegisteredCommand {
 	name: string;
 	sourceInfo: SourceInfo;
 	description?: string;
-	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
+	getArgumentCompletions?: (
+		argumentPrefix: string,
+		ctx: ExtensionCommandContext,
+	) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 }
 

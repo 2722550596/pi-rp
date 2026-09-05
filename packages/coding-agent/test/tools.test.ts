@@ -70,8 +70,8 @@ describe("Coding Agent Tools", () => {
 			// Vertex/Gemini function-declaration validation rejects `anyOf: [string, array]`
 			// ("For schema with items, schema type should be ARRAY"). Array-first passes;
 			// reordering this breaks gemini-*-backed providers (e.g. Vertex proxies).
-			const pathSchema = (readTool.parameters as { properties: { path: { anyOf: { type: string }[] } } })
-				.properties.path;
+			const pathSchema = (readTool.parameters as { properties: { path: { anyOf: { type: string }[] } } }).properties
+				.path;
 			const branchTypes = pathSchema.anyOf.map((branch) => branch.type);
 			expect(branchTypes).toEqual(["array", "string"]);
 		});

@@ -801,6 +801,14 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.settingsManager.getSettings();
 			},
+			getExtensionSetting: (extensionId, key) => {
+				runner.assertActive();
+				return runner.settingsManager.getExtensionSetting(extensionId, key);
+			},
+			setExtensionSetting: (extensionId, key, value) => {
+				runner.assertActive();
+				runner.settingsManager.setExtensionSetting(extensionId, key, value);
+			},
 			get thinkingLevel() {
 				runner.assertActive();
 				return runner.runtime.getThinkingLevel();

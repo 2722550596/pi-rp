@@ -127,16 +127,23 @@ export class CustomMessageComponent extends Container {
 		}
 
 		this.box.addChild(
-			new Markdown(text, 0, 0, this.markdownTheme, {
-				color: (text: string) => theme.fg("customMessageText", text),
-			}, {
-				transform: createMessageContentTransform(
-					"custom",
-					this.isStreaming,
-					this.messageContentTransformers,
-					this.message.customType,
-				),
-			}),
+			new Markdown(
+				text,
+				0,
+				0,
+				this.markdownTheme,
+				{
+					color: (text: string) => theme.fg("customMessageText", text),
+				},
+				{
+					transform: createMessageContentTransform(
+						"custom",
+						this.isStreaming,
+						this.messageContentTransformers,
+						this.message.customType,
+					),
+				},
+			),
 		);
 	}
 }

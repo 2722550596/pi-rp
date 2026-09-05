@@ -63,9 +63,6 @@ export {
 	shouldCompact,
 } from "./core/compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
-// XML-like message content tags (streaming-tolerant scanner + transformer factory)
-export { scanXmlTags, type XmlTagSegment } from "./core/xml-tags.ts";
-export { createXmlTagTransformer, type XmlTagRenderContext, type XmlTagRenderer, type XmlTagTransformerOptions } from "./core/xml-tag-transformer.ts";
 // Extension system
 export type {
 	AgentEndEvent,
@@ -384,6 +381,14 @@ export {
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
 } from "./core/trust-manager.ts";
+export {
+	createXmlTagTransformer,
+	type XmlTagRenderContext,
+	type XmlTagRenderer,
+	type XmlTagTransformerOptions,
+} from "./core/xml-tag-transformer.ts";
+// XML-like message content tags (streaming-tolerant scanner + transformer factory)
+export { scanXmlTags, type XmlTagSegment } from "./core/xml-tags.ts";
 // Opening preset seeding (generic core; role-filtering consumers transform first)
 export {
 	type ApplyOpeningResult,

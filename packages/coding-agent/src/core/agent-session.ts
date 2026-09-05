@@ -4213,8 +4213,14 @@ export class AgentSession {
 
 		const oldLeafId = this.sessionManager.getLeafId();
 
-		// No-op if already at target
+		// No-op if already at target: still resync agent state from the
+		// session path. An external writer can append entries (e.g. a
+		// character session's cast_profile via append_message) that move the
+		// leaf without touching agent state; navigating to the current leaf is
+		// that writer's explicit "replay the session" signal, so the LLM
+		// context must not silently stay stale.
 		if (targetId === oldLeafId) {
+			this._syncAgentStateFromSession();
 			return { cancelled: false };
 		}
 

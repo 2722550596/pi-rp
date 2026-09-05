@@ -38,7 +38,8 @@ export function syncExtensionCommands(runner: ExtensionRunner): void {
 				}
 			},
 			autocomplete: async (prefix) => {
-				const items = await command.getArgumentCompletions?.(prefix);
+				const extCtx = runner.createCommandContext();
+				const items = await command.getArgumentCompletions?.(prefix, extCtx);
 				if (!items) return null;
 				return items.map((item) => ({
 					value: item.value,

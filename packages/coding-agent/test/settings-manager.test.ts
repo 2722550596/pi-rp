@@ -111,6 +111,72 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("extension settings (get/setExtensionSetting)", () => {
+		it("returns undefined for unset keys (extensions treat that as default-on)", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getExtensionSetting("nocturne-recall", "autoRecall")).toBeUndefined();
+		});
+
+		it("persists per-extension settings to global settings.json and reads them back", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setExtensionSetting("nocturne-recall", "autoRecall", false);
+			await manager.flush();
+
+			const disk = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(disk.extensionSettings).toEqual({ "nocturne-recall": { autoRecall: false } });
+
+			// Reload (simulate restart) — the value must survive.
+			const reloaded = SettingsManager.create(projectDir, agentDir);
+			expect(reloaded.getExtensionSetting("nocturne-recall", "autoRecall")).toBe(false);
+		});
+
+		it("keeps multiple keys under one extension and isolates distinct extensions", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setExtensionSetting("nocturne-recall", "autoRecall", true);
+			manager.setExtensionSetting("nocturne-recall", "topK", 5);
+			manager.setExtensionSetting("other-ext", "flag", true);
+			await manager.flush();
+
+			const disk = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(disk.extensionSettings).toEqual({
+				"nocturne-recall": { autoRecall: true, topK: 5 },
+				"other-ext": { flag: true },
+			});
+
+			// Typed reads return the right shapes.
+			expect(manager.getExtensionSetting<number>("nocturne-recall", "topK")).toBe(5);
+			expect(manager.getExtensionSetting("other-ext", "flag")).toBe(true);
+		});
+
+		it("removes a key when set to undefined and does not corrupt sibling extensions", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setExtensionSetting("nocturne-recall", "autoRecall", false);
+			manager.setExtensionSetting("other-ext", "flag", true);
+			await manager.flush();
+
+			manager.setExtensionSetting("nocturne-recall", "autoRecall", undefined);
+			await manager.flush();
+
+			const disk = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(disk.extensionSettings).toEqual({ "other-ext": { flag: true } });
+			expect(manager.getExtensionSetting("nocturne-recall", "autoRecall")).toBeUndefined();
+		});
+
+		it("preserves pre-existing extension settings when unrelated settings change", async () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ extensionSettings: { "nocturne-recall": { autoRecall: false } }, theme: "dark" }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setTheme("light");
+			await manager.flush();
+
+			const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(saved.extensionSettings).toEqual({ "nocturne-recall": { autoRecall: false } });
+			expect(saved.theme).toBe("light");
+		});
+	});
+
 	describe("packages migration", () => {
 		it("should keep local-only extensions in extensions array", () => {
 			const settingsPath = join(agentDir, "settings.json");

@@ -147,6 +147,12 @@ export interface Settings {
 	requestGateway?: { defaultMaxConcurrency?: number };
 	/** Cross-process shared state store (opt-in). */
 	state?: { store?: "file"; storeDir?: string };
+	/** Per-extension persisted configuration, keyed by extension id then setting key.
+	 *  Written via SettingsManager.setExtensionSetting() / read via
+	 *  getExtensionSetting(); exposed read-write to extensions through
+	 *  ExtensionContext.getExtensionSetting/setExtensionSetting. Kept as an
+	 *  open-ended namespace so extensions never need a hardcoded Settings field. */
+	extensionSettings?: Record<string, Record<string, unknown>>;
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -782,6 +788,38 @@ export class SettingsManager {
 	/** 当前生效的合并后 settings（global ← project ← overlay）。 */
 	getSettings(): Readonly<Settings> {
 		return structuredClone(this.settings);
+	}
+
+	/** Read a persisted per-extension setting from the effective (merged) settings. */
+	getExtensionSetting<T = unknown>(extensionId: string, key: string): T | undefined {
+		const ns = this.settings.extensionSettings?.[extensionId];
+		return ns === undefined ? undefined : (ns[key] as T | undefined);
+	}
+
+	/** Persist a per-extension setting to the global settings file. Setting a
+	 *  value of undefined removes the key. The whole extensionId sub-namespace
+	 *  is written as one unit so nested keys survive the merge. */
+	setExtensionSetting(extensionId: string, key: string, value: unknown): void {
+		if (!this.globalSettings.extensionSettings) {
+			this.globalSettings.extensionSettings = {};
+		}
+		let ns = this.globalSettings.extensionSettings[extensionId];
+		if (!ns) {
+			ns = {};
+			this.globalSettings.extensionSettings[extensionId] = ns;
+		}
+		if (value === undefined) {
+			delete ns[key];
+			// Drop the whole sub-namespace once it has no keys left, so a key
+			// removal does not leave an empty object behind on disk.
+			if (Object.keys(ns).length === 0) {
+				delete this.globalSettings.extensionSettings[extensionId];
+			}
+		} else {
+			ns[key] = value;
+		}
+		this.markModified("extensionSettings", extensionId);
+		this.save();
 	}
 
 	setDefaultPreset(presetId: string): void {

@@ -64,12 +64,12 @@ import {
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
 import {
-	adaptMarkdownTransformer,
 	type AutocompleteProviderFactory,
+	adaptMarkdownTransformer,
 	type EditorFactory,
 	type ExtensionCommandContext,
 	type ExtensionContext,
-	ExtensionRunner,
+	type ExtensionRunner,
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
 	type ExtensionWidgetOptions,
@@ -1960,6 +1960,9 @@ export class InteractiveMode {
 			thinkingLevel: this.session.thinkingLevel,
 			scopedModels: this.session.scopedModels,
 			settings: this.settingsManager.getSettings(),
+			getExtensionSetting: (extensionId, key) => this.settingsManager.getExtensionSetting(extensionId, key),
+			setExtensionSetting: (extensionId, key, value) =>
+				this.settingsManager.setExtensionSetting(extensionId, key, value),
 			isIdle: () => this.session.isIdle,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
@@ -3224,7 +3227,10 @@ export class InteractiveMode {
 				if (event.message.role === "custom") {
 					const component = this.streamingCustomComponents.get(event.message);
 					if (component) {
-						component.updateMessage(this._filterMessageForDisplay(event.message) as CustomMessage<unknown>, false);
+						component.updateMessage(
+							this._filterMessageForDisplay(event.message) as CustomMessage<unknown>,
+							false,
+						);
 					}
 					this.streamingCustomComponents.delete(event.message);
 				}
