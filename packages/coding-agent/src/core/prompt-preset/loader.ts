@@ -69,22 +69,10 @@ export function chooseDefaultPreset(
 		if (preferred) return preferred;
 	}
 
-	// An explicit opt-in (autoActivate: true) is the designated main preset
-	// and wins regardless of scan order.
-	const optedIn = presets.find(
-		(p) => !p.diagnostics.some((d) => d.level === "error") && p.preset.autoActivate === true,
-	);
-	if (optedIn) return optedIn;
-
-	// Otherwise the first preset that did not opt out (autoActivate !== false).
-	for (const p of presets) {
-		if (p.diagnostics.some((d) => d.level === "error")) continue;
-		if (p.preset.autoActivate !== false) return p;
-	}
-
-	// Every usable preset opted out (or none loaded): return nothing so
+	// Only an explicit opt-in (autoActivate: true) designates the main preset.
+	// Presets that omit the flag (or set it to false) never auto-activate;
 	// callers fall back to the built-in default stack.
-	return undefined;
+	return presets.find((p) => !p.diagnostics.some((d) => d.level === "error") && p.preset.autoActivate === true);
 }
 
 export function isUsablePromptPreset(loaded: LoadedPromptPreset): boolean {

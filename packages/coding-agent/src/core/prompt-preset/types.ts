@@ -240,6 +240,7 @@ export interface PromptPreset {
 	id: string;
 	name?: string;
 	description?: string;
+	/** If true, this preset is auto-activated as the main preset for new sessions. Presets that omit this flag (or set it to false) are never auto-activated; sessions fall back to the built-in default stack. */
 	autoActivate?: boolean;
 	/** Model to switch to when this preset is activated, in "provider/model" format. */
 	model?: string;

@@ -39,14 +39,10 @@ describe("auto-activate preset selection", () => {
 		};
 	}
 
-	it("activates the first auto-activatable preset when no preset flag or settings default exists", async () => {
-		writeFileSync(
-			join(tempDir, ".pi", "prompt-presets", "hero.json"),
-			JSON.stringify({ schemaVersion: 1, id: "hero", autoActivate: false, items: [] }),
-		);
+	it("activates a preset that explicitly opts in with autoActivate: true", async () => {
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "writer.json"),
-			JSON.stringify({ schemaVersion: 1, id: "writer", items: [] }),
+			JSON.stringify({ schemaVersion: 1, id: "writer", autoActivate: true, items: [] }),
 		);
 
 		const { session } = await createAgentSession(baseOptions());
@@ -54,10 +50,21 @@ describe("auto-activate preset selection", () => {
 		session.dispose();
 	});
 
-	it("prefers an explicit autoActivate: true preset over earlier non-opted-out ones", async () => {
+	it("does not auto-activate a preset that omits the autoActivate flag", async () => {
+		writeFileSync(
+			join(tempDir, ".pi", "prompt-presets", "writer.json"),
+			JSON.stringify({ schemaVersion: 1, id: "writer", items: [] }),
+		);
+
+		const { session } = await createAgentSession(baseOptions());
+		expect(session.activePreset.id).toBe("pi-default");
+		session.dispose();
+	});
+
+	it("prefers an explicit autoActivate: true preset over opted-out ones", async () => {
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "hero.json"),
-			JSON.stringify({ schemaVersion: 1, id: "hero", items: [] }),
+			JSON.stringify({ schemaVersion: 1, id: "hero", autoActivate: false, items: [] }),
 		);
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "writer.json"),
@@ -76,7 +83,7 @@ describe("auto-activate preset selection", () => {
 		);
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "writer.json"),
-			JSON.stringify({ schemaVersion: 1, id: "writer", autoActivate: false, items: [] }),
+			JSON.stringify({ schemaVersion: 1, id: "writer", items: [] }),
 		);
 
 		const { session } = await createAgentSession(baseOptions());
@@ -91,7 +98,7 @@ describe("auto-activate preset selection", () => {
 		);
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "writer.json"),
-			JSON.stringify({ schemaVersion: 1, id: "writer", items: [] }),
+			JSON.stringify({ schemaVersion: 1, id: "writer", autoActivate: true, items: [] }),
 		);
 
 		const options = baseOptions();
@@ -108,7 +115,7 @@ describe("auto-activate preset selection", () => {
 		);
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "writer.json"),
-			JSON.stringify({ schemaVersion: 1, id: "writer", items: [] }),
+			JSON.stringify({ schemaVersion: 1, id: "writer", autoActivate: true, items: [] }),
 		);
 
 		// A resumed session has messages plus a recorded preset_change entry;
