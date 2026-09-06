@@ -511,6 +511,29 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
 	private _systemPromptOverride?: string;
+	/**
+	 * Memo for the preset static system-prompt compile (_rebuildSystemPrompt).
+	 * The static result feeds only extension-visible systemPrompt values (preset
+	 * mode keeps agent.state.systemPrompt = ""); recompiling it on every
+	 * setActiveToolsByName/extendResources call re-renders every sync slot,
+	 * which is quadratic during resume when slots are expensive (subprocess
+	 * renderers). Keyed on every input that can change the output; `now` is
+	 * intentionally excluded (date/time macros refresh on the next real change,
+	 * and the per-turn model path always compiles fresh).
+	 */
+	private _staticPromptCache?: {
+		preset: PromptPreset;
+		toolNames: string;
+		snippets: string;
+		guidelines: string;
+		skills: unknown;
+		contextFiles: unknown;
+		customPrompt: string | undefined;
+		appendPrompt: string;
+		model: string;
+		thinkingLevel: ThinkingLevel;
+		value: string;
+	};
 
 	// Deferred runtime reload state
 	private _reloadDeferralDepth = 0;
@@ -1421,7 +1444,6 @@ export class AgentSession {
 			const toolGuidelines = this._toolPromptGuidelines.get(name);
 			if (toolGuidelines) promptGuidelines.push(...toolGuidelines);
 		}
-
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
@@ -1452,6 +1474,40 @@ export class AgentSession {
 		if (presetHasAsyncSlots(this._activePreset)) {
 			return "";
 		}
+
+		// The static compile re-renders every sync slot (which can spawn
+		// subprocesses), so memoize on the full input fingerprint. Resume fires
+		// this several times in a row (tool registry, extension resources) with
+		// identical inputs; skipping the repeats removes the only avoidable
+		// multi-second cost in the path. `now` is excluded on purpose: the
+		// per-turn model path (getPresetInjectMessages/compileSystemPrompt)
+		// always compiles fresh, so only extension-visible systemPrompt values
+		// can observe a frozen date/time macro.
+		const model = this.model;
+		const thinkingLevel = this.thinkingLevel;
+		const toolNamesKey = validToolNames.join(",");
+		const snippetsKey = Object.entries(toolSnippets)
+			.map(([name, snippet]) => `${name}:${snippet}`)
+			.join("\n");
+		const guidelinesKey = promptGuidelines.join("\n");
+		const appendPromptKey = appendSystemPrompt ?? "";
+		const cache = this._staticPromptCache;
+		if (
+			cache &&
+			cache.preset === this._activePreset &&
+			cache.toolNames === toolNamesKey &&
+			cache.snippets === snippetsKey &&
+			cache.guidelines === guidelinesKey &&
+			cache.skills === loadedSkills &&
+			cache.contextFiles === loadedContextFiles &&
+			cache.customPrompt === loaderSystemPrompt &&
+			cache.appendPrompt === appendPromptKey &&
+			cache.model === model?.id &&
+			cache.thinkingLevel === thinkingLevel
+		) {
+			return cache.value;
+		}
+
 		const staticRuntime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
 			messages: [],
@@ -1459,12 +1515,26 @@ export class AgentSession {
 			now: new Date(),
 			variables: {},
 			skills: loadedSkills,
-			model: this.model,
-			thinkingLevel: this.thinkingLevel,
+			model,
+			thinkingLevel,
 		};
 		const compiled = compileMessagesSync(this._activePreset, staticRuntime);
 		const derived = deriveSystemPrompt(compiled, this._activePreset, "");
-		return expandMacros(derived.systemPrompt, staticRuntime, { mode: "static" });
+		const value = expandMacros(derived.systemPrompt, staticRuntime, { mode: "static" });
+		this._staticPromptCache = {
+			preset: this._activePreset,
+			toolNames: toolNamesKey,
+			snippets: snippetsKey,
+			guidelines: guidelinesKey,
+			skills: loadedSkills,
+			contextFiles: loadedContextFiles,
+			customPrompt: loaderSystemPrompt,
+			appendPrompt: appendPromptKey,
+			model: model?.id ?? "",
+			thinkingLevel,
+			value,
+		};
+		return value;
 	}
 
 	// =========================================================================
