@@ -285,4 +285,34 @@ describe("RPC prompt response semantics", () => {
 			await cleanup();
 		}
 	});
+
+	it("defaults streamingBehavior to followUp when omitted during streaming", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 100 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "b4-start", type: "prompt", message: "Start" }));
+			await vi.waitFor(() => {
+				expect(getPromptResponses(rpcIo.outputLines, "b4-start")).toHaveLength(1);
+			});
+
+			// Legacy-client contract: no streamingBehavior must queue (not reject) while streaming.
+			rpcIo.outputLines = [];
+			lineHandler(JSON.stringify({ id: "b4", type: "prompt", message: "Queue this" }));
+
+			await vi.waitFor(() => {
+				const responses = getPromptResponses(rpcIo.outputLines, "b4");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					id: "b4",
+					type: "response",
+					command: "prompt",
+					success: true,
+				});
+			});
+
+			await sleep(150);
+		} finally {
+			await cleanup();
+		}
+	});
 });

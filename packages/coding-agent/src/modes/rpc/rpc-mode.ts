@@ -572,7 +572,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				void session
 					.prompt(command.message, {
 						images: command.images,
-						streamingBehavior: command.streamingBehavior,
+						// Protocol compatibility: AgentSession.prompt() rejects concurrent prompts while
+						// streaming, but older RPC clients never send streamingBehavior. Default queued
+						// delivery ("followUp") preserves the pre-guard fire-and-forget contract; clients
+						// may still opt into interruption explicitly with "steer".
+						streamingBehavior: command.streamingBehavior ?? "followUp",
 						source: "rpc",
 						preflightResult: (didSucceed) => {
 							if (didSucceed) {
