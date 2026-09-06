@@ -1664,4 +1664,54 @@ bar`,
 			assert.strictEqual(partial.render(80).length, complete.render(80).length);
 		});
 	});
+
+	describe("Emphasis with CJK punctuation", () => {
+		it("renders **...** as bold when the closing ** follows CJK punctuation and is followed by CJK text", () => {
+			const markdown = new Markdown(
+				"**第一出，最安全的：《两个埃利亚斯的茶会》。**蒸汽与代码，隔桌对坐。",
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(!joined.includes("**"), `raw ** must not leak, got: ${joined}`);
+			assert.ok(joined.includes("\x1b[1m"), "expected bold ANSI in output");
+			assert.ok(stripAnsi(joined).includes("第一出，最安全的：《两个埃利亚斯的茶会》。"));
+		});
+
+		it("renders **...** as bold when the closing ** follows CJK punctuation and is followed by a year", () => {
+			const markdown = new Markdown(
+				"**第二出，《如果那盆花没有枯》。**2007年，禁足照旧。",
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(!joined.includes("**"), `raw ** must not leak, got: ${joined}`);
+			assert.ok(joined.includes("\x1b[1m"), "expected bold ANSI in output");
+			assert.ok(stripAnsi(joined).includes("第二出，《如果那盆花没有枯》。"));
+		});
+
+		it("still renders a trailing bold paragraph", () => {
+			const markdown = new Markdown("**第三出。**", 0, 0, defaultMarkdownTheme);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(!joined.includes("**"), `raw ** must not leak, got: ${joined}`);
+			assert.ok(joined.includes("\x1b[1m"), "expected bold ANSI in output");
+		});
+
+		it("keeps standard CommonMark behavior for ASCII text", () => {
+			const markdown = new Markdown("**bold**text and **bold** text", 0, 0, defaultMarkdownTheme);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(!joined.includes("**"), `raw ** must not leak, got: ${joined}`);
+			assert.ok(joined.includes("\x1b[1m"), "expected bold ANSI in output");
+		});
+	});
 });

@@ -6,6 +6,29 @@ import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
+/**
+ * Build a right-delimiter regex that also accepts `**` following punctuation
+ * when the next character is not punctuation (e.g. CJK text).
+ *
+ * marked's default `emStrongRDelimAst` branch 1 is
+ * `(?!\*)punct(\*+)(?=[\s]|$)`: a `**` after punctuation only counts as a
+ * closing delimiter when followed by whitespace or end-of-line. In CJK prose
+ * the closing `**` is typically followed directly by more text
+ * (`**加粗。**正文`), so branch 3 (`punctSpace(\*+)(?=notPunctSpace)`) wins and
+ * classifies it as an *opening* delimiter, leaving the raw `**` on screen.
+ * Relaxing branch 1 to also match a following non-punctuation character makes
+ * that closing delimiter usable without changing ASCII behavior (where branch
+ * 2 already handles `word**word`).
+ */
+function lenientEmStrongRDelim(defaultRe: RegExp): RegExp | undefined {
+	const source = defaultRe.source;
+	if (!source.includes("(?=[\\s]|$)")) {
+		return undefined;
+	}
+	const lenientSource = source.replace(/\(\?=\[\\s\]\|\$\)/, "(?!\\*)(?=[\\s]|$|[^\\s\\p{P}\\p{S}])");
+	return new RegExp(lenientSource, defaultRe.flags);
+}
+
 class StrictStrikethroughTokenizer extends Tokenizer {
 	override del(src: string): Tokens.Del | undefined {
 		const match = STRICT_STRIKETHROUGH_REGEX.exec(src);
@@ -20,6 +43,21 @@ class StrictStrikethroughTokenizer extends Tokenizer {
 			text,
 			tokens: this.lexer.inlineTokens(text),
 		};
+	}
+
+	override emStrong(src: string, maskedSrc: string, prevChar = ""): Tokens.Em | Tokens.Strong | undefined {
+		const inline = this.rules.inline;
+		const original = inline.emStrongRDelimAst;
+		const lenient = lenientEmStrongRDelim(original);
+		if (lenient) {
+			inline.emStrongRDelimAst = lenient;
+			try {
+				return super.emStrong(src, maskedSrc, prevChar);
+			} finally {
+				inline.emStrongRDelimAst = original;
+			}
+		}
+		return super.emStrong(src, maskedSrc, prevChar);
 	}
 }
 

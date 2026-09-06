@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed `**bold**` emphasis being left as raw asterisks when the closing delimiter follows punctuation and is followed directly by CJK text (e.g. `**加粗。**正文`); the emphasis now renders bold.
+
 ## [0.84.2] - 2026-08-14
 
 ### Added
