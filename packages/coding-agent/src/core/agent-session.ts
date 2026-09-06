@@ -611,11 +611,16 @@ export class AgentSession {
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
 
-		this._buildRuntime({
+		this._buildRuntimePromise = this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
 	}
+
+	/** Resolves when the async parts of construction (_buildRuntime: schema
+	 * loading, extension runner wiring) have finished. Callers that touch
+	 * tools/schemas/extension state right after construction must await this. */
+	readonly _buildRuntimePromise: Promise<void>;
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
 		model: Model<any>;
@@ -3874,11 +3879,11 @@ export class AgentSession {
 		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
 	}
 
-	private _buildRuntime(options: {
+	private async _buildRuntime(options: {
 		activeToolNames?: string[];
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
-	}): void {
+	}): Promise<void> {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
@@ -3898,10 +3903,12 @@ export class AgentSession {
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
 		);
 
-		// Load schema definitions and custom validators (sync — jiti supports sync import)
-		const schemaResult = loadSchemaDefs(this._cwd, getAgentDir());
+		// Load schema definitions and custom validators. Async jiti.import so
+		// dependency modules (typebox) come from Node's ESM cache instead of
+		// being re-transformed per file (sync jiti() cost ~300ms per schema).
+		const schemaResult = await loadSchemaDefs(this._cwd, getAgentDir());
 		this._loadedSchemaDefs = schemaResult.schemas;
-		this._loadedCustomValidators = loadCustomValidators(this._cwd, getAgentDir());
+		this._loadedCustomValidators = await loadCustomValidators(this._cwd, getAgentDir());
 		this._schemaValidator.setCustomValidators(this._loadedCustomValidators);
 		// Re-apply loaded schemas and strict mode from session entries so
 		// /reload picks up file changes (clears stale, replays schema_change
@@ -3981,7 +3988,7 @@ export class AgentSession {
 		resetApiProviders();
 		await this._resourceLoader.reload();
 		this.reloadPresets();
-		this._buildRuntime({
+		await this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,

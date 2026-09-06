@@ -494,6 +494,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 		attachStateStore: options.attachStateStore,
 	});
+	// Wait for the async construction work (schema/validator loading,
+	// extension runner wiring) before exposing the session.
+	await session._buildRuntimePromise;
 	sessionRef.current = session;
 	const sessionDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	if (options.initialMessages) {

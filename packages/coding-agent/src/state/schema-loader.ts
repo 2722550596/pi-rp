@@ -20,7 +20,16 @@ export interface LoadedSchemaDefs {
 	errors: Array<{ filePath: string; message: string }>;
 }
 
-/** Create a jiti instance with the same config used by the extension loader. */
+/** Create a jiti instance with the same config used by the extension loader.
+ *
+ * `moduleCache: false` keeps user schema/validator files re-evaluated on every
+ * load (so /reload picks up edits), but that must not re-execute their
+ * dependencies: the sync `jiti(path)` require path re-transforms and
+ * re-executes the whole typebox ESM tree (~280 small modules, ~300ms) for
+ * every file. The async `jiti.import()` path resolves dependencies through
+ * native ESM imports, so Node's module cache evaluates typebox once per
+ * process while the user-authored entry file itself stays uncached.
+ */
 function createSchemaJiti() {
 	return createJiti(import.meta.url, {
 		moduleCache: false,
@@ -29,7 +38,7 @@ function createSchemaJiti() {
 }
 
 /** Discover and load schema definitions from standard locations. */
-export function loadSchemaDefs(cwd: string, agentDir?: string): LoadedSchemaDefs {
+export async function loadSchemaDefs(cwd: string, agentDir?: string): Promise<LoadedSchemaDefs> {
 	const resolvedAgentDir = agentDir ?? getAgentDir();
 	const dirs = [join(resolvedAgentDir, SCHEMA_DIR), getProjectConfigDir(cwd, SCHEMA_DIR)];
 	const schemas: LoadedSchemaDef[] = [];
@@ -41,7 +50,7 @@ export function loadSchemaDefs(cwd: string, agentDir?: string): LoadedSchemaDefs
 		for (const file of files) {
 			const filePath = join(dir, file);
 			if (file.endsWith(".ts")) {
-				const result = loadSchemaFile(filePath);
+				const result = await loadSchemaFile(filePath);
 				if (result) schemas.push(result);
 				else errors.push({ filePath, message: "Failed to load schema" });
 			} else if (file.endsWith(".json")) {
@@ -61,29 +70,22 @@ export function loadSchemaDefs(cwd: string, agentDir?: string): LoadedSchemaDefs
 	return { schemas, errors };
 }
 
-function loadSchemaFile(filePath: string): LoadedSchemaDef | null {
+async function loadSchemaFile(filePath: string): Promise<LoadedSchemaDef | null> {
 	const jiti = createSchemaJiti();
-	// Sync jiti call (jiti extends NodeRequire, so jiti(path) works synchronously)
-	const mod: unknown = jiti(filePath);
-
-	// Extract the default export (jiti sync call returns the full module namespace)
-	let defaultExport: unknown = mod;
-	if (mod !== null && typeof mod === "object" && "default" in mod) {
-		defaultExport = (mod as Record<string, unknown>).default;
-	}
+	const mod = await jiti.import(filePath, { default: true });
 
 	// Accept either:
 	// - default: { namespace: string, schema: TSchema }
 	// - default: TSchema (namespace defaults to filename)
 	let namespace: string;
 	let schema: unknown;
-	if (defaultExport !== null && typeof defaultExport === "object" && "schema" in defaultExport) {
-		const obj = defaultExport as Record<string, unknown>;
+	if (mod !== null && typeof mod === "object" && "schema" in mod) {
+		const obj = mod as Record<string, unknown>;
 		namespace = typeof obj.namespace === "string" ? obj.namespace : basename(filePath, ".ts");
 		schema = obj.schema;
 	} else {
 		namespace = basename(filePath, ".ts");
-		schema = defaultExport;
+		schema = mod;
 	}
 
 	if (!schema || typeof schema !== "object") return null;
@@ -128,7 +130,7 @@ function loadJsonSchemaFile(filePath: string): LoadedSchemaDef | null {
 }
 
 /** Discover and load custom validators from standard locations. */
-export function loadCustomValidators(cwd: string, agentDir?: string): CustomValidator[] {
+export async function loadCustomValidators(cwd: string, agentDir?: string): Promise<CustomValidator[]> {
 	const resolvedAgentDir = agentDir ?? getAgentDir();
 	const dirs = [join(resolvedAgentDir, VALIDATOR_DIR), getProjectConfigDir(cwd, VALIDATOR_DIR)];
 	const validators: CustomValidator[] = [];
@@ -140,7 +142,7 @@ export function loadCustomValidators(cwd: string, agentDir?: string): CustomVali
 			const filePath = join(dir, file);
 			try {
 				const jiti = createSchemaJiti();
-				const mod: unknown = jiti(filePath);
+				const mod: unknown = await jiti.import(filePath, { default: true });
 				const found = extractValidators(mod);
 				if (found) validators.push(...found);
 			} catch {
