@@ -581,3 +581,66 @@ describe("runtime.model / runtime.thinkingLevel", () => {
 		expect(messageText(compiled[0])).toBe("t=high");
 	});
 });
+
+describe("squash never merges tool results", () => {
+	it("keeps adjacent toolResult messages standalone in chat-history", async () => {
+		// Regression: squashMessages merged adjacent toolResults into one message,
+		// collapsing their toolCallIds into the first one. Every other call in a
+		// parallel batch then replayed as orphaned and the provider adapter
+		// synthesized "No result provided" errors for it.
+		const history: AgentMessage[] = [
+			userMessage("并行读取"),
+			{
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "call_A", name: "read", arguments: { path: "a" } },
+					{ type: "toolCall", id: "call_B", name: "read", arguments: { path: "b" } },
+					{ type: "toolCall", id: "call_C", name: "read", arguments: { path: "c" } },
+				],
+				api: "openai-completions",
+				provider: "test",
+				model: "test-model",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: 0,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_A",
+				toolName: "read",
+				content: [{ type: "text", text: "CONTENT-A" }],
+				isError: false,
+				timestamp: 0,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_B",
+				toolName: "read",
+				content: [{ type: "text", text: "CONTENT-B" }],
+				isError: false,
+				timestamp: 0,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_C",
+				toolName: "read",
+				content: [{ type: "text", text: "CONTENT-C" }],
+				isError: false,
+				timestamp: 0,
+			},
+		];
+		const preset = presetWithItems([{ kind: "slot", id: "chat", slot: "chat-history" }]);
+		const compiled = (await compileMessages(preset, runtime(history))).messages;
+
+		const toolResults = compiled.filter((m) => m.role === "toolResult");
+		expect(toolResults).toHaveLength(3);
+		expect(toolResults.map((m) => (m as { toolCallId: string }).toolCallId)).toEqual(["call_A", "call_B", "call_C"]);
+	});
+});

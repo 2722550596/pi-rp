@@ -328,6 +328,16 @@ function squashMessages(messages: AgentMessage[]): AgentMessage[] {
 			last = msg;
 			continue;
 		}
+		// Never merge tool results: each toolResult must stay a standalone message
+		// paired 1:1 with its toolCall (matched by toolCallId downstream). Merging
+		// adjacent results collapses their toolCallIds into the first one, so every
+		// subsequent call in a parallel batch replays as orphaned and gets a
+		// synthetic "No result provided" error instead of its real output.
+		if (msg.role === "toolResult" || last.role === "toolResult") {
+			squashed.push(last);
+			last = msg;
+			continue;
+		}
 		if (last.role === msg.role && typeof last.content === "object" && typeof msg.content === "object") {
 			const lastArr = last.content as Array<{ type: string; text?: string }>;
 			const msgArr = msg.content as Array<{ type: string; text?: string }>;
