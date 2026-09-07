@@ -122,11 +122,30 @@ function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 	return theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
 }
 
+function normalizeReadPaths(raw: string | string[] | undefined): string[] {
+	if (raw === undefined) return [];
+	if (Array.isArray(raw)) return raw;
+	const trimmed = raw.trim();
+	if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+				return parsed;
+			}
+		} catch {
+			// Not valid JSON array; treat as single path string.
+		}
+	}
+	return [raw];
+}
+
 function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string): string {
 	const rawPath = args?.file_path ?? args?.path;
-	const pathDisplay = Array.isArray(rawPath)
-		? rawPath.map((p) => renderToolPath(str(p), theme, cwd)).join(", ")
-		: renderToolPath(str(rawPath), theme, cwd);
+	const normalizedPaths = normalizeReadPaths(rawPath);
+	const pathDisplay =
+		normalizedPaths.length > 1
+			? normalizedPaths.map((p) => renderToolPath(str(p), theme, cwd)).join(", ")
+			: renderToolPath(str(rawPath), theme, cwd);
 	return `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${formatReadLineRange(args, theme)}`;
 }
 
@@ -176,7 +195,9 @@ function getCompactReadClassification(
 	// arrays (multiple paths) or directory listings.
 	const rawPathValue = args?.file_path ?? args?.path;
 	if (typeof rawPathValue !== "string" || !rawPathValue) return undefined;
-	const rawPath = rawPathValue;
+	const normalized = normalizeReadPaths(rawPathValue);
+	if (normalized.length !== 1) return undefined;
+	const rawPath = normalized[0];
 
 	const absolutePath = resolveToCwd(rawPath, cwd);
 	const fileName = basename(absolutePath);
@@ -234,7 +255,8 @@ function formatReadResult(
 	// Syntax highlighting only applies to a single text file; multi-path
 	// results mix languages and cannot be highlighted as a whole.
 	const rawPathValue = args?.file_path ?? args?.path;
-	const rawPath = typeof rawPathValue === "string" ? rawPathValue : null;
+	const normalized = normalizeReadPaths(rawPathValue);
+	const rawPath = normalized.length === 1 ? normalized[0] : null;
 	const output = getTextOutput(result, showImages);
 	const lang = !isError && rawPath ? getLanguageFromPath(rawPath) : undefined;
 	const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
@@ -434,8 +456,8 @@ export function createReadToolDefinition(
 
 					(async () => {
 						try {
-							// Normalize input: accept a single path or an array, deduplicate, reject empties.
-							const rawPaths = Array.isArray(path) ? path : [path];
+							// Normalize input: accept a single path or an array, unpack JSON-serialized string arrays, deduplicate, reject empties.
+							const rawPaths = normalizeReadPaths(path);
 							if (rawPaths.length === 0) {
 								throw new Error("No paths specified. Pass at least one file or directory path to read.");
 							}

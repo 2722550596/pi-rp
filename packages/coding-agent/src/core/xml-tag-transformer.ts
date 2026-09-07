@@ -82,5 +82,5 @@ function serializeAttrs(attrs: Record<string, string>): string {
 	if (entries.length === 0) {
 		return "";
 	}
-	return " " + entries.map(([k, v]) => (v === "" ? k : `${k}="${v}"`)).join(" ");
+	return ` ${entries.map(([k, v]) => (v === "" ? k : `${k}="${v}"`)).join(" ")}`;
 }

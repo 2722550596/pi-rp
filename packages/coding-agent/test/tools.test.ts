@@ -309,6 +309,23 @@ describe("Coding Agent Tools", () => {
 			expect(output.match(/content A/g)).toHaveLength(1);
 		});
 
+		it("should unpack JSON-serialized path arrays passed as a single string", async () => {
+			const fileA = join(testDir, "a.txt");
+			const fileB = join(testDir, "b.txt");
+			writeFileSync(fileA, "content A");
+			writeFileSync(fileB, "content B");
+
+			const result = await readTool.execute("test-call-multi-7", {
+				path: JSON.stringify([fileA, fileB]),
+			});
+			const output = getTextOutput(result);
+
+			expect(output).toContain(`=== ${fileA} ===`);
+			expect(output).toContain("content A");
+			expect(output).toContain(`=== ${fileB} ===`);
+			expect(output).toContain("content B");
+		});
+
 		it("should list directory contents when path is a directory", async () => {
 			mkdirSync(join(testDir, "subdir"));
 			writeFileSync(join(testDir, "alpha.txt"), "alpha");
