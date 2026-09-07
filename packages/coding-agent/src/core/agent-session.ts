@@ -2467,8 +2467,11 @@ export class AgentSession {
 	/**
 	 * Continue the session: make the agent generate regardless of the last
 	 * message's state. Cleans up trailing aborted/errored empty assistant
-	 * messages from agent state, injects an invisible "Continue." user message,
-	 * and runs the agent loop. The injected message is not persisted to the session.
+	 * messages from agent state, then runs the agent loop directly when the
+	 * LLM-visible transcript already ends on a user/toolResult turn (e.g. an
+	 * abort that landed after tool results were recorded) — the loop
+	 * continues natively from there. Otherwise injects an invisible
+	 * "Continue." user message first. The injected message is not persisted.
 	 *
 	 * @returns true if the agent was started
 	 */
@@ -2494,13 +2497,27 @@ export class AgentSession {
 			}
 		}
 
-		// Inject an invisible continue message (not persisted to session).
-		const continueText = this._activePreset.hiddenOverrides?.continueText ?? "Continue.";
-		messages.push({
-			role: "user",
-			content: [{ type: "text", text: continueText }],
-			timestamp: Date.now(),
-		});
+		// The agent loop natively continues from a user/toolResult-ending
+		// transcript: that is exactly the mid-turn state after an abort that
+		// landed after tool results were recorded. Only inject the continue
+		// message when the LLM-visible transcript would otherwise end on an
+		// assistant turn, where the loop would refuse to run. The check uses
+		// convertToLlm (same conversion the request assembly applies) with the
+		// extension policy resolver, so custom messages registered as user
+		// turns behave like real user messages here.
+		const converted = convertToLlm(messages, (customType) => this._extensionRunner.getCustomTypePolicy(customType));
+		const lastConverted = converted[converted.length - 1];
+		const needsContinueMessage = !lastConverted || lastConverted.role === "assistant";
+
+		if (needsContinueMessage) {
+			// Inject an invisible continue message (not persisted to session).
+			const continueText = this._activePreset.hiddenOverrides?.continueText ?? "Continue.";
+			messages.push({
+				role: "user",
+				content: [{ type: "text", text: continueText }],
+				timestamp: Date.now(),
+			});
+		}
 
 		await this._runAgentContinue();
 		return true;
