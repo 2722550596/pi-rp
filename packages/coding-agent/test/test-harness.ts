@@ -426,6 +426,9 @@ async function createHarnessWithResourceLoader(
 		resourceLoader,
 		baseToolsOverride: options.baseToolsOverride,
 	});
+	// AgentSession wires the extension runner asynchronously; wait for it
+	// so harness consumers never race the wiring window.
+	await session._buildRuntimePromise;
 
 	const events: AgentSessionEvent[] = [];
 	session.subscribe((event) => {

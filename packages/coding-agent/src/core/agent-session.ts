@@ -622,6 +622,18 @@ export class AgentSession {
 	 * tools/schemas/extension state right after construction must await this. */
 	readonly _buildRuntimePromise: Promise<void>;
 
+	/**
+	 * Wait until the async parts of construction (_buildRuntime: schema
+	 * loading, extension runner wiring) have settled. Public entry points
+	 * that touch the extension runner must await this first — direct
+	 * `new AgentSession(...)` callers otherwise race the wiring window and
+	 * hit an undefined runner. After the first await the runner exists for
+	 * the session's lifetime; reload replaces it synchronously.
+	 */
+	private async _ensureRuntimeReady(): Promise<void> {
+		await this._buildRuntimePromise;
+	}
+
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
 		model: Model<any>;
 		apiKey?: string;
@@ -791,7 +803,7 @@ export class AgentSession {
 			| { type: "preset_activated"; presetId: string },
 	): void {
 		this._emit(event);
-		void this._extensionRunner.emit(event);
+		if (this._extensionRunner) void this._extensionRunner.emit(event);
 	}
 
 	private _emitQueueUpdate(): void {
@@ -1118,9 +1130,13 @@ export class AgentSession {
 		}
 
 		this._reloadRequested = false;
-		this._extensionRunner.invalidate(
-			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
-		);
+		// The runner is wired asynchronously; skip invalidation when dispose
+		// races construction (no captured ctx can exist yet in that window).
+		if (this._extensionRunner) {
+			this._extensionRunner.invalidate(
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			);
+		}
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
@@ -1724,6 +1740,7 @@ export class AgentSession {
 	 * Captures result in lastTransformedMessages for /prompt inspection.
 	 */
 	async previewPrompt(): Promise<AgentMessage[]> {
+		await this._ensureRuntimeReady();
 		const presetItems = await this.getPresetInjectMessages();
 		let result: AgentMessage[] = presetItems.length > 0 ? presetItems : [...this.agent.state.messages];
 		result = await this._extensionRunner.emitContext(result);
@@ -1761,6 +1778,7 @@ export class AgentSession {
 	 * Returns [] when a custom prompt exists (system is in systemPrompt field).
 	 */
 	async getPresetInjectMessages(): Promise<AgentMessage[]> {
+		await this._ensureRuntimeReady();
 		const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
 		if (hasCustomPrompt) return [];
 		const loadedSkills = this._resourceLoader.getSkills().skills;
@@ -1782,6 +1800,7 @@ export class AgentSession {
 	 * Re-compile the system prompt from the active preset (for /prompt display).
 	 */
 	async compileSystemPrompt(): Promise<string> {
+		await this._ensureRuntimeReady();
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const runtime: PromptRuntime = {
 			options: this._baseSystemPromptOptions,
@@ -1853,6 +1872,7 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		await this._ensureRuntimeReady();
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let preflightAccepted = false;
@@ -2108,6 +2128,7 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async steer(text: string, images?: ImageContent[]): Promise<void> {
+		await this._ensureRuntimeReady();
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2128,6 +2149,7 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+		await this._ensureRuntimeReady();
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2357,6 +2379,7 @@ export class AgentSession {
 	 * @returns true if a user message was found and branch performed
 	 */
 	async reroll(): Promise<boolean> {
+		await this._ensureRuntimeReady();
 		if (!this.isIdle || this.isStreaming) {
 			return false;
 		}
@@ -2476,6 +2499,7 @@ export class AgentSession {
 	 * @returns true if the agent was started
 	 */
 	async continueSession(): Promise<boolean> {
+		await this._ensureRuntimeReady();
 		if (!this.isIdle || this.isStreaming) {
 			return false;
 		}
@@ -2688,6 +2712,7 @@ export class AgentSession {
 	 * @throws Error if no auth is configured for the model
 	 */
 	async setModel(model: Model<any>, persistSettings = true): Promise<void> {
+		await this._ensureRuntimeReady();
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -2716,6 +2741,7 @@ export class AgentSession {
 	 * @returns The new model info, or undefined if only one model available
 	 */
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+		await this._ensureRuntimeReady();
 		if (this._scopedModels.length > 0) {
 			return this._cycleScopedModel(direction);
 		}
@@ -2904,6 +2930,7 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		await this._ensureRuntimeReady();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
@@ -3439,6 +3466,7 @@ export class AgentSession {
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+		await this._ensureRuntimeReady();
 		this._extensionsBound = true;
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
@@ -4154,6 +4182,7 @@ export class AgentSession {
 	// =========================================================================
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
+		await this._ensureRuntimeReady();
 		if (!this._extensionRunner.hasHandlers("user_bash")) {
 			return undefined;
 		}
@@ -4279,7 +4308,7 @@ export class AgentSession {
 		this.sessionManager.appendSessionInfo(name);
 		const event = { type: "session_info_changed", name: this.sessionManager.getSessionName() } as const;
 		this._emit(event);
-		void this._extensionRunner.emit(event);
+		if (this._extensionRunner) void this._extensionRunner.emit(event);
 	}
 
 	// =========================================================================
@@ -4301,6 +4330,7 @@ export class AgentSession {
 		targetId: string,
 		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
+		await this._ensureRuntimeReady();
 		if (this.isStreaming) {
 			throw new Error("Wait for the current response to finish before navigating the session tree.");
 		}

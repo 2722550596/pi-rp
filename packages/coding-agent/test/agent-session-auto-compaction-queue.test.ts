@@ -46,6 +46,10 @@ describe("AgentSession auto-compaction queue resume", () => {
 			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
 		});
+		// AgentSession wires the extension runner asynchronously; wait for it
+		// (this suite drives the private _runAutoCompaction directly, before
+		// any public entry point would have awaited it).
+		await session._buildRuntimePromise;
 	});
 
 	afterEach(() => {

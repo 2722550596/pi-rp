@@ -12,7 +12,7 @@ function tempSchemasDir(): string {
 }
 
 describe("loadSchemaDefs — .json schemas", () => {
-	it("loads a {namespace, schema} wrapper file", () => {
+	it("loads a {namespace, schema} wrapper file", async () => {
 		const dir = tempSchemasDir();
 		writeFileSync(
 			join(dir, "schemas", "world.json"),
@@ -22,7 +22,7 @@ describe("loadSchemaDefs — .json schemas", () => {
 			}),
 		);
 		try {
-			const { schemas, errors } = loadSchemaDefs(dir, dir);
+			const { schemas, errors } = await loadSchemaDefs(dir, dir);
 			expect(errors).toEqual([]);
 			expect(schemas).toHaveLength(1);
 			expect(schemas[0].schemaId).toBe("world");
@@ -36,11 +36,11 @@ describe("loadSchemaDefs — .json schemas", () => {
 		}
 	});
 
-	it("loads a bare JSON Schema file with namespace defaulting to filename", () => {
+	it("loads a bare JSON Schema file with namespace defaulting to filename", async () => {
 		const dir = tempSchemasDir();
 		writeFileSync(join(dir, "schemas", "secret.json"), JSON.stringify({ type: "object", properties: {} }));
 		try {
-			const { schemas, errors } = loadSchemaDefs(dir, dir);
+			const { schemas, errors } = await loadSchemaDefs(dir, dir);
 			expect(errors).toEqual([]);
 			expect(schemas).toHaveLength(1);
 			expect(schemas[0].schemaId).toBe("secret");
@@ -50,11 +50,11 @@ describe("loadSchemaDefs — .json schemas", () => {
 		}
 	});
 
-	it("reports unparseable .json files as errors", () => {
+	it("reports unparseable .json files as errors", async () => {
 		const dir = tempSchemasDir();
 		writeFileSync(join(dir, "schemas", "broken.json"), "{not json");
 		try {
-			const { schemas, errors } = loadSchemaDefs(dir, dir);
+			const { schemas, errors } = await loadSchemaDefs(dir, dir);
 			expect(schemas).toEqual([]);
 			expect(errors).toHaveLength(1);
 			expect(errors[0].filePath).toContain("broken.json");

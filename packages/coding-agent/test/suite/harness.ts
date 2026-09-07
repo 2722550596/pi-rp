@@ -200,6 +200,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,
 	});
+	// AgentSession wires the extension runner asynchronously; wait for it
+	// so harness consumers (extension api handles, session events) never
+	// race the wiring window.
+	await session._buildRuntimePromise;
 
 	const events: AgentSessionEvent[] = [];
 	session.subscribe((event) => {

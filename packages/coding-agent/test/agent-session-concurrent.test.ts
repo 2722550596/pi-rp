@@ -162,7 +162,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		// steer should work while streaming
-		expect(() => session.steer("Steering message")).not.toThrow();
+		await session.steer("Steering message");
 		expect(session.pendingMessageCount).toBe(1);
 
 		// Cleanup
@@ -178,7 +178,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		// followUp should work while streaming
-		expect(() => session.followUp("Follow-up message")).not.toThrow();
+		await session.followUp("Follow-up message");
 		expect(session.pendingMessageCount).toBe(1);
 
 		// Cleanup
@@ -435,6 +435,11 @@ describe("AgentSession concurrent prompt guard", () => {
 			resourceLoader: createTestResourceLoader(),
 			baseToolsOverride: { dummy: tool },
 		});
+
+		// Wait for the async runtime wiring to settle before patching the
+		// runner, so the real ExtensionRunner assigned by _buildRuntime cannot
+		// overwrite the test double.
+		await session._buildRuntimePromise;
 
 		const snapshots: string[][] = [];
 		const sessionWithRunner = session as unknown as {
