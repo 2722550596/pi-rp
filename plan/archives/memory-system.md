@@ -28,6 +28,8 @@ v2 中经源码验证的工程细节（评估结论表、运行时约束、工�
 
 nocturne_memory 与 pi-rp 本身和 worldlines 无耦合——worldlines 只是消费者之一。本计划以 pi-rp 为主体，worldlines 作为迁移验证场景。
 
+//worldlines只是其中一个消费者，一般来说下游的需求是：一个pi-rp作为agent for RP基础设施 + 可选一个nocturne memory记忆系统给独立角色用，日后会有更多类似的消费者
+
 ## 背景
 
 ### nocturne_memory 现状（要移植什么）
@@ -481,7 +483,7 @@ graph / search / glossary / views / patch / ops（含 rollback 重算 + 可见�
 2. **CJK 分词**：零依赖纯 JS（bigram / segmentit）vs `@node-rs/jieba`（质量最好，原生二进制影响 Bun 与跨平台）。默认：接口化 + 纯 JS 实现，质量不足再换。`search_terms` 列预计算，旧行（jieba 生成）不受影响——但注意同一库内新旧行分词质量混用，验收时对比搜索命中。
 3. **rollback 钩子方案**：A（reroll 补发 `session_tree`，推荐）vs B（绑 `_syncAgentStateFromSession`）。Phase 2 集成时定，见 §5。
 4. [v3] **两轨注入合并 or 分轨**：角色记忆 + 剧情档案的召回结果合并成一条 `<memories>` 注入，还是分两条 custom message（`rp-memories` + `rp-story`）。默认合并一条（token 省）；若发现 GM 场景需要区分语境再拆。Phase 2 验证后定。
-5. [v3] **本地嵌入模型选型**：fastembed（onnxruntime，需子进程隔离）vs 仅 API 模式（零本地依赖）。默认先 API 模式（已验证），local 模式 Phase 3 再评估（离线场景需要时）。
+5. [v3] ~~**本地嵌入模型选型**：fastembed（onnxruntime，需子进程隔离）vs 仅 API 模式（零本地依赖）。默认先 API 模式（已验证），local 模式 Phase 3 再评估（离线场景需要时）。~~别搞本地模型，统一用api 
 6. [v3] **剧情纪要的模型**：走 smol 角色模型（omp `providers.memoryModel` 先例）还是 host LLM；无 LLM 时确定性纪要的格式。Phase 3 实现时定。
 
 ## 风险
