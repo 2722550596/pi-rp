@@ -313,6 +313,33 @@ Example with glob and XML wrapping:
 }
 ```
 
+### `awaken`
+
+Renders the character's always-on working memories — the URIs listed in `awaken_uris` (managed via the memory system's `awaken` tool) with full text, child-node snippets, and the current world-time line. Nodes are resolved at render time, so deleted or relocated entries reconcile naturally.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `limit` | number | — | Cap on awaken entries rendered. |
+
+Implemented by [`@earendil-works/pi-memory`](../../../packages/memory/README.md) (prompt slots).
+
+### `recent`
+
+Renders the most recently modified memories (by `updated_ts`, newest first) with snippets.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `snippetCount` | number | `5` | Number of memory nodes to render. |
+| `rawCount` | number | — | Additionally render this many latest raw-log transcript rows. |
+
+### `index`
+
+Renders one snippet per domain root (excluding stub placeholders) — a quick index of what the memory tree holds.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `domain` | string | — | Restrict the index to a single domain root. |
+
 ## Macros
 
 In block `content` fields, wrap a macro name in `{{}}` to expand it at compile time. Macros support an optional `:params` suffix: `{{name:params}}`.

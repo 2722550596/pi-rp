@@ -790,4 +790,82 @@ describe("SettingsManager", () => {
 			expect(manager.getUserName()).toBe("丙");
 		});
 	});
+
+	describe("memory settings deep merge (MemorySettings)", () => {
+		it("merges nested memory fields across global and project without losing the tasks array", () => {
+			const tasks = [
+				{
+					name: "scene-summary",
+					everyNTurns: 4,
+					promptTemplate: "t",
+					landing: { domain: "history", strategy: "append" },
+				},
+			];
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					theme: "dark",
+					memory: {
+						dbPath: "/app/memory.db",
+						autoretain: { tasks },
+						recall: { keywordMinScore: 0.12, topK: 4 },
+						temp: { threshold: 3 },
+						revisions: { maxVersionsPerNode: 2 },
+					},
+				}),
+			);
+			// Project refines only the cadence — the global tasks array must survive.
+			writeFileSync(
+				join(projectDir, ".pi", "settings.json"),
+				JSON.stringify({ memory: { autoretain: { everyNTurns: 2 } } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			const memory = manager.getSettings().memory;
+			expect(memory).toBeDefined();
+			expect(memory?.dbPath).toBe("/app/memory.db");
+			// Global tasks array preserved (arrays merge as a whole, not by index).
+			expect(memory?.autoretain?.tasks).toEqual(tasks);
+			expect(memory?.autoretain?.everyNTurns).toBe(2);
+			expect(memory?.recall?.keywordMinScore).toBe(0.12);
+			expect(memory?.recall?.topK).toBe(4);
+			expect(memory?.temp?.threshold).toBe(3);
+			expect(memory?.revisions?.maxVersionsPerNode).toBe(2);
+		});
+
+		it("overlay overrides individual memory fields and keeps the rest", () => {
+			const manager = SettingsManager.inMemory(
+				{
+					memory: {
+						dbPath: "/app/memory.db",
+						autoretain: { everyNTurns: 4 },
+						embeddings: { mode: "off" },
+					},
+				},
+				{ overlay: { memory: { autoretain: { everyNTurns: 1 } } } },
+			);
+			const memory = manager.getSettings().memory;
+			expect(memory?.dbPath).toBe("/app/memory.db");
+			expect(memory?.autoretain?.everyNTurns).toBe(1);
+			expect(memory?.embeddings?.mode).toBe("off");
+		});
+
+		it("memory array fields override wholesale (no index merging)", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					memory: { autoretain: { tasks: [{ name: "global-task", everyNTurns: 4 }] } },
+				}),
+			);
+			writeFileSync(
+				join(projectDir, ".pi", "settings.json"),
+				JSON.stringify({
+					memory: { autoretain: { tasks: [{ name: "project-task", everyNTurns: 1 }] } },
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			const tasks = manager.getSettings().memory?.autoretain?.tasks ?? [];
+			expect(tasks).toHaveLength(1);
+			expect(tasks[0]?.name).toBe("project-task");
+		});
+	});
 });

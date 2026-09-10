@@ -317,6 +317,8 @@ export class ExtensionRunner {
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
+	/** Session-resolved memory DB path (or undefined when memory failed to init). */
+	private memoryDbPathFn: () => string | undefined = () => undefined;
 	private completeSideRequestFn: (options: CompleteSideRequestOptions) => Promise<AssistantMessage> = async () => {
 		throw new Error("completeSideRequest: not bound");
 	};
@@ -406,6 +408,7 @@ export class ExtensionRunner {
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
+		this.memoryDbPathFn = contextActions.getMemoryDbPath ?? (() => undefined);
 		this.completeSideRequestFn = contextActions.completeSideRequest;
 		this.compilePresetFn = contextActions.compilePreset;
 		this.spawnAgentFn = contextActions.spawnAgent;
@@ -863,6 +866,10 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			getMemoryDbPath: () => {
+				runner.assertActive();
+				return runner.memoryDbPathFn();
 			},
 			completeSideRequest: (options) => {
 				runner.assertActive();

@@ -68,7 +68,7 @@ describe("recent slot", () => {
 	});
 
 	it("includes raw_log rows when rawCount is set", async () => {
-		store.appendRaw([{ role: "user", text: "最新对话原文", entry_id: "e1", wall_ts: "t" }]);
+		store.appendRaw([{ role: "user", text: "最新对话原文", entry_id: "e1", session_id: "session-1", wall_ts: "t" }]);
 		store.put({ uri: "history://one", content: "纪要", source: "manual" });
 		const out = await renderItem("recent", { rawCount: 1, snippetCount: 5 });
 		expect(out).toContain("[1] user: 最新对话原文");

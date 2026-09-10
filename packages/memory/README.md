@@ -70,12 +70,13 @@ pi --memory-db ./world/magnolia/memory.db
 ```ts
 export interface MemoryModule {
   registerSession(host: MemoryModuleHost): void; // 工具/slot/customType/钩子
-  onLeafChange(): Promise<void>;                 // 回滚联动
+  onLeafChange(): Promise<void>;                 // 回滚联动 + raw 镜像对账
   onTurnEnd(): Promise<void>;                    // raw_log 写入 + autoretain + TEMP
+  dispose(): void;                               // 取消在飞召回/side 请求(v5.5)
 }
 ```
 
-宿主(`MemoryModuleHost`)由引擎实现,包含 `registerTool` / `registerSlot` / `registerCustomType` / `sendCustomMessage` / `completeSideRequest` 等 7 个方法;记忆包零依赖 coding-agent,类型是结构镜像。
+宿主(`MemoryModuleHost`)由引擎实现,包含 `registerTool` / `registerSlot` / `registerCustomType` / `sendCustomMessage` / `getSessionInfo`(id/turn) / `getBranchSnapshot` / `getTurnMessages` / `getActiveBranchMessages` / `completeSideRequest` 等 9 个方法;记忆包零依赖 coding-agent,类型是结构镜像。
 
 ### 驱动与依赖
 
@@ -88,22 +89,23 @@ export interface MemoryModule {
 
 | 表 | 职责 |
 |---|---|
-| `nodes` | 记忆树。`node_id` PK、`parent_id`、`domain`、`uri`(唯一)、`content`、`disclosure`(想起条件)、`priority`/`importance`(0–10)、`source`(auto/manual/import)、`model`、`anchor_entry_id`、`created_at`/`world_ts`/`updated_ts`、`content_hash`、`is_stub` |
-| `node_revisions` | 修订制:`(node_id, version)` PK。编辑时旧版归档于此,现行版在 nodes;`restoreRevision` 指定版本回滚 |
-| `edges` | 联想图(associate 建立),检索扩散面 |
+| `nodes` | 记忆树。`node_id` PK、`parent_id`、`domain`、`uri`(唯一)、`content`、`disclosure`(想起条件)、`importance`(0–10,数值越大越重要,单列)、`source`(auto/manual/import)、`model`、`anchor_entry_id`、`anchor_session_id`、`first_raw_id`/`last_raw_id`(原文区间)、`last_accessed_at`(主动想起时间)、`created_at`/`world_ts`/`updated_ts`、`content_hash`、`is_stub` |
+| `node_revisions` | 修订制:`(node_id, version)` PK,逐行带 `uri`。编辑时旧版归档于此,现行版在 nodes;`restoreRevision` 指定版本回滚;删除后经 `restoreDeleted` 按原 node_id 找回 |
+| `edges` | 联想图(associate `related_uri` 建立),显式 retrieve 一跳扩散 |
 | `aliases` | 别名寻址:rename/relocate 后旧地址转 alias,已有引用不破链 |
-| `raw_log` | 原文日志:每消息一行,`raw_id` 自增、`role`、`text`、`entry_id`(pi 活动树 entry id)、`wall_ts`、`world_ts` |
-| `node_fts` / `raw_fts` | FTS5 镜像,写侧用 jieba `cutForSearch` 空格 join 同步;只收 `is_stub=0` 行 |
-| `memory_embeddings` | 向量缓存表(树节点分片),API 嵌入模式预留 |
-| `glossary` | 专名表(trigger 工具维护),专名 → 节点 |
-| `memory_kv` | 键值:世界钟(`world_time`)、awaken_uris、autoretain 游标等 |
-| `audit_log` | append-only 审计流,见 §11 |
+| `raw_log` | 原文日志:每消息一行,`raw_id` 全库自增、`session_id`、`role`、`text`、`entry_id`、`wall_ts`(entry 原始时间)、`world_ts`、`active`(活动路径标记);`(session_id, entry_id)` 唯一 |
+| `node_fts` / `raw_fts` | FTS5(unified token 文本 + 稳定 ID 回表过滤);召回候选与 retrace query 的真实读端;只收 `is_stub=0` 行 |
+| `autoretain_progress` | autoretain 逐任务消费进度 `(session_id, task, entry_id)` |
+| `memory_embeddings` | 向量缓存表(树节点分片,存 content_hash + model,任一失配即失效重算);API 模式 |
+| `glossary` | 专名表(trigger 工具维护),专名 → 节点;完整专名参与索引与检索 |
+| `memory_kv` | 键值:世界钟(`world_time`)、awaken_uris 等 |
+| `audit_log` | append-only 审计流(node_id/source/model/turn/task/anchor/details),见 §15 |
 
 关键概念:
 
-- **`is_stub`**:memorize 自动补占位的父链节点标记为 1(无正文);FTS、召回、视图一律过滤。stub 不为垃圾,它是"等待被 revise 填实"的占位。
+- **`is_stub`**:memorize 自动补占位的父链节点标记为 1(空正文);FTS、召回、视图一律过滤。stub 不为垃圾,它是"等待被 memorize/revise 填实"的占位——带正文写入 stub 即原地转正(`is_stub=0`,不生成垃圾修订)。
 - **uri 约定**:`domain://路径/段`,如 `history://scenes/tavern`、`core://identity/habits`。`TEMP://`(动态区)与 `MEM://`(系统视图)是保留前缀,内容 domain 不得使用。
-- **raw_log 无限增长,不裁剪**(v5.1 定论):保留原文是"真正长期记忆"的底稿;唯一"删"语义是切换分支对账(§8),属正确性不是容量。要控体积只裁 `node_revisions`。
+- **raw_log 是稳定活动镜像,不裁剪、不物理删除**(v5.1 定论 + v5.5 修订):`(session_id, entry_id)` 唯一 upsert;切换分支把本 session 离枝行置 `active=0`(不删行、不碰他 session),切回旧分支按原 `raw_id` 复活。重放同一条时 `world_ts` 保留首次写入的世界时间、`wall_ts` 由调用方传入的 entry 原始时间戳刷新(调用方始终传原始时间,故等于不变);要控体积只裁 `node_revisions`。
 
 ## 5. 工具面(12 个)
 
@@ -111,16 +113,16 @@ export interface MemoryModule {
 
 | 工具 | 作用 | 要点 |
 |---|---|---|
-| `recall` | 回想与审视 | 精确 URI + 子树展开(`depth`/`max_nodes`);内置 `MEM://` 视图(§9) |
-| `retrieve` | 线索检索 | 关键词混合打分(`query`/`domain`/`limit`/`semantic?`);semantic 未配置 embedding 时退化为词法 |
-| `memorize` | 铭刻新记忆 | `uri`/`content`/`when`(=disclosure)/`parent_uri`(缺父链自动补 stub)/`time` |
-| `revise` | 修订记忆 | 单条支 replace/append/行编辑,批量 `batch`;旧版入 node_revisions |
-| `forget` | 遗忘清理 | `target` 单/多条,`dry_run` 级联预览;真删,cascade 子树 |
-| `relocate` | 认知重构 | `uri`+`to` 或 `batch`;跨域改名自动重算 domain、旧地址转 alias |
-| `associate` | 建立联想通路 | `target_uri`+`new_uri`,写入 edges |
-| `trigger` | 埋设检索线索 | 增删 glossary 专名 |
-| `consolidate` | 记忆综合与收敛 | `resolution: group\|merge\|link\|keep` |
-| `retrace` | 源头回溯 | `raw_id` 或 `first_raw_id`+`last_raw_id` 取原文日志 |
+| `recall` | 回想与审视 | 精确 URI + 子树展开(`depth`/`max_nodes`);命中记访问时间(§16 沉睡语义);内置 `MEM://` 视图(§9) |
+| `retrieve` | 线索检索 | 关键词混合打分(`query`/`domain`/`limit`/`semantic?`);显式检索无分数下限但 keyword 模式要求真实命中;对直接命中做一跳边扩散(带 via_edge/kind/from_uri) |
+| `memorize` | 铭刻新记忆 | `uri`/`content`/`when`(=disclosure)/`parent_uri`(缺父链自动补 stub)/`time`;目标是 stub 时原地转正 |
+| `revise` | 修订记忆 | `action: edit\|history\|restore`(默认 edit)。edit 支 replace/append/行编辑 + 批量 `batch`;history 看修订史(不传 uri 列出已删可恢复清单);restore 从修订史恢复(活节点必传 version,已删节点缺省最新,按原 node_id 接回修订史) |
+| `forget` | 遗忘清理 | `target` 单/多条,`dry_run` 级联预览;节点真删、cascade 子树;**修订史全留**——`revise(action:"history")` 查清单、`revise(action:"restore")` 找回 |
+| `relocate` | 认知重构 | `uri`+`to` 或 `batch`,`dry_run`;`relocateMany` 原子批量子树迁移(整棵跨域、URI 前缀重写、reparent、旧地址全链路转 alias、awaken 重映射);冲突在写入前整体抛错零改动 |
+| `associate` | 建立联想通路 | 双互斥模式:`new_uri` 建别名 / `related_uri`+可选 `kind` 建联想边(自连禁止,重复边幂等) |
+| `trigger` | 埋设检索线索 | 增删 glossary 专名;增删自动重建 FTS,专名即可召回正文不含触发词的节点 |
+| `consolidate` | 记忆综合与收敛 | `resolution: group\|merge\|link\|keep`;group 预检后建主题并用 relocateMany 真分组(源根 parent_id = 主题) |
+| `retrace` | 源头回溯 | `raw_id`、`first_raw_id`+`last_raw_id`、`uri`(节点原文区间)或 `query`(活动原文 FTS)取原文日志 |
 | `set_time` | 世界时钟推演 | 绝对或相对位移(`+1d`/`-2h`),写入全局世界钟 |
 | `awaken` | 意识焦点管理 | `action: list\|set\|add\|remove`;清单存 kv(`awaken_uris`) |
 
@@ -157,21 +159,23 @@ slots:
 ## 7. 召回与注入(引擎内建)
 
 - 每次 `before_agent_start`,对当前 prompt 做 **双 query**:当前 prompt(检索意图)+ `Prior context:` 最近 6 条消息(陈述文本)。
-- 打分:权重 vec 0.55 / keyword 0.3 / priority 0.15,keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max),世界钟 recency 加成(0.08/0.04/0.02);`MIN_SCORE 0.35`、`TOP_K 3`、`HIGH_CONFIDENCE 0.55`(唯一"高度相关"绝对档)。
+- 打分:权重 vec 0.55 / keyword 0.3 / importance 0.15(v5.4 单列;数值越大越重要),keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max),世界钟 recency 加成(0.08/0.04/0.02);vector 模式 `MIN_SCORE 0.35`、keyword 模式独立 `keywordMinScore 0.12`、`TOP_K 3`、`HIGH_CONFIDENCE 0.55`(唯一"高度相关"绝对档,keyword 模式按设计打不出)。
+- **候选集**:keyword 模式 = 节点 FTS `MATCH` 命中 ∩ kw>0(glossary 专名也算命中);vector 模式保留全 pool 语义空间但只为 FTS 命中节点算 kw。稳定同分次键:`score → kw → vec → bm25 → importance → updated_ts → uri`。
 - 注入只出 **树节点**(线索 ≤80 字 + 软锚),原文日志不进注入,只能 `retrace` 主动取。
-- 去重:每 prompt 从 `buildContextEntries()` 重建 `uri → md5(uri|content)` 表;同内容版本不重复注入,修订后自动失效重注。
+- 去重:每 prompt 从 `buildContextEntries()` 重建 `uri → md5(uri|content)` 表;同内容版本不重复注入,修订后自动失效重注;只在真正 fresh 注入时记一条 `inject` 审计。
 - 通道:`rp-memories` custom message,`context: include / llmRole: user / compaction: exclude / display: false`。`/` 与 `\` 开头 prompt 跳过。
 - **domain 黑名单**:默认 `["maintenance", "history_raw"]`(运维噪音);`TEMP` 不在黑名单——动态区草稿随时可被召回,这正是"保险"在生效。
-- 参数可配:`settings.memory.recall.{topK, minScore, blocklist}`。
+- 参数可配:`settings.memory.recall.{topK, minScore, keywordMinScore, blocklist}`。
+- **embeddings 隐私默认 off(v5.5)**:未显式 `mode:"api"` 恒不联网(即使 env 有 key);显式 api 才读 env key 外呼(10s 超时、外部 abort 不 latch、响应错误 latch);无向量时自动降级 keyword 注入。
 
 ## 8. 回滚联动
 
 挂在 `_moveLeafAndRestoreState`(reroll 与 navigateTree 的共同 choke point)尾部,零成本可选链:
 
-1. **anchor 可见性重算**:`source: auto` 的节点(纪要、反思、一切 autoretain 产物)若 `anchor_entry_id` 不在当前活动路径则转**不可见**——谓词隐藏,不删行,切回旧分支自动复活。`manual` 节点永不自动隐藏(角色主权)。
-2. **raw_log 对账**:物理删除 `entry_id ∉ 活动路径` 的行(全量差集 → 每 500 一批 DELETE)。真源是 pi session jsonl,DB 只是派生视图,删了可重建。
+1. **anchor 可见性重算**(session 维度):`source: auto` 的节点若缺 `anchor_session_id` 或 `anchor_entry_id` 恒不可见;来自**其他 session** 的 auto 节点恒可见(B 的 reroll 不隐藏 A 的产物);来自**当前 session** 的仅当 `anchor_entry_id` 在活动路径可见。`manual` 节点永不自动隐藏(角色主权)。
+2. **raw_log 对账**:`syncRawBranch` 把本 session 活动分支整体 upsert,并把本 session 不在路径的行置 `active=0`——**不物理删除、不碰其他 session 行**;切回旧分支旧行按原 `raw_id`/时间戳复活。`registerSession` 后立即 backfill 一次,resume/浏览不等下一回合。
 
-行为验证场景:reroll 后纪要隐藏 + 原文删除;切回旧分支后两者复活/重灌。
+行为验证场景:reroll 后纪要隐藏 + 原文行 active=0;切回旧分支后两者复活(原文 raw_id 不变)。
 
 ## 9. MEM:// 视图
 
@@ -180,7 +184,7 @@ slots:
 | 视图 | 数据源 | 说明 |
 |---|---|---|
 | `MEM://timeline/<domain>/<N>` | raw_log | 消息级原文时间轴,带 world_ts,倒序 |
-| `MEM://forgotten/<domain>/<N>` | nodes | 沉睡最久的活记忆(与删除无关,recall 可唤醒) |
+| `MEM://forgotten/<domain>/<N>` | nodes | 沉睡最久的活记忆(基准 = `last_accessed_at ?? created_at`,仅主动 recall/retrieve 更新;隐藏 auto 节点过滤) |
 | `MEM://wakeup/<N>` | awaken_uris | 意识焦点:清单全文 + 最近动态 |
 | `MEM://glossary` | glossary | 全部触发词 |
 | `MEM://recent/<N>` | nodes | 最近修改的结构化列表 |
@@ -205,16 +209,17 @@ slots:
 
 **定位**:保险不是记忆——止损不增值,产物是"关于我的记录",整理时降级为参考草稿。
 
-- **任务注册制**:每任务 `{ name, everyNTurns, promptTemplate, landing: { domain, strategy: "append"|"underParent"|"replaceStale" }, modelRole }`。core 内置两个默认任务,下游可覆盖/注册:
+- **任务注册制**:每任务 `{ name, everyNTurns, promptTemplate, landing: { domain, strategy: "append"|"underParent"|"replaceStale" }, modelRole?, maxInputChars?, maxOutputTokens?, redact? }`。core 内置两个默认任务,下游可覆盖/注册:
 
 | 任务 | 落点 | 内容 |
 |---|---|---|
 | `scene-summary` | `history` 域,append | 场景纪要(发生了什么、关键事实、未尽事项) |
 | `self-reflection` | `meta` 域,append | 第一人称行为模式 / 性格变化反思 |
 
-- **触发**:turn_end 计数(多任务共用计数器,各自按 everyNTurns 触发);到期任务经 `ctx.completeSideRequest` 跑廉模型 + strict JSON 契约(`{"uri":…,"content":…,"disclosure":…}`)。
-- **窗口游标**:从 raw_log 取"上次已消费 raw_id 之后"的新增行(kv `autoretain_last_raw_id`),窗口上限 80 行;成功才推进游标,**失败静默跳过,下轮重试同一窗口**——原文不丢,永可重做。
-- 产物走 memorize 内部路径,`source: "auto"`,anchor 自动填;每次触发(成败)都写 audit。
+- **触发**:turn_end 计数(多任务共用计数器,各自按 everyNTurns 触发);**autoretain 默认关闭**——需要显式配置 `memory.autoretain`(cadence 或任务列表)才启用,避免裸会话每 N 回合静默消耗 side-request 模型配额(与 embeddings 隐私默认 off 同一姿态)。到期任务经宿主 `completeSideRequest(prompt, {modelRole, maxTokens, signal, label})` 跑廉模型 + strict JSON 契约(`{"uri":…,"content":…,"disclosure":…}`),桥到引擎侧请求原语(`memory.autoretain.models.{smol,default}` 解析引用,未配回落 session model;会话 dispose 中止在飞请求)。
+- **提示词预算与脱敏(v5.5)**:窗口按 `maxInputChars`(默认 12000)从尾部按字符边界截断;`redact`(默认 true)把 Bearer token 与 `api_key|apikey|token|secret|password|authorization` 赋值替换为 `[REDACTED]`——不改 raw_log 原文。
+- **进度(v5.5)**:per-task/per-session(`autoretain_progress` 表),`listUnprocessedActiveRaw(sessionId, task, limit)` 只取本 session 活动分支中该任务未消费行;**成功才写进度,失败静默跳过、下轮重试同一窗口**——不同任务不同 session 不互吞窗口,离枝再回的低 raw_id 行不永久跳过。窗口上限 80 行。
+- 产物走 memorize 内部路径,`source: "auto"`,anchor 自动填,并写 `anchor_session_id` + `first_raw_id`/`last_raw_id`(原文区间);每次触发(成败)都写 audit(`autoretain_task`)。
 
 ## 12. TEMP 动态区
 
@@ -235,22 +240,26 @@ slots:
       "customTypes": "all-display-true"               // "all-display-true" | "none" | ["type-a", ...]
     },
     "autoretain": {
-      "everyNTurns": 4,                               // 默认任务 cadence
-      "tasks": [ /* 覆盖/新增 AutoretainTask */ ]
+      "everyNTurns": 4,                               // 默认任务 cadence;配置本例即启用 autoretain(未配置则关闭)
+      "tasks": [ /* 覆盖/新增 AutoretainTask */ ],
+      "models": { "smol": "model-ref", "default": "model-ref" }  // 侧请求模型引用;未配回落 session model
     },
     "recall": {
       "topK": 3,
-      "minScore": 0.35,
+      "minScore": 0.35,                               // vector 注入档
+      "keywordMinScore": 0.12,                        // keyword 注入档(v5.5)
       "blocklist": ["maintenance", "history_raw"]
     },
     "temp": { "threshold": 10 },
-    "embeddings": { "mode": "off", "model": "bge-large-zh-v1.5", "apiUrl": "..." }  // 预留,apiKey 走 env
+    "revisions": { "maxVersionsPerNode": 20 },        // 每节点保留修订数上限;缺省无限(不配置即不裁)
+    "embeddings": { "mode": "off", "model": "bge-large-zh-v1.5", "apiUrl": "..." }  // 隐私默认 off;apiKey 走 env
   }
 }
 ```
 
 - `rawLog.customTypes`:三态开关决定 custom message 是否收编进原文日志(默认收 display:true 的);user/assistant 消息恒收。
-- `embeddings`:目前召回为 keyword-only(纯包无 embedding 客户端),`mode: "off"` 是现状;`"api"` 模式为下游预留,权重刻度已保持可比。
+- `embeddings`:**默认 `mode:"off"`(隐私优先,v5.5)**——未显式 `"api"` 永不联网,即使 env 有 key;`"api"` 才读 `PI_MEMORY_EMBEDDING_API_KEY`/`NOCTURNE_EMBEDDING_API_KEY` 外呼(10s 超时)。无向量自动降级 keyword 注入。
+- `revisions.maxVersionsPerNode`:正整数或缺省(无限);每次归档后剪掉该节点最旧超额版本,删除前归档也应用同一策略,保证至少保留一版可恢复正文。
 
 ## 14. 与下游集成
 
@@ -262,7 +271,7 @@ import { MemoryStore, openMemoryStore } from "@earendil-works/pi-memory";
 const store = await openMemoryStore("./role.db"); // open + createSchema
 store.put({ uri: "history://scene/1", content: "……", parent_uri: "history://scene" });
 const node = store.resolveUri("history://scene/1");
-store.export();  // { nodes, revisions, kv } JSON 快照(迁移/备份/审计)
+store.export();  // { nodes, revisions, kv, aliases, edges, glossary } JSON 快照(迁移/备份/审计;三类资产不丢,v5.5)
 ```
 
 公开面(`src/index.ts`):`openMemoryStore` / `MemoryStore` / `createMemoryModule` / `createMemoryTools` / `createMemorySlots` / `resolveMemoryDbPath` / `runAutoretainTask` / `dueTasks` / system 视图渲染函数 / 全部常量与类型。
@@ -273,16 +282,17 @@ store.export();  // { nodes, revisions, kv } JSON 快照(迁移/备份/审计)
 
 ## 16. 已知行为与实战建议
 
-- **FTS 表目前只写不读**:召回打分走内存 `tokenizeForMatch`(bigram+latin 混合器);FTS 镜像保留给未来 MATCH 查询路径,写侧 jieba 分词与 unicode61 兼容。
+- **FTS 有真实读端(v5.5)**:`node_fts`/`raw_fts` 是检索候选与 retrace query 的来源(统一分词 + 稳定 ID 回表过滤);`@node-rs/jieba` 为模块级单例,不可用时回落 latin + bigram,两侧同一 token 空间。
+- **访问追踪只记主动想起**:`last_accessed_at` 仅由角色 `recall`/`retrieve` 更新;自动注入、slot、MEM 视图、`/memories` 浏览不 touch。`MEM://forgotten` 与 diagnostic 的沉睡基准 = `last_accessed_at ?? created_at`。
 - **空库是新会话常态**,不是缺陷;`seed()`/`put` 是低门槛写入口。
-- **恢复**:DB 损坏/丢失 → 冷启动重建 + 从 session jsonl 重建 raw_log;树/修订/kv 用 `export()/import()` 快照恢复。
+- **恢复**:DB 损坏/丢失 → 冷启动重建 + 从 session jsonl 重建 raw_log;树/修订/kv/aliases/edges/glossary 用 `export()/import()` 快照恢复。
 - **多进程格局**:同一 world project 下,作家(GM)与角色子进程各一库(库边界 = 进程边界),世界钟各库自存,靠 `world_ts` 讲同一个时间故事。
-- **不要裁 raw_log**:控制体积只动 `node_revisions`(可重建),原文日志永久保留。
+- **不要裁 raw_log**:控制体积只动 `node_revisions`(可重建),原文日志永久保留(`active=0` 行用于审计/retrace)。
 - 写前读设计文档的 §16 风险表(本实现继承了全部缓解措施)。
 
 ## 17. 测试与验证
 
-- 包内测试:`packages/memory/test/`(store 22 / tools 21 / slots 9 / module 26 / phase3 9 用例,`:memory:` 真库)。
-- 集成测试:`packages/coding-agent/test/memory-module.test.ts`(awaken 注入、修订入 revisions、reroll 隐藏 + 原文删除 + 切回复活、去重)。
+- 包内测试:`packages/memory/test/` **138 例**(store 37 / tools 33 / recall 22 / module 28 / phase3 / slots,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、审计完整列)。
+- 集成测试:`packages/coding-agent/test/memory-module.test.ts`(9 例:真实 harness 工具注册/注入去重/raw_log 镜像/reroll active 标记与切回复活/autoretain 消费 side response/时间戳落库/preset 路径/dispose 幂等)、`settings-manager.test.ts`(61 例,含 MemorySettings 深合并)。
 - 全仓:`npm run check`(biome / pinned-deps / ts-imports / shrinkwrap / install-lock / tsgo / browser-smoke)。
 - Bun 编译冒烟:`bun build --compile` 含 `openDatabase` 的最小入口,验证动态导入不炸构建。

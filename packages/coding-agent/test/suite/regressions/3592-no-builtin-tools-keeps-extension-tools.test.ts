@@ -79,20 +79,46 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 				.map((tool) => tool.name)
 				.sort(),
 		).toEqual([
+			"associate",
+			"awaken",
 			"bash",
+			"consolidate",
 			"dynamic_tool",
 			"edit",
 			"find",
+			"forget",
 			"get_state",
 			"grep",
 			"ls",
+			"memorize",
 			"read",
+			"recall",
+			"relocate",
+			"retrace",
+			"retrieve",
+			"revise",
+			"set_time",
 			"state_update",
 			"subagent",
 			"subagent_profiles",
+			"trigger",
 			"write",
 		]);
-		expect(session.getActiveToolNames()).toEqual(["dynamic_tool"]);
+		expect(session.getActiveToolNames()).toEqual([
+			"recall",
+			"retrieve",
+			"memorize",
+			"revise",
+			"forget",
+			"relocate",
+			"associate",
+			"trigger",
+			"consolidate",
+			"retrace",
+			"set_time",
+			"awaken",
+			"dynamic_tool",
+		]);
 		const compiledPrompt = await session.compileSystemPrompt();
 		expect(compiledPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(compiledPrompt).not.toContain("- read:");
@@ -125,9 +151,22 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			noTools: "builtin",
 		});
 
-		expect(session.getActiveToolNames()).toEqual([]);
+		expect(session.getActiveToolNames()).toEqual([
+			"recall",
+			"retrieve",
+			"memorize",
+			"revise",
+			"forget",
+			"relocate",
+			"associate",
+			"trigger",
+			"consolidate",
+			"retrace",
+			"set_time",
+			"awaken",
+		]);
 		const compiledPrompt = await session.compileSystemPrompt();
-		expect(compiledPrompt).toContain("(none)");
+		expect(compiledPrompt).toContain("- recall:");
 		expect(compiledPrompt).not.toContain("- read:");
 		session.dispose();
 	});

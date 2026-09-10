@@ -64,19 +64,46 @@ describe("defaultTools setting", () => {
 				.map((tool) => tool.name)
 				.sort(),
 		).toEqual([
+			"associate",
+			"awaken",
 			"bash",
+			"consolidate",
 			"edit",
 			"find",
+			"forget",
 			"get_state",
 			"grep",
 			"ls",
+			"memorize",
 			"read",
+			"recall",
+			"relocate",
+			"retrace",
+			"retrieve",
+			"revise",
+			"set_time",
 			"state_update",
 			"subagent",
 			"subagent_profiles",
+			"trigger",
 			"write",
 		]);
-		expect(session.getActiveToolNames()).toEqual(["grep", "find"]);
+		expect(session.getActiveToolNames()).toEqual([
+			"grep",
+			"find",
+			"recall",
+			"retrieve",
+			"memorize",
+			"revise",
+			"forget",
+			"relocate",
+			"associate",
+			"trigger",
+			"consolidate",
+			"retrace",
+			"set_time",
+			"awaken",
+		]);
 		const prompt = await session.compileSystemPrompt();
 		expect(prompt).toContain("- grep:");
 		expect(prompt).not.toContain("- read:");
@@ -120,7 +147,24 @@ describe("defaultTools setting", () => {
 		);
 		await session.bindExtensions({});
 
-		expect(session.getActiveToolNames().sort()).toEqual(["dynamic_tool", "grep", "sdk_tool", "static_tool"]);
+		expect(session.getActiveToolNames().sort()).toEqual([
+			"associate",
+			"awaken",
+			"consolidate",
+			"dynamic_tool",
+			"forget",
+			"grep",
+			"memorize",
+			"recall",
+			"relocate",
+			"retrace",
+			"retrieve",
+			"revise",
+			"sdk_tool",
+			"set_time",
+			"static_tool",
+			"trigger",
+		]);
 		expect(session.getAllTools().map((tool) => tool.name)).toEqual(
 			expect.arrayContaining(["read", "dynamic_tool", "sdk_tool", "static_tool"]),
 		);
@@ -133,7 +177,21 @@ describe("defaultTools setting", () => {
 		allowlistedSession.dispose();
 
 		const excludedSession = await createSession(["read", "grep"], { excludeTools: ["read"] });
-		expect(excludedSession.getActiveToolNames()).toEqual(["grep"]);
+		expect(excludedSession.getActiveToolNames()).toEqual([
+			"grep",
+			"recall",
+			"retrieve",
+			"memorize",
+			"revise",
+			"forget",
+			"relocate",
+			"associate",
+			"trigger",
+			"consolidate",
+			"retrace",
+			"set_time",
+			"awaken",
+		]);
 		excludedSession.dispose();
 
 		const toolLessSession = await createSession(["read"], { noTools: "all" });
@@ -157,19 +215,45 @@ describe("defaultTools setting", () => {
 				.map((tool) => tool.name)
 				.sort(),
 		).toEqual([
+			"associate",
+			"awaken",
 			"bash",
+			"consolidate",
 			"edit",
 			"find",
+			"forget",
 			"get_state",
 			"grep",
 			"ls",
+			"memorize",
 			"read",
+			"recall",
+			"relocate",
+			"retrace",
+			"retrieve",
+			"revise",
+			"set_time",
 			"state_update",
 			"subagent",
 			"subagent_profiles",
+			"trigger",
 			"write",
 		]);
-		expect(session.getActiveToolNames()).toEqual(["ls"]);
+		expect(session.getActiveToolNames()).toEqual([
+			"ls",
+			"recall",
+			"retrieve",
+			"memorize",
+			"revise",
+			"forget",
+			"relocate",
+			"associate",
+			"trigger",
+			"consolidate",
+			"retrace",
+			"set_time",
+			"awaken",
+		]);
 		session.dispose();
 	});
 });

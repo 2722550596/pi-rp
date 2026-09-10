@@ -1,8 +1,13 @@
 /**
- * /memories — interactive memory browser (docs/memory-system.md §14).
+ * /memories — interactive memory browser (docs/memory-system.md §13 Phase 3).
  *
  * Builtin extension over @earendil-works/pi-memory. TUI mode only (rpc/print
- * intentionally unsupported at this stage, §14 末期才考虑).
+ * intentionally unsupported at this stage).
+ *
+ * Uses the SESSION's resolved memory DB path (ctx.getMemoryDbPath(), the
+ * CLI > settings > active-preset > default chain already applied by
+ * AgentSession) — it never recomputes the path itself, so it can never open
+ * or create a second, empty database alongside the one the session writes to.
  *
  * Usage:
  *   /memories            — overview: domains, node counts, world time
@@ -11,7 +16,7 @@
  *   /memories search <q> — keyword listing via the store's recall index
  *   /memories temp       — TEMP zone contents + manual cleanup reminder (§7)
  */
-import { type MemoryNode, type MemoryStore, openMemoryStore, resolveMemoryDbPath } from "@earendil-works/pi-memory";
+import { type MemoryNode, type MemoryStore, openMemoryStore } from "@earendil-works/pi-memory";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../core/extensions/types.ts";
 
 // Process-wide singleton keyed by resolved db path — the same map semantics
@@ -21,7 +26,8 @@ const openStores = new Map<string, Promise<MemoryStore>>();
 
 /** Open the session's memory store for browsing (null when unavailable). */
 function openStore(ctx: ExtensionCommandContext): Promise<MemoryStore | null> {
-	const dbPath = resolveMemoryDbPath(process.env.PI_MEMORY_DB, undefined, undefined, ctx.cwd);
+	const dbPath = ctx.getMemoryDbPath?.();
+	if (!dbPath) return Promise.resolve(null);
 	let store = openStores.get(dbPath);
 	if (!store) {
 		store = openMemoryStore(dbPath);
@@ -33,7 +39,7 @@ function openStore(ctx: ExtensionCommandContext): Promise<MemoryStore | null> {
 
 function nodeLine(n: MemoryNode): string {
 	const flag = n.is_stub ? " [stub]" : "";
-	return `  ${n.uri}${flag}${n.priority !== 5 ? ` [★${n.priority}]` : ""}`;
+	return `  ${n.uri}${flag}${n.importance !== 5 ? ` [★${n.importance}]` : ""}`;
 }
 
 export default function memoriesExtension(pi: ExtensionAPI): void {
@@ -96,7 +102,7 @@ export default function memoriesExtension(pi: ExtensionAPI): void {
 				}
 				const children = store.listNodes().filter((n) => n.parent_id === node.node_id && !n.is_stub);
 				const lines = [
-					`${node.uri}${node.priority !== 5 ? ` [★${node.priority}]` : ""} (${node.source})`,
+					`${node.uri}${node.importance !== 5 ? ` [★${node.importance}]` : ""} (${node.source})`,
 					...node.content.split("\n").map((l) => `  ${l}`),
 				];
 				if (children.length > 0) {

@@ -129,14 +129,41 @@ describe("revise variants", () => {
 describe("retrace", () => {
 	it("single id and range fetch raw text", async () => {
 		store.appendRaw([
-			{ role: "user", text: "开场白", entry_id: "e1", wall_ts: "t1" },
-			{ role: "assistant", text: "回应", entry_id: "e2", wall_ts: "t2" },
+			{ role: "user", text: "开场白", entry_id: "e1", session_id: "session-1", wall_ts: "t1" },
+			{ role: "assistant", text: "回应", entry_id: "e2", session_id: "session-1", wall_ts: "t2" },
 		]);
 		const one = await run("retrace", { raw_id: 1 });
 		expect(one.text).toContain("开场白");
 		const range = await run("retrace", { first_raw_id: 1, last_raw_id: 2 });
 		expect(range.text).toContain("回应");
 		expect(range.details.count).toBe(2);
+	});
+
+	it("query mode searches active raw rows (activeOnly)", async () => {
+		store.appendRaw([
+			{ role: "user", text: "北方商队抵达", entry_id: "e1", session_id: "session-1", wall_ts: "t1" },
+			{ role: "assistant", text: "薇拉回应", entry_id: "e2", session_id: "session-1", wall_ts: "t2" },
+		]);
+		const r = await run("retrace", { query: "商队" });
+		expect(r.text).toContain("北方商队");
+		expect(r.details.count).toBe(1);
+	});
+
+	it("uri mode returns the raw window anchored by first/last raw ids", async () => {
+		store.appendRaw([
+			{ role: "user", text: "第一句", entry_id: "e1", session_id: "session-1", wall_ts: "t1" },
+			{ role: "assistant", text: "第二句", entry_id: "e2", session_id: "session-1", wall_ts: "t2" },
+		]);
+		store.put({
+			uri: "history://sum",
+			content: "纪要",
+			first_raw_id: 1,
+			last_raw_id: 2,
+			anchor_session_id: "session-1",
+		});
+		const r = await run("retrace", { uri: "history://sum" });
+		expect(r.text).toContain("第一句");
+		expect(r.text).toContain("第二句");
 	});
 });
 
@@ -275,5 +302,134 @@ describe("resolveMemoryDbPath", () => {
 		).toBe("/p/settings.db");
 		expect(resolveMemoryDbPath(undefined, undefined, { memory: { dbPath: "/abs/p.db" } }, "/p")).toBe("/abs/p.db");
 		expect(resolveMemoryDbPath(undefined, undefined, undefined, "/p")).toBe("/p/.pi/memory.db");
+	});
+});
+
+describe("revise history/restore (§13/§25)", () => {
+	it("history lists revisions with the live content marked current", async () => {
+		await run("memorize", { uri: "history://evolve", content: "v1" });
+		await run("revise", { uri: "history://evolve", append: "v2-tail" });
+		const r = await run("revise", { action: "history", uri: "history://evolve" });
+		expect(r.text).toContain("v1");
+		expect(r.text).toContain("v1\nv2-tail");
+		expect(r.text).toContain("current");
+	});
+
+	it("history without uri lists recoverable deleted uris", async () => {
+		await run("memorize", { uri: "history://gone", content: "将被删除" });
+		await run("forget", { target: "history://gone" });
+		const r = await run("revise", { action: "history" });
+		expect(r.text).toContain("history://gone");
+	});
+
+	it("restore on a deleted uri revives the newest version; a missing version errors", async () => {
+		await run("memorize", { uri: "history://resurrect", content: "v-original" });
+		await run("revise", { uri: "history://resurrect", old_text: "v-original", new_text: "v-new" });
+		await run("forget", { target: "history://resurrect" });
+		// Wrong version → hard error, nothing recreated.
+		const bad = await run("revise", { action: "restore", uri: "history://resurrect", version: 99 });
+		expect(bad.text).toMatch(/版本|version/i);
+		expect(store.resolveUri("history://resurrect")).toBeNull();
+		// Correct restore → newest version back.
+		const r = await run("revise", { action: "restore", uri: "history://resurrect" });
+		expect(r.text).toContain("已从修订史恢复");
+		expect(store.resolveUri("history://resurrect")!.content).toBe("v-new");
+	});
+});
+
+describe("associate edges and one-hop retrieve diffusion (§15.5)", () => {
+	it("related_uri mode creates a directional edge (self-links forbidden)", async () => {
+		await run("memorize", { uri: "core://alice", content: "艾丽丝" });
+		await run("memorize", { uri: "core://bob", content: "鲍勃" });
+		const r = await run("associate", { target_uri: "core://alice", related_uri: "core://bob", kind: "associate_of" });
+		expect(r.text).toContain("已建立联想");
+		const related = store.listRelated(store.resolveUri("core://alice")!.node_id);
+		expect(
+			related.some((e) => e.target_uri === "core://bob" && e.kind === "associate_of" && e.direction === "outgoing"),
+		).toBe(true);
+		// Self-link rejected.
+		const self = await run("associate", { target_uri: "core://alice", related_uri: "core://alice" });
+		expect(self.text).toContain("自关联");
+	});
+
+	it("new_uri and related_uri are mutually exclusive", async () => {
+		await run("memorize", { uri: "core://a", content: "A" });
+		const r = await run("associate", { target_uri: "core://a", new_uri: "甲", related_uri: "core://a" });
+		expect(r.text).toContain("需要且仅需要");
+	});
+
+	it("retrieve diffuses one hop through edges and labels them via_edge", async () => {
+		await run("memorize", { uri: "history://quest", content: "主线任务 quest" });
+		await run("memorize", { uri: "history://npc", content: "重要 NPC 人物" });
+		await run("associate", { target_uri: "history://quest", related_uri: "history://npc", kind: "involves" });
+		// Direct hit on quest only — the NPC comes via the edge.
+		const r = await run("retrieve", { query: "主线任务", semantic: false });
+		expect(r.text).toContain("history://quest");
+		expect(r.text).toContain("history://npc");
+		const npcId = store.resolveUri("history://npc")!.node_id;
+		expect(r.details.node_ids as string[]).toContain(npcId);
+	});
+});
+
+describe("consolidate group parentage (§2.5)", () => {
+	beforeEach(async () => {
+		await run("memorize", { uri: "history://g1", content: "分组一" });
+		await run("memorize", { uri: "history://g2", content: "分组二" });
+	});
+
+	it("reparents moved roots onto the theme node", async () => {
+		await run("consolidate", {
+			resolution: "group",
+			target_uri: "meta://arc",
+			source_uris: ["history://g1", "history://g2"],
+			content: "主题",
+		});
+		const theme = store.resolveUri("meta://arc")!;
+		// children() exposes canonical uris — the sources now live under the
+		// theme, old uris kept as aliases.
+		expect(
+			store
+				.children(theme.node_id)
+				.map((c) => c.uri)
+				.sort(),
+		).toEqual(["meta://arc/g1", "meta://arc/g2"]);
+		expect(store.resolveUri("history://g1")!.parent_id).toBe(theme.node_id);
+		expect(store.resolveUri("history://g2")!.parent_id).toBe(theme.node_id);
+	});
+
+	it("rejects grouping a source into its own subtree", async () => {
+		await run("memorize", { uri: "history://g1/child", content: "子节点", parent_uri: "history://g1" });
+		const r = await run("consolidate", {
+			resolution: "group",
+			target_uri: "history://g1/child",
+			source_uris: ["history://g1"],
+			content: "主题",
+		});
+		expect(r.text).toContain("冲突");
+		// Nothing changed: no theme was created, source untouched.
+		expect(store.resolveUri("history://g1")).not.toBeNull();
+		expect(store.resolveUri("history://g1/child")?.content).toBe("子节点");
+	});
+});
+
+describe("stub promotion through tools (§5.3)", () => {
+	it("memorize onto a stub promotes it instead of rejecting", async () => {
+		await run("memorize", { uri: "core://identity/habits/tea", content: "先建链" });
+		// The stub exists as an ancestor.
+		expect(store.resolveUri("core://identity")!.is_stub).toBe(1);
+		// Memorizing real content at the stub uri promotes it.
+		const r = await run("memorize", { uri: "core://identity", content: "身份：我是伊莱" });
+		expect(r.text).not.toContain("已存在");
+		expect(store.resolveUri("core://identity")!.is_stub).toBe(0);
+		expect(store.resolveUri("core://identity")!.content).toBe("身份：我是伊莱");
+	});
+
+	it("revise with a body edit promotes a stub and stamps editor_source manual", async () => {
+		await run("memorize", { uri: "core://self/habit", content: "喝茶习惯" });
+		await run("revise", { uri: "core://self", append: "被修订的身份" });
+		const node = store.resolveUri("core://self")!;
+		expect(node.is_stub).toBe(0);
+		expect(node.content).toBe("被修订的身份");
+		expect(node.source).toBe("manual");
 	});
 });

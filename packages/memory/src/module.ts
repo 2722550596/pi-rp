@@ -8,30 +8,26 @@
  *   ~/.pi/agent/extensions/nocturne-memory-recall.ts 92-114/554-681/700-832).
  *   Called once per engine runtime build (every reload gets a fresh host) —
  *   must stay idempotent.
- * - onLeafChange(): rollback coupling — auto-node anchor visibility recompute
- *   + raw_log reconciliation (§8: physical delete of rows whose entry_id left
- *   the active path). Engine calls this directly at the tail of
- *   _moveLeafAndRestoreState; fire-and-forget, never throws.
- * - onTurnEnd(): raw_log batch append for this turn (§4/§15.3). Engine calls
- *   this directly after the turn_end extension emit — do NOT also subscribe
- *   to turn_end via host.on (double write).
+ * - onLeafChange(): rollback coupling (§8: anchor visibility recompute + raw
+ *   mirror reconciliation for THIS session only — other sessions' rows are
+ *   never touched) + in-flight recall cancellation (a branch switch makes
+ *   stale async results meaningless).
+ * - onTurnEnd(): raw_log incremental upsert for this turn, single pass in the
+ *   original message order (§4/§15.3), then autoretain / TEMP checks. The
+ *   engine calls this directly after the turn_end extension emit.
+ * - dispose(): aborts in-flight recall/autoretain side work for this module.
  *
  * packages/memory never imports coding-agent: the host is a minimal
  * structural interface the engine satisfies.
  */
 import { createHash } from "node:crypto";
-import {
-	type AutoretainTask,
-	DEFAULT_AUTORETAIN_EVERY_N_TURNS,
-	DEFAULT_AUTORETAIN_TASKS,
-	dueTasks,
-	runAutoretainTask,
-} from "./autoretain.ts";
+import { type AutoretainTask, DEFAULT_AUTORETAIN_TASKS, dueTasks, runAutoretainTask } from "./autoretain.ts";
 import type { MemorySettings } from "./config.ts";
+import { EmbeddingClient, resolveEmbeddingsConfig } from "./embeddings.ts";
+import { type RecalledItem, type RecallMode, search, toEpochDays } from "./recall.ts";
 import { createMemorySlots, type MemorySlotDefinition } from "./slots.ts";
-import type { MemoryNode, MemoryStore } from "./store.ts";
+import type { MemoryNode, MemoryStore, RawEntry } from "./store.ts";
 import { checkTempThreshold, countActiveTempNodes, DEFAULT_TEMP_THRESHOLD, RP_NOTIFY_TYPE } from "./temp-notify.ts";
-import { tokenizeForMatch } from "./tokenize.ts";
 import { createMemoryTools } from "./tools.ts";
 
 // ── Host interface (structural mirror of the coding-agent ExtensionAPI) ─────
@@ -40,6 +36,10 @@ import { createMemoryTools } from "./tools.ts";
 export interface MemoryModuleSessionInfo {
 	modelId?: string;
 	leafId?: string | null;
+	/** Session that owns this module — scopes raw mirror + auto visibility. */
+	sessionId: string;
+	/** Current turn counter (audit turn column, autoretain cadence check). */
+	turn: number;
 }
 
 /** Snapshot of the active session path (compaction-aware). */
@@ -60,6 +60,8 @@ export interface MemoryTurnMessage {
 	text: string;
 	/** Session entry id the message was persisted under. */
 	entryId: string;
+	/** Original wall timestamp of the session entry (raw_log preservation). */
+	timestamp: string;
 	/** Present on custom_message entries (§15.3 capture switch). */
 	customType?: string;
 	display?: boolean;
@@ -84,57 +86,65 @@ export interface MemoryModuleHost {
 	): void;
 	/** Subscribe to a session event. Event/context payloads are host-owned. */
 	on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
-	/** Live session info (model id, current leaf). */
+	/** Live session info (model id, current leaf, session id, turn). */
 	getSessionInfo(): MemoryModuleSessionInfo;
 	/** Active-path snapshot (engine rebuilds from SessionManager per call). */
 	getBranchSnapshot(): MemoryBranchSnapshot;
 	/** This turn's new messages for raw_log (engine reads the branch tail). */
 	getTurnMessages(): MemoryTurnMessage[];
 	/**
+	 * ALL messages on the active branch, root → leaf (LLM order) — the full
+	 * raw mirror for reconciliation/backfill, including resumed or
+	 * merely-browsed paths.
+	 */
+	getActiveBranchMessages(): MemoryTurnMessage[];
+	/**
 	 * System→role directed message (§7 notify primitive): display:false +
 	 * triggerTurn custom message, compaction-excluded by the type policy.
 	 */
 	sendCustomMessage(message: { customType: string; content: string; display: false; details?: unknown }): void;
 	/**
-	 * One-shot side LLM request outside the main loop (§5 autoretain engine;
-	 * engine implementation: completeSideRequest — gateway attribution +
-	 * session-scoped abort).
+	 * One-shot side LLM request outside the main loop (§5 autoretain engine).
+	 * The engine implementation is completeSideRequest — gateway attribution +
+	 * session-scoped abort; the module passes task model role / maxTokens /
+	 * label through.
 	 */
-	completeSideRequest?(prompt: string): Promise<string>;
+	completeSideRequest(
+		prompt: string,
+		options: { modelRole?: "smol" | "default"; maxTokens?: number; signal?: AbortSignal; label: string },
+	): Promise<string>;
 }
 
 export interface MemoryModuleOptions {
 	/** memory.* settings (§15.3 switches, §9 recall params). */
 	settings?: MemorySettings;
+	/**
+	 * Embedding client override. Defaults to one built from
+	 * settings.memory.embeddings + the env key; downstream consumers (and
+	 * tests) can supply their own provider or a stub.
+	 */
+	embeddings?: EmbeddingClient;
 }
 
 export interface MemoryModule {
 	/** Register tools/slot/customType/hooks onto the session host. */
 	registerSession(host: MemoryModuleHost): void;
-	/** Rollback coupling (§8): anchor visibility recompute + raw_log reconciliation. */
+	/** Rollback coupling (§8): anchor visibility recompute + raw mirror reconcile. */
 	onLeafChange(): Promise<void>;
-	/** raw_log write-through (§4/§15.3): append this turn's messages. */
+	/** raw_log write-through (§4/§15.3): upsert this turn's messages. */
 	onTurnEnd(): Promise<void>;
+	/** Cancel in-flight recall/autoretain work. Call before dropping the module. */
+	dispose(): void;
 }
 
 // ── Recall tuning (port of nocturne-memory-recall.ts 92-114; §9 fixed) ──────
 
 export const RECALL_TOP_K = 3;
 export const RECALL_MIN_SCORE = 0.35;
+/** Keyword-mode injection floor (§5.9 — keyword-only auto-recall needs its own bar). */
+export const RECALL_KEYWORD_MIN_SCORE = 0.12;
 /** Anchor threshold: only the top item earns "高度相关" above this absolute score. */
 export const RECALL_HIGH_CONFIDENCE = 0.55;
-/** doc-coverage keyword normalization alignment gain. */
-const DOC_COVERAGE_GAIN = 1.4;
-const MAX_SUMMARY_LEN = 80;
-/** World-clock recency boost tiers (days delta → boost). */
-const RECENCY_TIERS: Array<{ max: number; boost: number }> = [
-	{ max: 7, boost: 0.08 },
-	{ max: 30, boost: 0.04 },
-	{ max: 90, boost: 0.02 },
-];
-const W_VECTOR = 0.55;
-const W_KEYWORD = 0.3;
-const W_PRIORITY = 0.15;
 /** Recent conversation messages forming the second recall query. */
 const PRIOR_CONTEXT_MESSAGES = 6;
 /** Raw rows forming one autoretain 纪要窗口 (§5: token 预算 guard). */
@@ -164,64 +174,11 @@ export const MEMORY_TOOL_NAMES = [
 export interface InjectedDetail {
 	ids: string[];
 	hashes: Record<string, string>;
-	mode: "keyword";
-}
-
-interface RecalledItem {
-	uri: string;
-	disclosure: string | null;
-	summary: string;
-	/** Full body: the dedup hash is version-sensitive. */
-	content: string;
-	score: number;
-	kw: number;
+	mode: RecallMode;
 }
 
 function md5(text: string): string {
 	return createHash("md5").update(text, "utf-8").digest("hex");
-}
-
-/** Flatten line breaks and take the first MAX_SUMMARY_LEN chars. */
-function summarize(content: string): string {
-	const flat = content.replace(/\r?\n+/g, " ").trim();
-	return flat.length > MAX_SUMMARY_LEN ? `${flat.slice(0, MAX_SUMMARY_LEN)}……` : flat;
-}
-
-function toEpochDays(ts: string | null): number | null {
-	if (!ts) return null;
-	const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ts);
-	if (!m) return null;
-	return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000);
-}
-
-function priorityScore(priority: number): number {
-	// 0 = most important → 1.0; 10 = trivia → 0.0.
-	const p = Math.min(Math.max(priority, 0), 10);
-	return 1 - p / 10;
-}
-
-function recencyBoost(docTs: string | null, nowDays: number): number {
-	const days = toEpochDays(docTs);
-	if (days == null) return 0;
-	const delta = nowDays - days;
-	if (delta < 0) return 0.08; // future-dated entries get the recent-tier boost
-	for (const tier of RECENCY_TIERS) {
-		if (delta <= tier.max) return tier.boost;
-	}
-	return 0;
-}
-
-function keywordScore(queryTokens: string[], doc: MemoryNode): number {
-	if (queryTokens.length === 0) return 0;
-	const docTokens = tokenizeForMatch(`${doc.uri} ${doc.disclosure ?? ""} ${doc.content}`);
-	const docTokenSet = new Set(docTokens);
-	let hits = 0;
-	for (const t of queryTokens) if (docTokenSet.has(t)) hits++;
-	let covered = 0;
-	for (const t of docTokenSet) if (queryTokens.includes(t)) covered++;
-	const byQuery = hits / queryTokens.length;
-	const byDoc = docTokens.length > 0 ? Math.min(1, (covered / docTokens.length) * DOC_COVERAGE_GAIN) : 0;
-	return Math.max(byQuery, byDoc);
 }
 
 // ── Injection format (port of nocturne-memory-recall.ts 685-698) ────────────
@@ -304,19 +261,33 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	const recallCfg = settings.recall ?? {};
 	const topK = recallCfg.topK ?? RECALL_TOP_K;
 	const minScore = recallCfg.minScore ?? RECALL_MIN_SCORE;
+	const keywordMinScore = recallCfg.keywordMinScore ?? RECALL_KEYWORD_MIN_SCORE;
 	const blocklist = recallCfg.blocklist ?? DEFAULT_DOMAIN_BLOCKLIST;
 	const rawLogCustomTypes = settings.rawLog?.customTypes ?? "all-display-true";
+	// §9 vector channel: API mode only, key from env. `mode: "off"` (the
+	// privacy-first default), a missing key or any request failure degrades to
+	// keyword scoring (recall.ts).
+	const embeddings = opts.embeddings ?? new EmbeddingClient(resolveEmbeddingsConfig(settings.embeddings));
 	const tempThreshold = settings.temp?.threshold ?? DEFAULT_TEMP_THRESHOLD;
 	// §5 task registry: core defaults, downstream may register/override.
 	// memory.autoretain.everyNTurns (§9) seeds the cadence of the CORE DEFAULT
 	// tasks only (matched by name) — user-registered tasks always keep the
 	// cadence they pinned, even when it happens to equal the default (4).
+	//
+	// Autoretain is NOT on by default: it consumes side-request model tokens
+	// every N turns, so a bare session (no memory.autoretain declared) stays
+	// zero-cost — the same privacy/opt-in posture as the embeddings default
+	// (§27.1). Explicitly configuring either the cadence or the task list
+	// opts in; the core default tasks fill in when only the cadence is given.
+	const autoretainOptedIn = settings.autoretain !== undefined;
 	const coreDefaultNames = new Set(DEFAULT_AUTORETAIN_TASKS.map((t) => t.name));
-	const autoretainTasks: AutoretainTask[] = [...(settings.autoretain?.tasks ?? DEFAULT_AUTORETAIN_TASKS)].map((t) =>
-		coreDefaultNames.has(t.name) && settings.autoretain?.everyNTurns
-			? { ...t, everyNTurns: settings.autoretain.everyNTurns }
-			: t,
-	);
+	const autoretainTasks: AutoretainTask[] = autoretainOptedIn
+		? [...(settings.autoretain?.tasks ?? DEFAULT_AUTORETAIN_TASKS)].map((t) =>
+				coreDefaultNames.has(t.name) && settings.autoretain?.everyNTurns
+					? { ...t, everyNTurns: settings.autoretain.everyNTurns }
+					: t,
+			)
+		: [];
 	// §5: multiple tasks share ONE turn counter.
 	let autoretainTurnCounter = 0;
 	// §7 hysteresis: do not re-notify until the zone was cleaned below threshold.
@@ -324,6 +295,15 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 
 	// auto nodes hidden by rollback — recomputed on every prompt / leaf change.
 	let hiddenAutoNodeIds = new Set<string>();
+	// Per-recall cancellation: a new recall or a leaf change supersedes the
+	// in-flight one; dispose() cancels everything.
+	let recallAbort: AbortController | undefined;
+	// Autoretain side requests ride one controller, aborted at dispose().
+	const autoretainAbort = new AbortController();
+	let disposed = false;
+
+	// Current host binding — refreshed by registerSession on every reload.
+	let host: MemoryModuleHost | undefined;
 
 	function getAwakenUriSet(): Set<string> {
 		try {
@@ -335,88 +315,89 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		}
 	}
 
-	/** Visibility predicate (§8): auto nodes hidden when the anchor left the path. */
+	/** Visibility predicate (§8): auto nodes hidden when their anchor left the path. */
 	function isVisible(node: MemoryNode): boolean {
 		if (node.source !== "auto") return true;
 		return !hiddenAutoNodeIds.has(node.node_id);
 	}
 
 	/**
-	 * Anchor visibility recompute (§8): an auto node whose anchor_entry_id is
-	 * not on the current active path becomes hidden; manual/import nodes never
-	 * hide. Pure data recompute — rows stay, switching back revives the node.
+	 * Anchor visibility recompute (§8, v5.5 session rules):
+	 * - manual/import nodes are always visible;
+	 * - auto nodes without BOTH anchor_session_id and anchor_entry_id are
+	 *   hidden (no provenance to walk back to);
+	 * - auto nodes from ANOTHER session are visible (B's reroll must never
+	 *   hide A's products);
+	 * - auto nodes from THIS session are visible only while their anchor
+	 *   entry is on the active path.
 	 */
 	function recomputeAnchorVisibility(entryIds: string[]): Set<string> {
 		const active = new Set(entryIds);
+		const currentSession = host?.getSessionInfo().sessionId;
 		const hidden = new Set<string>();
 		for (const node of store.listNodes()) {
 			if (node.source !== "auto") continue;
-			if (!node.anchor_entry_id || !active.has(node.anchor_entry_id)) hidden.add(node.node_id);
+			if (!node.anchor_session_id || !node.anchor_entry_id) {
+				hidden.add(node.node_id);
+				continue;
+			}
+			if (currentSession && node.anchor_session_id !== currentSession) continue;
+			if (!active.has(node.anchor_entry_id)) hidden.add(node.node_id);
 		}
 		return hidden;
 	}
 
-	/**
-	 * Hybrid recall over the tree pool (function-level port of
-	 * nocturne-memory-recall.ts recall() 554-681, keyword mode: the pure
-	 * package carries no embedding client; the §9 weight blend is preserved
-	 * with the vector weight folded into keyword so the score scale — and
-	 * with it MIN_SCORE / HIGH_CONFIDENCE — stays comparable).
-	 */
-	function recallForQueries(queries: string[]): { items: RecalledItem[]; mode: "keyword" } {
-		if (queries.length === 0) return { items: [], mode: "keyword" };
-		const blockSet = new Set(blocklist);
-		const nowDays = toEpochDays(store.getWorldTime() ?? new Date().toISOString().slice(0, 10)) ?? 0;
-		// Deduplicate docs by uri; blocked domains drop first; boot/awaken uris
-		// already live in the preset slot and are excluded from injection (§9);
-		// TEMP is NOT blocklisted (§9: dynamic zone stays recalleable).
-		const byUri = new Map<string, MemoryNode>();
-		for (const node of store.listNodes()) {
-			if (node.is_stub) continue;
-			if (blockSet.has(node.domain)) continue;
-			if (!isVisible(node)) continue;
-			if (byUri.has(node.uri)) continue;
-			byUri.set(node.uri, node);
-		}
-		const awakenUris = getAwakenUriSet();
-		const pool: MemoryNode[] = [];
-		for (const [uri, node] of byUri) {
-			if (awakenUris.has(uri)) continue;
-			pool.push(node);
-		}
-		if (pool.length === 0) return { items: [], mode: "keyword" };
+	/** Map a session message to a raw entry (wall_ts = original timestamp). */
+	function toRawEntry(m: MemoryTurnMessage, sessionId: string, worldTs: string | null): RawEntry {
+		return {
+			role: m.customType ?? m.role,
+			text: m.text,
+			entry_id: m.entryId,
+			session_id: sessionId,
+			wall_ts: m.timestamp,
+			world_ts: worldTs,
+		};
+	}
 
-		const queryTokensList = queries.map(tokenizeForMatch);
-		const scored: RecalledItem[] = pool.map((doc) => {
-			let kw = 0;
-			for (const qTokens of queryTokensList) {
-				const k = keywordScore(qTokens, doc);
-				if (k > kw) kw = k;
-			}
-			const prio = priorityScore(doc.priority);
-			let score = (W_VECTOR + W_KEYWORD) * kw + W_PRIORITY * prio;
-			score += recencyBoost(doc.world_ts, nowDays);
-			return {
-				uri: doc.uri,
-				disclosure: doc.disclosure,
-				summary: summarize(doc.content),
-				content: doc.content,
-				score,
-				kw,
-			};
-		});
-		scored.sort((a, b) => b.score - a.score);
-		const items = scored
-			.filter((s) => s.score >= minScore)
-			// Keyword mode: require at least one query-term hit, otherwise the
-			// score can be gamed by priority alone (no semantic signal).
-			.filter((s) => s.kw > 0)
-			.slice(0, topK);
-		return { items, mode: "keyword" };
+	/**
+	 * Hybrid recall over the tree pool (§9). Delegates to the shared scorer in
+	 * recall.ts — the same code path the retrieve tool uses — so injection and
+	 * explicit search can never drift apart again. Vector scoring runs when an
+	 * embedding client is configured and reachable; otherwise the mode falls
+	 * back to keyword and HIGH_CONFIDENCE stays out of reach by design.
+	 */
+	async function recallForQueries(queries: string[]): Promise<{ items: RecalledItem[]; mode: RecallMode }> {
+		if (queries.length === 0) return { items: [], mode: "keyword" };
+		// A newer prompt / leaf change makes the in-flight recall stale — cancel it.
+		recallAbort?.abort();
+		const ctrl = new AbortController();
+		recallAbort = ctrl;
+		try {
+			const nowDays = toEpochDays(store.getWorldTime() ?? new Date().toISOString().slice(0, 10)) ?? 0;
+			// awaken uris already live in the preset slot — never inject them twice
+			// (§9); TEMP is NOT blocklisted (dynamic zone stays recalleable).
+			return await search(
+				store,
+				embeddings,
+				{
+					queries,
+					domainBlocklist: blocklist,
+					excludeUris: getAwakenUriSet(),
+					isVisible,
+					topK,
+					minScore,
+					keywordMinScore,
+					nowDays,
+				},
+				ctrl.signal,
+			);
+		} finally {
+			if (recallAbort === ctrl) recallAbort = undefined;
+		}
 	}
 
 	/** before_agent_start handler: dual-query recall + dedup + injection. */
-	function handleBeforeAgentStart(event: unknown): { message: Record<string, unknown> } | undefined {
+	async function handleBeforeAgentStart(event: unknown): Promise<{ message: Record<string, unknown> } | undefined> {
 		const prompt = (event as { prompt?: unknown } | null)?.prompt;
 		if (typeof prompt !== "string") return;
 		const trimmed = prompt.trim();
@@ -438,7 +419,15 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		const prior = collectPriorContext(snapshot.entries);
 		if (prior.length > 0) queries.push(`Prior context:\n${prior.join("\n")}`);
 
-		const { items, mode } = recallForQueries(queries);
+		let items: RecalledItem[];
+		let mode: RecallMode;
+		try {
+			({ items, mode } = await recallForQueries(queries));
+		} catch {
+			// Recall must never break the turn: no memories this prompt.
+			// (Abort mid-flight is the normal supersede path — same outcome.)
+			return;
+		}
 		if (items.length === 0) return;
 
 		// Dedup against previously injected (same content version). The hash
@@ -454,6 +443,12 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		}
 		if (fresh.length === 0) return;
 
+		// §12 audit: only an actual fresh injection leaves a trace.
+		store.logAudit("inject", {
+			details: JSON.stringify({ uris: fresh.map((i) => i.uri), mode }),
+			turn: host?.getSessionInfo().turn,
+		});
+
 		const details: InjectedDetail = { ids: fresh.map((i) => i.uri), hashes, mode };
 		return {
 			message: {
@@ -465,9 +460,6 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		};
 	}
 
-	// Current host binding — refreshed by registerSession on every reload.
-	let host: MemoryModuleHost | undefined;
-
 	/**
 	 * Phase 3 turn-end extensions (called from onTurnEnd after the raw_log
 	 * write): autoretain task firing (§5) + TEMP threshold check (§7).
@@ -476,44 +468,54 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		// ── autoretain (§5): shared turn counter, per-task cadence ──────────
 		autoretainTurnCounter++;
 		const due = dueTasks(autoretainTasks, autoretainTurnCounter);
-		// 纪要窗口从 raw_log 取（§9 compaction 交互）：上次已消费 raw_id 之后
-		// 的新增行（游标存 kv，跨触发不重叠；窗口上限 AUTORETAIN_WINDOW_ROWS）。
-		const lastProcessed = Number(store.getKv("autoretain_last_raw_id") ?? "0") || 0;
-		const maxRowRow = store.db.prepare("SELECT MAX(raw_id) AS m FROM raw_log").get() as
-			| { m: number | null }
-			| undefined;
-		const maxRow = maxRowRow?.m ?? null;
+		const sessionId = host?.getSessionInfo().sessionId;
 		for (const task of due) {
-			if (maxRow === null || maxRow <= lastProcessed) continue;
-			const window = store.listRaw(lastProcessed + 1, Math.min(maxRow, lastProcessed + AUTORETAIN_WINDOW_ROWS));
+			if (!sessionId) continue;
+			// Per-session, per-task window (§18 fix): consume exactly the rows
+			// of THIS session's active branch this task has not processed yet.
+			// Off-branch rows stay unprocessed (not invisible) — switching
+			// back re-enables them; other tasks never eat this window.
+			const window = store.listUnprocessedActiveRaw(sessionId, task.name, AUTORETAIN_WINDOW_ROWS);
 			if (window.length === 0) continue;
 			if (!host?.completeSideRequest) continue; // no side-request primitive → silently skip
-			const outcome = await runAutoretainTask(store, task, window, {
-				completeSideRequest: host.completeSideRequest,
-				getSessionInfo: () => host?.getSessionInfo() ?? {},
-			});
+			const outcome = await runAutoretainTask(
+				store,
+				task,
+				window,
+				{
+					completeSideRequest: (prompt, sideOpts) =>
+						(host as MemoryModuleHost).completeSideRequest(prompt, sideOpts),
+					getSessionInfo: () => host?.getSessionInfo() ?? ({} as MemoryModuleSessionInfo),
+				},
+				autoretainAbort.signal,
+			);
 			if (outcome.ok) {
-				// Only advance the cursor on success — failures retry the same
+				// Consumed marker only on success — failures retry the same
 				// window next round (docs §5 失败静默跳过).
-				const last = window[window.length - 1];
-				store.setKv("autoretain_last_raw_id", String(last ? last.raw_id : lastProcessed));
+				store.markAutoretainProcessed(
+					sessionId,
+					task.name,
+					window.map((w) => w.entry_id),
+				);
 			}
 			// §12 audit: failures are recorded too — silent skips must stay
 			// discoverable (cheap-model JSON contract violations, etc.).
 			store.logAudit("autoretain_task", {
+				task: task.name,
+				turn: host?.getSessionInfo().turn,
 				details: outcome.ok ? `${task.name} ok` : `${task.name} failed: ${outcome.error ?? "unknown"}`,
 			});
 		}
 
 		// ── TEMP dynamic zone (§7): threshold check after write paths ───────
-		const isVisible = (node: { source: string; node_id: string }): boolean =>
+		const isVisibleLocal = (node: { source: string; node_id: string }): boolean =>
 			node.source !== "auto" || !hiddenAutoNodeIds.has(node.node_id);
-		if (countActiveTempNodes(store, isVisible) < tempThreshold) {
+		if (countActiveTempNodes(store, isVisibleLocal) < tempThreshold) {
 			tempNotified = false; // cleaned below threshold — re-arm
 			return;
 		}
 		if (tempNotified) return;
-		const notify = checkTempThreshold(store, { threshold: tempThreshold, isVisible });
+		const notify = checkTempThreshold(store, { threshold: tempThreshold, isVisible: isVisibleLocal });
 		if (notify) {
 			tempNotified = true;
 			host?.sendCustomMessage(notify);
@@ -523,9 +525,9 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	return {
 		registerSession(newHost: MemoryModuleHost): void {
 			host = newHost;
-			// 1. Tools (12) — provenance (model id / leaf id) is read lazily at
-			// execute time via host.getSessionInfo(), so signatures stay live
-			// across turns without re-registering.
+			// 1. Tools (12) — provenance (model id / leaf id / session / turn)
+			// is read lazily at execute time via host.getSessionInfo(), so
+			// signatures stay live across turns without re-registering.
 			const toolCtx = {
 				get modelId() {
 					return host?.getSessionInfo().modelId;
@@ -533,6 +535,20 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 				get leafId() {
 					return host?.getSessionInfo().leafId ?? null;
 				},
+				get sessionId() {
+					return host?.getSessionInfo().sessionId;
+				},
+				get turn() {
+					return host?.getSessionInfo().turn;
+				},
+				// Live visibility predicate — hidden auto nodes never leak into
+				// recall/retrieve/views/slots (§5.7).
+				get isVisible() {
+					return isVisible;
+				},
+				// retrieve(semantic) shares the injection client — one cache, one
+				// failure latch, one model.
+				embeddings,
 			};
 			for (const tool of createMemoryTools(store, toolCtx)) {
 				newHost.registerTool({
@@ -546,8 +562,8 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 			}
 			// 2. Slots (3). Engine-side static registration (registerSlot(def,
 			// true)) reuses these definitions; via the host they register as
-			// custom slots.
-			for (const slot of createMemorySlots(store)) {
+			// custom slots. Visibility filtering rides the live predicate.
+			for (const slot of createMemorySlots(store, { isVisible })) {
 				newHost.registerSlot(slot);
 			}
 			// 3. Custom type policy: LLM-visible, TUI-hidden, compaction-excluded.
@@ -572,13 +588,25 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		async onLeafChange(): Promise<void> {
 			try {
 				const snapshot = host?.getBranchSnapshot();
-				// ① anchor visibility recompute (§8 ①)
+				// ① anchor visibility recompute (§8 ①) — session-aware rules
 				hiddenAutoNodeIds = recomputeAnchorVisibility(snapshot ? snapshot.entryIds : []);
-				// ② raw_log reconciliation (§8 ②): physical delete of rows whose
-				// entry_id left the active path. buildContextEntries()-derived ids
-				// are the single source of truth (§16 risk table). No snapshot
-				// capability → skip reconciliation (empty path would wipe the log).
-				if (snapshot) store.reconcileRawLog(snapshot.entryIds);
+				// A branch switch makes in-flight recall stale — cancel it so
+				// superseded results never inject (§4.8).
+				recallAbort?.abort();
+				// ② raw mirror reconciliation (§8 ②, v5.5): upsert the FULL
+				// active branch then mark THIS session's orphaned rows inactive.
+				// Other sessions' rows are never read or written. This also
+				// backfills resumed / merely-browsed branches immediately —
+				// no waiting for the next turn.
+				const sessionId = host?.getSessionInfo().sessionId;
+				const active = host?.getActiveBranchMessages();
+				if (sessionId && active) {
+					const worldTs = store.getWorldTime();
+					store.syncRawBranch(
+						sessionId,
+						active.map((m) => toRawEntry(m, sessionId, worldTs)),
+					);
+				}
 			} catch {
 				// Never break the engine path-change flow; zero-cost when no store.
 			}
@@ -588,36 +616,34 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 			try {
 				const messages = host?.getTurnMessages() ?? [];
 				const worldTs = store.getWorldTime();
-				// §15.3: custom messages are captured only per the three-way
-				// switch; user/assistant messages always append (§4 mirror).
-				const rows = messages
-					.filter((m) => !m.customType)
-					.map((m) => ({
-						role: m.role,
-						text: m.text,
-						entry_id: m.entryId,
-						wall_ts: new Date().toISOString(),
-						world_ts: worldTs,
-					}));
-				const captured = messages
-					.filter(
-						(m) => m.customType && shouldCaptureCustomType(m.customType, m.display ?? false, rawLogCustomTypes),
-					)
-					.map((m) => ({
-						// Captured custom messages land as their own rows (role = customType).
-						role: m.customType as string,
-						text: m.text,
-						entry_id: m.entryId,
-						wall_ts: new Date().toISOString(),
-						world_ts: worldTs,
-					}));
-				if (rows.length + captured.length > 0) store.appendRaw([...rows, ...captured]);
+				const sessionId = host?.getSessionInfo().sessionId;
+				// §15.3 + §22 fix: ONE pass in the original message order —
+				// user/assistant and captured custom messages interleave exactly
+				// as they happened. Each row uses its OWN entry timestamp as the
+				// wall clock (§12 fix); new rows get the current world clock.
+				const rows: RawEntry[] = [];
+				if (sessionId) {
+					for (const m of messages) {
+						if (m.customType && !shouldCaptureCustomType(m.customType, m.display ?? false, rawLogCustomTypes)) {
+							continue;
+						}
+						rows.push(toRawEntry(m, sessionId, worldTs));
+					}
+				}
+				if (rows.length > 0) store.appendRaw(rows);
 				// Phase 3: autoretain firing (§5) + TEMP threshold check (§7),
 				// after the raw_log write so the window includes this turn.
-				await handleAutoretainAndTemp();
+				if (!disposed) await handleAutoretainAndTemp();
 			} catch {
 				// raw_log failures never fail the turn.
 			}
+		},
+
+		dispose(): void {
+			disposed = true;
+			recallAbort?.abort();
+			recallAbort = undefined;
+			autoretainAbort.abort();
 		},
 	};
 }

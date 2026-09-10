@@ -3,10 +3,20 @@
  *
  * Twelve entries covering the 9 core cognitive verbs plus retrace / set_time /
  * awaken. Each execute() runs against a local MemoryStore; provenance (§6) is
- * auto-filled from the session context — never hand-typed by the model.
+ * auto-filled from the session context — never hand-typed by the model. Since
+ * v5.5:
+ * - revise gains action:"history"|"restore" (revision read path + deleted-uri
+ *   recovery), memorize/revise promote stubs in place;
+ * - relocate is a thin wrapper over the atomic subtree move relocateMany();
+ * - consolidate(group) really re-parents sources under the theme;
+ * - associate has two mutually exclusive modes: alias (new_uri) and edge
+ *   (related_uri + kind); explicit retrieve diffuses one hop over edges;
+ * - retrace walks raw windows by uri anchor and full-text query;
+ * - recall/retrieve stamp audit records and access times; all read paths
+ *   filter hidden auto nodes via the live visibility predicate.
  */
 import { type Static, type TSchema, Type } from "typebox";
-import type { MemoryNode, MemoryStore } from "./store.ts";
+import type { EmbeddingClient } from "./embeddings.ts";
 import {
 	renderDiagnosticView,
 	renderForgottenView,
@@ -16,6 +26,8 @@ import {
 	renderTimelineView,
 	renderWakeupView,
 } from "./memory-views.ts";
+import { search, toEpochDays } from "./recall.ts";
+import type { MemoryNode, MemoryStore, VisibilityPredicate } from "./store.ts";
 
 /** Minimal structural shape of coding-agent ToolDefinition execute (no pi dep). */
 export interface MemoryToolResult {
@@ -36,6 +48,14 @@ export interface MemoryToolContext {
 	modelId?: string;
 	/** Session leaf entry id — stamped into nodes.anchor_entry_id on every write. */
 	leafId?: string | null;
+	/** Session id — stamped into nodes.anchor_session_id / audit turn scoping. */
+	sessionId?: string;
+	/** Current turn counter — stamped into audit rows. */
+	turn?: number;
+	/** Live visibility predicate — hidden auto nodes never leak into read paths. */
+	isVisible?: VisibilityPredicate;
+	/** Shared embedding client — enables retrieve(semantic) (docs §9). */
+	embeddings?: EmbeddingClient;
 }
 
 const AWAKEN_URIS_KEY = "awaken_uris";
@@ -100,6 +120,24 @@ function stampWorldTs(store: MemoryStore, time: string | undefined): string | nu
 	return store.getWorldTime();
 }
 
+/** Audit a character-initiated recall/retrieve (§12 decision 23, §6.1). */
+function auditRecall(
+	store: MemoryStore,
+	ctx: MemoryToolContext,
+	object: string,
+	nodeIds: string[],
+	extra: Record<string, unknown>,
+): void {
+	store.logAudit("recall", {
+		node_id: nodeIds[0],
+		object,
+		model: ctx.modelId,
+		turn: ctx.turn,
+		anchor: ctx.leafId ?? undefined,
+		details: JSON.stringify({ node_ids: nodeIds, ...extra }),
+	});
+}
+
 // ── recall ─────────────────────────────────────────────────────────────────
 
 const recallParams = Type.Object({
@@ -121,30 +159,46 @@ function parseViewCount(uri: string, partIndex: number, fallback: number): numbe
 	return Number.isInteger(raw) && raw >= 1 ? raw : fallback;
 }
 
-async function executeRecall(store: MemoryStore, params: Static<typeof recallParams>): Promise<MemoryToolResult> {
+async function executeRecall(
+	store: MemoryStore,
+	params: Static<typeof recallParams>,
+	ctx: MemoryToolContext,
+): Promise<MemoryToolResult> {
 	const { uri, depth, max_nodes: maxNodes } = params;
+	// System views never touch access times — browsing is not "想起" (§13/§5.6).
 	if (uri === "MEM://recent" || uri.startsWith("MEM://recent/")) {
 		const n = parseViewCount(uri, 2, 10);
-		const rendered = renderRecentView(store, n);
-		const nodes = store.listRecentNodes(n);
+		const rendered = renderRecentView(store, n, ctx.isVisible);
+		const nodes = store.listRecentNodes(n).filter((x) => (ctx.isVisible ? ctx.isVisible(x) : true));
+		auditRecall(
+			store,
+			ctx,
+			uri,
+			nodes.map((x) => x.node_id),
+			{ view: "recent" },
+		);
 		return withDetails(rendered, { node_ids: nodes.map((x) => x.node_id) });
 	}
 	if (uri === "MEM://index" || uri.startsWith("MEM://index/")) {
 		const rest = uri.slice("MEM://index".length); // "" or "/<domain>"
 		const domain = rest.startsWith("/") && rest.length > 1 ? rest.slice(1) : undefined;
-		return text(renderIndexView(store, domain));
+		auditRecall(store, ctx, uri, [], { view: "index" });
+		return text(renderIndexView(store, domain, ctx.isVisible));
 	}
 	if (uri === "MEM://glossary") {
+		auditRecall(store, ctx, uri, [], { view: "glossary" });
 		return text(renderGlossaryView(store));
 	}
 	if (uri === "MEM://wakeup" || uri.startsWith("MEM://wakeup/")) {
 		const n = parseViewCount(uri, 2, 5);
-		return text(renderWakeupView(store, getAwakenUris(store), n));
+		auditRecall(store, ctx, uri, [], { view: "wakeup" });
+		return text(renderWakeupView(store, getAwakenUris(store), n, ctx.isVisible));
 	}
 	if (uri === "MEM://timeline" || uri.startsWith("MEM://timeline/")) {
 		// Data source is raw_log (message-level, §15.4): the domain segment is
 		// accepted for uri compatibility but raw_log is domain-agnostic.
 		const n = parseViewCount(uri, 3, 20);
+		auditRecall(store, ctx, uri, [], { view: "timeline" });
 		return text(renderTimelineView(store, n));
 	}
 	if (uri === "MEM://forgotten" || uri.startsWith("MEM://forgotten/")) {
@@ -154,17 +208,31 @@ async function executeRecall(store: MemoryStore, params: Static<typeof recallPar
 		const second = parts[2];
 		const domain = second && second !== "" && !/^\d+$/.test(second) ? second : undefined;
 		const n = parseViewCount(uri, /^\d+$/.test(second ?? "") ? 2 : 3, 5);
-		return text(renderForgottenView(store, domain, n));
+		auditRecall(store, ctx, uri, [], { view: "forgotten" });
+		return text(renderForgottenView(store, domain, n, ctx.isVisible));
 	}
 	if (uri === "MEM://diagnostic" || uri.startsWith("MEM://diagnostic/")) {
 		const domain = uri.slice("MEM://diagnostic/".length) || undefined;
+		auditRecall(store, ctx, uri, [], { view: "diagnostic" });
 		return text(renderDiagnosticView(store, domain || undefined));
 	}
 
 	const node = store.resolveUri(uri);
 	if (!node) return text(`未找到记忆：${uri}`);
 	if (node.is_stub) return text(`（占位节点，无正文）${uri}`);
-	return withDetails(subtree(store, node, depth ?? 0, maxNodes ?? 200).join("\n"), { node_id: node.node_id });
+	const lines = subtree(store, node, depth ?? 0, maxNodes ?? 200);
+	const nodeIds = collectSubtreeIds(store, node);
+	// Explicitly recalled: the character is "thinking of" this subtree — the
+	// access time is the sleep metric for forgotten/diagnostic (§13).
+	store.markAccessed(nodeIds);
+	auditRecall(store, ctx, uri, nodeIds, { depth: depth ?? 0 });
+	return withDetails(lines.join("\n"), { node_id: node.node_id });
+}
+
+function collectSubtreeIds(store: MemoryStore, root: MemoryNode): string[] {
+	const ids = [root.node_id];
+	for (const child of store.children(root.node_id)) ids.push(...collectSubtreeIds(store, child));
+	return ids;
 }
 
 // ── retrieve ───────────────────────────────────────────────────────────────
@@ -173,16 +241,75 @@ const retrieveParams = Type.Object({
 	query: Type.String({ description: "搜索关键词" }),
 	domain: Type.Optional(Type.String({ description: "限定 domain（树根），如 core、history" })),
 	limit: Type.Optional(Type.Number({ description: "最多返回条数，默认 10" })),
-	semantic: Type.Optional(Type.Boolean({ description: "是否启用语义检索（未配置 embedding API 时自动退化词法）" })),
+	semantic: Type.Optional(
+		Type.Boolean({ description: "是否启用语义检索（默认启用；未配置 embedding API 时自动退化为词法）" }),
+	),
 });
 
-async function executeRetrieve(store: MemoryStore, params: Static<typeof retrieveParams>, _ctx: MemoryToolContext) {
+async function executeRetrieve(store: MemoryStore, params: Static<typeof retrieveParams>, ctx: MemoryToolContext) {
 	const limit = params.limit ?? 10;
-	const hits = store.recall(params.query, { domain: params.domain, limit });
-	if (hits.length === 0) return text("（无命中）");
-	return withDetails(hits.map((x) => snippet(x, 200)).join("\n"), {
-		node_ids: hits.map((x) => x.node_id),
-		semantic: params.semantic === true,
+	// semantic defaults to true: with a client configured this is the hybrid
+	// path (§9), without one `search()` returns keyword mode on its own.
+	const client = params.semantic === false ? undefined : ctx.embeddings;
+	const { items, mode } = await search(store, client, {
+		queries: [params.query],
+		domain: params.domain,
+		domainBlocklist: store.getDomainBlocklist(),
+		isVisible: ctx.isVisible,
+		topK: limit,
+		// Explicit search: rank everything, no injection-grade score floor —
+		// but keyword mode STILL demands a real FTS/keyword hit (pruned by the
+		// FTS candidate set + `requireKeywordHit` default), so a glossary-only
+		// proper noun still recalls while pure importance/recency noise never
+		// surfaces (§5.9).
+		minScore: 0,
+		keywordMinScore: 0,
+		nowDays: toEpochDays(store.getWorldTime() ?? new Date().toISOString()) ?? 0,
+	});
+
+	// One-hop edge diffusion (§5.5): related nodes append after the direct
+	// hits, in hit order. Diffusion never consumes the direct-hit limit but
+	// the total is still capped at `limit`.
+	const direct = items.slice(0, limit);
+	const related: Array<{ node_id: string; via_edge: true; kind: string | null; from_uri: string }> = [];
+	const seen = new Set(direct.map((i) => i.node_id));
+	for (const item of direct) {
+		if (related.length + direct.length >= limit) break;
+		for (const edge of store.listRelated(item.node_id)) {
+			if (related.length + direct.length >= limit) break;
+			const neighbor =
+				edge.direction === "outgoing" ? store.resolveUri(edge.target_uri) : store.getNode(edge.node_id);
+			if (!neighbor || neighbor.is_stub || seen.has(neighbor.node_id)) continue;
+			if (ctx.isVisible && !ctx.isVisible(neighbor)) continue;
+			if (store.getDomainBlocklist().includes(neighbor.domain)) continue;
+			seen.add(neighbor.node_id);
+			related.push({ node_id: neighbor.node_id, via_edge: true, kind: edge.kind, from_uri: item.uri });
+		}
+	}
+
+	// Character explicitly retrieved — access tracking (§13).
+	const hitIds = [...direct.map((i) => i.node_id), ...related.map((r) => r.node_id)];
+	if (hitIds.length > 0) store.markAccessed(hitIds);
+	auditRecall(store, ctx, params.query, hitIds, {
+		mode,
+		scores: Object.fromEntries(direct.map((i) => [i.node_id, Number(i.score.toFixed(4))])),
+		related: related.map((r) => ({ node_id: r.node_id, from_uri: r.from_uri, kind: r.kind })),
+	});
+
+	if (hitIds.length === 0) return text("（无命中）");
+	const lines: string[] = [];
+	for (const item of direct) {
+		const node = store.getNode(item.node_id);
+		lines.push(node ? snippet(node, 200) : `${item.uri}: ${item.summary}`);
+	}
+	for (const r of related) {
+		const node = store.getNode(r.node_id);
+		if (node) lines.push(`  ↳ ${snippet(node, 160)}（关联：${r.from_uri}${r.kind ? `, ${r.kind}` : ""}）`);
+	}
+	return withDetails(lines.join("\n"), {
+		node_ids: hitIds,
+		mode,
+		semantic: mode === "vector",
 	});
 }
 
@@ -192,13 +319,16 @@ const memorizeParams = Type.Object({
 	uri: Type.String({ description: "记忆 URI，如 core://identity 或 history://scenes/xxx" }),
 	content: Type.String({ description: "记忆的具体内容" }),
 	parent_uri: Type.Optional(Type.String({ description: "父节点 URI（可选）；父链不存在时自动补占位父节点" })),
-	importance: Type.Optional(Type.Number({ description: "重要性 0=最重要，5=普通，10=边角料" })),
+	importance: Type.Optional(Type.Number({ description: "重要性 10=最重要，5=普通，0=边角料（数值越大越重要）" })),
 	when: Type.Optional(Type.String({ description: "想起条件（外部信号/情境，如「当对方…」）" })),
 	time: Type.Optional(Type.String({ description: "世界时间 YYYY-MM-DD 或相对位移如 -1d；缺省用当前世界时间" })),
 });
 
 async function executeMemorize(store: MemoryStore, params: Static<typeof memorizeParams>, ctx: MemoryToolContext) {
-	if (store.resolveUri(params.uri)) {
+	const existing = store.resolveUri(params.uri);
+	// Stub targets are demand-promoted in place (memorize fills the ancestor's
+	// real content); only a live non-stub node is "already exists" (§5 fix).
+	if (existing && !existing.is_stub) {
 		return text(`URI 已存在：${params.uri}（改写请用 revise）`);
 	}
 	const node = store.put({
@@ -210,6 +340,7 @@ async function executeMemorize(store: MemoryStore, params: Static<typeof memoriz
 		source: "manual",
 		model: ctx.modelId ?? null,
 		anchor_entry_id: ctx.leafId ?? null,
+		anchor_session_id: ctx.sessionId ?? null,
 		world_ts: stampWorldTs(store, params.time),
 	});
 	return withDetails(`已记下：${nodeRow(node)}`, { node_id: node.node_id });
@@ -230,7 +361,16 @@ const reviseModSchema = Type.Object({
 });
 
 const reviseParams = Type.Object({
+	action: Type.Optional(
+		Type.Unsafe<"edit" | "history" | "restore">({
+			type: "string",
+			enum: ["edit", "history", "restore"],
+			description:
+				"edit（默认）= 修改内容/元数据；history = 查看修订史（不传 uri 时列出可恢复的已删记忆）；restore = 从修订史恢复指定版本或已删记忆",
+		}),
+	),
 	uri: Type.Optional(Type.String({ description: "单条模式：要修改的记忆 URI" })),
+	version: Type.Optional(Type.Number({ description: "restore 时指定版本（活节点必传；已删节点缺省恢复最新版）" })),
 	old_text: Type.Optional(Type.String({ description: "[替换] 要改掉的原文" })),
 	new_text: Type.Optional(Type.String({ description: "[替换] 改成什么" })),
 	append: Type.Optional(Type.String({ description: "[追加] 追加到末尾的文字" })),
@@ -277,17 +417,99 @@ function applyReviseMod(
 		content = lines.join("\n");
 	}
 	const worldTs = mod.time === "" ? null : (parseWorldTime(store, mod.time) ?? node.world_ts);
+	// Stub with a body edit is promoted in place by _updateNode; editor_source
+	// completes the custody chain (§6, §25 fix).
 	store.updateNode(node.node_id, {
 		...(mod.old_text !== undefined || mod.append !== undefined || mod.line !== undefined ? { content } : {}),
 		importance: mod.importance,
 		disclosure: mod.when,
 		world_ts: mod.time !== undefined ? worldTs : undefined,
+		editor_source:
+			mod.old_text !== undefined || mod.append !== undefined || mod.line !== undefined ? "manual" : undefined,
 		editor_model: editorModel,
 	});
 	return `已修订：${mod.uri}`;
 }
 
 async function executeRevise(store: MemoryStore, params: Static<typeof reviseParams>, ctx: MemoryToolContext) {
+	const action = params.action ?? "edit";
+	if (action !== "edit") {
+		// history / restore: no batch, no edit fields.
+		if (params.batch) return text("history/restore 不支持 batch");
+		const editFields = [
+			params.old_text,
+			params.new_text,
+			params.append,
+			params.line,
+			params.line_content,
+			params.importance,
+			params.when,
+			params.time,
+		];
+		if (editFields.some((f) => f !== undefined)) return text("history/restore 不接受编辑字段");
+		if (action === "history") {
+			if (!params.uri) {
+				// Deleted-uri recovery list (§13 read path for #6).
+				const deleted = store.listDeletedUris();
+				if (deleted.length === 0) return text("（没有可恢复的已删记忆）");
+				return withDetails(
+					[
+						"可恢复的已删记忆：",
+						...deleted.map((d) => `- ${d.uri}（${d.versions} 个版本，最后 ${d.last_seen.slice(0, 10)}）`),
+						"用 revise(action='restore', uri='<uri>') 恢复。",
+					].join("\n"),
+					{ deleted: deleted.map((d) => d.uri) },
+				);
+			}
+			const alive = store.resolveUri(params.uri);
+			if (alive) {
+				const revs = store.listRevisions(alive.node_id);
+				if (revs.length === 0) return text(`该记忆尚无修订历史：${params.uri}`);
+				// archiveRevision stores the pre-edit body, so every archived row
+				// is an older version; the live node content is the current one.
+				const lines = revs.map((r) => `v${r.version} @ ${r.created_at.slice(0, 16)}\n  ${r.content}`);
+				lines.push(`current @ ${alive.updated_ts.slice(0, 16)}\n  ${alive.content}`);
+				return withDetails(lines.join("\n---\n"), {
+					node_id: alive.node_id,
+					current: `${alive.uri}\n  ${alive.content}`,
+				});
+			}
+			const chain = store.listRevisionsByUri(params.uri);
+			if (chain.length === 0) return text(`未找到修订史：${params.uri}`);
+			return withDetails(
+				chain
+					.map(
+						(r) =>
+							`v${r.version}${r.alive ? "（已还原）" : "（已删除）"} @ ${r.created_at.slice(0, 16)}\n  ${r.content}`,
+					)
+					.join("\n---\n"),
+				{ node_id: chain[0]?.node_id },
+			);
+		}
+		// restore
+		if (!params.uri) return text("restore 需要 uri");
+		const alive = store.resolveUri(params.uri);
+		if (alive) {
+			if (params.version === undefined) return text("活节点 restore 必须指定 version");
+			if (!Number.isInteger(params.version) || params.version < 1) return text(`无效版本：${params.version}`);
+			try {
+				store.restoreRevision(alive.node_id, params.version);
+			} catch (error) {
+				return text(error instanceof Error ? error.message : String(error));
+			}
+			return withDetails(`已恢复 v${params.version}：${alive.uri}`, {
+				node_id: alive.node_id,
+				version: params.version,
+			});
+		}
+		try {
+			const node = store.restoreDeleted(params.uri, params.version);
+			return withDetails(`已从修订史恢复：${node.uri}`, { node_id: node.node_id, version: params.version ?? null });
+		} catch (error) {
+			return text(error instanceof Error ? error.message : String(error));
+		}
+	}
+	if (params.action !== undefined && params.action !== "edit") return text("未知 action");
 	const mods = params.batch ?? [
 		{
 			uri: params.uri ?? "",
@@ -345,10 +567,10 @@ async function executeForget(store: MemoryStore, params: Static<typeof forgetPar
 		if (!node) continue;
 		deleted += store.deleteCascade(node.node_id);
 	}
-	return withDetails(`已删除 ${deleted} 条记忆${missing.length ? `（未找到：${missing.join("、")}）` : ""}`, {
-		deleted,
-		missing,
-	});
+	return withDetails(
+		`已删除 ${deleted} 条记忆${missing.length ? `（未找到：${missing.join("、")}）` : ""}；修订史已保留，可用 revise(action="history") 查看并用 revise(action="restore") 找回。`,
+		{ deleted, missing },
+	);
 }
 
 // ── relocate ───────────────────────────────────────────────────────────────
@@ -381,27 +603,23 @@ async function executeRelocate(store: MemoryStore, params: Static<typeof relocat
 			{ previews },
 		);
 	}
-	const results: string[] = [];
-	for (const p of previews) {
-		if (!p.exists) {
-			results.push(`${p.from}：不存在`);
-			continue;
-		}
-		if (p.conflict) {
-			results.push(`${p.to}：目标已占用`);
-			continue;
-		}
-		store.rename(p.from, p.to);
-		results.push(`已移动：${p.from} → ${p.to}`);
+	// One atomic call: any conflict aborts the whole batch with zero changes
+	// (§7/§8 — subtree moves, reparenting, alias preservation).
+	try {
+		store.relocateMany(moves);
+	} catch (error) {
+		return text(error instanceof Error ? error.message : String(error));
 	}
-	return withDetails(results.join("\n"), { moved: results.filter((r) => r.startsWith("已移动")).length });
+	return withDetails(moves.map((m) => `已移动：${m.from} → ${m.to}`).join("\n"), { moved: moves.length });
 }
 
 // ── associate ──────────────────────────────────────────────────────────────
 
 const associateParams = Type.Object({
 	target_uri: Type.String({ description: "已有的目标记忆 URI" }),
-	new_uri: Type.String({ description: "新入口放哪（别名路径）" }),
+	new_uri: Type.Optional(Type.String({ description: "别名模式：新入口放哪（与 related_uri 互斥）" })),
+	related_uri: Type.Optional(Type.String({ description: "边模式：建立联想关系的另一端 URI（与 new_uri 互斥）" })),
+	kind: Type.Optional(Type.String({ description: "边模式：联想类型，如 前后续/因果/同场景" })),
 	importance: Type.Optional(Type.Number({ description: "从这个入口想起的重要性" })),
 	when: Type.Optional(Type.String({ description: "从这入口什么时候会想起来" })),
 });
@@ -409,8 +627,24 @@ const associateParams = Type.Object({
 async function executeAssociate(store: MemoryStore, params: Static<typeof associateParams>, _ctx: MemoryToolContext) {
 	const node = store.resolveUri(params.target_uri);
 	if (!node) return text(`未找到：${params.target_uri}`);
-	if (store.resolveUri(params.new_uri)) return text(`新入口已存在：${params.new_uri}`);
-	store.addAlias(params.new_uri, node.node_id);
+	const hasAlias = params.new_uri !== undefined;
+	const hasEdge = params.related_uri !== undefined;
+	if (hasAlias === hasEdge) {
+		return text("associate 需要且仅需要 new_uri（别名模式）或 related_uri（边模式）之一");
+	}
+	if (hasEdge) {
+		const related = store.resolveUri(params.related_uri as string);
+		if (!related) return text(`未找到：${params.related_uri}`);
+		if (related.node_id === node.node_id) return text("不能自关联");
+		// Duplicate edges are idempotent — kind overwritten.
+		store.addEdge(node.node_id, related.uri, params.kind);
+		return withDetails(`已建立联想：${node.uri} --${params.kind ?? ""}-> ${related.uri}`, {
+			node_id: node.node_id,
+			related_node_id: related.node_id,
+		});
+	}
+	if (store.resolveUri(params.new_uri as string)) return text(`新入口已存在：${params.new_uri}`);
+	store.addAlias(params.new_uri as string, node.node_id);
 	return withDetails(`已关联：${params.new_uri} → ${params.target_uri}`, { node_id: node.node_id });
 }
 
@@ -473,7 +707,62 @@ async function executeConsolidate(
 		return withDetails(`已合并 ${sources.length} 条 → ${merged.uri}`, { node_id: merged.node_id });
 	}
 
-	// group / link / keep: create the theme node, then arrange sources.
+	if (resolution === "group") {
+		// Preflight BEFORE creating the theme or moving anything (§8):
+		// duplicate leaf names, occupied targets, target inside a source
+		// subtree, ancestor-overlapping sources — all abort with zero changes.
+		const leafName = (uri: string): string => {
+			const parts = uri.split("://");
+			const segs = (parts[parts.length - 1] ?? "").split("/");
+			return segs[segs.length - 1] ?? uri;
+		};
+		const names = new Set<string>();
+		for (const s of sources) {
+			const name = leafName(s.uri);
+			if (names.has(name)) return text(`group 冲突：源末段重复「${name}」（${s.uri}）`);
+			names.add(name);
+		}
+		const planned = sources.map((s) => ({
+			...s,
+			to: `${params.target_uri.replace(/\/$/, "")}/${leafName(s.uri)}`,
+		}));
+		for (const p of planned) {
+			const occupied = store.resolveUri(p.to);
+			if (occupied) return text(`group 冲突：目标已占用 ${p.to}`);
+			const src = p.node as MemoryNode;
+			if (p.to.startsWith(`${src.uri}/`) || p.to === src.uri) {
+				return text(`group 冲突：目标 ${p.to} 位于源 ${src.uri} 子树内`);
+			}
+		}
+		for (let i = 0; i < sources.length; i++) {
+			for (let j = i + 1; j < sources.length; j++) {
+				const a = sources[i].node as MemoryNode;
+				const b = sources[j].node as MemoryNode;
+				if (a.uri === b.uri) return text(`group 冲突：源重复 ${a.uri}`);
+				if (b.uri.startsWith(`${a.uri}/`) || a.uri.startsWith(`${b.uri}/`)) {
+					return text(`group 冲突：源互为祖先（${a.uri} / ${b.uri}）`);
+				}
+			}
+		}
+		// Theme creation AND the subtree move share one transaction: a conflict
+		// the preflight missed (relocate re-checks occupancy/self-nesting
+		// atomically) rolls the theme back too, so no orphan theme is left.
+		const theme = store.consolidateGroup(
+			{
+				uri: params.target_uri,
+				content: params.content,
+				importance: params.importance ?? 5,
+				disclosure: params.when ?? null,
+				source: "manual",
+				model: ctx.modelId ?? null,
+				anchor_entry_id: ctx.leafId ?? null,
+			},
+			planned.map((p) => ({ from: p.uri, to: p.to })),
+		);
+		return withDetails(`已整理 ${sources.length} 条 → ${theme.uri}（group）`, { node_id: theme.node_id });
+	}
+
+	// link / keep: create the theme node, then arrange sources.
 	const theme = store.put({
 		uri: params.target_uri,
 		content: params.content,
@@ -485,10 +774,7 @@ async function executeConsolidate(
 	});
 	for (const s of sources) {
 		const src = s.node as MemoryNode;
-		if (resolution === "group") {
-			const childUri = `${params.target_uri.replace(/\/$/, "")}/${src.uri.split("/").pop()}`;
-			if (!store.resolveUri(childUri)) store.rename(src.uri, childUri);
-		} else if (resolution === "link") {
+		if (resolution === "link") {
 			store.addAlias(src.uri, theme.node_id);
 		}
 		// keep: leave sources untouched.
@@ -502,6 +788,9 @@ const retraceParams = Type.Object({
 	raw_id: Type.Optional(Type.Number({ description: "单条模式：原文日志 ID" })),
 	first_raw_id: Type.Optional(Type.Number({ description: "区间模式：起始 raw_id（含）" })),
 	last_raw_id: Type.Optional(Type.Number({ description: "区间模式：结束 raw_id（含）" })),
+	uri: Type.Optional(Type.String({ description: "纪要模式：带原文区间引用的记忆 URI" })),
+	query: Type.Optional(Type.String({ description: "全文模式：在活动原文中按关键词搜索" })),
+	limit: Type.Optional(Type.Number({ description: "全文模式：最多返回条数，默认 20" })),
 });
 
 async function executeRetrace(store: MemoryStore, params: Static<typeof retraceParams>, _ctx: MemoryToolContext) {
@@ -516,7 +805,35 @@ async function executeRetrace(store: MemoryStore, params: Static<typeof retraceP
 		if (rows.length === 0) return text("区间内无原文");
 		return withDetails(rows.map((r) => `[${r.raw_id}] ${r.role}: ${r.text}`).join("\n"), { count: rows.length });
 	}
-	return text("需要 raw_id 或 first_raw_id + last_raw_id");
+	if (params.uri !== undefined) {
+		const node = store.resolveUri(params.uri);
+		if (!node) return text(`未找到：${params.uri}`);
+		if (node.first_raw_id === null || node.last_raw_id === null) {
+			return text(`该记忆没有原文区间（${params.uri}）`);
+		}
+		// Walk the ORIGINAL window by session scope — inactive rows remain
+		// audit-trail readable (§3.2). The node's stored session filters out
+		// other sessions' interleaved rows.
+		const rows = store.listRaw(node.first_raw_id, node.last_raw_id, {
+			sessionId: node.anchor_session_id ?? undefined,
+		});
+		if (rows.length === 0) return text("区间内无原文");
+		return withDetails(rows.map((r) => `[${r.raw_id}] ${r.role}: ${r.text}`).join("\n"), {
+			count: rows.length,
+			first_raw_id: node.first_raw_id,
+			last_raw_id: node.last_raw_id,
+		});
+	}
+	if (params.query !== undefined) {
+		// Active rows only — full-text search over the current transcript.
+		const rows = store.searchRawFts(params.query, params.limit ?? 20);
+		if (rows.length === 0) return text("（无命中原文）");
+		return withDetails(rows.map((r) => `[${r.raw_id}] ${r.role}: ${r.text}`).join("\n"), {
+			count: rows.length,
+			raw_ids: rows.map((r) => r.raw_id),
+		});
+	}
+	return text("需要 raw_id、first_raw_id + last_raw_id、uri 或 query");
 }
 
 // ── set_time ───────────────────────────────────────────────────────────────
@@ -556,13 +873,15 @@ function setAwakenUris(store: MemoryStore, uris: string[]): void {
 	store.setKv(AWAKEN_URIS_KEY, JSON.stringify(uris));
 }
 
-async function executeAwaken(store: MemoryStore, params: Static<typeof awakenParams>, _ctx: MemoryToolContext) {
+async function executeAwaken(store: MemoryStore, params: Static<typeof awakenParams>, ctx: MemoryToolContext) {
 	const current = getAwakenUris(store);
 	switch (params.action) {
 		case "list": {
 			const lines = current.map((uri) => {
 				const node = store.resolveUri(uri);
-				return node ? snippet(node) : `${uri}（已失效，渲染时自动剔除）`;
+				if (!node) return `${uri}（已失效，渲染时自动剔除）`;
+				if (ctx.isVisible && !ctx.isVisible(node)) return `${uri}（已隐藏，渲染时自动剔除）`;
+				return snippet(node);
 			});
 			return withDetails(lines.join("\n") || "（醒来记忆清单为空）", { uris: current });
 		}
@@ -601,15 +920,15 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "recall",
 			label: "回想记忆",
 			description:
-				"回想与审视一段记忆：URI 精确寻址 + 子树展开（depth/max_nodes）。系统视图：MEM://recent/<N>、MEM://index/<domain>、MEM://timeline/<domain>/<N>、MEM://forgotten/<domain>/<N>、MEM://glossary、MEM://wakeup/<N>、MEM://diagnostic/<domain>。",
+				"回想与审视一段记忆：URI 精确寻址 + 子树展开（depth/max_nodes），精确回想会记录访问时间。系统视图：MEM://recent/<N>、MEM://index/<domain>、MEM://timeline/<domain>/<N>、MEM://forgotten/<domain>/<N>、MEM://glossary、MEM://wakeup/<N>、MEM://diagnostic/<domain>。",
 			parameters: recallParams,
-			run: (p) => executeRecall(store, p as Static<typeof recallParams>),
+			run: (p) => executeRecall(store, p as Static<typeof recallParams>, ctx),
 		},
 		{
 			name: "retrieve",
 			label: "检索记忆",
 			description:
-				"线索检索：想不起 URI 时用关键词搜索。默认词法（BM25/分词打分）；semantic=true 启用语义检索（未配置 embedding API 自动退化词法）。",
+				"线索检索：想不起 URI 时用关键词搜索（FTS 词法，支持触发词专名与联想边一跳扩散）；semantic=true 启用语义检索（未配置 embedding API 自动退化词法）。命中即记录访问时间。",
 			parameters: retrieveParams,
 			run: (p) => executeRetrieve(store, p as Static<typeof retrieveParams>, ctx),
 		},
@@ -617,7 +936,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "memorize",
 			label: "铭刻记忆",
 			description:
-				"记下一段新记忆。可选 parent_uri 挂到已有父节点（父链缺失自动补占位）；time 打世界时间（Events 类可传，Static 类缺省用当前世界时间）。来源/模型/回溯锚点由系统自动署名，无需手填。",
+				"记下一段新记忆。可选 parent_uri 挂到已有父节点（父链缺失自动补占位）；time 打世界时间（Events 类可传，Static 类缺省用当前世界时间）。若目标 URI 是占位节点（stub），会原地转正为真实记忆。来源/模型/回溯锚点由系统自动署名，无需手填。",
 			parameters: memorizeParams,
 			run: (p) => executeMemorize(store, p as Static<typeof memorizeParams>, ctx),
 		},
@@ -625,14 +944,15 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "revise",
 			label: "修订记忆",
 			description:
-				"修订记忆内容或元数据。三种内容编辑三选一：替换（old_text→new_text，old_text 须唯一）、追加（append）、行编辑（line+line_content）；也可只改 importance/when/time。批量传 batch 列表。旧内容自动入修订史。",
+				"修订记忆内容或元数据。action=history 查看修订史（不传 uri 时列出可恢复的已删记忆；已删记忆显示完整版本链）；action=restore 从修订史恢复（活节点需指定 version，已删节点缺省恢复最新版）；默认 edit：三种内容编辑三选一（替换 old_text→new_text 须唯一、追加 append、行编辑 line+line_content），也可只改 importance/when/time，批量传 batch。旧内容自动入修订史。",
 			parameters: reviseParams,
 			run: (p) => executeRevise(store, p as Static<typeof reviseParams>, ctx),
 		},
 		{
 			name: "forget",
 			label: "忘掉记忆",
-			description: "忘掉记忆：target 传单个 URI 或列表。子节点级联删除；dry_run=true 先预览会牵连哪些子节点。",
+			description:
+				"忘掉记忆：target 传单个 URI 或列表。子节点级联删除；dry_run=true 先预览会牵连哪些子节点。节点行真删但修订史全部保留——误删可用 revise(action='history') 查看清单、revise(action='restore') 找回。",
 			parameters: forgetParams,
 			run: (p) => executeForget(store, p as Static<typeof forgetParams>, ctx),
 		},
@@ -640,14 +960,15 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "relocate",
 			label: "迁移记忆",
 			description:
-				"移动/改名记忆（兼并 move 与 rename）：单条传 uri+to，批量传 batch 列表；可跨域。旧路径自动转为别名不破链；dry_run=true 预览冲突。",
+				"移动/改名记忆（兼并 move 与 rename）：单条传 uri+to，批量传 batch 列表；可跨域、整棵子树随根移动（子节点 URI 一起重写）。旧路径自动转为别名不破链；目标缺失的父链自动补占位；任一冲突整批零改动。dry_run=true 预览冲突。",
 			parameters: relocateParams,
 			run: (p) => executeRelocate(store, p as Static<typeof relocateParams>, ctx),
 		},
 		{
 			name: "associate",
 			label: "关联记忆",
-			description: "同一条记忆多开一个入口（别名映射），不是复制：两个入口共享内容，改一个另一个也变。",
+			description:
+				"建立联想通路，两种模式二选一：new_uri=给已有记忆多开一个入口（别名映射，不是复制，共享内容）；related_uri=在两段记忆之间画联想边（可选 kind 标注类型，如 前后续/因果/同场景），显式 retrieve 时沿边一跳扩散找到它。",
 			parameters: associateParams,
 			run: (p) => executeAssociate(store, p as Static<typeof associateParams>, ctx),
 		},
@@ -655,7 +976,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "trigger",
 			label: "埋设触发词",
 			description:
-				"给记忆增删触发词（glossary）。触发词提升分词命中；查看全部触发词用 recall(uri='MEM://glossary')。",
+				"给记忆增删触发词（glossary）。触发词作为专名进全文索引：正文没有该词的节点也能被触发词召回。查看全部触发词用 recall(uri='MEM://glossary')。",
 			parameters: triggerParams,
 			run: (p) => executeTrigger(store, p as Static<typeof triggerParams>, ctx),
 		},
@@ -663,7 +984,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "consolidate",
 			label: "整理记忆",
 			description:
-				"记忆综合与结构收敛（合并+整理合体）：resolution=merge 把多条提炼成一条并删源；group=建主题并把源记忆移到主题下；link=建主题别名入口保留原位；keep=只建主题不动源记忆。",
+				"记忆综合与结构收敛（合并+整理合体）：resolution=merge 把多条提炼成一条并删源；group=建主题并把源记忆整棵移到主题下（真分组，children 可见）；link=建主题别名入口保留原位；keep=只建主题不动源记忆。",
 			parameters: consolidateParams,
 			run: (p) => executeConsolidate(store, p as Static<typeof consolidateParams>, ctx),
 		},
@@ -671,7 +992,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "retrace",
 			label: "回溯原文",
 			description:
-				"源头回溯：按 raw_id 或 first_raw_id+last_raw_id 区间提取底层原文日志。场景纪要节点引用原文区间时用它取原文。",
+				"源头回溯：按 raw_id / first_raw_id+last_raw_id 区间 / 纪要 uri（自动取原文区间引用）/ 关键词全文搜索（活动原文）提取底层对话原文。场景纪要节点用 uri 模式直接定位其来源窗口。",
 			parameters: retraceParams,
 			run: (p) => executeRetrace(store, p as Static<typeof retraceParams>, ctx),
 		},
@@ -686,7 +1007,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "awaken",
 			label: "醒来记忆",
 			description:
-				"管理「醒来记忆」——角色醒来自动载入的常驻/工作记忆清单。action=list 查看，set 完全替换，add 追加，remove 移除。节点被删/移走后渲染时自动对账。",
+				"管理「醒来记忆」——角色醒来自动载入的常驻/工作记忆清单。action=list 查看，set 完全替换，add 追加，remove 移除。节点被删/移走/被回滚隐藏时渲染与 list 自动对账。",
 			parameters: awakenParams,
 			run: (p) => executeAwaken(store, p as Static<typeof awakenParams>, ctx),
 		},

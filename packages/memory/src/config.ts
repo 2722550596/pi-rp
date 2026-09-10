@@ -11,10 +11,22 @@ import type { AutoretainTask } from "./autoretain.ts";
 export interface MemorySettings {
 	dbPath?: string;
 	rawLog?: { customTypes?: "all-display-true" | "none" | string[] };
-	autoretain?: { everyNTurns?: number; tasks?: AutoretainTask[] };
-	recall?: { topK?: number; minScore?: number; blocklist?: string[] };
+	autoretain?: {
+		everyNTurns?: number;
+		tasks?: AutoretainTask[];
+		models?: { smol?: string; default?: string };
+	};
+	recall?: {
+		topK?: number;
+		minScore?: number;
+		/** Keyword-mode injection floor; default 0.12 (§5.9). */
+		keywordMinScore?: number;
+		blocklist?: string[];
+	};
 	temp?: { threshold?: number };
 	embeddings?: { mode?: "api" | "off"; model?: string; apiUrl?: string };
+	/** Revision retention (§12 decision 20): max versions kept per node; undefined = unlimited. */
+	revisions?: { maxVersionsPerNode?: number };
 }
 
 /** Prompt-preset memory declaration (preset > default). */

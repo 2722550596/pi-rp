@@ -64,11 +64,13 @@ import {
 	type MemoryBranchSnapshot,
 	type MemoryModule,
 	type MemoryModuleHost,
+	type MemoryModuleSessionInfo,
 	type MemorySlotDefinition,
 	type MemoryStore,
 	type MemoryTurnMessage,
 	openMemoryStore,
 	resolveMemoryDbPath,
+	shouldCaptureCustomType,
 } from "@earendil-works/pi-memory";
 import { registerBuiltinCommandEntries, syncExtensionCommands } from "../commands/index.ts";
 import { getAgentDir, getProjectConfigDir } from "../config.ts";
@@ -517,6 +519,8 @@ export class AgentSession {
 	private _resourceLoader: ResourceLoader;
 	private _schemaValidator: SchemaValidator;
 	private _memoryModule?: MemoryModule;
+	/** Resolved memory DB path for this session (undefined when init failed). */
+	private _memoryDbPath?: string;
 	/** Message entry ids already handed to the memory module's raw_log (turn collection). */
 	private _memorySeenEntryIds: Set<string> = new Set();
 	private _loadedSchemaDefs: LoadedSchemaDef[] = [];
@@ -553,6 +557,8 @@ export class AgentSession {
 	/** True once setActivePreset() ran — the lazy restore block must not override an explicit activation. */
 	private _presetExplicitlyActivated = false;
 	private _loadedPresets: LoadedPromptPreset[] = [];
+	/** One-shot guard for first-load session state/schema restore (P0-1). */
+	private _firstLoadRestored = false;
 
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
@@ -1175,6 +1181,12 @@ export class AgentSession {
 				ctrl.abort();
 			}
 			this.agent.abort();
+			// Cancel the memory module's in-flight recalls/autoretain side work.
+			// The shared MemoryStore singleton stays open (other sessions may
+			// use the same DB) — only the module is torn down.
+			this._memoryModule?.dispose();
+			this._memoryModule = undefined;
+			this._memoryDbPath = undefined;
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
 		}
@@ -1224,6 +1236,15 @@ export class AgentSession {
 	/** Current effective system prompt (includes any per-turn extension modifications) */
 	get systemPrompt(): string {
 		return this.agent.state.systemPrompt;
+	}
+
+	/**
+	 * Resolved memory DB path for this session (CLI > settings > active
+	 * preset > default, docs memory-system §2). Undefined when the memory
+	 * module failed to initialize.
+	 */
+	getMemoryDbPath(): string | undefined {
+		return this._memoryDbPath;
 	}
 
 	/** Current retry attempt (0 if not retrying) */
@@ -1468,34 +1489,10 @@ export class AgentSession {
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
-		if (this._loadedPresets.length === 0) {
-			this._loadedPresets = loadPromptPresets(this._cwd, getAgentDir());
+		this._ensureActivePresetRestored();
 
-			// Restore active preset: existing preset_change entry → settings default → built-in default
-			const entries = this.sessionManager.getEntries();
-			let storedPresetId: string | undefined;
-			for (let i = entries.length - 1; i >= 0; i--) {
-				const e = entries[i];
-				if (e.type === "preset_change") {
-					storedPresetId = e.presetId;
-					break;
-				}
-			}
-
-			const settingsPresetId = this.settingsManager.getDefaultPreset();
-			if (!this._presetExplicitlyActivated) {
-				const restoreId = storedPresetId ?? settingsPresetId;
-				if (restoreId && !isDisabledPromptPresetId(restoreId) && restoreId !== "default") {
-					const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
-					if (found) this._activePreset = found.preset;
-				} else if (!restoreId) {
-					// No recorded restore target (fresh session, no settings default):
-					// fall back to the first auto-activatable preset on disk.
-					const chosen = chooseDefaultPreset(this._loadedPresets);
-					if (chosen) this._activePreset = chosen.preset;
-				}
-			}
-
+		if (!this._firstLoadRestored) {
+			this._firstLoadRestored = true;
 			// No initial write needed — sdk.ts handles that for new sessions
 
 			// Restore StateManager state + SchemaValidator schemas from the
@@ -1608,6 +1605,41 @@ export class AgentSession {
 		return value;
 	}
 
+	/**
+	 * Restore the active preset (existing preset_change entry → settings
+	 * default → auto-activatable preset) exactly once, guarded by
+	 * `_loadedPresets`, so `_activePreset` is determined before
+	 * `_setupMemoryModule()` resolves the memory DB path — the preset tier
+	 * feeds the §2 resolution chain (docs memory-system.md).
+	 */
+	private _ensureActivePresetRestored(): void {
+		if (this._loadedPresets.length > 0) return;
+		this._loadedPresets = loadPromptPresets(this._cwd, getAgentDir());
+		const entries = this.sessionManager.getEntries();
+		let storedPresetId: string | undefined;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (e.type === "preset_change") {
+				storedPresetId = e.presetId;
+				break;
+			}
+		}
+
+		const settingsPresetId = this.settingsManager.getDefaultPreset();
+		if (!this._presetExplicitlyActivated) {
+			const restoreId = storedPresetId ?? settingsPresetId;
+			if (restoreId && !isDisabledPromptPresetId(restoreId) && restoreId !== "default") {
+				const found = this._loadedPresets.find((p) => p.preset.id === restoreId);
+				if (found) this._activePreset = found.preset;
+			} else if (!restoreId) {
+				// No recorded restore target (fresh session, no settings default):
+				// fall back to the first auto-activatable preset on disk.
+				const chosen = chooseDefaultPreset(this._loadedPresets);
+				if (chosen) this._activePreset = chosen.preset;
+			}
+		}
+	}
+
 	// =========================================================================
 	// Prompt Preset Management
 	// =========================================================================
@@ -1708,6 +1740,7 @@ export class AgentSession {
 			if (options?.record !== false) this.sessionManager.appendPresetChange(id);
 			if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
 			// _restoreToolPolicy calls setActiveToolsByName which rebuilds the prompt
+			this._maybeReloadForMemoryDbPathChange();
 			emitPresetActivated();
 			return { ok: true };
 		}
@@ -1716,6 +1749,10 @@ export class AgentSession {
 		this._activePreset = found.preset;
 		this._presetExplicitlyActivated = true;
 		this._syncActiveToolPolicy();
+		// A preset that changes the resolved memory DB path must rebuild the
+		// runtime so _setupMemoryModule re-binds against the new DB — never
+		// stack a second synthetic memory extension on this runner (§4.6).
+		this._maybeReloadForMemoryDbPathChange();
 		if (options?.record !== false) this.sessionManager.appendPresetChange(id);
 		// Mirror the disabled branch: persist the activated preset as the settings
 		// default. Without this, a prior /preset none leaves settings.defaultPreset
@@ -1763,6 +1800,27 @@ export class AgentSession {
 				ok: true,
 				error: `Failed to switch to preset model "${modelRef}": ${error instanceof Error ? error.message : String(error)}`,
 			};
+		}
+	}
+
+	/**
+	 * If the newly activated preset resolves a DIFFERENT memory DB path than
+	 * the currently bound one, request a runtime reload so _setupMemoryModule
+	 * rebuilds against the new path — instead of stacking a second synthetic
+	 * memory extension on the same runner (§4.6). No-op when memory is
+	 * unavailable (_memoryDbPath undefined) or the path is unchanged.
+	 */
+	private _maybeReloadForMemoryDbPathChange(): void {
+		if (this._memoryDbPath === undefined) return;
+		const settings = this.settingsManager.getSettings();
+		const nextPath = resolveMemoryDbPath(
+			process.env.PI_MEMORY_DB,
+			settings,
+			this._activePreset.memory ? { memory: this._activePreset.memory } : undefined,
+			this._cwd,
+		);
+		if (nextPath !== this._memoryDbPath) {
+			void this.requestReload();
 		}
 	}
 
@@ -3810,6 +3868,7 @@ export class AgentSession {
 				reload: () => this.requestReload(),
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getMemoryDbPath: () => this._memoryDbPath,
 				completeSideRequest: async ({
 					model,
 					context,
@@ -4057,6 +4116,10 @@ export class AgentSession {
 		syncExtensionCommands(this._extensionRunner);
 		// Memory module wiring needs the runner (synthetic extension host) —
 		// must run after the _extensionRunner assignment and binding above.
+		// Ensure the active preset is restored first: it feeds the memory DB
+		// path chain (§2 preserve > settings > preset > default) and the
+		// module's inject settings.
+		this._ensureActivePresetRestored();
 		await this._setupMemoryModule();
 
 		const defaultActiveToolNames = this._baseToolsOverride
@@ -4080,27 +4143,47 @@ export class AgentSession {
 	 * Memory module wiring (@earendil-works/pi-memory, docs/memory-system.md).
 	 *
 	 * Store resolution (§2): PI_MEMORY_DB env override > settings memory.dbPath
-	 * > default <cwd>/.pi/memory.db. The store is a process-wide singleton keyed
-	 * by path (single tree per DB); the module re-registers onto each runtime
-	 * rebuild (reload) via a fresh host. Failures degrade to no-memory with a
-	 * warning — memory must never block session startup.
+	 * > activePreset memory.dbPath > default <cwd>/.pi/memory.db. The store is
+	 * a process-wide singleton keyed by path (single tree per DB); the module
+	 * re-registers onto each runtime rebuild (reload) via a fresh host.
+	 * Every rebuild disposes the previous module first, so a settings/preset
+	 * change — including a DB path switch — takes effect cleanly. Failures
+	 * degrade to no-memory with a warning — memory never blocks startup. The
+	 * shared MemoryStore singleton is NOT closed here (other sessions may use
+	 * the same DB).
 	 */
 	private async _setupMemoryModule(): Promise<void> {
 		const settings = this.settingsManager.getSettings();
-		const dbPath = resolveMemoryDbPath(process.env.PI_MEMORY_DB, settings, undefined, this._cwd);
+		const dbPath = resolveMemoryDbPath(
+			process.env.PI_MEMORY_DB,
+			settings,
+			this._activePreset.memory ? { memory: this._activePreset.memory } : undefined,
+			this._cwd,
+		);
 		try {
+			// Dispose the previous module (cancels in-flight recall/side work)
+			// before building a fresh one — reloads re-apply current settings.
+			this._memoryModule?.dispose();
+			this._memoryModule = undefined;
 			const store = await getMemoryStoreSingleton(dbPath);
-			if (!this._memoryModule) {
-				this._memoryModule = createMemoryModule(store, { settings: settings.memory });
-			}
-			this._memoryModule.registerSession(this._createMemoryModuleHost());
+			const module = createMemoryModule(store, { settings: settings.memory });
+			const host = this._createMemoryModuleHost();
+			module.registerSession(host);
 			// Slots render in the prompt-preset compile path — register statically
 			// so presets can reference awaken/recent/index without an extension.
 			for (const slot of createMemorySlots(store)) {
 				this._registerMemorySlot(slot);
 			}
+			this._memoryModule = module;
+			this._memoryDbPath = dbPath;
+			// Backfill the raw mirror + recompute visibility for the current
+			// branch immediately — resume / merely-browsed paths do not wait
+			// for the next turn (§3.3).
+			await module.onLeafChange();
 		} catch (error) {
+			this._memoryModule?.dispose();
 			this._memoryModule = undefined;
+			this._memoryDbPath = undefined;
 			const message = error instanceof Error ? error.message : String(error);
 			this._extensionRunner?.emitError?.({
 				extensionPath: "<memory>",
@@ -4175,10 +4258,12 @@ export class AgentSession {
 				list.push((...args: unknown[]) => Promise.resolve(handler(args[0], args[1])));
 				synthetic.handlers.set(event, list);
 			},
-			getSessionInfo() {
+			getSessionInfo(): MemoryModuleSessionInfo {
 				return {
 					modelId: session.model?.id,
 					leafId: session.sessionManager.getLeafId(),
+					sessionId: session.sessionManager.getSessionId(),
+					turn: session._turnIndex,
 				};
 			},
 			getBranchSnapshot(): MemoryBranchSnapshot {
@@ -4200,7 +4285,9 @@ export class AgentSession {
 						seen.add(entry.id);
 						const text = contentText(entry.message.content, "");
 						if (text) {
-							messages.push({ role, text, entryId: entry.id });
+							// entry.timestamp is the message's ORIGINAL wall time —
+							// raw_log preservation (§12 fix).
+							messages.push({ role, text, entryId: entry.id, timestamp: entry.timestamp });
 						} else {
 							seen.delete(entry.id);
 						}
@@ -4220,11 +4307,89 @@ export class AgentSession {
 								entryId: entry.id,
 								customType: entry.customType,
 								display: entry.display,
+								timestamp: entry.timestamp,
 							});
 						}
 					}
 				}
 				return messages;
+			},
+			getActiveBranchMessages(): MemoryTurnMessage[] {
+				// Full active-branch mirror (root→leaf, §3.3): user/assistant
+				// messages plus custom messages per the rawLog.customTypes switch —
+				// the SAME capture policy the module applies on turn end, so the
+				// backfill and the incremental writes never diverge.
+				const rawLogCustomTypes =
+					session.settingsManager.getSettings().memory?.rawLog?.customTypes ?? "all-display-true";
+				const messages: MemoryTurnMessage[] = [];
+				for (const entry of session.sessionManager.getBranch()) {
+					if (entry.type === "message") {
+						const role = entry.message.role;
+						if (role !== "user" && role !== "assistant") continue;
+						const text = contentText(entry.message.content, "");
+						if (!text) continue;
+						messages.push({ role, text, entryId: entry.id, timestamp: entry.timestamp });
+					} else if (entry.type === "custom_message") {
+						const text =
+							typeof entry.content === "string"
+								? entry.content
+								: entry.content
+										.map((block) => (block.type === "text" ? block.text : ""))
+										.join(" ")
+										.trim();
+						if (!text) continue;
+						if (!shouldCaptureCustomType(entry.customType, entry.display, rawLogCustomTypes)) continue;
+						messages.push({
+							role: "custom",
+							text,
+							entryId: entry.id,
+							customType: entry.customType,
+							display: entry.display,
+							timestamp: entry.timestamp,
+						});
+					}
+				}
+				return messages;
+			},
+			async completeSideRequest(
+				prompt: string,
+				options: { modelRole?: "smol" | "default"; maxTokens?: number; signal?: AbortSignal; label: string },
+			): Promise<string> {
+				// §5 model role: settings.memory.autoretain.models.{smol,default}
+				// resolve via the model catalogue; a bad reference is a hard error
+				// (task fails, progress cursor does not advance). Unconfigured
+				// role falls back to the current session model.
+				const models = session.settingsManager.getSettings().memory?.autoretain?.models;
+				const ref = options.modelRole === "default" ? models?.default : models?.smol;
+				let model: Model<any> | undefined;
+				if (ref && ref.trim().length > 0) {
+					const available = [...session._modelRuntime.getModels()];
+					model = findExactModelReferenceMatch(ref, available);
+					if (!model) throw new Error(`Autoretain model "${ref}" not found.`);
+				} else {
+					model = session.model;
+				}
+				if (!model) throw new Error("completeSideRequest: no model available");
+				// Single user-message context; timestamp required by the
+				// Message type (wall clock of this side request).
+				const message = await runner.createContext().completeSideRequest({
+					model,
+					context: {
+						systemPrompt: "",
+						messages: [
+							{
+								role: "user" as const,
+								content: [{ type: "text" as const, text: prompt }],
+								timestamp: Date.now(),
+							},
+						],
+					},
+					maxTokens: options.maxTokens,
+					signal: options.signal,
+					priority: 0,
+					label: options.label,
+				});
+				return contentText(message.content, "");
 			},
 			sendCustomMessage(message) {
 				runner.getExtensionRuntime().sendMessage(message, { triggerTurn: true });
@@ -4251,6 +4416,12 @@ export class AgentSession {
 		const previousFlagValues = oldRunner.getFlagValues();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
+		// Release the memory module bound to the OLD runner before rebuilding
+		// (_setupMemoryModule also disposes on the way in — this makes the
+		// cancel explicit at reload time so no stale host survives).
+		this._memoryModule?.dispose();
+		this._memoryModule = undefined;
+		this._memoryDbPath = undefined;
 		await this.settingsManager.reload();
 		this._stateManager.detachStore();
 		this.syncQueueModesFromSettings();

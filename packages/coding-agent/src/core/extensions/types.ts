@@ -362,6 +362,12 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Resolved memory DB path of the current session (settings + active preset
+	 * chain). Undefined when memory failed to init — do NOT recompute a path
+	 * yourself (that can silently open a second, empty database).
+	 */
+	getMemoryDbPath(): string | undefined;
 	/** One-shot side LLM request outside the main loop (gateway-attributed, uncached). */
 	completeSideRequest(options: CompleteSideRequestOptions): Promise<AssistantMessage>;
 	/** Compile a prompt preset with the given runtime; throws when the preset id is unknown. */
@@ -1921,6 +1927,15 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	/**
+	 * Resolved memory DB path of the current session (after settings + active
+	 * preset resolution). Undefined when the memory module failed to init or
+	 * the host predates memory support — callers must NOT fall back to
+	 * recomputing a path (that can silently open or create a second, empty
+	 * database). Optional so embedders constructing this object before the
+	 * memory module existed keep type-checking.
+	 */
+	getMemoryDbPath?: () => string | undefined;
 	completeSideRequest: (options: CompleteSideRequestOptions) => Promise<AssistantMessage>;
 	compilePreset: (
 		presetId: string,

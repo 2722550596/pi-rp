@@ -7,16 +7,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type AutoretainTask, dueTasks, runAutoretainTask } from "../src/autoretain.ts";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
-import { createMemoryModule, type MemoryModuleHost, type MemoryTurnMessage } from "../src/module.ts";
-import { createSchema } from "../src/schema.ts";
-import type { MemoryNode } from "../src/store.ts";
-import { MemoryStore } from "../src/store.ts";
 import {
 	renderDiagnosticView,
 	renderForgottenView,
 	renderRecentView,
 	renderTimelineView,
 } from "../src/memory-views.ts";
+import { createMemoryModule, type MemoryModuleHost, type MemoryTurnMessage } from "../src/module.ts";
+import { createSchema } from "../src/schema.ts";
+import type { MemoryNode } from "../src/store.ts";
+import { MemoryStore } from "../src/store.ts";
 
 let db: MemoryDatabase;
 let store: MemoryStore;
@@ -43,21 +43,31 @@ const SUMMARY_TASK: AutoretainTask = {
 
 function autoretainHost(response: string, calls: string[] = []) {
 	return {
-		completeSideRequest: async (prompt: string) => {
+		completeSideRequest: async (prompt: string, _options?: { label?: string }) => {
 			calls.push(prompt);
 			return response;
 		},
-		getSessionInfo: () => ({ modelId: "side-model", leafId: "leaf-42" }),
+		getSessionInfo: () => ({ modelId: "side-model", leafId: "leaf-42", sessionId: "session-1" }),
 	};
+}
+
+/** Seed one raw row with the required session_id (§3.1). */
+function rawRow(
+	entryId: string,
+	role: string,
+	text: string,
+	wallTs: string,
+): Parameters<MemoryStore["appendRaw"]>[0][number] {
+	return { role, text, entry_id: entryId, session_id: "session-1", wall_ts: wallTs };
 }
 
 describe("autoretain", () => {
 	it("lands the product in the history domain with source auto and provenance stamped", async () => {
 		store.appendRaw([
-			{ role: "user", text: "我们在酒馆谈话", entry_id: "e1", wall_ts: "2026-09-10T00:00:00Z" },
-			{ role: "assistant", text: "薇拉谈到了北方商队", entry_id: "e2", wall_ts: "2026-09-10T00:00:01Z" },
+			rawRow("e1", "user", "我们在酒馆谈话", "2026-09-10T00:00:00Z"),
+			rawRow("e2", "assistant", "薇拉谈到了北方商队", "2026-09-10T00:00:01Z"),
 		]);
-		const window = store.listRawTail(80);
+		const window = store.listUnprocessedActiveRaw("session-1", SUMMARY_TASK.name, 80);
 		const outcome = await runAutoretainTask(
 			store,
 			SUMMARY_TASK,
@@ -75,11 +85,11 @@ describe("autoretain", () => {
 	});
 
 	it("silently skips on JSON contract violation", async () => {
-		store.appendRaw([{ role: "user", text: "hi", entry_id: "e1", wall_ts: "2026-09-10T00:00:00Z" }]);
+		store.appendRaw([rawRow("e1", "user", "hi", "2026-09-10T00:00:00Z")]);
 		const outcome = await runAutoretainTask(
 			store,
 			SUMMARY_TASK,
-			store.listRawTail(80),
+			store.listUnprocessedActiveRaw("session-1", SUMMARY_TASK.name, 80),
 			autoretainHost("我不是 JSON"),
 		);
 		expect(outcome.ok).toBe(false);
@@ -97,8 +107,8 @@ describe("autoretain", () => {
 		const calls: string[] = [];
 		const sendCalls: unknown[] = [];
 		const messages: MemoryTurnMessage[] = [
-			{ role: "user", text: "谈话内容一", entryId: "e1" },
-			{ role: "assistant", text: "回应内容二", entryId: "e2" },
+			{ role: "user", text: "谈话内容一", entryId: "e1", timestamp: "2026-09-10T00:00:00Z" },
+			{ role: "assistant", text: "回应内容二", entryId: "e2", timestamp: "2026-09-10T00:00:01Z" },
 		];
 		const host: MemoryModuleHost = {
 			registerTool: () => {},
@@ -108,15 +118,18 @@ describe("autoretain", () => {
 			sendCustomMessage: (m) => {
 				sendCalls.push(m);
 			},
-			getSessionInfo: () => ({ modelId: "side-model", leafId: "leaf-9" }),
+			getSessionInfo: () => ({ modelId: "side-model", leafId: "leaf-9", sessionId: "session-1", turn: 0 }),
 			getBranchSnapshot: () => ({ entryIds: ["e1", "e2"], entries: [] }),
 			getTurnMessages: () => messages,
-			completeSideRequest: async (prompt) => {
+			getActiveBranchMessages: () => messages,
+			completeSideRequest: async (prompt, _options) => {
 				calls.push(prompt);
 				return '{"content": "自动纪要内容"}';
 			},
 		};
-		const module = createMemoryModule(store, { settings: { autoretain: { everyNTurns: 1 } } });
+		const module = createMemoryModule(store, {
+			settings: { embeddings: { mode: "off" }, autoretain: { everyNTurns: 1 } },
+		});
 		module.registerSession(host);
 		await module.onTurnEnd(); // turn 1: everyNTurns=1 → both default tasks due
 
@@ -127,6 +140,10 @@ describe("autoretain", () => {
 		expect(node.source).toBe("auto");
 		expect(node.model).toBe("side-model");
 		expect(node.anchor_entry_id).toBe("leaf-9");
+		// §4 consumption path: the window provenance is stamped.
+		expect(node.first_raw_id).not.toBeNull();
+		expect(node.last_raw_id).not.toBeNull();
+		expect(node.anchor_session_id).toBe("session-1");
 	});
 });
 
@@ -143,9 +160,11 @@ describe("TEMP threshold notify", () => {
 			sendCustomMessage: (m) => {
 				sent.push(m);
 			},
-			getSessionInfo: () => ({}),
+			getSessionInfo: () => ({ sessionId: "session-1", turn: 0 }),
 			getBranchSnapshot: () => ({ entryIds: [], entries: [] }),
 			getTurnMessages: () => [],
+			getActiveBranchMessages: () => [],
+			completeSideRequest: async () => "{}",
 		};
 		return { host, sent };
 	}
@@ -186,15 +205,23 @@ describe("TEMP threshold notify", () => {
 
 describe("MEM:// views", () => {
 	function seed() {
-		store.insertNode({ uri: "history://alpha", content: "阿尔法事件：北方商队抵达", priority: 3 });
-		store.insertNode({ uri: "history://beta", content: "贝塔事件：酒馆易主", priority: 5 });
+		store.insertNode({ uri: "history://alpha", content: "阿尔法事件：北方商队抵达", importance: 3 });
+		store.insertNode({ uri: "history://beta", content: "贝塔事件：酒馆易主", importance: 5 });
 		store.insertNode({ uri: "core://self", content: "自我认知：沉默寡言" });
 		store.appendRaw([
-			{ role: "user", text: "第一条消息", entry_id: "e1", wall_ts: "2026-09-09T00:00:00Z", world_ts: "1000-01-01" },
+			{
+				role: "user",
+				text: "第一条消息",
+				entry_id: "e1",
+				session_id: "session-1",
+				wall_ts: "2026-09-09T00:00:00Z",
+				world_ts: "1000-01-01",
+			},
 			{
 				role: "assistant",
 				text: "第二条消息",
 				entry_id: "e2",
+				session_id: "session-1",
 				wall_ts: "2026-09-09T00:00:01Z",
 				world_ts: "1000-01-02",
 			},
@@ -210,15 +237,15 @@ describe("MEM:// views", () => {
 		expect(out.indexOf("第二条消息")).toBeLessThan(out.indexOf("第一条消息"));
 	});
 
-	it("forgotten renders the least-recently-updated live memories", () => {
+	it("forgotten renders the least-recently-accessed live memories (§13)", () => {
 		seed();
-		store.updateNode(store.resolveUri("history://beta")!.node_id, { content: "贝塔事件：更新过" });
-		// Beta was just updated; pin alpha's updated_ts back 60 days so it is
-		// clearly the sleeper.
-		db.prepare("UPDATE nodes SET updated_ts = ? WHERE uri = ?").run(
+		// Alpha was actively recalled 60 days ago and never since; beta was
+		// just recalled. Sleeping metric = last_accessed_at (§13).
+		db.prepare("UPDATE nodes SET last_accessed_at = ? WHERE uri = ?").run(
 			new Date(Date.now() - 60 * 86400000).toISOString(),
 			"history://alpha",
 		);
+		store.markAccessed([store.resolveUri("history://beta")!.node_id], new Date().toISOString());
 		const out = renderForgottenView(store, undefined, 1);
 		expect(out).toContain("history://alpha");
 		expect(out).not.toContain("history://beta");
@@ -232,9 +259,9 @@ describe("MEM:// views", () => {
 
 	it("diagnostic reports stale / crowded / placeholder issues", () => {
 		seed();
-		// Pin alpha back 60 days → stale (priority 5 default threshold 30d),
-		// and give it a stub child → placeholder parent.
-		db.prepare("UPDATE nodes SET updated_ts = ? WHERE uri = ?").run(
+		// Pin alpha's last access back 60 days → stale (importance 3 < 8 →
+		// default 30d threshold), and give it a child → parent status.
+		db.prepare("UPDATE nodes SET last_accessed_at = ? WHERE uri = ?").run(
 			new Date(Date.now() - 60 * 86400000).toISOString(),
 			"history://alpha",
 		);

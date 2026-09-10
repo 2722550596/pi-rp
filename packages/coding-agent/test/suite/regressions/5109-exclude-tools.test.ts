@@ -51,13 +51,25 @@ describe("regression #5109: exclude tools", () => {
 			expect(allToolNames).toContain("bash");
 			expect(allToolNames).toContain("dynamic_tool");
 			expect(harness.session.getActiveToolNames().sort()).toEqual([
+				"associate",
+				"awaken",
 				"bash",
+				"consolidate",
 				"dynamic_tool",
 				"edit",
+				"forget",
 				"get_state",
+				"memorize",
+				"recall",
+				"relocate",
+				"retrace",
+				"retrieve",
+				"revise",
+				"set_time",
 				"state_update",
 				"subagent",
 				"subagent_profiles",
+				"trigger",
 				"write",
 			]);
 			const compiledPrompt = await harness.session.compileSystemPrompt();

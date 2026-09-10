@@ -262,6 +262,9 @@ export interface PromptPreset {
 	regex?: PromptPresetRegexConfig;
 	hiddenOverrides?: PromptPresetHiddenOverrides;
 	variables?: Record<string, string>;
+	/** Memory-system declaration: preset-level dbPath (lowest precedence in
+	 *  the CLI > settings > preset > default chain, docs memory-system §2). */
+	memory?: { dbPath?: string };
 	items: PromptPresetItem[];
 }
 

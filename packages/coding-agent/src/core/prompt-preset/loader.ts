@@ -203,6 +203,15 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 		preset.regex = obj.regex as PromptPresetRegexConfig;
 	}
 
+	// Copy the memory declaration (only a non-empty string dbPath is
+	// accepted; everything else is ignored — docs memory-system §2).
+	if (isPlainObject(obj.memory)) {
+		const m = obj.memory as Record<string, unknown>;
+		if (typeof m.dbPath === "string" && m.dbPath.trim().length > 0) {
+			preset.memory = { dbPath: m.dbPath };
+		}
+	}
+
 	// Copy hidden prompt overrides
 	if (isPlainObject(obj.hiddenOverrides)) {
 		const ho = obj.hiddenOverrides as Record<string, unknown>;

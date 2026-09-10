@@ -1,8 +1,8 @@
 # pi-rp 记忆系统设计(v5)
 
-> 状态:**已实施**(Phase 0-3 全量落地,实施 commit b0708f1e6,2026-09-10)
+> 状态:**已实施**(Phase 0-3 全量落地,实施 commit b0708f1e6,2026-09-10;**v5.5 修复轮落地,2026-09-11,** 见 `memory-system-audit.md` §27)
 > 相关:`plan.md`(功能规划第 6 项)、`plan/multi-agent-infrastructure.md`(多会话 daemon)、`plan/archives/memory-system.md`(v3 档案)、`~/MEMORY.md`(角色侧补充要求)
-> 版本史:v3(2026-09-01,RP 双轨定位)→ v4(2026-09-09,胶水层现状重核)→ **v5(2026-09-09,逐枝设计评审版,本版取代 v4)** → **v5.1(2026-09-10,首消费者回冲修订,本版取代 v5)** → **v5.2(2026-09-10,系统视图 scheme 更名 `system://` → `MEM://`,与 `TEMP://` 同属保留前缀;seed 索引根改为 `index://` 真域根)**
+> 版本史:v3(2026-09-01,RP 双轨定位)→ v4(2026-09-09,胶水层现状重核)→ **v5(2026-09-09,逐枝设计评审版,本版取代 v4)** → **v5.1(2026-09-10,首消费者回冲修订,本版取代 v5)** → **v5.2(2026-09-10,系统视图 scheme 更名 `system://` → `MEM://`,与 `TEMP://` 同属保留前缀;seed 索引根改为 `index://` 真域根)** → **v5.3(2026-09-11,`priority`/`importance` 双列合并为单列 `importance`)** → **v5.4(2026-09-11,importance 极性反转为"数值越大越重要";delete 语义定案(真删节点 + node_revisions 保留为找回路径);embeddings 向量通道落地;详见 `memory-system-audit.md`)** → **v5.5(2026-09-11,与 v5.4 同日落地:raw_log 改稳定 session 隔离活动镜像(active 标记,删"物理删除");node 增 anchor_session_id / first/last_raw_id / last_accessed_at;autoretain 引擎接通真实 AgentSession(per-task 进度、脱敏、modelRole);FTS/glossary/edges 真实读端(检索候选、专名召回、显式检索一跳扩散);embeddings 隐私默认 off;keyword 注入档 0.12;access tracking(只记主动想起);审计补全 node_id/turn/task;export/import 三类资产;详见 `memory-system-audit.md` §27)**
 
 ## 0. v5 相对 v4 的根本分歧
 
@@ -37,21 +37,36 @@ v5 由一轮逐枝设计评审产生,两路输入:用户对 v4 的四点观察(a
 ```
 memory.db
 ├── nodes              树。单节点单树:node_id 主键、parent_id、domain、
-│                      uri、content、disclosure(想起条件)、priority/importance、
+│                      uri、content、disclosure(想起条件)、importance(10=最重要,
+│                      5=普通,0=边角料;数值越大越重要;单列,无 priority 影子列)、
 │                      source(auto|manual|import)、model(写入引擎模型 id)、
-│                      anchor_entry_id、created_at、world_ts、updated_ts、content_hash
-├── node_revisions     修订制:node_id、version、content、editor_source、
+│                      anchor_entry_id、anchor_session_id(产出该节点的 session,
+│                      §8 跨 session 可见性)、first_raw_id/last_raw_id(autoretain 产物
+│                      的原文区间,v5.5)、last_accessed_at(角色主动想起时间,§13 沉睡
+│                      基准,v5.5)、created_at、world_ts、updated_ts、content_hash、is_stub
+├── node_revisions     修订制:node_id、version、uri、content、editor_source、
 │                      editor_model、created_at。编辑时旧版归档于此,
 │                      现行版在 nodes;修订回滚 = 指定 version 重新生效;
+│                      **uri 逐行携带**:节点行被 forget 删掉之后修订仍可寻址,
+│                      这就是"删除后的找回路径"(见 §10 与决策 10);
 │                      裁剪点(可配):node_revisions 是库内唯一适合裁剪的表,
-│                      内容可重建(raw_log 不可裁,见 §4 增长与留存)
-├── edges              联想图(检索扩散面),挂 node_id
-├── aliases            别名寻址(uri 稳定性:rename 不破链)
-├── raw_log            原文日志(新,见 §4)
-├── node_fts           FTS5(树节点:纪要/反思/定稿自动入召回)
-├── raw_fts            FTS5(原文日志)
-├── memory_embeddings  向量(仅树节点;API 嵌入,见 §9)
-├── glossary           专名表(专名→节点,提升分词命中)
+│                      内容可重建;`memory.revisions.maxVersionsPerNode`(默认无限)
+│                      每次归档后剪掉最旧超额版本,删除前归档也应用同一策略
+├── edges              联想图(检索扩散面,挂 node_id;显式 retrieve 一跳扩散,v5.5)
+├── aliases            别名寻址(uri 稳定性:rename/relocate 不破链)
+├── raw_log            原文日志(见 §4;v5.5 起为稳定活动镜像:session_id +
+│                      active 标记,不再物理删除)
+├── node_fts           FTS5(树节点:纪要/反思/定稿自动入召回;统一分词文本
+│                      + 稳定 ID 回表过滤,v5.5)
+├── raw_fts            FTS5(原文日志;查询回表过滤 active=1)
+├── memory_embeddings  向量缓存(仅树节点;node_id + seg_index,存 content_hash
+│                      与 model,任一不匹配即失效重算;API 嵌入,见 §9)
+├── glossary           专名表(专名→节点,提升分词命中;检索时完整专名
+│                      作为额外 token 参与,不污染全局分词词典,v5.5)
+├── audit_log          审计流(见 §12;v5.5 补全 node_id/source/model/turn/
+│                      task/anchor/details 列)
+├── autoretain_progress autoretain 逐任务消费进度(session_id,task,entry_id,
+│                      processed_at;PRIMARY KEY 三者,v5.5)
 └── memory_kv          世界钟等配置(记忆包内建世界钟:配置存此,
                        set_world_time 工具 + clock 读取 API + timeline/recency 用)
 ```
@@ -60,14 +75,14 @@ memory.db
 
 ## 4. 原文日志(raw_log)
 
-**定位**:活跃树消息的镜像,append-only,是"场景记忆"的原文层。
+**定位**:活跃树消息的稳定镜像,是"场景记忆"的原文层。**v5.5 起不再物理删除**——行用 `active` 标记表示是否在活动路径上,`raw_id`/wall/world 时间戳永存。
 
-- 每消息一行:`raw_id`、`role`、`text`、`entry_id`(pi 活动树 entry id,回溯指针)、wall 时间戳、world_ts。
-- **写入**:turn_end 钩子批量 append 本回合新增。默认收叙事 user / assistant;**custom message 不预设排除**——display:true 的可收,收编规则做成可配置接口(现阶段不实现复杂规则,但口子留好)。
-- **检索**:FTS5 + 按 id/区间取回工具(见 §10 工具面)。无向量。
-- **与活动树的同步(切换即对账)**:reroll / 切分支 / 回滚后,立即物理删除活动路径之外的原文行。依据:pi session 树 append-only、entry 永不删,切回旧分支后可按最新活跃树重建,DB 只是派生视图——真源在 jsonl,删除不破坏审计,且避免反复回滚时影子行堆积。
-- **消费**:场景纪要节点存原文区间引用(first_raw_id/last_raw_id),agent 由纪要 id 直接取原文。
-- **增长与留存(v5.1 定论)**:raw_log **无限增长,不做任何裁剪/归档/retention**。逐消息一行的体量对 SQLite 长期成本极小,而保留下来的原文是"真正长期记忆"的唯一原文底稿(compaction / 回滚后仍可变回原文),这是白赚的收益,不接受反驳。**如需控体积,裁剪只发生在 node_revisions(修订版,内容可重建),不在 raw_log**;raw_log 唯一的"删"语义是切换分支对账(本§上文),属正确性不是容量。
+- 每消息一行:`raw_id`(全库稳定自增主键)、`session_id`(写入 session)、`role`、`text`、`entry_id`(pi 活动树 entry id,回溯指针)、`active`(1=活动路径,0=已切走)、wall 时间戳(entry 原始时间,永不被覆盖)、`world_ts`(写入时世界钟;已存在的行不被覆盖)。
+- **写入**:turn_end 单遍批量 append 本回合新增(默认收叙事 user / assistant;custom message 收编 = settings 三态开关 `memory.rawLog.customTypes`,默认 all-display-true)。`(session_id, entry_id)` 唯一,重放幂等。
+- **切换即对账(syncRawBranch)**:reroll / 切分支 / 回滚后,把本 session 活动分支完整 upsert 一遍,并把本 session 不在活动路径的行置 `active=0`。**绝不触碰其他 session 的行**——多 session 共库时 A 的 reroll 不隐藏 B 的原文(v5.5 修复 #1)。切回旧分支时旧行按原 `raw_id`/时间戳复活。
+- **检索**:FTS5(查询回表过滤 `active=1`)+ 按 id/区间取回工具(见 §10 工具面)。无向量。
+- **消费**:场景纪要节点存原文区间引用(first_raw_id/last_raw_id),agent 由纪要 id 直接取原文;autoretain 按 per-session/per-task 进度读活动行。
+- **增长与留存(v5.1 定论,延续)**:raw_log **无限增长,不做任何裁剪/归档/retention**。逐消息一行的体量对 SQLite 长期成本极小,而保留下来的原文是"真正长期记忆"的唯一原文底稿。`active=0` 的行保留用于审计/retrace 回溯;默认视图/timeline/autoretain/FTS 只读活动行。
 
 ## 5. autoretain(引擎侧后台生成)
 
@@ -75,9 +90,11 @@ memory.db
 
 - **通用能力,非剧情摘要专属**。对角色:回看 n 回合行动,意识到行为模式 / 性格变化 / 倾向(反思);对作家 / 角色通用的场景纪要。不同下游产物不同。
 - **写入行为模型:引擎侧后台 LLM 生成**(omp stage1 姿势):廉模型 + strict JSON 输出契约 + token 预算 + redact;不经角色主循环,失败静默跳过(下轮重试覆盖窗口;原文日志不丢,永可重做)。确定性强、不干扰主循环,恰合"保险"生态位。
-- **任务注册制**:每任务 = `{name, everyNTurns, 提示词模板, 产物落点(domain+放置策略), 模型角色}`。core 自带默认任务(场景纪要、自我反思),下游可增删改——提示词、落点、周期全部自定义,`history` 这类 domain 名就是下游取的。
-- **模型角色**:逐任务可配,默认 smol(omp `providers.memoryModel` 先例)。
-- 多任务共用一个回合计数器,各自按周期触发。
+- **任务注册制**:每任务 = `{name, everyNTurns, 提示词模板, 产物落点(domain+放置策略), 模型角色, maxInputChars, maxOutputTokens, redact}`。core 自带默认任务(场景纪要、自我反思),下游可增删改——提示词、落点、周期全部自定义,`history` 这类 domain 名就是下游取的。`memory.autoretain.tasks` 覆盖/注册,`memory.autoretain.everyNTurns` 只改 core 默认任务的周期。**默认关闭**:未配置 `memory.autoretain`(cadence 或任务列表任一)时不调度——裸会话每 N 回合静默消耗 side-request 模型配额是隐藏成本,与 embeddings 隐私默认 off(§27.1)同一 opt-in 姿态。
+- **模型角色(v5.5 接通真实引擎)**:逐任务可配 `modelRole: "smol" | "default"`,默认 smol。走引擎的 `completeSideRequest` 原语(单条 user message context,label `memory-autoretain:<task>`);引用经模型目录 `findExactModelReferenceMatch` 解析,未配置该 role 回落当前 session model。session dispose 会中止在飞 side request。
+- **窗口与脱敏(v5.5)**:`maxInputChars`(默认 12000,按字符边界从窗口尾部截断)、`maxOutputTokens`(默认 800)、`redact`(默认 true——Bearer token 与 `api_key|apikey|token|secret|password|authorization` 赋值被确定性替换为 `[REDACTED]`;不改 raw_log 原文)。
+- 多任务共用一个回合计数器,各自按周期触发;**每任务、每 session 独立进度**(`autoretain_progress` 表,按 `(session_id, task, entry_id)` 记已消费行)——不同任务/不同 session 不互吞窗口,离枝后再回来的低 raw_id 行不会被永久跳过。成功才写进度,失败静默跳过(下轮重试同一窗口;原文日志不丢,永可重做)。
+- 产物写 `anchor_session_id`、`first_raw_id`/`last_raw_id`(本窗口原文区间),均可被 `retrace(uri=...)` 回取。
 
 ## 6. 署名(provenance,harness 内建)
 
@@ -100,44 +117,50 @@ memory.db
 
 ## 8. 回滚与可见性
 
-- **auto 来源节点跟回滚**:所有 `source:auto` 的节点(纪要、反思、autoretain 一切产物)带 anchor(anchor_entry_id 或原文区间);anchor 离开活动路径时节点转不可见——可见性谓词,不删行,切回分支自动复活(与 pi 树 append-only 哲学一致)。
+- **auto 来源节点跟回滚**:所有 `source:auto` 的节点(纪要、反思、autoretain 一切产物)带完整出处(anchor_entry_id + anchor_session_id);anchor 离开活动路径时节点转不可见——可见性谓词,不删行,切回分支自动复活(与 pi 树 append-only 哲学一致)。
+- **可见性规则(v5.5 定案,§3.7)**:manual/import 恒可见;auto 且缺 `anchor_session_id` 或 `anchor_entry_id` 不可见(无出处可循);auto 来自**其他 session** 时可见(B 的 reroll 不隐藏 A 的产物);auto 来自**当前 session** 时仅当 anchor 在当前活动路径可见。A 的 reroll 只隐藏 A 自己离枝的 auto 节点。
 - **manual 节点永不自动隐藏**(角色主权):角色手动写的认知不被 reroll 抹掉。
-- **raw_log 行:切换即对账**(§4,物理删除活动路径之外的行)。
+- **raw_log 行:切换即对账**(§4,`syncRawBranch`——置 `active=0` 而非删除,session 隔离)。
 - 钩子绑定 `_moveLeafAndRestoreState`(reroll 与 navigateTree 的共同 choke point,`session_tree` 事件已标记退役);`session_before_reroll` / `leaf_changed` 仅作扩展生态观察口,包不依赖。
 - `memory_ops` 表与"全量重算"流程取消——上述两条规则覆盖其全部职责,且更简单。
 
 ## 9. 召回(autorecall)
 
-- **机制与参数整体迁移自 recall 扩展调参版**(生产验证,不重新发明):双 query(当前 prompt 带 BGE instruction + "Prior context:" 最近 6 条)、权重 vec 0.55 / keyword 0.3 / priority 0.15、keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max)、MIN_SCORE 0.35、TOP_K 3、HIGH_CONFIDENCE 0.55、世界钟 recency 加成(0.08/0.04/0.02)、chunk 500/overlap 80、md5(content|search_terms) hash。
+- **机制与参数整体迁移自 recall 扩展调参版**(生产验证,不重新发明):双 query(当前 prompt 带 BGE instruction + "Prior context:" 最近 6 条)、权重 vec 0.55 / keyword 0.3 / importance 0.15(v5.3 单列更名,值不变)、keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max)、MIN_SCORE 0.35、TOP_K 3、HIGH_CONFIDENCE 0.55、世界钟 recency 加成(0.08/0.04/0.02)、chunk 500/overlap 80、md5(content|search_terms) hash。
+- **权重不因降级而重标定(v5.4,延续)**:无向量时 keyword 通道仍是 0.3,不把 0.55 折进来。keyword-only 的分数上限 = 0.3 + 0.15 + 0.08 = **0.53 < HIGH_CONFIDENCE 0.55**——"高度相关,建议读取"这个软锚按设计只能由语义证据挣得。**代价要明说**:不配 embedding key 时,MIN_SCORE 0.35 对默认 importance(5)的节点要求 keyword ≈ 0.92,自动注入近乎静默;这是生产版原本的行为,要更活跃就调 `memory.recall.minScore`,不要动权重。
+- **注入双阈值(v5.5)**:vector 模式仍用 `minScore`(默认 0.35);keyword 模式用独立 **`memory.recall.keywordMinScore`(默认 0.12)**,且始终要求真实 keyword/FTS 命中(`kw>0`)——glossary 专名也算命中,纯 importance/recency 噪声永远进不了注入。
+- **候选集(v5.5)**:keyword 模式候选 = 节点 FTS `MATCH` 命中 ∩ `kw>0`(消除全库逐节点重分词);vector 模式保留全 pool 作语义空间,但只为 FTS 命中节点算 keyword overlap(未命中即 kw=0)。两条路径共用 `recall.ts` 一份实现。
+- **稳定同分次键(v5.5)**:`score DESC → kw DESC → vec DESC → bm25 ASC(null 最后)→ importance DESC → updated_ts DESC → uri ASC`——不再由插入顺序决定。
+- **向量通道(v5.4 落地;v5.5 隐私默认)**:`embeddings.ts` = 零依赖 fetch 客户端(默认 siliconflow `BAAI/bge-large-zh-v1.5`)。**未显式设置 `memory.embeddings.mode:"api"` 时恒为 `off`,即使环境有 key 也不出网**;只有明确 opt-in 才读 `PI_MEMORY_EMBEDDING_API_KEY` / `NOCTURNE_EMBEDDING_API_KEY` 外呼。超时 10s,外部 abort(会话 dispose/召回被取代)不触发 sticky failure latch,HTTP/响应错误仍 latch。向量缓存落在 `memory_embeddings`,命中即零调用。
 - **注入只出树节点**(线索 ≤80 字 + 软锚),原文日志不进注入——原文只能拿 id 主动取;场景记忆的"自然想起"由纪要节点承担(它就在树里,本来就会被召回)。
 - **domain 黑名单**:autorecall 的域级排除机制照搬(默认 maintenance 类运维噪音;TEMP **不进**默认黑名单——动态区随时可召回,前面已定)。`/recall domain add|remove` 交互沿袭。
 - **RRF 不引入召回通道**:那是工具查询场景的融合方案,与加权召回并存于各自场景(沿 v4)。
-- 注入通道:`before_agent_start` → 混合召回 → `rp-memories` custom message(context:include / llmRole:user / compaction:exclude / display:false);去重每 prompt 从 `buildContextEntries()` 重建。
-- `memory.autoretain.everyNTurns`(默认 4)语义并入 §5 任务注册制。
+- **注入通道**:`before_agent_start` → 混合召回 → `rp-memories` custom message(context:include / llmRole:user / compaction:exclude / display:false);去重每 prompt 从 `buildContextEntries()` 重建,审计只在真正 fresh 注入时记一条 `inject`。
+- **访问追踪(v5.5)**:`last_accessed_at` 只由角色主动 `recall`(精确 URI/展开子树)与 `retrieve` 命中节点更新;**自动注入、slot、MEM:// 系统视图、/memories 浏览不算"想起"**——防止后台机制清空 forgotten 语义。forgotten/diagnostic 的沉睡基准 = `last_accessed_at ?? created_at`。
 - **compaction 交互**:raw_log 独立于 compaction(它是库的镜像,不是 session 内容),原文照常落库;注入的 rp-memories 沿用 compaction:exclude。**autoretain 纪要窗口从 raw_log 取而非活跃上下文**——compaction 把上下文摘要掉之后,纪要照常生成,这正是原文日志存在的意义之一。
 
 ## 10. 工具面（统一、重命名与收敛）
 
-**一套工具服务角色与作家**，不因内容域割裂。摒弃机械去后缀，采用“高阶认知动词 + 语义无冲突”命名；全面吸收 `batch_*` 批处理与冗余工具，将原系统 16–18 个工具槽位精简收敛为 **9 个高聚合核心工具**：
+**一套工具服务角色与作家**，不因内容域割裂。摒弃机械去后缀，采用“高阶认知动词 + 语义无冲突”命名；全面吸收 `batch_*` 批处理与冗余工具，将原系统 16–18 个工具槽位精简收敛为 **12 个顶级工具**（v5.5 定名：recall / retrieve / memorize / revise / forget / relocate / associate / trigger / consolidate / retrace / set_time / awaken）。
 
 ### 对照表
 
 | 旧名 | 推荐新名 | 说明 |
 | --- | --- | --- |
-| `browse_memory` | **`recall`** | 回想与审视：支持精确 URI 寻址、子树多层展开（`depth`/`max_nodes`）及内置系统视图（`MEM://*`）|
-| `search_memory` | **`retrieve`** | 线索检索：混合检索（BM25 词法 + 向量语义），聚合树命中与原文命中摘要，保留 `semantic` 参数|
-| `remember_memory` / `remember_child_memory` | **`memorize`** | 铭刻新记忆：单工具兼具根节点/子节点记入；提供可选 `parent_uri`（自动补齐占位父链）与世界时间打标|
-| `edit_memory` / `batch_edit_memories` | **`revise`** | 修订记忆：避开与 Harness 的 `edit` 冲突；单条支持精确 Patch/追加/行编辑，多条支持批量修饰属性|
-| `forget_memory` / `batch_forget_memories` | **`forget`** | 遗忘清理：单/多条统一入口；`target` 参数多态化（`str | list[str]`），支持 `dry_run` 预览级联影响，删除时自动备份|
-| `move_memory` / `rename_memory` / `batch_move_memories` | **`relocate`** | 认知重构/路径迁移：兼并改名与跨域迁移；单条传 `uri` + `to`，多条传 `batch` 列表，支持 `dry_run`|
-| `link_memory` | **`associate`** | 建立联想通路：在新的上下文路径开辟别名映射（底层 `add_path`），让事件在多处自然通达|
-| `tag_memory` | **`trigger`** | 埋设检索线索：增删触发词汇（`glossary_keywords`），彻底消除“主动执行触发”的动词误解|
-| `merge_memories` / `organize_memory` | **`consolidate`** | 记忆综合与结构收敛：统一多源提炼；通过 `resolution` 参数切换处理策略（`group`/`merge`/`link`/`keep`）|
+| `browse_memory` | **`recall`** | 回想与审视：支持精确 URI 寻址、子树多层展开（`depth`/`max_nodes`）及内置系统视图（`MEM://*`）;精确命中记访问时间(§9 access tracking)|
+| `search_memory` | **`retrieve`** | 线索检索：混合检索（BM25 词法 + 向量语义），保留 `semantic` 参数;显式检索无分数下限,但 keyword 模式仍要求真实命中(kw>0,禁止纯 importance/recency 噪声);**对直接命中做一跳边扩散**(`associate` 建的边,标注 via_edge/kind/from_uri,不占 direct limit,总截 limit)|
+| `remember_memory` / `remember_child_memory` | **`memorize`** | 铭刻新记忆：单工具兼具根节点/子节点记入；提供可选 `parent_uri`（自动补齐占位父链,stub 空正文不进 FTS）与世界时间打标;**目标是 stub 时原地转正**不报"已存在"|
+| `edit_memory` / `batch_edit_memories` | **`revise`** | 修订记忆：`action` 三态——`edit`(默认,单条 Patch/追加/行编辑 + 批量)、`history`(看修订史;不传 uri 列出可恢复的已删记忆;活节点现行正文标 current)、`restore`(从修订史恢复;活节点必传 version,已删节点走 restoreDeleted 可省,按原 node_id 重建接回修订史);stub 有正文编辑时转正并补 custody chain(editor_source manual)|
+| `forget_memory` / `batch_forget_memories` | **`forget`** | 遗忘清理：单/多条统一入口；`target` 参数多态化（`str | list[str]`），支持 `dry_run` 预览级联影响；节点行真删(不留僵尸入口)，修订史保留为找回路径(v5.4),可用 `revise(action:"history")` 查清单、`revise(action:"restore")` 找回|
+| `move_memory` / `rename_memory` / `batch_move_memories` | **`relocate`** | 认知重构/路径迁移：`relocateMany` 原子批量子树迁移——旧 canonical URI 全链路保留为别名、awaken_uris 重映射、后代 URI 按 canonical 前缀重写、根 parent 重挂到目标隐式父;冲突(目标在源子树/目标占用/同批互撞/源互为祖先)在写入前整体抛错零改动;单条 `uri`+`to` 或 batch;支持 `dry_run`|
+| `link_memory` | **`associate`** | 建立联想通路：**双互斥模式**——`new_uri` 建别名(旧语义) / `related_uri`+可选 `kind` 建联想边(edges 表,自连禁止,重复边幂等覆盖 kind)|
+| `tag_memory` | **`trigger`** | 埋设检索线索：增删触发词汇(`glossary_keywords`);增删自动重建该节点 FTS,专名即可检索正文不含触发词的节点|
+| `merge_memories` / `organize_memory` | **`consolidate`** | 记忆综合与结构收敛：统一多源提炼；`resolution` = `group`/`merge`/`link`/`keep`。**group 真分组**:先预检(源末段重名/目标占用/目标在源子树/源互为祖先),再建主题节点、`relocateMany` 把每个源根移到 `target_uri/<源末段>`,移动后源根 parent_id = 主题 node_id;冲突时不建主题、不移动任何源|
 | `boot_memory` | **`awaken`** | 意识焦点管理：管理角色醒来自动载入的常驻/工作记忆清单（`add`/`set`/`remove`/`list`）|
 | `set_world_time` | **`set_time`** | 世界时钟推演：设置或按相对位移（如 `+1d`）推进世界观时间轴；单动词与全体系保持绝对对齐|
 | `archive_history` | **(废除)** | 场景历史日志归档属于运行时快照/审计流水，不占角色主记忆认知工具位|
 | `recent_memories` | **(废除)** | 职责完全被 `recall(uri="MEM://recent/10")` 覆盖，不再独立占用顶级工具位|
-| (新增) | **`retrace`** | 源头回溯：按 ID 或起止区间提取底层历史原文日志，与认知层面的记忆节点解耦 |
+| (新增) | **`retrace`** | 源头回溯：按 ID、起止区间、**URI(节点 first/last_raw_id + anchor_session_id 区间)** 或 **query(raw FTS 活动行)** 提取底层历史原文日志，与认知层面的记忆节点解耦 |
 
 写入工具(source/model/anchor/world_time...)由引擎自动填。删除后的找回路径是 node_revisions——不留无入口的僵尸节点。
 
@@ -163,15 +186,18 @@ memory.db
 - CJK 分词:**`@node-rs/jieba`**。零依赖不是目标本身,分词质量优先;引入原生依赖的代价(install 体积、平台二进制)接受。接口仍抽象,极端场景可换。
 - **不做 MCP wrapper**:nocturne Python 服务退役后,外部消费者走 MemoryStore 纯库层;协议层等真实需求出现再单独成包。
 - **便捷写库/引导(v5.1)**:空库是新会话的**常态**(如同新 jsonl 无消息),不属缺陷。包提供低成本写入口:`seed()`(导入初始树/Boot 节点)、`remember/put` 双向(单节点写入无需预置 parent)。参考实现引导即可,不搞自动化"空库自检"。
-- **恢复与迁移(v5.1)**:DB 文件损坏/丢失 = 冷启动重建 + 从 session jsonl 重建 raw_log 镜像(真源在 jsonl,§4 对账已说明);记忆库本体提供 `export()/import()`(树 + 修订 + kv 的 JSON 快照)供迁移/备份/审计。不做与 session 无关的二次冗余。
-- **审计留痕(v5.1,非 usage/token 计量)**:不埋 token/耗时这类成本 metric——那不是记忆系统的职责。取 pi 每次 LLM 请求都带 usage 的**透明姿态**:记忆系统每次对外动作(写入/编辑/删除/召回/注入/autoretain 任务产出)都出一条 **append-only 结构化审计记录**(时间 + world_ts、事件类型、对象(node_id / 原文区间)、来源与模型、所在回合/任务、anchor)。**只留痕,不参与系统语义**——不投入回滚/查询/注入回路,系统正确性不依赖它;下游可用它对账、复盘、解释"记忆发生了什么"。默认开、可关、不设观测面板。
+- **恢复与迁移(v5.1;v5.5 扩展快照)**:DB 文件损坏/丢失 = 冷启动重建 + 从 session jsonl 重建 raw_log 镜像(真源在 jsonl,§4 对账已说明);记忆库本体提供 `export()/import()` 的 **JSON 快照 = nodes + revisions + kv + aliases + edges + glossary**(v5.5 三类资产齐备;import 时引用不存在节点的 alias/edge/glossary 立即抛错并整体回滚;重建每个活节点 FTS)供迁移/备份/审计。不做与 session 无关的二次冗余。
+- **审计留痕(v5.1;v5.5 补全列)**:不埋 token/耗时这类成本 metric——那不是记忆系统的职责。取 pi 每次 LLM 请求都带 usage 的**透明姿态**:记忆系统每次对外动作(写入/编辑/删除/召回/注入/autoretain 任务产出)都出一条 **append-only 结构化审计记录**(时间 + world_ts、事件类型、对象(node_id + 人可读 URI)、来源与模型、所在回合/任务、anchor、details)。v5.5 补全 `node_id`/`source`/`model`/`turn`/`task`/`anchor`/`details` 列——工具 recall/retrieve 各记一条 `recall` audit(query/URI、命中 node ids、scores/mode),注入只在 fresh 时记 `inject`,autoretain 成功/失败都记 `autoretain_task`。**只留痕,不参与系统语义**——不投入回滚/查询/注入回路,系统正确性不依赖它;下游可用它对账、复盘、解释"记忆发生了什么"。默认开、可关、不设观测面板。
 
 ## 13. Phase 计划(存储先行,autoretain 殿后)
 
 - **Phase 0 — 包骨架 + 新 schema**:workspace 接入三处;schema 全建(§3);存储层纯 vitest 测试(不碰 pi 集成);`openDatabase()` 驱动口。
 - **Phase 1 — 工具面 + slot + context 路由**:§10 全部工具注册;awaken/recent/index 三 slot;`--memory-db` / settings / preset 解析链。
-- **Phase 2 — 召回 + 注入 + 回滚联动 + 署名**:recall 机制与调参迁移(§9);before_agent_start 注入;`_moveLeafAndRestoreState` 绑定(auto anchor 谓词 + raw_log 对账);署名自动填(§6)。验收含:awaken 注入、写/改/删(修订入 revisions)、reroll(纪要隐藏 + 原文删除 + 切回复活)、注入去重 + compaction 重算。
+- **Phase 2 — 召回 + 注入 + 回滚联动 + 署名**:recall 机制与调参迁移(§9);before_agent_start 注入;`_moveLeafAndRestoreState` 绑定(auto anchor 谓词 + raw_log 对账);署名自动填(§6)。验收含:awaken 注入、写/改/删(修订入 revisions)、reroll(纪要隐藏 + 原文 active 标记 + 切回复活)、注入去重 + compaction 重算。
 - **Phase 3 — autoretain + TEMP + 读端**:任务注册引擎(§5)、"系统→角色定向消息"原语、TEMP 动态区机制(§7)、系统视图移植(timeline / forgotten / wakeup;forgotten 语义 = 捞沉睡最久的活记忆,与删除无关)、`/memories` interactive、(可选)smol 模型角色接 autoretain。
+
+> **状态:v5.5 起 Phase 0-3 全部闭环**。修复轮(见 `memory-system-audit.md` §27)落地:raw_log 稳定 session 镜像、autoretain 真实引擎接线(per-task 进度/脱敏/modelRole)、FTS/glossary/edges 真实读端、embeddings 隐私默认 off、keyword 注入档 0.12、access tracking、审计补全、快照三类资产、`/memories` 使用 AgentSession 已解析路径。<br>
+> 审计报告每项均有代码与回归测试闭环;测试:packages/memory/test(store/tools/recall/module/phase3/slots)+ packages/coding-agent/test(memory-module/settings-manager)。
 
 ## 14. 已定决策清单
 
@@ -180,25 +206,35 @@ memory.db
 2a. **多进程格局(作家与角色)**:同一 world project 下,**进程各一库**——主进程(GM/作家 agent)与角色子进程各有自己的 context(库边界 = 进程边界;session 自身已实现上下文隔离)。作家库记剧情大纲/伏笔/世界状态,角色库记主观记忆与自视角纪要(现网 elias 与全局 namespace 的分离已是此格局)。raw_log 各记各的 session;世界钟**各库自存**(memory_kv),包只提供读写 API,子进程如何跟随主进程推进由下游接线;两库不共享表,靠 world_ts 讲同一个时间故事。
 3. 树为脊,单节点单树,树根即 domain;TEMP 之外无特殊 domain。
 4. 客观轨 = raw_log 原文日志(逐消息行,turn_end 批量;custom message 收编 = settings 三态开关,默认 all-display-true);纪要 = 树节点(autoretain 产物,落点默认 history domain,纯下游约定)。
-5. raw_log 与活动树切换即对账(物理删除路径外行);真源是 pi session jsonl,DB 是派生。
+5. raw_log 与活动树切换即对账(**v5.5:置 active=0 的稳定镜像,session 隔离;不再物理删除**);真源是 pi session jsonl,DB 是派生。
 6. autoretain:通用能力、引擎侧后台生成(廉模型 + strict JSON)、任务注册制、模型逐任务可配默认 smol、失败静默跳过。
 7. 署名全字段内建(source/model/anchor+world_ts),引擎自动填;同款/异款 = 模型 id 全等;custody 链经 node_revisions。
 8. 动态区:机制内建、命名 TEMP:// 唯一约定、计数 = TEMP 活跃节点数、整理 = 清零、TEMP 节点普通可召回;notify 与 autoretain 共用"系统→角色定向消息"原语。
 9. 回滚:auto 来源节点带 anchor 跟回滚(谓词隐藏,切回复活),manual 永不自动隐藏;钩子绑 `_moveLeafAndRestoreState`;memory_ops 取消。
-10. 节点版本:node_revisions 表(修订制 + custody 链);delete = 真删,无归档层,无机器 retention。
+10. 节点版本:node_revisions 表(修订制 + custody 链)。**delete = 真删(v5.4 定案)**:节点行物理删除,不像 nocturne 那样留"拿掉入口但数据还在"的僵尸节点/孤儿池;但删除时把当前正文归档为最后一版,`node_revisions` 连同 `uri` 全部保留——**找回路径就是 node_revisions**(`listRevisionsByUri` / `listDeletedUris` / `restoreDeleted`,按原 node_id 重建以接回修订史)。无归档层,无机器 retention。
 11. edges / aliases / glossary 保留(schema 随新设计重写)。
-12. 召回:调参版整体迁移(0.55/0.3/0.15 等);注入只出树节点;黑名单默认 maintenance 类,TEMP 不进;RRF 只在工具查询场景。
+12. 召回:调参版整体迁移(0.55/0.3/0.15 等);注入只出树节点;黑名单默认 maintenance 类,TEMP 不进;RRF 只在工具查询场景。v5.5:keyword 注入档独立 `keywordMinScore`(默认 0.12)且要求真实命中;候选集走 FTS;稳定同分次键。
 13. slot:awaken / recent / index 三个,静态注册,async:true。
-14. 工具:一套统一、去后缀、归并(约 16-18 个);browse→recall、forget→delete、archive_history 废除、新增 raw。
+14. 工具:一套统一、去后缀、归并(**12 个**:recall / retrieve / memorize / revise / forget / relocate / associate / trigger / consolidate / retrace / set_time / awaken);browse→recall、forget→delete 语义收敛、archive_history 废除、新增 raw(retrace)。
 15. 世界钟内建记忆包(配置 memory_kv + 工具 + 读取 API)。
 16. 包 API 两层:MemoryStore 纯库 + createMemoryModule;autoretain 任务注册接口。
 17. 驱动:node:sqlite 为主,编译场景留后备口;向量仅节点、仅 API、可 off。
 18. Phase:0 schema → 1 工具/slot/路由 → 2 召回/注入/回滚/署名 → 3 autoretain/TEMP/读端。
-19. **raw_log 无限增长不裁剪(v5.1)**:append-only 永久保留,不做 retention/归档/容量裁剪;成本极低,收益 = 原文永久可得。唯一"删"= 切换分支对账。
-20. **裁剪点只在 node_revisions(v5.1)**:修订版内容可重建,`memory.revisions.retention`(默认无限,可配保留版本数/体积上限)。两表分工从此清晰。
+19. **raw_log 无限增长不裁剪(v5.1;v5.5 修订)**:append-only 永久保留,不做 retention/归档/容量裁剪;成本极低,收益 = 原文永久可得。唯一"删"= 切换分支对账,且 v5.5 起为 **active 标记(不物理删除)**,曾入库行(含 world/wall 时间戳)永久可审计。
+20. **裁剪点只在 node_revisions(v5.1;v5.5 落地)**:修订版内容可重建,`memory.revisions.maxVersionsPerNode`(默认无限,正整数)每次归档后剪最旧超额版本,删除前归档也应用同一策略,保证至少保留一版可恢复正文。两表分工从此清晰。
 21. **写库接口与空库语义(v5.1)**:空库 = 新会话常态;包提供 seed()/put 低门槛写入口,不做自动化空库自检。
 22. **恢复与迁移(v5.1)**:损坏/丢失 → 冷启动重建 + jsonl 重建 raw_log;`export()/import()` JSON 快照供迁移/备份/审计。
-23. **审计留痕(v5.1)**:不是 usage/token 计量;而是每次写入/编辑/删除/召回/注入/autoretain 产出 append-only 结构化审计流(事件 + 对象 + 来源/模型 + 时间/world_ts + 回合/任务 + anchor),供下游透明审计;除对外暴露外不参与系统语义。
+23. **审计留痕(v5.1;v5.5 补全)**:不是 usage/token 计量;而是每次写入/编辑/删除/召回/注入/autoretain 产出 append-only 结构化审计流(事件 + 对象(node_id + URI) + 来源/模型 + 时间/world_ts + 回合/任务 + anchor + details),供下游透明审计;除对外暴露外不参与系统语义。
+24. **重要性单列(v5.3,2026-09-11;v5.4 反转极性)**:`priority` 与 `importance` 合并为**一列 `importance`**,口径 **10=最重要 / 5=普通 / 0=边角料(数值越大越重要)**。工具参数名、schema 列名、召回权重(`W_IMPORTANCE` 0.15)、星级与诊断阈值全链路同名同向;§9 权重表里的"priority 0.15"即此列。落地见 `memory-system-audit.md` #10。
+25. **删除语义(v5.4)**:见决策 10 —— 真删指的是不留僵尸入口,不是不留数据;node_revisions 是唯一找回路径,`forget` 因此不再级联删修订。
+26. **向量通道(v5.4;v5.5 隐私默认)**:embeddings 落地为 API 模式 + 本地缓存,失败静默降级;keyword-only 时权重不重标定(§9),软锚只由语义挣得。**未显式 `mode:"api"` 恒为 off、不联网**;显式 api 才读 env key 外呼,10s 超时,外部 abort 不 latch,响应错误仍 latch。
+27. **raw_log 稳定活动镜像(v5.5)**:`(session_id, entry_id)` 唯一 + active 标记;切换对账只动本 session 行,不读/不扫他 session;切回旧分支按原 raw_id/时间戳复活;wall 时间戳永存、world_ts 不覆盖。
+28. **autoretain 真实引擎接线(v5.5)**:`completeSideRequest(prompt, {modelRole,maxTokens,signal,label})` 桥到引擎侧请求原语;每任务 `maxInputChars`/`maxOutputTokens`/`redact` 默认;`autoretain_progress(session_id,task,entry_id)` per-task/per-session 消费进度,成功才写、失败重试同窗口;产物写 anchor_session_id + first/last_raw_id。
+29. **auto 可见性(session 维度,v5.5)**:manual/import 恒可见;auto 缺 anchor_session_id 或 anchor_entry_id 隐藏;跨 session auto 恒可见;同 session auto 仅当 anchor 在活动路径可见。A 的 reroll 不隐藏 B 的产物。
+30. **FTS/glossary/edges 真实读端(v5.5)**:node/raw 两张 FTS 用统一分词文本 + 稳定 ID 回表过滤;检索候选 = FTS 命中;glossary 完整专名作为额外 token 参与索引与查询,专名可召回正文不含该词的节点(不污染全局分词词典);edges 只用于显式 retrieve 的一跳扩散(不参与自动注入)。`@node-rs/jieba` 不可用时 FTS/查询共用 latin + CJK bigram 退路,两侧同一 token 空间。
+31. **访问追踪(v5.5)**:`last_accessed_at` 仅由角色主动 recall/retrieve 更新;自动注入、slot、MEM:// 视图、/memories 浏览不 touch;forgotten/diagnostic 沉睡基准 = `last_accessed_at ?? created_at`。
+32. **keyword 注入档(v5.5)**:`memory.recall.keywordMinScore` 默认 0.12、要求 kw>0;vector 模式仍 minScore 0.35。显式 retrieve 两种模式 minScore:0,但 keyword 模式同样要求真实命中。
+33. **preset memory 声明 + 生命周期(v5.5)**:`PromptPreset.memory.dbPath` 接入解析链(`PI_MEMORY_DB > settings.memory.dbPath > activePreset.memory.dbPath > <cwd>/.pi/memory.db`);`_setupMemoryModule` 每次 reload 先 dispose 旧 module 再按当前配置重建;preset 切换解析路径变化时 `requestReload()` 干净重绑;`/memories` 只用 AgentSession 已解析路径(`ctx.getMemoryDbPath()`)。
 
 ## 15. 本轮评审补充决策(2026-09-09,ask 批次)
 
@@ -213,7 +249,7 @@ memory.db
 
 | 风险 | 缓解 |
 |---|---|
-| raw_log 物理删除误伤(活动路径判定 bug) | 对账逻辑以 `buildContextEntries()` 为唯一真源;Phase 2 验收专测 reroll / 切分支 / compaction 三场景;jsonl 永不删,可重建 |
+| raw_log active 标记误伤(活动路径判定 bug) | 对账逻辑以 `getActiveBranchMessages()`(session 隔离)为唯一真源;`syncRawBranch` 只动本 session 行;Phase 2 验收专测 reroll / 切分支 / compaction 三场景;jsonl 永不删,可重建;active=0 不丢数据(可审计、可复活) |
 | auto anchor 谓词与 pi 内部结构耦合(anchor_entry_id 语义变化) | 谓词集中单文件;`leaf_changed`/`session_before_reroll` 作旁路观察口 |
 | autoretain 后台生成质量(廉模型写歪) | strict JSON 契约 + 验收 schema;产物 source:auto 天然"整理时降级为参考草稿";失败静默跳过不影响主链路 |
 | TEMP 清零纪律失效(历史教训:143 节点) | notify 注入含教程与清零要求;display:false 不扰用户;机制内建不可绕过 |

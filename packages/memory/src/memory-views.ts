@@ -12,14 +12,17 @@ function snippet(node: MemoryNode, max = 80): string {
 	return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
 }
 
-function stars(priority: number): string {
-	return ` [★${priority}]`;
+/** importance 星级：10 = 最重要，0 = 边角料（数值越大越重要，docs §3）。 */
+function stars(importance: number): string {
+	return ` [★${importance}]`;
 }
 
 /** MEM://timeline/<domain>/<N> — raw_log messages with world_ts (§15.4). */
 export function renderTimelineView(store: MemoryStore, limit = 20): string {
+	// Active rows only (§3.2): rolled-back variants stay in the DB for audit
+	// but never re-surface on the axis.
 	const rows = store.db
-		.prepare("SELECT raw_id, role, text, world_ts FROM raw_log ORDER BY raw_id DESC LIMIT ?")
+		.prepare("SELECT raw_id, role, text, world_ts FROM raw_log WHERE active = 1 ORDER BY raw_id DESC LIMIT ?")
 		.all(limit) as Array<{ raw_id: number; role: string; text: string; world_ts: string | null }>;
 	const lines = [`# 原文时间轴 (Timeline)`, `> 条目: ${rows.length} 条（按记录倒序）`, ``];
 	if (rows.length === 0) {
@@ -46,7 +49,8 @@ export function renderForgottenView(
 	const nodes = store
 		.listNodes(domain ? { domain } : {})
 		.filter((n) => !n.is_stub && isVisible(n))
-		.map((n) => ({ node: n, days: nowDays - (epochDays(n.updated_ts) ?? nowDays) }))
+		// 沉睡基准 = last_accessed_at ?? created_at（从未被主动想起 = 出生即沉睡，§13/§16）。
+		.map((n) => ({ node: n, days: nowDays - (epochDays(n.last_accessed_at ?? n.created_at) ?? nowDays) }))
 		.sort((a, b) => b.days - a.days)
 		.slice(0, limit);
 	const lines = [
@@ -60,7 +64,7 @@ export function renderForgottenView(
 		return lines.join("\n");
 	}
 	for (const { node, days } of nodes) {
-		lines.push(`- ${days} 天没想起 | ${node.uri}${stars(node.priority)}`);
+		lines.push(`- ${days} 天没想起 | ${node.uri}${stars(node.importance)}`);
 		lines.push(`  ${snippet(node)}`);
 	}
 	lines.push(``, `(这些记忆正在沉睡。recall 读取原文可以唤醒它们。)`);
@@ -75,26 +79,31 @@ function epochDays(ts: string | null): number | null {
 }
 
 /** MEM://wakeup/<N> — 意识焦点视图: awaken 清单全文 + 最近动态. */
-export function renderWakeupView(store: MemoryStore, awakenUris: string[], limit = 5): string {
+export function renderWakeupView(
+	store: MemoryStore,
+	awakenUris: string[],
+	limit = 5,
+	isVisible: (n: MemoryNode) => boolean = () => true,
+): string {
 	const sections: string[] = [];
 	const listed = new Set<string>();
 	for (const uri of awakenUris) {
 		const node = store.resolveUri(uri);
-		if (!node || node.is_stub) continue;
+		if (!node || node.is_stub || !isVisible(node)) continue;
 		listed.add(node.uri);
 		const lines = [`### ${node.uri}`];
 		if (node.world_ts) lines.push(`> (发生于: ${node.world_ts})`);
 		if (node.disclosure) lines.push(`> 什么时候想起：${node.disclosure}`);
 		lines.push(node.content, ``);
 		for (const child of store.children(node.node_id)) {
-			if (child.is_stub) continue;
+			if (child.is_stub || !isVisible(child)) continue;
 			listed.add(child.uri);
 			const disc = child.disclosure ? ` (${child.disclosure})` : "";
 			lines.push(`- ${child.uri}${disc} — ${snippet(child)}`);
 		}
 		sections.push(lines.join("\n"));
 	}
-	const recent = store.listRecentNodes(limit).filter((n) => !listed.has(n.uri));
+	const recent = store.listRecentNodes(limit).filter((n) => !listed.has(n.uri) && isVisible(n));
 	if (recent.length > 0) {
 		sections.push(`## 最近动态\n${recent.map((n) => snippet(n)).join("\n")}`);
 	}
@@ -118,26 +127,34 @@ export function renderGlossaryView(store: MemoryStore): string {
 }
 
 /** MEM://recent/<N> — 最近修改的记忆（结构化渲染）. */
-export function renderRecentView(store: MemoryStore, limit = 10): string {
-	const nodes = store.listRecentNodes(limit);
+export function renderRecentView(
+	store: MemoryStore,
+	limit = 10,
+	isVisible: (n: MemoryNode) => boolean = () => true,
+): string {
+	const nodes = store.listRecentNodes(limit).filter((n) => isVisible(n));
 	const lines = [`# 最近修改的记忆 (Recently Modified)`, `> 显示范围: 最近 ${nodes.length} 条记录`, ``];
 	if (nodes.length === 0) {
 		lines.push("(没有找到相关的记忆。)");
 		return lines.join("\n");
 	}
 	for (const n of nodes) {
-		lines.push(`- ${n.uri}${stars(n.priority)} (修改时间: ${n.updated_ts.slice(0, 16).replace("T", " ")})`);
+		lines.push(`- ${n.uri}${stars(n.importance)} (修改时间: ${n.updated_ts.slice(0, 16).replace("T", " ")})`);
 		if (n.disclosure) lines.push(`  想起条件: ${n.disclosure}`);
 	}
 	return lines.join("\n");
 }
 
 /** MEM://index[/<domain>] — domain 根节点视图. */
-export function renderIndexView(store: MemoryStore, domain?: string): string {
+export function renderIndexView(
+	store: MemoryStore,
+	domain?: string,
+	isVisible: (n: MemoryNode) => boolean = () => true,
+): string {
 	const domains = domain ? [domain] : store.listDomains();
 	const lines: string[] = [];
 	for (const d of domains) {
-		const roots = store.listNodes({ domain: d }).filter((n) => !n.is_stub && n.parent_id === null);
+		const roots = store.listNodes({ domain: d }).filter((n) => !n.is_stub && n.parent_id === null && isVisible(n));
 		if (roots.length === 0) continue;
 		lines.push(`## ${d}`);
 		for (const root of roots) lines.push(`  ${root.uri}: ${snippet(root)}`);
@@ -149,11 +166,12 @@ export function renderIndexView(store: MemoryStore, domain?: string): string {
 export function renderDiagnosticView(store: MemoryStore, domain?: string, daysStale = 30, maxChildren = 10): string {
 	const nodes = store.listNodes(domain ? { domain } : {}).filter((n) => !n.is_stub);
 	const nowDays = epochDays(new Date().toISOString()) ?? 0;
-	const priorityThreshold: Record<number, number> = { 0: 3, 1: 7, 2: 14 };
+	// 越重要的记忆，容许沉睡的天数越短。沉睡基准 = last_accessed_at ?? created_at.
+	const importanceThreshold: Record<number, number> = { 10: 3, 9: 7, 8: 14 };
 	const stale = nodes
-		.map((n) => ({ node: n, days: nowDays - (epochDays(n.updated_ts) ?? nowDays) }))
-		.filter(({ node, days }) => days > (priorityThreshold[node.priority] ?? daysStale))
-		.sort((a, b) => a.node.priority - b.node.priority || b.days - a.days);
+		.map((n) => ({ node: n, days: nowDays - (epochDays(n.last_accessed_at ?? n.created_at) ?? nowDays) }))
+		.filter(({ node, days }) => days > (importanceThreshold[node.importance] ?? daysStale))
+		.sort((a, b) => b.node.importance - a.node.importance || b.days - a.days);
 	const childCount = new Map<string, number>();
 	for (const n of nodes) {
 		if (n.parent_id) childCount.set(n.parent_id, (childCount.get(n.parent_id) ?? 0) + 1);
@@ -168,9 +186,9 @@ export function renderDiagnosticView(store: MemoryStore, domain?: string, daysSt
 	}
 	const lines = [`# Memory System Diagnostics${domain ? `: ${domain}` : ""}`, ``];
 	if (stale.length > 0) {
-		lines.push(`## 1. 陈旧记忆 (Stale)`, `超出对应优先级的沉睡阈值（0:<3d 1:<7d 2:<14d 其余:<${daysStale}d）。`, ``);
+		lines.push(`## 1. 陈旧记忆 (Stale)`, `超出对应重要性的沉睡阈值（10:<3d 9:<7d 8:<14d 其余:<${daysStale}d）。`, ``);
 		for (const { node, days } of stale) {
-			lines.push(`- ${node.uri}${stars(node.priority)} — 沉睡约 ${days} 天`, `  ${snippet(node)}`);
+			lines.push(`- ${node.uri}${stars(node.importance)} — 沉睡约 ${days} 天`, `  ${snippet(node)}`);
 		}
 		lines.push(``);
 	}
