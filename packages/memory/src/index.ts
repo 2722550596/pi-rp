@@ -55,7 +55,7 @@ export {
 	renderRecentView,
 	renderTimelineView,
 	renderWakeupView,
-} from "./system-views.ts";
+} from "./memory-views.ts";
 export {
 	buildTempNotifyContent,
 	checkTempThreshold,

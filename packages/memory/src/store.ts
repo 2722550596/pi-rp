@@ -684,8 +684,8 @@ export class MemoryStore {
 	seed(): void {
 		this.db.transaction(() => {
 			this.setKv(SCHEMA_VERSION_KEY, SCHEMA_VERSION);
-			if (!this.resolveUri("system://index")) {
-				this._insertNode({ uri: "system://index", content: "Memory system root index", source: "manual" });
+			if (!this.resolveUri("index://")) {
+				this._insertNode({ uri: "index://", content: "Index domain root", source: "manual" });
 			}
 			if (!this.resolveUri("history://")) {
 				this._insertNode({ uri: "history://", content: "Scene summary domain", source: "manual" });

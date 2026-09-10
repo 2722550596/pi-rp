@@ -15,7 +15,7 @@ import {
 	renderRecentView,
 	renderTimelineView,
 	renderWakeupView,
-} from "./system-views.ts";
+} from "./memory-views.ts";
 
 /** Minimal structural shape of coding-agent ToolDefinition execute (no pi dep). */
 export interface MemoryToolResult {
@@ -105,7 +105,7 @@ function stampWorldTs(store: MemoryStore, time: string | undefined): string | nu
 const recallParams = Type.Object({
 	uri: Type.String({
 		description:
-			"记忆 URI，如 core://identity/habits。系统视图：system://recent/<N>、system://index/<domain>、system://timeline/<domain>/<N>、system://forgotten/<domain>/<N>、system://glossary、system://wakeup/<N>、system://diagnostic/<domain>。",
+			"记忆 URI，如 core://identity/habits。系统视图：MEM://recent/<N>、MEM://index/<domain>、MEM://timeline/<domain>/<N>、MEM://forgotten/<domain>/<N>、MEM://glossary、MEM://wakeup/<N>、MEM://diagnostic/<domain>。",
 	}),
 	depth: Type.Optional(
 		Type.Number({
@@ -115,7 +115,7 @@ const recallParams = Type.Object({
 	max_nodes: Type.Optional(Type.Number({ description: "子树模式下最多渲染多少条节点正文，防刷爆上下文。默认 200。" })),
 });
 
-/** Parse a system:// view limit segment: non-negative integer, min 1. */
+/** Parse a MEM:// view limit segment: non-negative integer, min 1. */
 function parseViewCount(uri: string, partIndex: number, fallback: number): number {
 	const raw = Number(uri.split("/")[partIndex]);
 	return Number.isInteger(raw) && raw >= 1 ? raw : fallback;
@@ -123,41 +123,41 @@ function parseViewCount(uri: string, partIndex: number, fallback: number): numbe
 
 async function executeRecall(store: MemoryStore, params: Static<typeof recallParams>): Promise<MemoryToolResult> {
 	const { uri, depth, max_nodes: maxNodes } = params;
-	if (uri === "system://recent" || uri.startsWith("system://recent/")) {
+	if (uri === "MEM://recent" || uri.startsWith("MEM://recent/")) {
 		const n = parseViewCount(uri, 2, 10);
 		const rendered = renderRecentView(store, n);
 		const nodes = store.listRecentNodes(n);
 		return withDetails(rendered, { node_ids: nodes.map((x) => x.node_id) });
 	}
-	if (uri === "system://index" || uri.startsWith("system://index/")) {
-		const rest = uri.slice("system://index".length); // "" or "/<domain>"
+	if (uri === "MEM://index" || uri.startsWith("MEM://index/")) {
+		const rest = uri.slice("MEM://index".length); // "" or "/<domain>"
 		const domain = rest.startsWith("/") && rest.length > 1 ? rest.slice(1) : undefined;
 		return text(renderIndexView(store, domain));
 	}
-	if (uri === "system://glossary") {
+	if (uri === "MEM://glossary") {
 		return text(renderGlossaryView(store));
 	}
-	if (uri === "system://wakeup" || uri.startsWith("system://wakeup/")) {
+	if (uri === "MEM://wakeup" || uri.startsWith("MEM://wakeup/")) {
 		const n = parseViewCount(uri, 2, 5);
 		return text(renderWakeupView(store, getAwakenUris(store), n));
 	}
-	if (uri === "system://timeline" || uri.startsWith("system://timeline/")) {
+	if (uri === "MEM://timeline" || uri.startsWith("MEM://timeline/")) {
 		// Data source is raw_log (message-level, §15.4): the domain segment is
 		// accepted for uri compatibility but raw_log is domain-agnostic.
 		const n = parseViewCount(uri, 3, 20);
 		return text(renderTimelineView(store, n));
 	}
-	if (uri === "system://forgotten" || uri.startsWith("system://forgotten/")) {
+	if (uri === "MEM://forgotten" || uri.startsWith("MEM://forgotten/")) {
 		const parts = uri.split("/");
-		// <domain> must not be numeric: system://forgotten/<N> treats N as the
+		// <domain> must not be numeric: MEM://forgotten/<N> treats N as the
 		// limit, not a domain name.
 		const second = parts[2];
 		const domain = second && second !== "" && !/^\d+$/.test(second) ? second : undefined;
 		const n = parseViewCount(uri, /^\d+$/.test(second ?? "") ? 2 : 3, 5);
 		return text(renderForgottenView(store, domain, n));
 	}
-	if (uri === "system://diagnostic" || uri.startsWith("system://diagnostic/")) {
-		const domain = uri.slice("system://diagnostic/".length) || undefined;
+	if (uri === "MEM://diagnostic" || uri.startsWith("MEM://diagnostic/")) {
+		const domain = uri.slice("MEM://diagnostic/".length) || undefined;
 		return text(renderDiagnosticView(store, domain || undefined));
 	}
 
@@ -601,7 +601,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "recall",
 			label: "回想记忆",
 			description:
-				"回想与审视一段记忆：URI 精确寻址 + 子树展开（depth/max_nodes）。系统视图：system://recent/<N>、system://index/<domain>、system://timeline/<domain>/<N>、system://forgotten/<domain>/<N>、system://glossary、system://wakeup/<N>、system://diagnostic/<domain>。",
+				"回想与审视一段记忆：URI 精确寻址 + 子树展开（depth/max_nodes）。系统视图：MEM://recent/<N>、MEM://index/<domain>、MEM://timeline/<domain>/<N>、MEM://forgotten/<domain>/<N>、MEM://glossary、MEM://wakeup/<N>、MEM://diagnostic/<domain>。",
 			parameters: recallParams,
 			run: (p) => executeRecall(store, p as Static<typeof recallParams>),
 		},
@@ -655,7 +655,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "trigger",
 			label: "埋设触发词",
 			description:
-				"给记忆增删触发词（glossary）。触发词提升分词命中；查看全部触发词用 recall(uri='system://glossary')。",
+				"给记忆增删触发词（glossary）。触发词提升分词命中；查看全部触发词用 recall(uri='MEM://glossary')。",
 			parameters: triggerParams,
 			run: (p) => executeTrigger(store, p as Static<typeof triggerParams>, ctx),
 		},

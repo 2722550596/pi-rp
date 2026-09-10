@@ -1,5 +1,5 @@
 /**
- * system:// views for the recall tool (docs/memory-system.md §10/§15.4).
+ * MEM:// views for the recall tool (docs/memory-system.md §10/§15.4).
  *
  * Render-format port of nocturne system_views.py (timeline/forgotten/wakeup/
  * glossary/diagnostic/recent/index) onto the local store. timeline 数据源 =
@@ -16,7 +16,7 @@ function stars(priority: number): string {
 	return ` [★${priority}]`;
 }
 
-/** system://timeline/<domain>/<N> — raw_log messages with world_ts (§15.4). */
+/** MEM://timeline/<domain>/<N> — raw_log messages with world_ts (§15.4). */
 export function renderTimelineView(store: MemoryStore, limit = 20): string {
 	const rows = store.db
 		.prepare("SELECT raw_id, role, text, world_ts FROM raw_log ORDER BY raw_id DESC LIMIT ?")
@@ -35,7 +35,7 @@ export function renderTimelineView(store: MemoryStore, limit = 20): string {
 	return lines.join("\n");
 }
 
-/** system://forgotten/<domain>/<N> — 捞沉睡最久的活记忆（与删除无关）. */
+/** MEM://forgotten/<domain>/<N> — 捞沉睡最久的活记忆（与删除无关）. */
 export function renderForgottenView(
 	store: MemoryStore,
 	domain?: string,
@@ -74,7 +74,7 @@ function epochDays(ts: string | null): number | null {
 	return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000);
 }
 
-/** system://wakeup/<N> — 意识焦点视图: awaken 清单全文 + 最近动态. */
+/** MEM://wakeup/<N> — 意识焦点视图: awaken 清单全文 + 最近动态. */
 export function renderWakeupView(store: MemoryStore, awakenUris: string[], limit = 5): string {
 	const sections: string[] = [];
 	const listed = new Set<string>();
@@ -101,7 +101,7 @@ export function renderWakeupView(store: MemoryStore, awakenUris: string[], limit
 	return sections.join("\n\n---\n\n") || "(醒来记忆清单为空。)";
 }
 
-/** system://glossary — 触发词索引. */
+/** MEM://glossary — 触发词索引. */
 export function renderGlossaryView(store: MemoryStore): string {
 	const entries = store.listGlossary();
 	const lines = [`# 标签/触发词索引 (Glossary Index)`, `> 总计: ${entries.length} 个关键词`, ``];
@@ -117,7 +117,7 @@ export function renderGlossaryView(store: MemoryStore): string {
 	return lines.join("\n");
 }
 
-/** system://recent/<N> — 最近修改的记忆（结构化渲染）. */
+/** MEM://recent/<N> — 最近修改的记忆（结构化渲染）. */
 export function renderRecentView(store: MemoryStore, limit = 10): string {
 	const nodes = store.listRecentNodes(limit);
 	const lines = [`# 最近修改的记忆 (Recently Modified)`, `> 显示范围: 最近 ${nodes.length} 条记录`, ``];
@@ -132,7 +132,7 @@ export function renderRecentView(store: MemoryStore, limit = 10): string {
 	return lines.join("\n");
 }
 
-/** system://index[/<domain>] — domain 根节点视图. */
+/** MEM://index[/<domain>] — domain 根节点视图. */
 export function renderIndexView(store: MemoryStore, domain?: string): string {
 	const domains = domain ? [domain] : store.listDomains();
 	const lines: string[] = [];
@@ -145,7 +145,7 @@ export function renderIndexView(store: MemoryStore, domain?: string): string {
 	return lines.join("\n") || "(空)";
 }
 
-/** system://diagnostic/<domain> — 库健康诊断（stale / crowded / placeholder）. */
+/** MEM://diagnostic/<domain> — 库健康诊断（stale / crowded / placeholder）. */
 export function renderDiagnosticView(store: MemoryStore, domain?: string, daysStale = 30, maxChildren = 10): string {
 	const nodes = store.listNodes(domain ? { domain } : {}).filter((n) => !n.is_stub);
 	const nowDays = epochDays(new Date().toISOString()) ?? 0;

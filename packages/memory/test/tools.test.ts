@@ -245,14 +245,14 @@ describe("recall system views", () => {
 	it("recent view lists by updated_ts", async () => {
 		await run("memorize", { uri: "history://one", content: "一" });
 		await run("memorize", { uri: "history://two", content: "二" });
-		const r = await run("recall", { uri: "system://recent/5" });
+		const r = await run("recall", { uri: "MEM://recent/5" });
 		expect(r.text).toContain("history://one");
 		expect(r.text).toContain("history://two");
 	});
 
 	it("index view lists domain roots", async () => {
 		await run("memorize", { uri: "core://identity", content: "身份" });
-		const r = await run("recall", { uri: "system://index" });
+		const r = await run("recall", { uri: "MEM://index" });
 		expect(r.text).toContain("core://identity");
 	});
 });

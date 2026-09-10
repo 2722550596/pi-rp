@@ -2,7 +2,7 @@
  * Phase 3 tests (docs/memory-system.md §5/§7/§10):
  *   - autoretain task engine (side LLM via completeSideRequest)
  *   - TEMP dynamic-zone threshold notify (rp-notify)
- *   - system:// views (timeline / forgotten / recent / diagnostic)
+ *   - MEM:// views (timeline / forgotten / recent / diagnostic)
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type AutoretainTask, dueTasks, runAutoretainTask } from "../src/autoretain.ts";
@@ -16,7 +16,7 @@ import {
 	renderForgottenView,
 	renderRecentView,
 	renderTimelineView,
-} from "../src/system-views.ts";
+} from "../src/memory-views.ts";
 
 let db: MemoryDatabase;
 let store: MemoryStore;
@@ -182,9 +182,9 @@ describe("TEMP threshold notify", () => {
 	});
 });
 
-// ── system:// views (§10) ───────────────────────────────────────────────────
+// ── MEM:// views (§10) ───────────────────────────────────────────────────
 
-describe("system views", () => {
+describe("MEM:// views", () => {
 	function seed() {
 		store.insertNode({ uri: "history://alpha", content: "阿尔法事件：北方商队抵达", priority: 3 });
 		store.insertNode({ uri: "history://beta", content: "贝塔事件：酒馆易主", priority: 5 });

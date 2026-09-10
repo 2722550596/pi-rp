@@ -2,7 +2,7 @@
 
 > 状态:**已实施**(Phase 0-3 全量落地,实施 commit b0708f1e6,2026-09-10)
 > 相关:`plan.md`(功能规划第 6 项)、`plan/multi-agent-infrastructure.md`(多会话 daemon)、`plan/archives/memory-system.md`(v3 档案)、`~/MEMORY.md`(角色侧补充要求)
-> 版本史:v3(2026-09-01,RP 双轨定位)→ v4(2026-09-09,胶水层现状重核)→ **v5(2026-09-09,逐枝设计评审版,本版取代 v4)** → **v5.1(2026-09-10,首消费者回冲修订,本版取代 v5)**
+> 版本史:v3(2026-09-01,RP 双轨定位)→ v4(2026-09-09,胶水层现状重核)→ **v5(2026-09-09,逐枝设计评审版,本版取代 v4)** → **v5.1(2026-09-10,首消费者回冲修订,本版取代 v5)** → **v5.2(2026-09-10,系统视图 scheme 更名 `system://` → `MEM://`,与 `TEMP://` 同属保留前缀;seed 索引根改为 `index://` 真域根)**
 
 ## 0. v5 相对 v4 的根本分歧
 
@@ -124,7 +124,7 @@ memory.db
 
 | 旧名 | 推荐新名 | 说明 |
 | --- | --- | --- |
-| `browse_memory` | **`recall`** | 回想与审视：支持精确 URI 寻址、子树多层展开（`depth`/`max_nodes`）及内置系统视图（`system://*`）|
+| `browse_memory` | **`recall`** | 回想与审视：支持精确 URI 寻址、子树多层展开（`depth`/`max_nodes`）及内置系统视图（`MEM://*`）|
 | `search_memory` | **`retrieve`** | 线索检索：混合检索（BM25 词法 + 向量语义），聚合树命中与原文命中摘要，保留 `semantic` 参数|
 | `remember_memory` / `remember_child_memory` | **`memorize`** | 铭刻新记忆：单工具兼具根节点/子节点记入；提供可选 `parent_uri`（自动补齐占位父链）与世界时间打标|
 | `edit_memory` / `batch_edit_memories` | **`revise`** | 修订记忆：避开与 Harness 的 `edit` 冲突；单条支持精确 Patch/追加/行编辑，多条支持批量修饰属性|
@@ -136,7 +136,7 @@ memory.db
 | `boot_memory` | **`awaken`** | 意识焦点管理：管理角色醒来自动载入的常驻/工作记忆清单（`add`/`set`/`remove`/`list`）|
 | `set_world_time` | **`set_time`** | 世界时钟推演：设置或按相对位移（如 `+1d`）推进世界观时间轴；单动词与全体系保持绝对对齐|
 | `archive_history` | **(废除)** | 场景历史日志归档属于运行时快照/审计流水，不占角色主记忆认知工具位|
-| `recent_memories` | **(废除)** | 职责完全被 `recall(uri="system://recent/10")` 覆盖，不再独立占用顶级工具位|
+| `recent_memories` | **(废除)** | 职责完全被 `recall(uri="MEM://recent/10")` 覆盖，不再独立占用顶级工具位|
 | (新增) | **`retrace`** | 源头回溯：按 ID 或起止区间提取底层历史原文日志，与认知层面的记忆节点解耦 |
 
 写入工具(source/model/anchor/world_time...)由引擎自动填。删除后的找回路径是 node_revisions——不留无入口的僵尸节点。
@@ -147,9 +147,9 @@ memory.db
 |---|---|---|
 | **awaken** | 常驻觉知记忆：醒来时预加载的 URI 原文 + 子节点 snippet（+世界时间行） | 旧 boot（彻底去除系统启动味与 state 化） |
 | **recent** | 按 updated_ts 拉最新记忆;原文 / snippet 各自数量可配(options) | 旧 history + state(两 slot 职能合并) |
-| **index** | 所有 domain 根节点 snippet 视图 | 新增(现 system://index/<domain> 的全局化) |
+| **index** | 所有 domain 根节点 snippet 视图 | 新增(现 MEM://index/<domain> 的全局化) |
 
-//boot_uris → awaken_uris 的命名也要全链路对齐，比如system://awaken替换system://boot
+//boot_uris → awaken_uris 的命名也要全链路对齐，比如MEM://awaken替换MEM://boot
 //awaken记忆变更时也要自动对账，比如节点被遗忘时自动剔除，被relocate时自动更新
 //顺便补一个之前没有的细节，就是memorize时如果不存在父节点自动创建的placeholder不能够靠魔法字符串了，要在 nodes 表原生引入 is_stub，这样全文索引触发器或查询视图增加过滤时看不到垃圾字符串
 

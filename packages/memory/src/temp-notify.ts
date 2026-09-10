@@ -43,7 +43,7 @@ export function buildTempNotifyContent(count: number, threshold: number): string
 		`请整理 TEMP 暂存区：把仍有价值的草稿 revise/consolidate 归位到正式记忆域，过时的 forget 删除，`,
 		`整理目标是把 TEMP:// 清到零——不要只处理一部分，缓冲区留底即垃圾场。`,
 		``,
-		`整理流程：recall(uri="system://recent/20") 或逐条 recall TEMP:// 节点 → 判断去留 → consolidate / revise / forget。`,
+		`整理流程：recall(uri="MEM://recent/20") 或逐条 recall TEMP:// 节点 → 判断去留 → consolidate / revise / forget。`,
 		`教程见 docs/memory-system.md §7（动态区）。`,
 		`</temp-notify>`,
 	].join("\n");

@@ -164,7 +164,7 @@ describe("seed", () => {
 	it("creates core domains idempotently", () => {
 		store.seed();
 		store.seed();
-		expect(store.resolveUri("system://index")).not.toBeNull();
+		expect(store.resolveUri("index://")).not.toBeNull();
 		expect(store.resolveUri("history://")).not.toBeNull();
 		expect(store.resolveUri("meta://")).not.toBeNull();
 		expect(store.getKv("schema_version")).toBe("1");
