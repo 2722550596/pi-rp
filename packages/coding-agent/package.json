@@ -46,6 +46,7 @@
 		"@earendil-works/pi-agent-core": "^0.84.2",
 		"@earendil-works/pi-ai": "^0.84.2",
 		"@earendil-works/pi-client": "^0.84.2",
+		"@earendil-works/pi-memory": "^0.84.2",
 		"@earendil-works/pi-protocol": "^0.84.2",
 		"@earendil-works/pi-tui": "^0.84.2",
 		"@silvia-odwyer/photon-node": "0.3.4",

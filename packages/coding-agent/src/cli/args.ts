@@ -53,11 +53,13 @@ export interface Args {
 	strict?: boolean;
 	/** Override the project-local config directory name (default: .pi or package-configured) */
 	configDir?: string;
-	/** Process-scoped read-only settings overlay file (relative to cwd, same semantics as --config-dir/--session-dir). */
-	settingsFile?: string;
+	/** Memory DB path override (docs/memory-system.md §2 resolution chain top priority). */
+	memoryDb?: string;
 	tuiMode?: TuiMode;
 	verbose?: boolean;
 	projectTrustOverride?: boolean;
+	/** Process-scoped read-only settings overlay file (relative to cwd, same semantics as --config-dir/--session-dir). */
+	settingsFile?: string;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -234,6 +236,8 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.diagnostics.push({ type: "error", message: "--schema requires a value" });
 			}
+		} else if (arg === "--memory-db" && i + 1 < args.length) {
+			result.memoryDb = args[++i];
 		} else if (arg === "--config-dir") {
 			if (i + 1 < args.length) {
 				result.configDir = args[++i];
@@ -337,6 +341,7 @@ ${chalk.bold("Options:")}
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file>                Export session file to HTML and exit
   --config-dir <name>            Override the project-local config directory name (default: .pi)
+  --memory-db <path>             Override the memory DB path (default: <cwd>/.pi/memory.db)
   --settings-file <path>         Process-scoped read-only settings overlay (relative to cwd; highest merge priority)
                                  Scanned for prompt-presets, schemas, validators, extensions, settings, and MCP config
   --list-models [search]         List available models (with optional fuzzy search)

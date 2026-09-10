@@ -27,6 +27,7 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	AgentToolResult,
 	PrepareNextTurnContext,
 	StreamFn,
 	ThinkingLevel,
@@ -56,6 +57,19 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
+import {
+	createMemoryModule,
+	createMemorySlots,
+	MEMORY_TOOL_NAMES,
+	type MemoryBranchSnapshot,
+	type MemoryModule,
+	type MemoryModuleHost,
+	type MemorySlotDefinition,
+	type MemoryStore,
+	type MemoryTurnMessage,
+	openMemoryStore,
+	resolveMemoryDbPath,
+} from "@earendil-works/pi-memory";
 import { registerBuiltinCommandEntries, syncExtensionCommands } from "../commands/index.ts";
 import { getAgentDir, getProjectConfigDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
@@ -89,6 +103,7 @@ import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type AgentEndEvent,
 	type ContextUsage,
+	type Extension,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	type ExtensionMode,
@@ -142,7 +157,7 @@ import { chooseDefaultPreset, isDisabledPromptPresetId, loadPromptPresets } from
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
-import { isChatHistoryPosition } from "./prompt-preset/slot-renderers.ts";
+import { isChatHistoryPosition, registerSlot } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { RequestGateway } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -187,6 +202,35 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 		content: match[3],
 		userMessage: match[4]?.trim() || undefined,
 	};
+}
+
+// ── Memory store singleton (@earendil-works/pi-memory) ──────────────────────
+
+/**
+ * Process-wide memory store, keyed by resolved DB path (docs §2: one tree per
+ * DB). Session rebuilds (/reload) reuse the open store instead of reopening
+ * SQLite per runtime build.
+ */
+const memoryStoreSingletons = new Map<string, Promise<MemoryStore>>();
+
+function getMemoryStoreSingleton(dbPath: string): Promise<MemoryStore> {
+	let store = memoryStoreSingletons.get(dbPath);
+	if (!store) {
+		// node:sqlite does not create parent directories — the default path
+		// lives under <cwd>/.pi/, which may not exist on a fresh project.
+		if (dbPath !== ":memory:") {
+			const parent = dirname(dbPath);
+			if (!existsSync(parent)) {
+				mkdirSync(parent, { recursive: true });
+			}
+		}
+		store = openMemoryStore(dbPath);
+		memoryStoreSingletons.set(dbPath, store);
+		// A failed open must not poison the key: drop it so a later attempt
+		// (e.g. after fixing permissions) can retry.
+		store.catch(() => memoryStoreSingletons.delete(dbPath));
+	}
+	return store;
 }
 
 /** Session-specific events that extend the core AgentEvent */
@@ -468,11 +512,13 @@ export class AgentSession {
 	 * `stripAssistantThinking: "previous-traces"`.
 	 */
 	private _currentTraceStartIndex = 0;
-
-	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
 	private _stateManager: StateManager;
+	private _resourceLoader: ResourceLoader;
 	private _schemaValidator: SchemaValidator;
+	private _memoryModule?: MemoryModule;
+	/** Message entry ids already handed to the memory module's raw_log (turn collection). */
+	private _memorySeenEntryIds: Set<string> = new Set();
 	private _loadedSchemaDefs: LoadedSchemaDef[] = [];
 	private _loadedCustomValidators: CustomValidator[] = [];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
@@ -1015,6 +1061,10 @@ export class AgentSession {
 				toolResults: event.toolResults,
 			};
 			await this._extensionRunner.emit(extensionEvent);
+			// Memory module raw_log write-through (§4): after extensions saw the
+			// turn, batch-append this turn's new messages. Fire-and-forget — the
+			// module never throws and failures must not fail the turn.
+			void this._memoryModule?.onTurnEnd();
 			this._turnIndex++;
 		} else if (event.type === "message_start") {
 			const extensionEvent: MessageStartEvent = {
@@ -2474,6 +2524,18 @@ export class AgentSession {
 		// namespaces so the next apply replays onto the rolled-back baseline
 		// instead of the stale (ahead) file revision.
 		this._stateManager.commitOwnedToStore();
+
+		// Memory rollback coupling (§8): recompute auto-node anchor visibility and
+		// reconcile raw_log against the new active path. Drop seen-marks for
+		// entries that left the active path so switching back re-collects them.
+		// Fire-and-forget — the module never throws and must not break the flow.
+		const activeIds = new Set(this.sessionManager.getBranch().map((entry) => entry.id));
+		for (const id of this._memorySeenEntryIds) {
+			if (!activeIds.has(id)) {
+				this._memorySeenEntryIds.delete(id);
+			}
+		}
+		void this._memoryModule?.onLeafChange();
 
 		return summaryId;
 	}
@@ -3993,10 +4055,16 @@ export class AgentSession {
 		// so a reload drops stale entries).
 		registerBuiltinCommandEntries();
 		syncExtensionCommands(this._extensionRunner);
+		// Memory module wiring needs the runner (synthetic extension host) —
+		// must run after the _extensionRunner assignment and binding above.
+		await this._setupMemoryModule();
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
 			: ["read", "bash", "edit", "write", "state_update", "get_state", "subagent_profiles", "subagent"];
+		if (this._memoryModule) {
+			defaultActiveToolNames.push(...MEMORY_TOOL_NAMES);
+		}
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
@@ -4006,6 +4074,162 @@ export class AgentSession {
 		// Apply the restored/active preset's tools policy after re-registering tools,
 		// so extension tools added by includeAllExtensionTools are also filtered.
 		this._syncActiveToolPolicy();
+	}
+
+	/**
+	 * Memory module wiring (@earendil-works/pi-memory, docs/memory-system.md).
+	 *
+	 * Store resolution (§2): PI_MEMORY_DB env override > settings memory.dbPath
+	 * > default <cwd>/.pi/memory.db. The store is a process-wide singleton keyed
+	 * by path (single tree per DB); the module re-registers onto each runtime
+	 * rebuild (reload) via a fresh host. Failures degrade to no-memory with a
+	 * warning — memory must never block session startup.
+	 */
+	private async _setupMemoryModule(): Promise<void> {
+		const settings = this.settingsManager.getSettings();
+		const dbPath = resolveMemoryDbPath(process.env.PI_MEMORY_DB, settings, undefined, this._cwd);
+		try {
+			const store = await getMemoryStoreSingleton(dbPath);
+			if (!this._memoryModule) {
+				this._memoryModule = createMemoryModule(store, { settings: settings.memory });
+			}
+			this._memoryModule.registerSession(this._createMemoryModuleHost());
+			// Slots render in the prompt-preset compile path — register statically
+			// so presets can reference awaken/recent/index without an extension.
+			for (const slot of createMemorySlots(store)) {
+				this._registerMemorySlot(slot);
+			}
+		} catch (error) {
+			this._memoryModule = undefined;
+			const message = error instanceof Error ? error.message : String(error);
+			this._extensionRunner?.emitError?.({
+				extensionPath: "<memory>",
+				event: "memory_init",
+				error: `Memory module unavailable: ${message}`,
+			});
+		}
+	}
+
+	/** Bridge a package MemorySlotDefinition onto the coding-agent slot registry. */
+	private _registerMemorySlot(slot: MemorySlotDefinition): void {
+		registerSlot(
+			{
+				name: slot.name,
+				description: slot.description,
+				async: true,
+				render: (context) =>
+					slot.render({ item: { options: context.item.options as Record<string, unknown> | undefined } }),
+			},
+			true,
+		);
+	}
+
+	/**
+	 * Build the MemoryModuleHost for the current runtime build. Event handlers
+	 * and tools registered through it are attached to a synthetic Extension owned
+	 * by the current ExtensionRunner, so /reload discards them together with the
+	 * old runner and registerSession() runs again against a fresh host.
+	 */
+	private _createMemoryModuleHost(): MemoryModuleHost {
+		const session = this;
+		const runner = this._extensionRunner;
+		// Synthetic extension: registrations ride the standard extension pipeline
+		// (tool registry rebuild, event emit, custom-type policies).
+		const synthetic: Extension = {
+			path: "<memory>",
+			resolvedPath: "<memory>",
+			sourceInfo: createSyntheticSourceInfo("<memory>", { source: "builtin" }),
+			handlers: new Map(),
+			tools: new Map(),
+			messageRenderers: new Map(),
+			commands: new Map(),
+			flags: new Map(),
+			shortcuts: new Map(),
+		};
+		runner.attachSyntheticExtension(synthetic);
+
+		return {
+			registerTool(tool) {
+				const definition: ToolDefinition = {
+					name: tool.name,
+					label: tool.label,
+					description: tool.description,
+					promptSnippet: tool.promptSnippet,
+					parameters: tool.parameters as ToolDefinition["parameters"],
+					execute: async (_toolCallId, params) =>
+						(await tool.execute(_toolCallId, params as Record<string, unknown>)) as AgentToolResult<never>,
+				};
+				synthetic.tools.set(tool.name, {
+					definition,
+					sourceInfo: synthetic.sourceInfo,
+				});
+			},
+			registerSlot(definition) {
+				session._registerMemorySlot(definition);
+			},
+			registerCustomType(customType, policy) {
+				runner.getExtensionRuntime().registerCustomType(customType, policy);
+			},
+			on(event, handler) {
+				const list = synthetic.handlers.get(event) ?? [];
+				list.push((...args: unknown[]) => Promise.resolve(handler(args[0], args[1])));
+				synthetic.handlers.set(event, list);
+			},
+			getSessionInfo() {
+				return {
+					modelId: session.model?.id,
+					leafId: session.sessionManager.getLeafId(),
+				};
+			},
+			getBranchSnapshot(): MemoryBranchSnapshot {
+				return {
+					entryIds: session.sessionManager.getBranch().map((entry) => entry.id),
+					entries: session.sessionManager.buildContextEntries() as unknown as Array<Record<string, unknown>>,
+				};
+			},
+			getTurnMessages(): MemoryTurnMessage[] {
+				const seen = session._memorySeenEntryIds;
+				const messages: MemoryTurnMessage[] = [];
+				for (const entry of session.sessionManager.getBranch()) {
+					if (seen.has(entry.id)) continue;
+					if (entry.type === "message") {
+						const role = entry.message.role;
+						// Mirror §4: user and assistant turns feed the raw transcript
+						// log; toolResult noise and other roles are skipped.
+						if (role !== "user" && role !== "assistant") continue;
+						seen.add(entry.id);
+						const text = contentText(entry.message.content, "");
+						if (text) {
+							messages.push({ role, text, entryId: entry.id });
+						} else {
+							seen.delete(entry.id);
+						}
+					} else if (entry.type === "custom_message") {
+						seen.add(entry.id);
+						const text =
+							typeof entry.content === "string"
+								? entry.content
+								: entry.content
+										.map((block) => (block.type === "text" ? block.text : ""))
+										.join(" ")
+										.trim();
+						if (text) {
+							messages.push({
+								role: "custom",
+								text,
+								entryId: entry.id,
+								customType: entry.customType,
+								display: entry.display,
+							});
+						}
+					}
+				}
+				return messages;
+			},
+			sendCustomMessage(message) {
+				runner.getExtensionRuntime().sendMessage(message, { triggerTurn: true });
+			},
+		};
 	}
 
 	/**

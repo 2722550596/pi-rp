@@ -641,6 +641,12 @@ export async function main(args: string[], options?: MainOptions) {
 		process.env[ENV_SETTINGS_FILE] = parsed.settingsFile;
 	}
 
+	// --memory-db：进程级记忆库覆盖（AgentSession._setupMemoryModule 读取；
+	// docs/memory-system.md §2：CLI flag 是解析链最高优先级）。
+	if (parsed.memoryDb) {
+		process.env.PI_MEMORY_DB = parsed.memoryDb;
+	}
+
 	if (parsed.version) {
 		console.log(VERSION);
 		process.exit(0);

@@ -23,7 +23,10 @@ export type PromptPresetSlot =
 	| "pi-docs"
 	| "variables"
 	| "state"
-	| "file";
+	| "file"
+	| "awaken"
+	| "recent"
+	| "index";
 
 // =========================================================================
 // Resource Policy (tools/skills allow/deny)

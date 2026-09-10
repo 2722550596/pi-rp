@@ -637,6 +637,21 @@ export class ExtensionRunner {
 		}
 	}
 
+	/** Expose the shared runtime for engine-side registrations (memory module). */
+	getExtensionRuntime(): ExtensionRuntime {
+		return this.runtime;
+	}
+
+	/**
+	 * Attach an engine-built synthetic extension (e.g. the memory module host).
+	 * Registrations made through it ride the standard extension pipeline and are
+	 * discarded when this runner is invalidated on reload.
+	 */
+	attachSyntheticExtension(extension: Extension): void {
+		this.extensions.push(extension);
+		this.runtime.refreshTools();
+	}
+
 	onError(listener: ExtensionErrorListener): () => void {
 		this.errorListeners.add(listener);
 		return () => this.errorListeners.delete(listener);

@@ -147,6 +147,19 @@ export interface Settings {
 	requestGateway?: { defaultMaxConcurrency?: number };
 	/** Cross-process shared state store (opt-in). */
 	state?: { store?: "file"; storeDir?: string };
+	/** Memory system (@earendil-works/pi-memory, docs/memory-system.md). */
+	memory?: {
+		/** DB path; project-relative or absolute (CLI --memory-db overrides). */
+		dbPath?: string;
+		/** raw_log custom-message capture: "all-display-true" (default) | "none" | explicit type list. */
+		rawLog?: { customTypes?: "all-display-true" | "none" | string[] };
+		/** Background autoretain cadence (§5 task registry shares the turn counter). */
+		autoretain?: { everyNTurns?: number };
+		/** Recall parameters (§9/§16: production-tuned defaults live in the package). */
+		recall?: { topK?: number; minScore?: number; blocklist?: string[] };
+		/** Embeddings: API mode only; apiKey comes from env, never settings. */
+		embeddings?: { mode?: "api" | "off"; model?: string; apiUrl?: string };
+	};
 	/** Per-extension persisted configuration, keyed by extension id then setting key.
 	 *  Written via SettingsManager.setExtensionSetting() / read via
 	 *  getExtensionSetting(); exposed read-write to extensions through

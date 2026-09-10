@@ -60,6 +60,9 @@ export const SUPPORTED_SLOTS = new Set<string>([
 	"variables",
 	"state",
 	"file",
+	"awaken",
+	"recent",
+	"index",
 ]);
 
 // =========================================================================

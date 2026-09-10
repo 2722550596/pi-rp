@@ -41,5 +41,8 @@ packages/coding-agent/binaries/
 todo.md
 plans/
 .pi/hf-sessions/
+.pi/memory.db
+.pi/memory.db-shm
+.pi/memory.db-wal
 .pi/hf-sessions-backup/
 collect.sh
