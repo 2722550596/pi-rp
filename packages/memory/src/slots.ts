@@ -10,6 +10,7 @@
  * predicate (§5.7): a rolled-back summary must never surface through the
  * prompt preset either.
  */
+import { formatRelativeWorldTime } from "./recall.ts";
 import type { MemoryNode, MemoryStore, VisibilityPredicate } from "./store.ts";
 import { getAwakenUris } from "./tools.ts";
 
@@ -31,14 +32,10 @@ export interface MemorySlotsOptions {
 	isVisible?: VisibilityPredicate;
 }
 
-function snippet(node: { uri: string; content: string }, max = 80): string {
+function snippet(node: { uri: string; content: string; disclosure?: string | null }, max = 80): string {
 	const oneLine = node.content.replace(/\s+/g, " ").trim();
-	return `${node.uri}: ${oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine}`;
-}
-
-function fullRow(node: { uri: string; content: string; world_ts: string | null }): string {
-	const time = node.world_ts ? `（${node.world_ts}）` : "";
-	return `## ${node.uri}${time}\n${node.content}`;
+	const disc = "disclosure" in node && node.disclosure ? ` (${node.disclosure})` : "";
+	return `${node.uri}${disc}: ${oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine}`;
 }
 
 /**
@@ -55,20 +52,41 @@ export function createMemorySlots(store: MemoryStore, opts: MemorySlotsOptions =
 		async: true,
 		render: () => {
 			const uris = getAwakenUris(store);
-			const sections: string[] = [];
+			const worldTime = store.getWorldTime();
+			const fullUris = new Set(uris);
+			const blocks: string[] = [];
 			for (const uri of uris) {
 				const node = store.resolveUri(uri);
 				if (!node || node.is_stub || !visible(node)) continue; // 对账：已删/失效/隐藏 uri 自动剔除
-				const lines = [fullRow(node)];
+				const lines = [`### ${node.uri}`];
+				if (node.world_ts) {
+					const rel = formatRelativeWorldTime(node.world_ts, worldTime);
+					lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
+				}
+				if (node.disclosure) {
+					lines.push(`> 什么时候想起：${node.disclosure}\n`);
+				}
+				lines.push(node.content);
+				const childLines: string[] = [];
 				for (const child of store.children(node.node_id)) {
 					if (child.is_stub || !visible(child)) continue;
-					lines.push(`- ${snippet(child)}`);
+					if (fullUris.has(child.uri)) continue; // 已作为完整 awaken 块渲染的 URI 不再作为子 snippet 重复显示
+					const disc = child.disclosure ? ` (${child.disclosure})` : "";
+					const rawContent = (child.content || "").replace(/\s+/g, " ").trim();
+					const snip = rawContent.length > 100 ? `${rawContent.slice(0, 100)}...` : rawContent;
+					const snipStr = snip ? ` — ${snip}` : "";
+					childLines.push(`- ${child.uri}${disc}${snipStr}`);
 				}
-				sections.push(lines.join("\n"));
+				if (childLines.length > 0) {
+					lines.push("", ...childLines);
+				}
+				blocks.push(lines.join("\n"));
 			}
-			const worldTime = store.getWorldTime();
-			const header = worldTime ? `世界时间：${worldTime}\n` : "";
-			return header + sections.join("\n");
+			if (blocks.length === 0) return "";
+			if (worldTime) {
+				blocks.unshift(`> 当前世界时间: ${worldTime}`);
+			}
+			return blocks.join("\n\n---\n\n");
 		},
 	};
 

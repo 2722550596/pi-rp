@@ -9,7 +9,7 @@ import {
 	QUERY_INSTRUCTION,
 	resolveEmbeddingsConfig,
 } from "../src/embeddings.ts";
-import { rank, search, W_IMPORTANCE, W_KEYWORD, W_VECTOR } from "../src/recall.ts";
+import { formatRelativeWorldTime, rank, search, W_IMPORTANCE, W_KEYWORD, W_VECTOR } from "../src/recall.ts";
 import { createSchema } from "../src/schema.ts";
 import { MemoryStore } from "../src/store.ts";
 import { createFakeEmbeddingClient } from "./fake-embeddings.ts";
@@ -259,5 +259,48 @@ describe("injection keyword floor (§5.9/§27.6)", () => {
 		// The keyword floor (0.12) is below the ceiling but above nothing:
 		// with a real FTS hit the item passes injection.
 		expect(items[0].score).toBeGreaterThanOrEqual(0.12);
+	});
+});
+
+describe("formatRelativeWorldTime", () => {
+	it("formats same day as 今天", () => {
+		expect(formatRelativeWorldTime("2020-09-28", "2020-09-28")).toBe("今天");
+	});
+
+	it("formats 1 day difference as 昨天 and 明天", () => {
+		expect(formatRelativeWorldTime("2020-09-27", "2020-09-28")).toBe("昨天");
+		expect(formatRelativeWorldTime("2020-09-29", "2020-09-28")).toBe("明天");
+	});
+
+	it("formats 2 days difference as 前天 and 后天", () => {
+		expect(formatRelativeWorldTime("2020-09-26", "2020-09-28")).toBe("前天");
+		expect(formatRelativeWorldTime("2020-09-30", "2020-09-28")).toBe("后天");
+	});
+
+	it("formats within a week as N 天前 / 后", () => {
+		expect(formatRelativeWorldTime("2020-09-24", "2020-09-28")).toBe("约 4 天前");
+		expect(formatRelativeWorldTime("2020-10-03", "2020-09-28")).toBe("约 5 天后");
+	});
+
+	it("formats within a month as N 周前 / 后", () => {
+		expect(formatRelativeWorldTime("2020-09-14", "2020-09-28")).toBe("约 2 周前");
+		expect(formatRelativeWorldTime("2020-10-12", "2020-09-28")).toBe("约 2 周后");
+	});
+
+	it("formats within a year as N 个月前 / 后", () => {
+		expect(formatRelativeWorldTime("2020-07-28", "2020-09-28")).toBe("约 2 个月前");
+		expect(formatRelativeWorldTime("2020-12-28", "2020-09-28")).toBe("约 3 个月后");
+	});
+
+	it("formats multi-year as N 年前 / 后", () => {
+		expect(formatRelativeWorldTime("2018-09-28", "2020-09-28")).toBe("约 2 年前");
+		expect(formatRelativeWorldTime("2023-09-28", "2020-09-28")).toBe("约 3 年后");
+	});
+
+	it("returns empty string when inputs are null or invalid", () => {
+		expect(formatRelativeWorldTime(null, "2020-09-28")).toBe("");
+		expect(formatRelativeWorldTime("2020-09-28", null)).toBe("");
+		expect(formatRelativeWorldTime("", "2020-09-28")).toBe("");
+		expect(formatRelativeWorldTime("invalid", "2020-09-28")).toBe("");
 	});
 });

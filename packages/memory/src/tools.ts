@@ -26,7 +26,7 @@ import {
 	renderTimelineView,
 	renderWakeupView,
 } from "./memory-views.ts";
-import { search, toEpochDays } from "./recall.ts";
+import { formatRelativeWorldTime, search, toEpochDays } from "./recall.ts";
 import type { MemoryNode, MemoryStore, VisibilityPredicate } from "./store.ts";
 
 /** Minimal structural shape of coding-agent ToolDefinition execute (no pi dep). */
@@ -79,20 +79,35 @@ function snippet(node: MemoryNode, max = 80): string {
 	return `${node.uri}: ${oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine}`;
 }
 
-/** Expand a URI into its subtree, depth-bounded. depth -1 = full tree. */
-function subtree(store: MemoryStore, root: MemoryNode, depth: number, maxNodes: number): string[] {
-	const lines: string[] = [];
-	const walk = (node: MemoryNode, level: number): void => {
-		if (lines.length >= maxNodes) {
-			lines.push(`${node.uri} (内容省略)`);
-			return;
+/** Render one descendant node (plus recursively its children if remaining != 0) with indentation. */
+function renderChildSubtree(
+	store: MemoryStore,
+	node: MemoryNode,
+	remaining: number,
+	indent: string,
+	budget: { count: number },
+	isVisible?: VisibilityPredicate,
+): string[] {
+	if (budget.count <= 0) {
+		return [`${indent}■ ${node.uri} (内容省略：已达 max_nodes 上限)`];
+	}
+	budget.count--;
+	const pad = `${indent}  `;
+	const out: string[] = [`${indent}■ ${node.uri}`];
+	if (node.disclosure) {
+		out.push(`${pad}(想起条件: ${node.disclosure})`);
+	}
+	for (const line of node.content.split("\n")) {
+		out.push(`${pad}${line}`);
+	}
+	if (remaining !== 0) {
+		const kids = store.children(node.node_id).filter((c) => !c.is_stub && (isVisible ? isVisible(c) : true));
+		for (const kid of kids) {
+			const sub = renderChildSubtree(store, kid, remaining > 0 ? remaining - 1 : -1, pad, budget, isVisible);
+			out.push("", ...sub);
 		}
-		lines.push(level === 0 ? nodeRow(node) : `${"  ".repeat(level)}${nodeRow(node)}`);
-		if (depth >= 0 && level >= depth) return;
-		for (const child of store.children(node.node_id)) walk(child, level + 1);
-	};
-	walk(root, 0);
-	return lines;
+	}
+	return out;
 }
 
 function parseWorldTime(store: MemoryStore, time: string | undefined): string | null {
@@ -220,13 +235,83 @@ async function executeRecall(
 	const node = store.resolveUri(uri);
 	if (!node) return text(`未找到记忆：${uri}`);
 	if (node.is_stub) return text(`（占位节点，无正文）${uri}`);
-	const lines = subtree(store, node, depth ?? 0, maxNodes ?? 200);
+
+	const lines: string[] = [`# [${node.uri}]`];
+	const currWorldTime = store.getWorldTime();
+	if (node.world_ts) {
+		const rel = formatRelativeWorldTime(node.world_ts, currWorldTime);
+		lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
+	}
+	if (node.disclosure) {
+		lines.push(`> (想起条件: ${node.disclosure})`);
+	}
+	const nodeKeywords = store.listGlossary(node.node_id).map((g) => g.keyword);
+	if (nodeKeywords.length > 0) {
+		lines.push(`> (标签: ${nodeKeywords.join(", ")})`);
+	}
+	lines.push("", "---", "", node.content, "");
+
+	// Related associations via glossary in content or explicit edges
+	const uriToKeywords = new Map<string, string[]>();
+	const allGlossary = store.listGlossary();
+	for (const g of allGlossary) {
+		if (g.node_id === node.node_id) continue;
+		if (node.content.includes(g.keyword)) {
+			const target = store.getNode(g.node_id);
+			if (target && !target.is_stub && (ctx.isVisible ? ctx.isVisible(target) : true)) {
+				const list = uriToKeywords.get(target.uri) ?? [];
+				if (!list.includes(g.keyword)) list.push(g.keyword);
+				uriToKeywords.set(target.uri, list);
+			}
+		}
+	}
+	for (const edge of store.listRelated(node.node_id)) {
+		const targetUri = edge.direction === "outgoing" ? edge.target_uri : store.getNode(edge.node_id)?.uri;
+		if (targetUri) {
+			const target = store.resolveUri(targetUri);
+			if (target && !target.is_stub && (ctx.isVisible ? ctx.isVisible(target) : true)) {
+				const list = uriToKeywords.get(target.uri) ?? [];
+				if (edge.kind && !list.includes(edge.kind)) list.push(edge.kind);
+				uriToKeywords.set(target.uri, list);
+			}
+		}
+	}
+	if (uriToKeywords.size > 0) {
+		lines.push("---", "相关联想:");
+		for (const [targetUri, kws] of uriToKeywords.entries()) {
+			const kwStr = kws.map((k) => `@${k}`).join(", ");
+			lines.push(`- ${kwStr} -> ${targetUri}`);
+		}
+		lines.push("");
+	}
+
+	const children = store.children(node.node_id).filter((c) => !c.is_stub && (ctx.isVisible ? ctx.isVisible(c) : true));
+	if (children.length > 0) {
+		const d = depth ?? 0;
+		if (d !== 0) {
+			const budget = { count: maxNodes ?? 200 };
+			for (const child of children) {
+				const childLines = renderChildSubtree(store, child, d > 0 ? d - 1 : -1, "", budget, ctx.isVisible);
+				lines.push("", ...childLines);
+			}
+		} else {
+			lines.push("---", "更深层的记忆:", "");
+			for (const child of children) {
+				if (child.disclosure) {
+					lines.push(`- ${child.uri} (${child.disclosure})`);
+				} else {
+					lines.push(`- ${child.uri}`);
+				}
+			}
+		}
+	}
+
 	const nodeIds = collectSubtreeIds(store, node);
 	// Explicitly recalled: the character is "thinking of" this subtree — the
 	// access time is the sleep metric for forgotten/diagnostic (§13).
 	store.markAccessed(nodeIds);
 	auditRecall(store, ctx, uri, nodeIds, { depth: depth ?? 0 });
-	return withDetails(lines.join("\n"), { node_id: node.node_id });
+	return withDetails(lines.join("\n").trimEnd(), { node_id: node.node_id });
 }
 
 function collectSubtreeIds(store: MemoryStore, root: MemoryNode): string[] {
@@ -296,17 +381,38 @@ async function executeRetrieve(store: MemoryStore, params: Static<typeof retriev
 		related: related.map((r) => ({ node_id: r.node_id, from_uri: r.from_uri, kind: r.kind })),
 	});
 
-	if (hitIds.length === 0) return text("（无命中）");
-	const lines: string[] = [];
+	if (hitIds.length === 0) {
+		const scope = params.domain ? `在 ${params.domain} ` : "所有域名";
+		return text(`${scope}里没有找到和「${params.query}」相关的记忆。`);
+	}
+	const lines: string[] = [`找到了 ${direct.length} 条和「${params.query}」相关的记忆：`, ""];
 	for (const item of direct) {
 		const node = store.getNode(item.node_id);
-		lines.push(node ? snippet(node, 200) : `${item.uri}: ${item.summary}`);
+		if (!node) continue;
+		lines.push(`- ${node.uri}`);
+		lines.push(`  重要性：${node.importance}`);
+		if (node.disclosure) {
+			lines.push(`  想起条件：${node.disclosure}`);
+		}
+		const rawContent = (node.content || "").replace(/\s+/g, " ").trim();
+		const snip = rawContent.length > 200 ? `${rawContent.slice(0, 200)}…` : rawContent;
+		lines.push(`  ${snip}`);
+		lines.push("");
 	}
 	for (const r of related) {
 		const node = store.getNode(r.node_id);
-		if (node) lines.push(`  ↳ ${snippet(node, 160)}（关联：${r.from_uri}${r.kind ? `, ${r.kind}` : ""}）`);
+		if (!node) continue;
+		lines.push(`  ↳ ${node.uri}（关联：${r.from_uri}${r.kind ? `, ${r.kind}` : ""}）`);
+		lines.push(`    重要性：${node.importance}`);
+		if (node.disclosure) {
+			lines.push(`    想起条件：${node.disclosure}`);
+		}
+		const rawContent = (node.content || "").replace(/\s+/g, " ").trim();
+		const snip = rawContent.length > 160 ? `${rawContent.slice(0, 160)}…` : rawContent;
+		lines.push(`    ${snip}`);
+		lines.push("");
 	}
-	return withDetails(lines.join("\n"), {
+	return withDetails(lines.join("\n").trimEnd(), {
 		node_ids: hitIds,
 		mode,
 		semantic: mode === "vector",

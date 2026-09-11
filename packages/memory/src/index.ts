@@ -67,6 +67,7 @@ export {
 	buildGlossaryTerms,
 	buildPool,
 	computeVectorScores,
+	formatRelativeWorldTime,
 	importanceScore,
 	keywordScore,
 	type RecalledItem,

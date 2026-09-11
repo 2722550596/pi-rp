@@ -284,11 +284,73 @@ describe("recall system views", () => {
 	});
 });
 
-describe("retrieve", () => {
-	it("finds nodes by keyword", async () => {
-		await run("memorize", { uri: "history://tavern", content: "薇拉在酒馆" });
+describe("recall rich formatting", () => {
+	it("renders title, relative world time, disclosure, tags, and deeper memories at depth 0", async () => {
+		store.setWorldTime("2020-09-28");
+		await run("memorize", {
+			uri: "history://scenes/tavern",
+			content: "伊莱在酒馆遇到薇拉",
+			when: "当提起酒馆之夜",
+			time: "2020-09-27",
+		});
+		await run("trigger", { uri: "history://scenes/tavern", add: ["酒馆", "初遇"] });
+		await run("memorize", {
+			uri: "history://scenes/tavern/fight",
+			content: "酒馆里发生了冲突",
+			parent_uri: "history://scenes/tavern",
+			when: "当提到打斗",
+		});
+
+		const r = await run("recall", { uri: "history://scenes/tavern", depth: 0 });
+		expect(r.text).toContain("# [history://scenes/tavern]");
+		expect(r.text).toContain("> (发生于: 2020-09-27，昨天)");
+		expect(r.text).toContain("> (想起条件: 当提起酒馆之夜)");
+		expect(r.text).toContain("> (标签: 初遇, 酒馆)");
+		expect(r.text).toContain("伊莱在酒馆遇到薇拉");
+		expect(r.text).toContain("更深层的记忆:");
+		expect(r.text).toContain("- history://scenes/tavern/fight (当提到打斗)");
+	});
+
+	it("renders subtree with indentation and disclosure at depth > 0", async () => {
+		await run("memorize", {
+			uri: "core://identity",
+			content: "我是伊莱",
+			when: "当确认身份",
+		});
+		await run("memorize", {
+			uri: "core://identity/habits",
+			content: "平时的习惯",
+			parent_uri: "core://identity",
+			when: "当闲聊日常",
+		});
+
+		const r = await run("recall", { uri: "core://identity", depth: 1 });
+		expect(r.text).toContain("# [core://identity]");
+		expect(r.text).toContain("■ core://identity/habits");
+		expect(r.text).toContain("(想起条件: 当闲聊日常)");
+		expect(r.text).toContain("平时的习惯");
+	});
+});
+
+describe("retrieve formatting", () => {
+	it("finds nodes by keyword and renders importance, disclosure, and snippet", async () => {
+		await run("memorize", {
+			uri: "history://tavern",
+			content: "薇拉在酒馆喝麦酒",
+			importance: 8,
+			when: "当提起酒馆饮酒",
+		});
 		const r = await run("retrieve", { query: "薇拉 酒馆" });
-		expect(r.text).toContain("history://tavern");
+		expect(r.text).toContain("找到了 1 条和「薇拉 酒馆」相关的记忆：");
+		expect(r.text).toContain("- history://tavern");
+		expect(r.text).toContain("重要性：8");
+		expect(r.text).toContain("想起条件：当提起酒馆饮酒");
+		expect(r.text).toContain("薇拉在酒馆喝麦酒");
+	});
+
+	it("renders not-found message when query has no hits", async () => {
+		const r = await run("retrieve", { query: "完全不存在的词汇" });
+		expect(r.text).toBe("所有域名里没有找到和「完全不存在的词汇」相关的记忆。");
 	});
 });
 

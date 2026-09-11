@@ -26,16 +26,40 @@ function renderItem(name: string, options?: Record<string, unknown>): Promise<st
 
 describe("awaken slot", () => {
 	it("renders full text, child snippets and world time", async () => {
-		store.put({ uri: "core://self", content: "我是伊莱，出身北港。", source: "manual" });
-		store.put({ uri: "core://self/habit", content: "喜欢在傍晚喝茶", parent_uri: "core://self" });
+		store.put({
+			uri: "core://self",
+			content: "我是伊莱，出身北港。",
+			source: "manual",
+			disclosure: "当确认自己身份时",
+			world_ts: "2026-06-04",
+		});
+		store.put({
+			uri: "core://self/habit",
+			content: "喜欢在傍晚喝茶",
+			parent_uri: "core://self",
+			disclosure: "当闲聊习惯时",
+		});
 		store.setWorldTime("2026-06-05");
 		setAwakenUris(store, ["core://self"]);
 
 		const out = await renderItem("awaken");
-		expect(out).toContain("世界时间：2026-06-05");
-		expect(out).toContain("## core://self");
+		expect(out).toContain("> 当前世界时间: 2026-06-05");
+		expect(out).toContain("### core://self");
+		expect(out).toContain("> (发生于: 2026-06-04，昨天)");
+		expect(out).toContain("> 什么时候想起：当确认自己身份时");
 		expect(out).toContain("我是伊莱，出身北港。");
-		expect(out).toContain("core://self/habit: 喜欢在傍晚喝茶");
+		expect(out).toContain("- core://self/habit (当闲聊习惯时) — 喜欢在傍晚喝茶");
+	});
+
+	it("deduplicates child if child uri is also in awaken", async () => {
+		store.put({ uri: "core://parent", content: "父节点", source: "manual" });
+		store.put({ uri: "core://parent/child", content: "子节点", parent_uri: "core://parent", source: "manual" });
+		setAwakenUris(store, ["core://parent", "core://parent/child"]);
+
+		const out = await renderItem("awaken");
+		expect(out).toContain("### core://parent\n父节点");
+		expect(out).toContain("### core://parent/child\n子节点");
+		expect(out).not.toMatch(/- core:\/\/parent\/child/);
 	});
 
 	it("reconciles: deleted and stale uris drop out", async () => {
@@ -46,7 +70,7 @@ describe("awaken slot", () => {
 
 		const out = await renderItem("awaken");
 		expect(out).not.toContain("core://a");
-		expect(out).toContain("## core://b\nB");
+		expect(out).toContain("### core://b\nB");
 		expect(out).not.toContain("core://ghost");
 	});
 

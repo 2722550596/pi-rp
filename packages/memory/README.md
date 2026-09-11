@@ -113,8 +113,8 @@ export interface MemoryModule {
 
 | 工具 | 作用 | 要点 |
 |---|---|---|
-| `recall` | 回想与审视 | 精确 URI + 子树展开(`depth`/`max_nodes`);命中记访问时间(§16 沉睡语义);内置 `MEM://` 视图(§9) |
-| `retrieve` | 线索检索 | 关键词混合打分(`query`/`domain`/`limit`/`semantic?`);显式检索无分数下限但 keyword 模式要求真实命中;对直接命中做一跳边扩散(带 via_edge/kind/from_uri) |
+| `recall` | 回想与审视 | 精确 URI + 子树展开(`depth`/`max_nodes`); `depth 0` 渲染完整卡片(相对世界时间、想起条件、标签、关联联想 `@kw -> uri`、更深层的记忆列表); `depth > 0` 递归展开缩进子树(`■ uri`, 带想起条件与缩进正文); 命中记访问时间(§16 沉睡语义); 内置 `MEM://` 视图(§9) |
+| `retrieve` | 线索检索 | 关键词混合打分(`query`/`domain`/`limit`/`semantic?`); 结果结构化输出(命中数、重要性、想起条件、摘要); 显式检索无分数下限但 keyword 模式要求真实命中; 对直接命中做一跳边扩散(带 `↳` 关联来源与 kind) |
 | `memorize` | 铭刻新记忆 | `uri`/`content`/`when`(=disclosure)/`parent_uri`(缺父链自动补 stub)/`time`;目标是 stub 时原地转正 |
 | `revise` | 修订记忆 | `action: edit\|history\|restore`(默认 edit)。edit 支 replace/append/行编辑 + 批量 `batch`;history 看修订史(不传 uri 列出已删可恢复清单);restore 从修订史恢复(活节点必传 version,已删节点缺省最新,按原 node_id 接回修订史) |
 | `forget` | 遗忘清理 | `target` 单/多条,`dry_run` 级联预览;节点真删、cascade 子树;**修订史全留**——`revise(action:"history")` 查清单、`revise(action:"restore")` 找回 |
@@ -142,7 +142,7 @@ static 注册进 `SUPPORTED_SLOTS` + `PromptPresetSlot`,全部 `async: true`(异
 
 | slot | 内容 |
 |---|---|
-| `awaken` | 常驻觉知记忆:awaken_uris 清单原文 + 子节点 snippet + 世界时间行。渲染时按 uri 现值解析,节点被删/被 relocate 天然对账 |
+| `awaken` | 常驻觉知记忆: 首行带 `> 当前世界时间: YYYY-MM-DD`, 每条以 `### uri` 渲染原文正文, 附带发生时间与自然相对时间 `> (发生于: ...，昨天/约 N 天前)`、想起条件 `> 什么时候想起：...`、子节点 snippet 及想起条件 `(${child.disclosure})`。若子节点本身已在 awaken 顶层清单则自动去重跳过 snippet; 记忆块间以 `\n\n---\n\n` 分隔。渲染时按 uri 现值解析, 节点被删/被 relocate 天然对账 |
 | `recent` | 按 `updated_ts` 倒序的最新记忆;`{ rawCount?, snippetCount? }` 可配原文/snippet 数量 |
 | `index` | 所有 domain 根节点 snippet 一览 |
 
@@ -230,6 +230,8 @@ slots:
 
 ## 13. 配置参考
 
+### 13.1 全字段配置模型 (`Settings.memory`)
+
 编码在 `Settings.memory`,全字段:
 
 ```jsonc
@@ -260,6 +262,87 @@ slots:
 - `rawLog.customTypes`:三态开关决定 custom message 是否收编进原文日志(默认收 display:true 的);user/assistant 消息恒收。
 - `embeddings`:**默认 `mode:"off"`(隐私优先,v5.5)**——未显式 `"api"` 永不联网,即使 env 有 key;`"api"` 才读 `PI_MEMORY_EMBEDDING_API_KEY`/`NOCTURNE_EMBEDDING_API_KEY` 外呼(10s 超时)。无向量自动降级 keyword 注入。
 - `revisions.maxVersionsPerNode`:正整数或缺省(无限);每次归档后剪掉该节点最旧超额版本,删除前归档也应用同一策略,保证至少保留一版可恢复正文。
+
+### 13.2 典型角色消费端配置实战 (Role Preset & Settings)
+
+以真实项目中的 RP 角色 (如 `world/magnolia/elias`) 为例, 角色进程拥有完全属于自己的独立记忆数据库、prompt preset、工具白名单与向量设置。
+
+#### 1. 目录结构
+
+```text
+world/magnolia/elias/
+├── .pi/
+│   ├── memory.db            # 角色独占记忆库 (SQLite, 存储 nodes, raw_log, glossary, kv 等)
+│   └── settings.json        # 角色专用的记忆与会话配置
+└── chat.sh                  # 角色启动进程脚本
+```
+
+#### 2. 角色级 `settings.json` (`world/magnolia/elias/.pi/settings.json`)
+
+```jsonc
+{
+  "memory": {
+    "dbPath": "./.pi/memory.db",
+    "embeddings": {
+      "mode": "api",
+      "apiUrl": "https://api.openai-proxy.org/v1/embeddings",
+      "model": "text-embedding-3-small"
+    },
+    "recall": {
+      "topK": 3,
+      "minScore": 0.35,
+      "keywordMinScore": 0.12,
+      "blocklist": ["maintenance", "history_raw"]
+    }
+  }
+}
+```
+
+#### 3. Prompt Preset (`~/.pi/agent/prompt-presets/elias-chat.json`)
+
+Preset 配置 12 个记忆核心动词、awaken/recent slots, 并引导角色利用记忆认知世界:
+
+```jsonc
+{
+  "name": "elias-chat",
+  "description": "Elias 角色会话 (接入内建 pi-memory 系统)",
+  "tools": {
+    "allow": [
+      "recall", "retrieve", "memorize", "revise", "forget",
+      "relocate", "associate", "trigger", "consolidate",
+      "retrace", "set_time", "awaken"
+    ]
+  },
+  "slots": [
+    { "name": "awaken" },
+    { "name": "recent", "options": { "rawCount": 0, "snippetCount": 5 } }
+  ],
+  "systemPrompt": "## 你的现实与记忆\n你正处于你的生活与世界中……\n\n## 认知与记忆工具\n- 形成新认知 (memorize): 遇到新的人、事、物品、重要线索或触动时存入记忆，带上 when(想起条件) 和 time(世界时间)。\n- 回溯过去 (retrieve / recall): 遇到似曾相识的人或事，或需要确认细节时主动调取记忆碎片。\n- 修正观念 (revise): 旧记忆与现实不符或有进展时更新。"
+}
+```
+
+#### 4. 启动脚本 (`world/magnolia/elias/chat.sh`)
+
+通过环境变量注入 API 凭据与数据库位置, 启动角色交互:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export MAGNOLIA_ROLE="elias"
+export PI_MEMORY_DB="${SCRIPT_DIR}/.pi/memory.db"
+export PI_MEMORY_EMBEDDING_API_KEY="${OPENAI_API_KEY:-}"
+
+cd "${SCRIPT_DIR}"
+exec pi --preset elias-chat "$@"
+```
+
+在这个格局下, 角色启动时:
+1. 引擎由 `PI_MEMORY_DB` / `settings.json` 自动绑定 `memory.db`。
+2. 提示词编译期, `awaken` slot 自动格式化输出世界时间、常驻 URI 原文卡片(带相对时间、想起条件、子节点 snippet)。
+3. 对话交互中, `before_agent_start` 双 query 自动混合检索关联记忆并通过 `rp-memories` 静默注入。
+4. 模型可按需随时调用 12 个记忆工具审视或更新记忆。
 
 ## 14. 与下游集成
 
@@ -292,7 +375,7 @@ store.export();  // { nodes, revisions, kv, aliases, edges, glossary } JSON 快�
 
 ## 17. 测试与验证
 
-- 包内测试:`packages/memory/test/` **138 例**(store 37 / tools 33 / recall 22 / module 28 / phase3 / slots,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、审计完整列)。
+- 包内测试:`packages/memory/test/` **152 例**(store 39 / tools 36 / recall 30 / module 28 / phase3 9 / slots 10,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、相对时间与想起条件渲染、审计完整列)。
 - 集成测试:`packages/coding-agent/test/memory-module.test.ts`(9 例:真实 harness 工具注册/注入去重/raw_log 镜像/reroll active 标记与切回复活/autoretain 消费 side response/时间戳落库/preset 路径/dispose 幂等)、`settings-manager.test.ts`(61 例,含 MemorySettings 深合并)。
 - 全仓:`npm run check`(biome / pinned-deps / ts-imports / shrinkwrap / install-lock / tsgo / browser-smoke)。
 - Bun 编译冒烟:`bun build --compile` 含 `openDatabase` 的最小入口,验证动态导入不炸构建。

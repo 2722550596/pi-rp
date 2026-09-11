@@ -5,6 +5,7 @@
  * glossary/diagnostic/recent/index) onto the local store. timeline 数据源 =
  * raw_log 消息级带 world_ts（§15.4）；纪要节点不入轴。
  */
+import { formatRelativeWorldTime } from "./recall.ts";
 import type { MemoryNode, MemoryStore } from "./store.ts";
 
 function snippet(node: MemoryNode, max = 80): string {
@@ -85,21 +86,36 @@ export function renderWakeupView(
 	limit = 5,
 	isVisible: (n: MemoryNode) => boolean = () => true,
 ): string {
+	const worldTime = store.getWorldTime();
 	const sections: string[] = [];
-	const listed = new Set<string>();
+	if (worldTime) {
+		sections.push(`> 当前世界时间: ${worldTime}`);
+	}
+	const fullUris = new Set<string>(awakenUris);
+	const listed = new Set<string>(awakenUris);
 	for (const uri of awakenUris) {
 		const node = store.resolveUri(uri);
 		if (!node || node.is_stub || !isVisible(node)) continue;
-		listed.add(node.uri);
 		const lines = [`### ${node.uri}`];
-		if (node.world_ts) lines.push(`> (发生于: ${node.world_ts})`);
-		if (node.disclosure) lines.push(`> 什么时候想起：${node.disclosure}`);
-		lines.push(node.content, ``);
+		if (node.world_ts) {
+			const rel = formatRelativeWorldTime(node.world_ts, worldTime);
+			lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
+		}
+		if (node.disclosure) lines.push(`> 什么时候想起：${node.disclosure}\n`);
+		lines.push(node.content);
+		const childLines: string[] = [];
 		for (const child of store.children(node.node_id)) {
 			if (child.is_stub || !isVisible(child)) continue;
+			if (fullUris.has(child.uri)) continue;
 			listed.add(child.uri);
 			const disc = child.disclosure ? ` (${child.disclosure})` : "";
-			lines.push(`- ${child.uri}${disc} — ${snippet(child)}`);
+			const rawContent = (child.content || "").replace(/\s+/g, " ").trim();
+			const snip = rawContent.length > 100 ? `${rawContent.slice(0, 100)}...` : rawContent;
+			const snipStr = snip ? ` — ${snip}` : "";
+			childLines.push(`- ${child.uri}${disc}${snipStr}`);
+		}
+		if (childLines.length > 0) {
+			lines.push("", ...childLines);
 		}
 		sections.push(lines.join("\n"));
 	}
@@ -165,7 +181,7 @@ export function renderIndexView(
 /** MEM://diagnostic/<domain> — 库健康诊断（stale / crowded / placeholder）. */
 export function renderDiagnosticView(store: MemoryStore, domain?: string, daysStale = 30, maxChildren = 10): string {
 	const nodes = store.listNodes(domain ? { domain } : {}).filter((n) => !n.is_stub);
-	const nowDays = epochDays(new Date().toISOString()) ?? 0;
+	const nowDays = epochDays(store.getWorldTime() ?? new Date().toISOString()) ?? 0;
 	// 越重要的记忆，容许沉睡的天数越短。沉睡基准 = last_accessed_at ?? created_at.
 	const importanceThreshold: Record<number, number> = { 10: 3, 9: 7, 8: 14 };
 	const stale = nodes

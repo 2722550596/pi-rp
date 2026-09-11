@@ -91,6 +91,47 @@ export function toEpochDays(ts: string | null): number | null {
 	return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000);
 }
 
+/**
+ * Relative time calculation between target date and current world date.
+ * Port of Nocturne calculate_relative_world_time.
+ */
+export function formatRelativeWorldTime(
+	targetTs: string | null | undefined,
+	currentTs: string | null | undefined,
+): string {
+	if (!targetTs || !currentTs) return "";
+	const targetDays = toEpochDays(targetTs);
+	const currentDays = toEpochDays(currentTs);
+	if (targetDays == null || currentDays == null) return "";
+
+	const diff = targetDays - currentDays;
+	const absDiff = Math.abs(diff);
+	const isFuture = diff > 0;
+
+	if (absDiff === 0) return "今天";
+	if (absDiff === 1) return isFuture ? "明天" : "昨天";
+	if (absDiff === 2) return isFuture ? "后天" : "前天";
+
+	let val: number;
+	let unit: string;
+	if (absDiff < 7) {
+		val = absDiff;
+		unit = "天";
+	} else if (absDiff < 30) {
+		val = Math.floor(absDiff / 7);
+		unit = "周";
+	} else if (absDiff < 365) {
+		val = Math.floor(absDiff / 30);
+		unit = "个月";
+	} else {
+		val = Math.floor(absDiff / 365);
+		unit = "年";
+	}
+
+	const direction = isFuture ? "后" : "前";
+	return `约 ${val} ${unit}${direction}`;
+}
+
 /** 10 = most important → 1.0; 0 = trivia → 0.0 (docs §3, v5.4 单列且大为重). */
 export function importanceScore(importance: number): number {
 	return Math.min(Math.max(importance, 0), 10) / 10;
