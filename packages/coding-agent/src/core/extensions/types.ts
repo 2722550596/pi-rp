@@ -1777,7 +1777,7 @@ export interface ExtensionShortcut {
 	extensionPath: string;
 }
 
-type HandlerFn = (...args: unknown[]) => Promise<unknown>;
+export type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,

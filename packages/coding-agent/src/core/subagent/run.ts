@@ -2,6 +2,7 @@ import { contentText } from "@earendil-works/pi-ai";
 import type { JsonValue } from "../../state/state-manager.ts";
 import type { AgentSession } from "../agent-session.ts";
 import { createExtensionRuntime } from "../extensions/loader.ts";
+import type { HandlerFn } from "../extensions/types.ts";
 import type { ModelRuntime } from "../model-runtime.ts";
 import type { RequestGateway } from "../request-gateway.ts";
 import { createAgentSession } from "../sdk.ts";
@@ -34,6 +35,8 @@ export interface RunSubagentOptions {
 	strict?: boolean;
 	/** Callback after the subagent session is created, before the run starts (spawnAgent subscribes to tool execution events here). */
 	onSessionCreated?: (session: AgentSession) => void;
+	/** Parent session to inherit UI context and tool event handlers from. */
+	parentSession?: AgentSession;
 }
 
 export async function runSubagent(
@@ -93,6 +96,47 @@ export async function runSubagent(
 			reload: async () => {},
 		},
 	});
+
+	const parentSession = preparation.session ?? options.parentSession;
+	if (parentSession) {
+		const parentRunner = parentSession.extensionRunner;
+		await session.bindExtensions({
+			uiContext: parentRunner.getUIContext(),
+			mode: parentRunner.getMode(),
+			onError: (err) => parentRunner.emitError(err),
+		});
+
+		// Forward tool-related event handlers from parent extensions
+		const parentExtensions = parentRunner.getExtensions();
+		for (const parentExt of parentExtensions) {
+			const toolHandlers = new Map<string, HandlerFn[]>();
+			for (const eventName of [
+				"tool_call",
+				"tool_result",
+				"tool_execution_start",
+				"tool_execution_update",
+				"tool_execution_end",
+			]) {
+				const handlers = parentExt.handlers.get(eventName);
+				if (handlers && handlers.length > 0) {
+					toolHandlers.set(eventName, [...handlers]);
+				}
+			}
+			if (toolHandlers.size > 0) {
+				session.extensionRunner.attachSyntheticExtension({
+					path: parentExt.path,
+					resolvedPath: parentExt.resolvedPath,
+					sourceInfo: parentExt.sourceInfo,
+					handlers: toolHandlers,
+					tools: new Map(),
+					messageRenderers: new Map(),
+					commands: new Map(),
+					flags: new Map(),
+					shortcuts: new Map(),
+				});
+			}
+		}
+	}
 
 	const controller = new AbortController();
 	const combinedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;

@@ -298,6 +298,143 @@ describe("Subagent", () => {
 		}
 	});
 
+	it("Phase 5b: peer completion inherits parent UI context and forwards tool event handlers", async () => {
+		const notifications: string[] = [];
+		const toolCallsSeen: string[] = [];
+		const toolResultsSeen: string[] = [];
+		let toolExecStartSeen = 0;
+		let toolExecEndSeen = 0;
+
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerTool({
+						name: "interactive_tool",
+						label: "Interactive Tool",
+						description: "A tool that notifies and updates",
+						parameters: Type.Object({}),
+						promptSnippet: "interactive_tool: notify",
+						execute: async (_id, _params, _signal, _onUpdate, ctx) => {
+							ctx?.ui?.notify("subagent notification", "info");
+							return { content: [{ type: "text", text: "tool completed" }], details: undefined };
+						},
+					});
+
+					pi.on("tool_call", async (event) => {
+						toolCallsSeen.push(event.toolName);
+					});
+
+					pi.on("tool_result", async (event) => {
+						toolResultsSeen.push(event.toolName);
+					});
+
+					pi.on("tool_execution_start", async () => {
+						toolExecStartSeen++;
+					});
+
+					pi.on("tool_execution_end", async () => {
+						toolExecEndSeen++;
+					});
+				},
+			],
+		});
+
+		try {
+			await harness.session.bindExtensions({
+				uiContext: {
+					notify: (msg: string) => {
+						notifications.push(msg);
+					},
+					select: async () => undefined,
+					confirm: async () => true,
+					input: async () => undefined,
+					onTerminalInput: () => () => {},
+					setStatus: () => {},
+					setWorkingMessage: () => {},
+					setWorkingVisible: () => {},
+					setWorkingIndicator: () => {},
+					setHiddenThinkingLabel: () => {},
+					setWidget: () => {},
+					setFooter: () => {},
+					setHeader: () => {},
+					setTitle: () => {},
+					custom: async () => undefined as never,
+					pasteToEditor: () => {},
+					setEditorText: () => {},
+					getEditorText: () => "",
+					editor: async () => undefined,
+					addAutocompleteProvider: () => {},
+					setEditorComponent: () => {},
+					getEditorComponent: () => undefined,
+					theme: {} as any,
+					getAllThemes: () => [],
+					getTheme: () => undefined,
+					setTheme: () => ({ success: true }),
+					getToolsExpanded: () => false,
+					setToolsExpanded: () => {},
+				},
+				mode: "rpc",
+			});
+
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-ext-events.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-ext-events",
+					delegatable: true,
+					items: [
+						{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a test peer." },
+						{
+							kind: "slot",
+							id: "tools",
+							enabled: true,
+							role: "system",
+							slot: "tools",
+							options: { onlyWithSnippets: true },
+						},
+						{
+							kind: "block",
+							id: "prompt",
+							enabled: true,
+							role: "user",
+							content: "Delegate.",
+						},
+					],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const result = await prepareSubagentConversation({
+				cwd: harness.tempDir,
+				profileId: "test-ext-events",
+				task: "task",
+				modelRuntime: harness.session.modelRuntime,
+				session: harness.session,
+				modelRef: `${harness.getModel().provider}/${harness.getModel().id}`,
+			});
+
+			assert.equal(isPrepareError(result), false);
+			if (!isPrepareError(result)) {
+				harness.setResponses([
+					fauxAssistantMessage([fauxToolCall("interactive_tool", {})], { stopReason: "toolUse" }),
+					fauxAssistantMessage("finished"),
+				]);
+
+				const runResult = await runSubagent(result, harness.session.modelRuntime);
+				assert.equal(runResult.status, "completed");
+				assert.deepEqual(notifications, ["subagent notification"], "subagent should inherit parent UI notify");
+				assert.deepEqual(toolCallsSeen, ["interactive_tool"], "subagent should trigger tool_call handler");
+				assert.deepEqual(toolResultsSeen, ["interactive_tool"], "subagent should trigger tool_result handler");
+				assert.equal(toolExecStartSeen, 1, "subagent should trigger tool_execution_start handler");
+				assert.equal(toolExecEndSeen, 1, "subagent should trigger tool_execution_end handler");
+			}
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("Phase 6: peer completion resolves {{user}} from the parent session's user name", async () => {
 		const harness = await createHarness({ settings: { userName: "凌霜" } });
 		try {

@@ -524,12 +524,21 @@ export class ExtensionRunner {
 		return this.uiContext;
 	}
 
+	getMode(): ExtensionMode {
+		return this.mode;
+	}
+
 	hasUI(): boolean {
 		return this.uiContext !== noOpUIContext;
 	}
 
 	getExtensionPaths(): string[] {
 		return this.extensions.map((e) => e.path);
+	}
+
+	/** Get all loaded extensions (read-only snapshot). */
+	getExtensions(): readonly Extension[] {
+		return this.extensions;
 	}
 
 	/** Get all registered tools from all extensions (first registration per name wins). */

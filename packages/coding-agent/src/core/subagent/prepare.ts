@@ -80,6 +80,8 @@ export interface SubagentPreparation {
 	/** Extension/custom tool definitions inherited from the parent session,
 	 *  so the subagent can execute them. Empty when no parent session. */
 	customTools?: ToolDefinition[];
+	/** The parent session that initiated this subagent preparation, if any. */
+	session?: AgentSession;
 }
 
 export interface PrepareSubagentError {
@@ -266,6 +268,7 @@ export async function prepareSubagentConversation(options: PrepareSubagentOption
 		schemas,
 		customTools:
 			options.customTools ?? (extensionTools.length > 0 ? extensionTools.map((t) => t.definition) : undefined),
+		session: options.session,
 	};
 }
 
