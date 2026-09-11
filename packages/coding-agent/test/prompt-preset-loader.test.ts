@@ -166,4 +166,17 @@ describe("prompt preset loader", () => {
 		const loaded = loadPromptPresets(cwd);
 		expect(loaded[0].preset.items[0]).toMatchObject({ options: { dropToolNames: ["show_html"] } });
 	});
+
+	it("recurses into nested preset subdirectories (C7)", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-preset-loader-"));
+		tempDirs.push(tempDir);
+		const presetDir = join(tempDir, ".pi", "prompt-presets");
+		mkdirSync(join(presetDir, "nested"), { recursive: true });
+		writeFileSync(join(presetDir, "a.json"), JSON.stringify({ schemaVersion: 1, id: "top-a" }));
+		writeFileSync(join(presetDir, "nested", "b.json"), JSON.stringify({ schemaVersion: 1, id: "nested-b" }));
+
+		const loaded = loadPromptPresets(tempDir);
+		const ids = loaded.map((p) => p.preset.id).sort();
+		expect(ids).toEqual(["nested-b", "top-a"]);
+	});
 });

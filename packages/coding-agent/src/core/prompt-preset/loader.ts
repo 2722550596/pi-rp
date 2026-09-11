@@ -31,6 +31,17 @@ export function promptPresetsProjectDir(cwd: string): string {
 	return getProjectConfigDir(cwd, PROMPT_PRESET_DIR);
 }
 
+/** Collect *.json files under `dir`, including nested subdirectories (sorted, depth-first). */
+function collectPresetFiles(dir: string): string[] {
+	const out: string[] = [];
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const full = join(dir, entry.name);
+		if (entry.isDirectory()) out.push(...collectPresetFiles(full));
+		else if (entry.name.endsWith(".json")) out.push(full);
+	}
+	return out.sort();
+}
+
 export function loadPromptPresets(cwd: string, agentDir?: string): LoadedPromptPreset[] {
 	const dirs: string[] = [];
 	if (agentDir) dirs.push(join(agentDir, PROMPT_PRESET_DIR));
@@ -39,9 +50,7 @@ export function loadPromptPresets(cwd: string, agentDir?: string): LoadedPromptP
 	const presets: LoadedPromptPreset[] = [];
 	for (const dir of dirs) {
 		if (!existsSync(dir)) continue;
-		const files = readdirSync(dir)
-			.filter((f) => f.endsWith(".json"))
-			.map((f) => join(dir, f));
+		const files = collectPresetFiles(dir);
 		for (const filePath of files) {
 			const loaded = loadPromptPresetFile(filePath);
 			// Project presets override global ones with the same ID
