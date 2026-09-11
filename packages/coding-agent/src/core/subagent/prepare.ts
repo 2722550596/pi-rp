@@ -15,6 +15,18 @@ import type { Skill } from "../skills.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 
 // =========================================================================
+// Constants
+// =========================================================================
+
+/**
+ * Default tool set for a subagent when the preset does not declare `tools`.
+ * The full builtin set (including write/edit) so resource-policy `allow`
+ * entries can select them; subagents run un-sandboxed inside the parent
+ * process, and `deny` still narrows the set.
+ */
+export const DEFAULT_SUBAGENT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+
+// =========================================================================
 // Types
 // =========================================================================
 
@@ -155,17 +167,17 @@ export async function prepareSubagentConversation(options: PrepareSubagentOption
 	const effectiveThinkingLevel =
 		thinkingLevel ?? (preset.thinkingLevel as ThinkingLevel | undefined) ?? DEFAULT_THINKING_LEVEL;
 
-	// Effective tools: explicit option wins; otherwise the read-only default
-	// plus the parent session's extension tools (peer-completion). Resolved
-	// before runtime construction so buildPeerOptions can apply the preset's
-	// tool policy.
+	// Effective tools: explicit option wins; otherwise the full builtin
+	// default (now including write/edit) plus the parent session's extension
+	// tools (peer-completion). Resolved before runtime construction so
+	// buildPeerOptions can apply the preset's tool policy.
 	const extensionTools =
 		options.session && options.inheritExtensionTools !== false
 			? options.session.extensionRunner.getAllRegisteredTools()
 			: [];
 	const effectiveTools = options.tools
 		? [...options.tools]
-		: [...["read", "grep", "find", "ls", "bash"], ...extensionTools.map((t) => t.definition.name)];
+		: [...DEFAULT_SUBAGENT_TOOLS, ...extensionTools.map((t) => t.definition.name)];
 
 	// Build the PromptRuntime for compileMessages. With a parent session,
 	// build a peer-context runtime (state, history, options); otherwise minimal.

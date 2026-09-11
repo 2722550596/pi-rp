@@ -10,7 +10,11 @@ import {
 import { describe, it } from "vitest";
 import { ENV_AGENT_DIR } from "../../src/config.ts";
 import { defineTool } from "../../src/core/extensions/types.ts";
-import { isPrepareError, prepareSubagentConversation } from "../../src/core/subagent/prepare.ts";
+import {
+	DEFAULT_SUBAGENT_TOOLS,
+	isPrepareError,
+	prepareSubagentConversation,
+} from "../../src/core/subagent/prepare.ts";
 import { spawnAgent } from "../../src/core/subagent/spawn.ts";
 import { createHarness, getMessageText } from "./harness.ts";
 
@@ -51,7 +55,7 @@ async function setupHarness() {
 }
 
 describe("spawnAgent", () => {
-	it("spawns a subagent with only state_update/get_state tools (no extension tool leakage)", async () => {
+	it("spawns a subagent with the default builtin tool set (no extension tool leakage)", async () => {
 		let peekCalls = 0;
 		const prev = process.env[ENV_AGENT_DIR];
 		const harness = await createHarness({
@@ -90,7 +94,12 @@ describe("spawnAgent", () => {
 			});
 
 			assert.equal(result.status, "completed", result.error ?? "");
-			assert.deepEqual(activeTools, ["state_update", "get_state"]);
+			assert.ok(activeTools, "onSessionCreated must fire");
+			// Default = the full builtin tool set (walker + writer), aligned
+			// with the subagent entry point; state tools are opt-in via `tools`.
+			assert.deepEqual(activeTools!.slice().sort(), [...DEFAULT_SUBAGENT_TOOLS].sort());
+			assert.ok(!activeTools!.includes("state_update"), "state_update is not a default tool");
+			assert.ok(!activeTools!.includes("web_peek"), "parent extension tool must not leak into the subagent");
 			assert.equal(peekCalls, 0, "parent extension tool must not execute inside the subagent");
 			assert.deepEqual(result.stateOps, []);
 		} finally {
@@ -182,6 +191,7 @@ describe("spawnAgent", () => {
 				task: "Append c to /world/seen.",
 				stateNamespaces: ["world"],
 				schemas: ["world"],
+				tools: ["state_update", "get_state"],
 			});
 
 			assert.equal(result.status, "completed", result.error ?? "");
@@ -209,6 +219,7 @@ describe("spawnAgent", () => {
 				task: "Write /secret/x.",
 				stateNamespaces: ["world"],
 				schemas: ["world"],
+				tools: ["state_update", "get_state"],
 			});
 
 			assert.equal(result.status, "completed", result.error ?? "");

@@ -4,12 +4,18 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, it } from "vitest";
+import { applyResourcePolicy } from "../../src/core/prompt-preset/policy.ts";
 import {
 	createSubagentProfilesToolDefinition,
 	createSubagentToolDefinition,
 } from "../../src/core/subagent/extension.ts";
-import { isPrepareError, prepareSubagentConversation } from "../../src/core/subagent/prepare.ts";
+import {
+	DEFAULT_SUBAGENT_TOOLS,
+	isPrepareError,
+	prepareSubagentConversation,
+} from "../../src/core/subagent/prepare.ts";
 import { runSubagent } from "../../src/core/subagent/run.ts";
+import { spawnAgent } from "../../src/core/subagent/spawn.ts";
 import { createHarness, getMessageText } from "./harness.ts";
 
 describe("Subagent", () => {
@@ -382,4 +388,128 @@ describe("Subagent", () => {
 			harness.cleanup();
 		}
 	});
+
+	it("Phase 7: default subagent tool set includes write/edit (C1)", async () => {
+		const harness = await createHarness();
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-tools-default.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-tools-default",
+					delegatable: true,
+					items: [{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a tools peer." }],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const result = await prepareSubagentConversation({
+				cwd: harness.tempDir,
+				profileId: "test-tools-default",
+				task: "task",
+				modelRuntime: harness.session.modelRuntime,
+				session: harness.session,
+			});
+
+			assert.equal(isPrepareError(result), false);
+			if (!isPrepareError(result)) {
+				// The harness session registers memory extension tools, so the
+				// effective set is DEFAULT + inherited extensions — assert the
+				// full default set (now including write/edit) is present.
+				for (const tool of DEFAULT_SUBAGENT_TOOLS) {
+					assert.ok(result.effectiveTools.includes(tool), `default set must include ${tool}`);
+				}
+			}
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("Phase 7b: preset tools.allow can select write from the expanded default set (C2)", async () => {
+		// policy.ts is a filter, not a whitelist expander: an allow entry can
+		// only keep a tool that is already in the input set. Before C1 the
+		// default set had no write/edit, so allow could never select them.
+		// With the expanded default set, allow picks them out in input order.
+		assert.deepEqual(
+			applyResourcePolicy([...DEFAULT_SUBAGENT_TOOLS], { allow: ["read", "bash", "write"] }),
+			["read", "bash", "write"],
+			"allow must select tools present in the (expanded) default set",
+		);
+
+		const harness = await createHarness();
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-tools-allow.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-tools-allow",
+					delegatable: true,
+					tools: { allow: ["read", "bash", "write"] },
+					items: [{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a tools peer." }],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const result = await prepareSubagentConversation({
+				cwd: harness.tempDir,
+				profileId: "test-tools-allow",
+				task: "task",
+				modelRuntime: harness.session.modelRuntime,
+				session: harness.session,
+			});
+
+			assert.equal(isPrepareError(result), false);
+			if (!isPrepareError(result)) {
+				// The expanded default set reaches the subagent pipeline, so
+				// the preset's allow policy can keep write/edit instead of
+				// silently dropping them.
+				assert.ok(result.effectiveTools.includes("write"), "default set must include write for allow to select it");
+				assert.ok(result.effectiveTools.includes("edit"), "default set must include edit for allow to select it");
+			}
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("Phase 7c: spawnAgent without tools exposes the same default set as subagent (C1/C2 alignment)", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("done")]);
+		let activeTools: string[] | undefined;
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-spawn.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-spawn",
+					delegatable: true,
+					items: [{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a spawn peer." }],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const spawnResult = await spawnAgent(harness.session, {
+				profileId: "test-spawn",
+				task: "task",
+				model: harness.getModel(),
+				onSessionCreated: (sub) => {
+					activeTools = sub.getActiveToolNames();
+				},
+			});
+
+			assert.equal(spawnResult.status, "completed", `spawn error: ${spawnResult.error ?? "none"}`);
+			assert.ok(activeTools, "onSessionCreated must fire");
+			for (const tool of DEFAULT_SUBAGENT_TOOLS) {
+				assert.ok(activeTools!.includes(tool), `spawned session must expose ${tool}`);
+			}
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 });

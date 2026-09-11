@@ -3,7 +3,7 @@ import type { Model } from "@earendil-works/pi-ai/compat";
 import type { JsonValue } from "../../state/state-manager.ts";
 import type { AgentSession } from "../agent-session.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { isPrepareError, pick, prepareSubagentConversation } from "./prepare.ts";
+import { DEFAULT_SUBAGENT_TOOLS, isPrepareError, pick, prepareSubagentConversation } from "./prepare.ts";
 import { runSubagent, type SubagentResultStatus } from "./run.ts";
 
 // =========================================================================
@@ -29,7 +29,7 @@ export interface SpawnAgentOptions {
 	stateNamespaces?: string[];
 	/** Schema IDs loaded into the subagent session; default: preset.schemas. */
 	schemas?: string[];
-	/** Tool names for the subagent; default ["state_update", "get_state"]. */
+	/** Tool names for the subagent; default: the builtin subagent tool set (read/bash/edit/write/grep/find/ls). */
 	tools?: string[];
 	/** Custom tool definitions injected into the subagent session (e.g. extension-registered
 	 *  tools). Names must also be listed in `tools` to be selectable. Without this, the
@@ -87,7 +87,7 @@ export async function spawnAgent(session: AgentSession, options: SpawnAgentOptio
 		inheritMessages: options.inheritMessages,
 		stateNamespaces: options.stateNamespaces,
 		schemas: options.schemas,
-		tools: options.tools ?? ["state_update", "get_state"],
+		tools: options.tools ?? [...DEFAULT_SUBAGENT_TOOLS],
 		inheritExtensionTools: false,
 		customTools: options.customTools,
 		model: options.model ?? session.model,
