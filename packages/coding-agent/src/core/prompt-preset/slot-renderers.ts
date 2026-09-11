@@ -3,12 +3,14 @@ import { isAbsolute, resolve } from "node:path";
 import { stringify } from "yaml";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../../config.ts";
 import { formatSkillsForPrompt } from "../skills.ts";
+import { expandMacros } from "./macro-engine.ts";
 import { applyResourcePolicy } from "./policy.ts";
 import type {
 	PromptPreset,
 	PromptPresetDiagnostic,
 	PromptPresetItem,
 	PromptPresetSlotItem,
+	PromptPresetSlotOptions,
 	PromptRuntime,
 	SlotDefinition,
 	SlotRenderContext,
@@ -474,6 +476,34 @@ function formatStateKeyValue(obj: Record<string, unknown>, prefix = "", depth = 
 // =========================================================================
 
 /**
+ * Expand {{macros}} inside string-valued slot options (e.g. a file slot's
+ * `path`) while leaving non-string values untouched. Only string leaves are
+ * expanded — arrays (roles, allowNamespace), numbers (maxMessages,
+ * maxChars) and booleans (glob, sort, noMacros) pass through unchanged.
+ */
+function expandSlotOptions(
+	options: PromptPresetSlotOptions | undefined,
+	runtime: PromptRuntime,
+	preset: PromptPreset,
+	diagnostics: PromptPresetDiagnostic[],
+): PromptPresetSlotOptions | undefined {
+	if (!options) return undefined;
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(options)) {
+		out[key] =
+			typeof value === "string"
+				? expandMacros(value, runtime, {
+						unresolvedPolicy: preset.defaults?.unresolvedMacroPolicy,
+						diagnostics,
+					})
+				: value;
+	}
+	// Only strings are rewritten (to strings); every other field type is
+	// carried over verbatim, so the result still satisfies the options shape.
+	return out as PromptPresetSlotOptions;
+}
+
+/**
  * Synchronous slot render. Slots declared `async: true` render as empty with
  * an info diagnostic — their Promise cannot be awaited here. Returns a
  * warning diagnostic if a non-async slot still returns a Promise (extension
@@ -502,7 +532,12 @@ export function renderSlotSync(
 		});
 		return "";
 	}
-	const ctx: SlotRenderContext = { runtime, preset, item, diagnostics };
+	const ctx: SlotRenderContext = {
+		runtime,
+		preset,
+		item: { ...item, options: expandSlotOptions(item.options, runtime, preset, diagnostics) },
+		diagnostics,
+	};
 	const result = slotDef.render(ctx);
 	if (isPromiseLike(result)) {
 		diagnostics.push({
@@ -531,7 +566,12 @@ export async function renderSlotAsync(
 		});
 		return `[unknown slot: ${item.slot}]`;
 	}
-	const ctx: SlotRenderContext = { runtime, preset, item, diagnostics };
+	const ctx: SlotRenderContext = {
+		runtime,
+		preset,
+		item: { ...item, options: expandSlotOptions(item.options, runtime, preset, diagnostics) },
+		diagnostics,
+	};
 	return await slotDef.render(ctx);
 }
 
