@@ -149,6 +149,47 @@ describe("spawnAgent", () => {
 		}
 	});
 
+	it("makes customTools selectable when `tools` is omitted (omitting the allowlist keeps them on)", async () => {
+		let injectedCalls = 0;
+		const injectedTool = defineTool({
+			name: "kb_write",
+			label: "KB Write",
+			description: "Write a knowledge entry",
+			parameters: { type: "object", properties: {} },
+			promptSnippet: "kb_write: write a knowledge entry",
+			execute: async () => {
+				injectedCalls++;
+				return { content: [{ type: "text", text: "written" }], details: undefined };
+			},
+		});
+		const prev = process.env[ENV_AGENT_DIR];
+		const harness = await setupHarness();
+		try {
+			harness.faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("kb_write", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("DONE"),
+			]);
+			let activeTools: string[] | undefined;
+			const result = await spawnAgent(harness.session, {
+				profileId: "test-spawn",
+				task: "Write a knowledge entry.",
+				// No `tools`: the caller is not narrowing anything, so what it explicitly
+				// injected must be usable alongside the builtin default set.
+				customTools: [injectedTool],
+				onSessionCreated: (sub) => {
+					activeTools = sub.getActiveToolNames();
+				},
+			});
+
+			assert.equal(result.status, "completed", result.error ?? "");
+			assert.deepEqual(activeTools!.slice().sort(), [...DEFAULT_SUBAGENT_TOOLS, "kb_write"].sort());
+			assert.equal(injectedCalls, 1, "injected custom tool must be selectable without an explicit allowlist");
+		} finally {
+			restoreEnv(prev);
+			harness.cleanup();
+		}
+	});
+
 	it("seeds the subagent state from the parent snapshot, filtered by stateNamespaces", async () => {
 		const prev = process.env[ENV_AGENT_DIR];
 		const harness = await setupHarness();

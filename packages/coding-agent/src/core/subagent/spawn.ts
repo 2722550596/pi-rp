@@ -32,9 +32,9 @@ export interface SpawnAgentOptions {
 	/** Tool names for the subagent; default: the builtin subagent tool set (read/bash/edit/write/grep/find/ls). */
 	tools?: string[];
 	/** Custom tool definitions injected into the subagent session (e.g. extension-registered
-	 *  tools). Names must also be listed in `tools` to be selectable. Without this, the
-	 *  subagent only has built-in tools (spawnAgent does not inherit the parent's
-	 *  extension tools). */
+	 *  tools). Selectable by default; `tools`, when given, is a narrowing allowlist and must
+	 *  then list these names too. Without this, the subagent only has built-in tools
+	 *  (spawnAgent does not inherit the parent's extension tools). */
 	customTools?: ToolDefinition[];
 	/** Explicit model; default session.model. */
 	model?: Model<any>;
@@ -87,7 +87,13 @@ export async function spawnAgent(session: AgentSession, options: SpawnAgentOptio
 		inheritMessages: options.inheritMessages,
 		stateNamespaces: options.stateNamespaces,
 		schemas: options.schemas,
-		tools: options.tools ?? [...DEFAULT_SUBAGENT_TOOLS],
+		// Omitting `tools` means "everything handed to this call": the builtin default set
+		// plus the caller's own customTools. `tools` gates the subagent session's tool
+		// registry itself (AgentSession._refreshToolRegistry filters customTools by it), so
+		// defaulting to the builtins alone would silently drop every customTool the caller
+		// passed — the one option whose whole purpose is to inject them. Parent extension
+		// tools are still not inherited (inheritExtensionTools below).
+		tools: options.tools ?? [...DEFAULT_SUBAGENT_TOOLS, ...(options.customTools ?? []).map((t) => t.name)],
 		inheritExtensionTools: false,
 		customTools: options.customTools,
 		model: options.model ?? session.model,
