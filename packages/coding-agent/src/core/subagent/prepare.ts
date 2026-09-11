@@ -71,6 +71,8 @@ export interface SubagentPreparation {
 	thinkingLevel: ThinkingLevel;
 	/** Effective tool names */
 	effectiveTools: string[];
+	/** Working directory for the spawned subagent session; derived from the prepare cwd. */
+	cwd: string;
 	/** The resolved preset profile */
 	profile: PromptPreset;
 	/** Schema IDs to load into the subagent session (from options or preset). */
@@ -259,6 +261,7 @@ export async function prepareSubagentConversation(options: PrepareSubagentOption
 		model,
 		thinkingLevel: effectiveThinkingLevel,
 		effectiveTools,
+		cwd,
 		profile: preset,
 		schemas,
 		customTools:

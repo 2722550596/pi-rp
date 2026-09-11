@@ -512,4 +512,44 @@ describe("Subagent", () => {
 		}
 	});
 
+	it("Phase 8: runSubagent runs its session in the preparation's cwd (C5)", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("done from custom cwd")]);
+		let subSessionCwd: string | undefined;
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-cwd.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-cwd",
+					delegatable: true,
+					items: [{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a cwd peer." }],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const preparation = await prepareSubagentConversation({
+				cwd: harness.tempDir,
+				profileId: "test-cwd",
+				task: "task",
+				modelRuntime: harness.session.modelRuntime,
+				session: harness.session,
+			});
+			assert.equal(isPrepareError(preparation), false);
+			assert.notEqual(process.cwd(), harness.tempDir, "test must use a cwd different from process cwd");
+			if (!isPrepareError(preparation)) {
+				const runResult = await runSubagent(preparation, harness.session.modelRuntime, {
+					onSessionCreated: (sub) => {
+						subSessionCwd = sub.sessionManager.getCwd();
+					},
+				});
+				assert.equal(runResult.status, "completed", `run error: ${runResult.error ?? "none"}`);
+				assert.equal(subSessionCwd, harness.tempDir, "subagent session must run in the preparation cwd");
+			}
+		} finally {
+			harness.cleanup();
+		}
+	});
 });

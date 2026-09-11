@@ -53,10 +53,10 @@ export async function runSubagent(
 	const initialMessages = preparation.messages;
 
 	// In-memory session manager: no disk I/O, nothing to clean up.
-	const sessionManager = SessionManager.inMemory(process.cwd());
+	const sessionManager = SessionManager.inMemory(preparation.cwd);
 
 	const { session } = await createAgentSession({
-		cwd: process.cwd(),
+		cwd: preparation.cwd,
 		modelRuntime,
 		requestGateway: options.requestGateway,
 		requestIdentity: { sessionId: "?", priority: 0, label: "subagent" },
