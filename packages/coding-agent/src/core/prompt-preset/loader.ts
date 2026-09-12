@@ -346,7 +346,12 @@ function normalizeSlotOptions(options: Record<string, unknown>): Record<string, 
 	const result: Record<string, unknown> = {};
 	if (typeof options.format === "string") result.format = options.format;
 	if (typeof options.heading === "string") result.heading = options.heading;
-	if (options.includePiDefaultGuidelines === true) result.includePiDefaultGuidelines = true;
+	// Preserve BOTH booleans: the renderer tests `!== false` (default on, explicit off),
+	// so dropping `false` here silently makes the option a no-op. Same shape as
+	// `onlyWithSnippets` on line 354.
+	if (typeof options.includePiDefaultGuidelines === "boolean") {
+		result.includePiDefaultGuidelines = options.includePiDefaultGuidelines;
+	}
 	if (options.omitNamespace === true) result.omitNamespace = true;
 	if (Array.isArray(options.allowNamespace)) {
 		result.allowNamespace = options.allowNamespace.filter((n): n is string => typeof n === "string");
