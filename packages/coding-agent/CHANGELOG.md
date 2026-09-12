@@ -32,6 +32,7 @@
 - Fixed HTML export (`/export` and `--export`) not applying the active preset's `display` regex rules to message text, so exported pages could show content the TUI redacts.
 - Fixed documentation claiming `/preset list`, `/preset use`, and `/preset reload` subcommands (from the 0.83.0 changelog entry). `/preset` takes no subcommands: no argument lists loaded presets, `/preset <id|none>` activates or disables a preset, and `/reload` re-reads preset files.
 - Fixed `/preset <id>` after `/preset none` not updating the `defaultPreset` setting: the disabled branch persisted `"none"` to settings while the activation branch did not, so once disabled, every new session (and restart) restored the disabled state and the preset could never be switched back. Activating a preset now persists it as the settings default, mirroring the disable path.
+- Fixed RPC `prompt` acknowledging an extension command only after its handler returned: the `success` response is now emitted the moment the command is recognised, so a handler that legitimately runs longer than the client's 30s response timeout (waiting for idle, calling an LLM, spawning a subagent) no longer makes a successful command look like a timeout. Post-acceptance handler errors still surface via the event stream (`extension_error`), keeping the single-authoritative-response contract introduced for [#3049](https://github.com/earendil-works/pi/issues/3049).
 
 ## [0.84.2] - 2026-08-14
 

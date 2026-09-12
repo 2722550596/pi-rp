@@ -16,8 +16,9 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
+import type { ExtensionFactory } from "../src/core/sdk.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createTestResourceLoader } from "./utilities.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
@@ -95,7 +96,14 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
+interface RuntimeHostOptions {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<any>;
+	extensions?: ExtensionFactory[];
+}
+
+async function createRuntimeHost(options: RuntimeHostOptions): Promise<{
 	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
 }> {
@@ -133,14 +141,18 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 	if (options.withAuth) {
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 	}
-
+	const resourceLoader = createTestResourceLoader(
+		options.extensions
+			? { extensionsResult: await createTestExtensionsResult(options.extensions, tempDir) }
+			: undefined,
+	);
 	const session = new AgentSession({
 		agent,
 		sessionManager,
 		settingsManager,
 		cwd: tempDir,
 		modelRuntime: getModelRuntime(modelRegistry),
-		resourceLoader: createTestResourceLoader(),
+		resourceLoader,
 	});
 
 	const runtimeHost = {
@@ -170,7 +182,7 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 	};
 }
 
-async function startRpcMode(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
+async function startRpcMode(options: RuntimeHostOptions): Promise<{
 	lineHandler: (line: string) => void;
 	cleanup: () => Promise<void>;
 }> {
@@ -312,6 +324,53 @@ describe("RPC prompt response semantics", () => {
 
 			await sleep(150);
 		} finally {
+			await cleanup();
+		}
+	});
+
+	it("acknowledges an extension command before its handler finishes", async () => {
+		// Regression: the ack used to fire only after `await command.handler(...)`,
+		// so a handler running longer than the client's 30s response timeout made a
+		// successful prompt look like a timeout. Acceptance is "command recognised",
+		// not "handler returned" — see docs/rpc.md.
+		const handlerRelease: { resolve?: () => void } = {};
+		const handlerStarted = vi.fn();
+		const slowCommand: ExtensionFactory = (pi) => {
+			pi.registerCommand("slow-cmd", {
+				description: "A deliberately long-running command",
+				handler: async () => {
+					handlerStarted();
+					await new Promise<void>((resolve) => {
+						handlerRelease.resolve = resolve;
+					});
+				},
+			});
+		};
+
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			extensions: [slowCommand],
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "b5", type: "prompt", message: "/slow-cmd" }));
+
+			// The ack must arrive while the handler is still blocked.
+			await vi.waitFor(() => {
+				const responses = getPromptResponses(rpcIo.outputLines, "b5");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					id: "b5",
+					type: "response",
+					command: "prompt",
+					success: true,
+				});
+			});
+			expect(handlerStarted).toHaveBeenCalledTimes(1);
+			expect(handlerRelease.resolve).toBeDefined();
+		} finally {
+			handlerRelease.resolve?.();
 			await cleanup();
 		}
 	});

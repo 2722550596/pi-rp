@@ -134,7 +134,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import type { OrchestrationAck } from "./extensions/types.ts";
+import type { OrchestrationAck, ResolvedCommand } from "./extensions/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -1991,11 +1991,20 @@ export class AgentSession {
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
 			if (expandPromptTemplates && text.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(text);
-				if (handled) {
-					// Extension command executed, no prompt to send
+				// Resolve *before* awaiting the handler: recognising the command is the
+				// acceptance signal, not the handler finishing. A handler may run for
+				// seconds to minutes (waiting for idle, calling an LLM, spawning a
+				// subagent), and the RPC client times out its response in 30s — so we
+				// must acknowledge as soon as the command is taken over, matching the
+				// normal-prompt path below (`preflightResult` fires before the run).
+				// Handler failures still reach the caller: `_runExtensionCommand`
+				// catches them and routes through `emitError`, and docs/rpc.md
+				// contractually reports post-acceptance failures via the event stream.
+				const invocation = this._resolveExtensionCommand(text);
+				if (invocation) {
 					preflightResult?.(true);
 					preflightAccepted = true;
+					await this._runExtensionCommand(invocation);
 					return;
 				}
 			}
@@ -2168,31 +2177,46 @@ export class AgentSession {
 	}
 
 	/**
-	 * Try to execute an extension command. Returns true if command was found and executed.
+	 * Resolve an extension command invocation from raw prompt text.
+	 *
+	 * Returns `undefined` when the text is not a registered extension command.
+	 * Split from execution so `prompt()` can acknowledge acceptance the moment
+	 * the command is recognised, without waiting for a possibly long handler.
 	 */
-	private async _tryExecuteExtensionCommand(text: string): Promise<boolean> {
+	private _resolveExtensionCommand(
+		text: string,
+	): { command: ResolvedCommand; args: string } | undefined {
 		// Parse command name and args
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
 		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
 
 		const command = this._extensionRunner.getCommand(commandName);
-		if (!command) return false;
+		if (!command) return undefined;
+		return { command, args };
+	}
 
+	/**
+	 * Execute a resolved extension command.
+	 *
+	 * The handler owns its LLM interaction (via `pi.sendMessage`). A throwing
+	 * handler is reported through `emitError` (surfaced as an `extension_error`
+	 * event) rather than propagating, matching the RPC contract that failures
+	 * after acceptance travel the event stream, not a second response.
+	 */
+	private async _runExtensionCommand(invocation: { command: ResolvedCommand; args: string }): Promise<void> {
 		// Get command context from extension runner (includes session control methods)
 		const ctx = this._extensionRunner.createCommandContext();
 
 		try {
-			await command.handler(args, ctx);
-			return true;
+			await invocation.command.handler(invocation.args, ctx);
 		} catch (err) {
 			// Emit error via extension runner
 			this._extensionRunner.emitError({
-				extensionPath: `command:${commandName}`,
+				extensionPath: `command:${invocation.command.invocationName}`,
 				event: "command",
 				error: err instanceof Error ? err.message : String(err),
 			});
-			return true;
 		}
 	}
 

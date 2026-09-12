@@ -62,9 +62,11 @@ With images:
 - `"steer"`: Queue the message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call.
 - `"followUp"`: Wait until the agent finishes. Message is delivered only when agent stops.
 
-If the agent is streaming and no `streamingBehavior` is specified, the command returns an error.
+If the agent is streaming and no `streamingBehavior` is specified, the message is queued as `"followUp"`.
 
 **Extension commands**: If the message is an extension command (e.g., `/mycommand`), it executes immediately even during streaming. Extension commands manage their own LLM interaction via `pi.sendMessage()`.
+
+The `success` response for an extension command is emitted as soon as the command is **recognised**, before its handler runs — a handler may legitimately take a long time (waiting for idle, calling an LLM, spawning a subagent), and acknowledging acceptance must not depend on it finishing. Errors thrown by a handler after acceptance are reported through the normal event stream (an `extension_error` event), not as a second `response`. Clients must therefore treat `success: true` as "the command was taken over", not "the command finished".
 
 **Input expansion**: Skill commands (`/skill:name`) and prompt templates (`/template`) are expanded before sending/queueing.
 
