@@ -708,6 +708,15 @@ export class RpcClient {
 				return;
 			}
 
+			// A `response` whose id is no longer pending is a LATE reply to a
+			// request that already timed out — `send()` clears the pending entry
+			// when its 30s timer fires. It is a reply, not an event: never forward
+			// it to event listeners (a caller that does not whitelist event types
+			// would otherwise see a stray `response` object on the event stream).
+			if (data.type === "response") {
+				return;
+			}
+
 			// state_changed pushes go to watch_state listeners only (never to
 			// JsonAgentSessionEvent listeners); dedup by stateRevision.
 			if (data.type === "state_changed") {
