@@ -22,6 +22,18 @@ export interface SubagentResult {
 	error?: string;
 }
 
+export interface SubagentActivityEvent {
+	type: "tool_start" | "tool_end";
+	turnId: string;
+	toolCallId: string;
+	toolName: string;
+	args?: unknown;
+	details?: unknown;
+	isError?: boolean;
+}
+
+export type SubagentActivitySink = (event: SubagentActivityEvent) => void;
+
 export interface RunSubagentOptions {
 	/** Maximum time in milliseconds before aborting */
 	timeoutMs?: number;
@@ -33,10 +45,50 @@ export interface RunSubagentOptions {
 	seedState?: Record<string, JsonValue>;
 	/** Enable schema strict mode in the subagent session (writes to namespaces without a loaded schema are rejected). */
 	strict?: boolean;
-	/** Callback after the subagent session is created, before the run starts (spawnAgent subscribes to tool execution events here). */
-	onSessionCreated?: (session: AgentSession) => void;
+	/** Callback after the subagent session is created, before the run starts. */
+	onSessionCreated?: (session: AgentSession) => void | (() => void);
+	/** Receive child tool start/end events after the child turn is bound. */
+	activitySink?: SubagentActivitySink;
 	/** Parent session to inherit UI context and tool event handlers from. */
 	parentSession?: AgentSession;
+}
+
+export function observeSubagentActivity(session: AgentSession, sink: SubagentActivitySink): () => void {
+	let active = true;
+	let turnId: string | undefined;
+	let fallbackTurnIndex = 0;
+	const unsubscribe = session.subscribe((event) => {
+		if (!active) return;
+		if (event.type === "turn_start") {
+			const turnIndex = "turnIndex" in event ? event.turnIndex : fallbackTurnIndex++;
+			turnId = `functional:${crypto.randomUUID()}:${turnIndex}`;
+			return;
+		}
+		if (event.type === "turn_end") {
+			turnId = undefined;
+			return;
+		}
+		if (event.type !== "tool_execution_start" && event.type !== "tool_execution_end") return;
+		if (turnId === undefined) turnId = `functional:${crypto.randomUUID()}:${fallbackTurnIndex++}`;
+		const result =
+			event.type === "tool_execution_end" && typeof event.result === "object" && event.result !== null
+				? event.result
+				: undefined;
+		sink({
+			type: event.type === "tool_execution_start" ? "tool_start" : "tool_end",
+			turnId,
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			...(event.type === "tool_execution_start" ? { args: event.args } : {}),
+			...(result && "details" in result ? { details: result.details } : {}),
+			...(event.type === "tool_execution_end" ? { isError: event.isError } : {}),
+		});
+	});
+	return () => {
+		if (!active) return;
+		active = false;
+		unsubscribe();
+	};
 }
 
 export async function runSubagent(
@@ -152,7 +204,8 @@ export async function runSubagent(
 	// Seed state after schema loading (createAgentSession), before the run starts.
 	// onSessionCreated fires here so subscriptions capture every tool execution event.
 	if (options.seedState) session.stateManager.load(options.seedState);
-	options.onSessionCreated?.(session);
+	const onSessionCleanup = options.onSessionCreated?.(session);
+	const activityCleanup = options.activitySink ? observeSubagentActivity(session, options.activitySink) : undefined;
 
 	try {
 		// 播种消息已含 task（最后一条 user 消息），直接 continue() 触发 run——
@@ -196,6 +249,8 @@ export async function runSubagent(
 	} finally {
 		clearTimeout(timeoutId);
 		combinedSignal.removeEventListener("abort", signalHandler);
+		activityCleanup?.();
+		onSessionCleanup?.();
 		session.agent.abort();
 		await session.waitForIdle().catch(() => {});
 		session.dispose();

@@ -3,8 +3,7 @@ import type { AgentSession } from "../agent-session.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { LoadedPromptPreset } from "../prompt-preset/index.ts";
 import { isPrepareError, prepareSubagentConversation } from "./prepare.ts";
-import { runSubagent } from "./run.ts";
-
+import { observeSubagentActivity, runSubagent, type SubagentActivityEvent } from "./run.ts";
 // =========================================================================
 // Helpers
 // =========================================================================
@@ -124,11 +123,45 @@ export function createSubagentToolDefinition(session: AgentSession): ToolDefinit
 			}
 
 			// Execute the subagent
+			const runtime = session.extensionRunner.getExtensionRuntime();
+			runtime.registerCustomType("airp_agent_activity", {
+				context: "exclude",
+				llmRole: "user",
+				compaction: "exclude",
+			});
+			const relay = (event: SubagentActivityEvent): void => {
+				const envelope = {
+					type: event.type,
+					context: {
+						source: "functional" as const,
+						agentId: params.profileId,
+						turnId: event.turnId,
+					},
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
+					...(event.args !== undefined ? { args: event.args } : {}),
+					...(event.details !== undefined ? { details: event.details } : {}),
+					...(event.isError !== undefined ? { isError: event.isError } : {}),
+				};
+				try {
+					const content = JSON.stringify(envelope);
+					if (content.length > 32_768) return;
+					runtime.sendMessage(
+						{ customType: "airp_agent_activity", content, display: false },
+						{ triggerTurn: false },
+					);
+				} catch {
+					// The parent may have been disposed while the child was unwinding.
+				}
+			};
+
+			// The callback is invoked before continue() starts, so no child tool
+			// execution can race ahead of the observer subscription.
 			const result = await runSubagent(preparation, session.modelRuntime, {
 				signal,
 				requestGateway: session.requestGateway,
+				onSessionCreated: (child) => observeSubagentActivity(child, relay),
 			});
-
 			const statusLabel = result.status === "completed" ? "" : ` [${result.status}]`;
 			const errorLabel = result.error ? `\nError: ${result.error}` : "";
 			const text = `${result.text}${statusLabel}${errorLabel}`;
