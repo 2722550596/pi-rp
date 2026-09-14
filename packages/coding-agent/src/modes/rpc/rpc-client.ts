@@ -95,14 +95,16 @@ export class RpcClient {
 		const cliPath = this.options.cliPath ?? "dist/cli.js";
 		const args = ["--mode", "rpc"];
 
+		// `args` is the raw escape hatch; `provider`/`model` are explicit typed options.
+		// Push raw args first so last-wins CLI parsing lets the explicit options override them.
+		if (this.options.args) {
+			args.push(...this.options.args);
+		}
 		if (this.options.provider) {
 			args.push("--provider", this.options.provider);
 		}
 		if (this.options.model) {
 			args.push("--model", this.options.model);
-		}
-		if (this.options.args) {
-			args.push(...this.options.args);
 		}
 
 		const childProcess = spawn("node", [cliPath, ...args], {
