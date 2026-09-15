@@ -46,6 +46,7 @@ export interface RunSubagentOptions {
 	/** Enable schema strict mode in the subagent session (writes to namespaces without a loaded schema are rejected). */
 	strict?: boolean;
 	/** Callback after the subagent session is created, before the run starts. */
+	// biome-ignore lint/suspicious/noConfusingVoidType: void allows block-body callbacks to return nothing
 	onSessionCreated?: (session: AgentSession) => void | (() => void);
 	/** Receive child tool start/end events after the child turn is bound. */
 	activitySink?: SubagentActivitySink;
