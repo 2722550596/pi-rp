@@ -15,9 +15,12 @@
  *   /memories <uri>      — recall one node in full (with children)
  *   /memories search <q> — keyword listing via the store's recall index
  *   /memories temp       — TEMP zone contents + manual cleanup reminder (§7)
+ *   /memories web        — open the local memory browser (starts it if not running)
  */
 import { type MemoryNode, type MemoryStore, openMemoryStore } from "@earendil-works/pi-memory";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../core/extensions/types.ts";
+import { openBrowser } from "../../utils/open-browser.ts";
+import { ensureWebServer } from "./web-launcher.ts";
 
 // Process-wide singleton keyed by resolved db path — the same map semantics
 // as AgentSession's memoryStoreSingletons, so /memories browses the tree the
@@ -44,10 +47,40 @@ function nodeLine(n: MemoryNode): string {
 
 export default function memoriesExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("memories", {
-		description: "Browse the memory tree (/memories stat|search <q>|<uri>|temp)",
+		description: "Browse the memory tree (/memories stat|search <q>|<uri>|temp|web)",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/memories is only available in interactive TUI mode.", "warning");
+				return;
+			}
+			// /memories web — the local memory browser. Handled BEFORE openStore on
+			// purpose: the browser is a separate long-lived process with its own
+			// SQLite connection, and this command's whole job is to start it (or
+			// focus an instance already running) — it must not touch the session's
+			// handle, and must still work when the session has no store.
+			if (args.trim() === "web") {
+				const dbPath = ctx.getMemoryDbPath?.();
+				if (!dbPath) {
+					ctx.ui.notify("这个会话没有绑定记忆库。", "warning");
+					return;
+				}
+				ctx.ui.notify("正在打开记忆浏览器…");
+				const outcome = await ensureWebServer({ dbPath });
+				if (outcome.kind === "reused") {
+					ctx.ui.notify(`已有实例在服务这个库，直接打开：${outcome.url}`);
+				} else if (outcome.kind === "started") {
+					ctx.ui.notify(`记忆浏览器已启动：${outcome.url}（独立进程 pid ${outcome.pid}，会话退出后继续运行）`);
+				} else if (outcome.kind === "no-cli") {
+					ctx.ui.notify("找不到 pi-memory-web 入口。先在仓库根目录跑 `npm run build`。", "error");
+					return;
+				} else if (outcome.kind === "no-port") {
+					ctx.ui.notify("起始端口起连续 10 个端口都被占用，没能启动。", "error");
+					return;
+				} else {
+					ctx.ui.notify(`端口 ${outcome.port} 上启动后 5 秒仍未就绪，请手动运行 pi-memory-web 看输出。`, "error");
+					return;
+				}
+				openBrowser(outcome.url);
 				return;
 			}
 			const store = await openStore(ctx);
@@ -125,7 +158,7 @@ export default function memoriesExtension(pi: ExtensionAPI): void {
 				`  TEMP 暂存: ${temp} 条`,
 				`  领域: ${domains.length ? domains.join(", ") : "(空)"}`,
 				"",
-				"用法: /memories <uri> | /memories search <q> | /memories temp",
+				"用法: /memories <uri> | /memories search <q> | /memories temp | /memories web",
 			];
 			ctx.ui.notify(lines.join("\n"));
 		},

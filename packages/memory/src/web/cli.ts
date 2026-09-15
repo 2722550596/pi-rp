@@ -161,7 +161,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 	let store: MemoryStore;
 	try {
 		store = await openMemoryStore(opts.dbPath);
-	} catch (_error) {
+	} catch (error) {
+		// 必须出声：这条路径原先只 `exit(1)`，用户看到的是一个「什么都没说就退出」
+		// 的进程 —— 库路径写错时无从判断。错误原文（SQLite 的 "unable to open
+		// database file" 等）比任何自造文案都准确，直接透传。
+		process.stderr.write(`错误：无法打开记忆库 ${opts.dbPath}\n      ${(error as Error).message}\n`);
 		process.exit(1);
 	}
 

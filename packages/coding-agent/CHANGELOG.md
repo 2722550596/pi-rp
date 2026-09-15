@@ -61,6 +61,7 @@
 - Added inherited `createGatewayBindingFetch()` for routing Cloudflare AI Gateway requests through a Workers AI binding without an API token ([#7901](https://github.com/earendil-works/pi/pull/7901) by [@Maximo-Guk](https://github.com/Maximo-Guk)).
 - Added inherited `AssistantMessage.endTurn` to preserve OpenAI Codex's terminal `end_turn` signal for diagnostics ([#7766](https://github.com/earendil-works/pi/pull/7766)).
 - Added inherited unbound single-line transcript scrolling actions for fullscreen mode. See [TUI Fullscreen Viewport](docs/keybindings.md#tui-fullscreen-viewport) ([#7903](https://github.com/earendil-works/pi/pull/7903) by [@midastruth](https://github.com/midastruth)).
+- Added `/memories web` to open the local memory browser in the default browser, starting it first if no instance is running. The browser is a separate detached process: it borrows only the session's resolved DB path, keeps running after the session exits, and an already-running instance is reused only when its `/api/meta` reports the same database (a port merely being occupied is not enough — sibling databases share a port range).
 
 ### Changed
 
