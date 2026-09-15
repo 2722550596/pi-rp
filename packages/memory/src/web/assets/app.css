@@ -1,0 +1,232 @@
+/* 记忆浏览器 —— 只写 Pico CSS 覆盖不到的规则（< 250 行）。
+   颜色/圆角/字号一律取 var(--pico-*) → 自动跟随暗色模式。
+   Pico 白拿：排版、表单、卡片、表格、按钮、暗色模式、[aria-busy] 指示器、.grid、.modal-is-*。 */
+
+:root {
+  --mw-row-h: 28px; /* ⭐ JS 读同一个值（getComputedStyle），窗口化不得两处漂移 */
+}
+
+/* ── 应用外壳：Pico 无 app shell 概念 ─────────────────────────────── */
+/* ⭐ `padding-inline` 不是装饰：Pico 给 `nav ul:first-of-type` 设了
+   `margin-left: calc(var(--pico-nav-element-spacing-horizontal) * -1)`（并给了
+   last-of-type 对称的 `-right`），它假设 nav 坐在一个**有内边距的容器**里。
+   我们的 `#mw-nav` 是 body 的直接子元素、自身无内边距 → 左右各溢出 0.5rem，
+   实测文档宽 1375 > 视口 1365（**每页都有 10px 横向滚动条**）。
+   补上对称的 `padding-inline` 即抵消这两个负 margin（实测 1375 → 1365，归零）。 */
+#mw-nav { position: sticky; top: 0; z-index: 30; padding-inline: var(--pico-nav-element-spacing-horizontal); }
+#mw-nav ul { flex-wrap: wrap; }
+#mw-nav input[type="search"] { max-width: 22rem; }
+
+#mw-shell { display: grid; grid-template-columns: 280px 1fr; }
+#mw-shell > * { min-height: 0; } /* grid 子项默认 min-height:auto → 不置 0 就不滚 */
+@media (min-width: 901px) {
+  #mw-shell { height: calc(100vh - var(--mw-nav-h, 5.2rem)); }
+}
+#mw-sidebar {
+  overflow: auto;
+  border-right: 1px solid var(--pico-muted-border-color);
+  padding: 0.6rem 0.7rem 2rem;
+  background: var(--pico-card-background-color);
+}
+#mw-main { overflow: auto; padding: 1.2rem 1.5rem 4rem; outline: none; }
+
+.mw-burger { display: none; padding: 0.3rem 0.7rem; }
+#mw-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 40; }
+
+/* ── 树 ──────────────────────────────────────────────────────────── */
+.mw-row {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 0.35rem;
+  min-height: var(--mw-row-h); line-height: 1.35; overflow: hidden;
+}
+.mw-row--active { background: var(--pico-secondary-background); }
+.mw-row--stub .mw-uri { color: var(--pico-muted-color); }
+/* ⭐ caret / ↗ 是 `<button>`：Pico 的全局 button 样式会把它们画成蓝色方块，
+   这两条规则只把它们还原成行内符号（不覆盖 Pico 选择器，只作用于自己的 class）。 */
+.mw-caret, .mw-row .mw-more {
+  flex: 0 0 auto; width: auto; height: auto; min-width: 0; margin: 0;
+  padding: 0 0.2rem; background: none; border: 0; box-shadow: none;
+  color: var(--pico-muted-color); font-size: 1em; line-height: 1; cursor: pointer;
+}
+.mw-caret { width: 1.1rem; text-align: center; }
+.mw-caret:hover, .mw-row .mw-more:hover { color: var(--pico-primary); background: none; }
+/* URI 取自然宽度（不抢空间），摘要紧随其后，尾部的 ★N / chip / ↗ 靠 margin-left:auto 贴右。 */
+.mw-uri, .mw-snippet { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mw-tail { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 0.3rem; }
+.mw-more { color: var(--pico-muted-color); font-size: 0.85em; }
+
+/* ⭐ shadowed：原分支已回滚。可辨识但绝不隐形 —— 不隐藏、不沉底、照常可点。 */
+.mw-row--shadowed { position: relative; opacity: 0.55; }
+.mw-row--shadowed::before {
+  content: ""; position: absolute; left: 0; top: 2px; bottom: 2px;
+  border-left: 2px dashed var(--pico-muted-color);
+}
+.mw-chip {
+  font-size: 0.72em; line-height: 1.4; padding: 0 0.35rem; white-space: nowrap;
+  border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius);
+  color: var(--pico-muted-color);
+}
+.mw-chip--shadowed { border-style: dashed; }
+
+/* ⭐ importance：数值越大越重要（5 = 普通，必须最不起眼）。 */
+.mw-imp {
+  font-size: 0.72em; line-height: 1.5; padding: 0 0.3rem;
+  border: 1px solid transparent; border-radius: var(--pico-border-radius); white-space: nowrap;
+}
+.mw-imp--5 { background: var(--pico-primary); color: var(--pico-primary-inverse); }
+.mw-imp--4 { border-color: var(--pico-primary); color: var(--pico-primary); }
+.mw-imp--3 { color: inherit; }
+.mw-imp--2 { color: var(--pico-muted-color); }
+.mw-imp--1 { color: var(--pico-muted-color); opacity: 0.7; }
+
+/* ── 详情页 ──────────────────────────────────────────────────────── */
+.mw-kv { display: grid; grid-template-columns: minmax(9rem, auto) 1fr; gap: 0.15rem 0.8rem; margin: 0; }
+.mw-kv dt { color: var(--pico-muted-color); }
+.mw-kv dd { margin: 0; word-break: break-word; }
+.mw-content { white-space: pre-wrap; word-break: break-word; }
+.mw-h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.mw-edge { list-style: none; padding: 0; margin: 0 0 0.6rem; }
+.mw-edge li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.15rem 0; }
+.mw-edge--dangling { color: var(--pico-del-color); }
+.mw-muted { color: var(--pico-muted-color); }
+
+/* ── 搜索 ────────────────────────────────────────────────────────── */
+.mw-card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.mw-card-title a { word-break: break-all; }
+.mw-searchbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.8rem; }
+
+/* ── 抽屉 ────────────────────────────────────────────────────────── */
+#mw-drawer { width: min(760px, 92vw); max-height: 88vh; padding: 0; }
+#mw-drawer::backdrop { background: rgba(0, 0, 0, 0.4); }
+#mw-drawer > article { max-height: 88vh; overflow: auto; }
+
+/* ── 横幅 / Toast ────────────────────────────────────────────────── */
+#mw-banner {
+  position: sticky; top: var(--mw-nav-h, 5.2rem); z-index: 20;
+  display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center;
+  padding: 0.5rem 1rem; background: var(--pico-secondary-background);
+}
+#mw-toasts {
+  position: fixed; right: 1rem; bottom: 1rem; z-index: 60;
+  display: flex; flex-direction: column; gap: 0.5rem; max-width: 26rem;
+}
+.mw-toast {
+  padding: 0.5rem 0.8rem; border: 1px solid var(--pico-muted-border-color); border-left-width: 4px;
+  border-radius: var(--pico-border-radius); background: var(--pico-card-background-color);
+  animation: mw-toast-in 0.15s ease-out;
+}
+.mw-toast--error { border-left-color: var(--pico-del-color); }
+.mw-toast--info { border-left-color: var(--pico-primary); }
+@keyframes mw-toast-in { from { opacity: 0; transform: translateY(0.4rem); } to { opacity: 1; transform: none; } }
+
+/* ── 骨架 / 空态 ─────────────────────────────────────────────────── */
+.mw-skeleton { display: flex; flex-direction: column; gap: 0.5rem; }
+.mw-skeleton span {
+  height: 0.9rem; border-radius: var(--pico-border-radius);
+  background: var(--pico-muted-border-color); animation: mw-pulse 1.2s ease-in-out infinite;
+}
+.mw-skeleton span:nth-child(2) { width: 80%; }
+.mw-skeleton span:nth-child(3) { width: 62%; }
+@keyframes mw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.mw-empty {
+  padding: 1.2rem; border: 1px dashed var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius); color: var(--pico-muted-color);
+}
+.mw-empty p { margin: 0.2rem 0; }
+
+/* ── 侧栏 ────────────────────────────────────────────────────────── */
+.mw-domain select { width: 100%; margin-bottom: 0.2rem; }
+/* 侧栏顶部的「新建记忆」入口：整条可点，视觉上比普通链接重一点。 */
+.mw-sidebar-create {
+  display: block; text-align: center; margin: 0 0 0.8rem;
+  font-size: 0.92em; text-decoration: none;
+}
+.mw-filter { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; font-size: 0.9em; }
+.mw-filter input { margin: 0; flex: 0 0 auto; }
+.mw-filter label { margin: 0; }
+.mw-view-links { list-style: none; padding: 0; margin: 0; font-size: 0.92em; }
+.mw-view-links li { margin: 0.1rem 0; }
+/* 窄槽里 URI 拿全部剩余宽度（摘要与「↗」在 compact 模式下不渲染） */
+.mw-row--compact .mw-uri { flex: 1 1 auto; }
+.mw-filter-note { font-size: 0.85em; color: var(--pico-muted-color); margin: 0.2rem 0 0.6rem; }
+
+/* ── 窄屏：侧栏变抽屉 ────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  #mw-shell { grid-template-columns: 1fr; }
+  #mw-sidebar { position: fixed; inset: 0 auto 0 0; width: min(20rem, 86vw); z-index: 50; display: none; }
+  body.mw-sidebar-open #mw-sidebar { display: block; }
+  body.mw-sidebar-open #mw-scrim { display: block; }
+  .mw-burger { display: inline-block; }
+}
+
+/* ── 自写动画的无障碍硬要求（Pico 只对它自己的动画负责） ─────────── */
+@media (prefers-reduced-motion: reduce) {
+  .mw-skeleton span { animation: none; }
+  .mw-toast { animation: none; }
+}
+
+/* ── 兄弟视图模块（D3/D4/D5）的布局槽与状态 ─────────────────────────
+   这些 class 由 raw/temp/views/edit 使用；壳只提供样式，不解释其语义。 */
+.mw-raw-list, .mw-row-list, .mw-cards { list-style: none; padding: 0; margin: 0; }
+.mw-cards > * { margin-bottom: 0.8rem; }
+.mw-raw-head, .mw-raw-filters, .mw-raw-search, .mw-raw-stats, .mw-raw-pager,
+.mw-temp-actions, .mw-temp-gauge, .mw-view-tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.mw-raw-stats, .mw-raw-pager { font-size: 0.9em; color: var(--pico-muted-color); }
+.mw-view-tabs a[aria-selected="true"] { font-weight: 600; text-decoration: underline; }
+.mw-temp-gauge { margin-bottom: 0.8rem; }
+.mw-temp-actions { margin-top: 0.4rem; }
+.mw-diff { white-space: pre-wrap; word-break: break-word; font-size: 0.9em; }
+/* 纯标记用的容器（布局由 Pico 的 article/段落负责）：
+   只声明它们存在，便于后续按需加规则时不必再改 class 名。 */
+.mw-raw, .mw-temp, .mw-temp-list, .mw-view, .mw-edit, .mw-deleted { display: block; }
+
+/* ⭐ `raw_log.active = 0` 的历史分支行（D3 §3.2 冻结名字 `mw-raw--inactive`）：
+   MUST 与 active=1 一眼看出 —— 斜纹背景 + 左侧 4px 灰边 + 整行降不透明度。
+   纯 CSS，无图片；颜色取 Pico 变量以自动跟随暗色。 */
+.mw-raw--inactive {
+  border-left: 4px solid var(--pico-muted-border-color);
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0,
+    transparent 5px,
+    var(--pico-muted-border-color) 5px,
+    var(--pico-muted-border-color) 6px
+  );
+  opacity: 0.65;
+}
+
+/* ⭐ audit 事件徽章（契约 §6.5 / D4 §10.2b）：按事件分组配色，9 组两两可辨；
+   组内同色是刻意的分组语义。颜色全取 var(--pico-*) → 自动跟随暗色。 */
+.mk-new { color: var(--pico-ins-color); border-color: currentColor; }
+.mk-edit { color: var(--pico-primary); border-color: currentColor; }
+.mk-del { color: var(--pico-del-color); border-color: currentColor; }
+.mk-assoc { color: var(--pico-secondary); border-color: currentColor; }
+.mk-time { color: var(--pico-muted-color); border-style: dotted; }
+.mk-import { color: var(--pico-primary); border-style: dashed; }
+.mk-read { color: var(--pico-muted-color); }
+.mk-auto { color: var(--pico-secondary); border-style: dashed; }
+.mk-unknown { color: var(--pico-muted-color); font-style: italic; }
+
+/* ⭐ 审计流的「细节」列含长 JSON（实测 dy:// 一类 URI 列表），不加约束会横向溢出
+   127px。修法分两层，**只作用于 audit 的表**（它的列语义与修订史表不同 ——
+   修订史表有 `17 字` 这类短单元格、且本来就 985/985 不溢出，不需要也不应被改）：
+   ① `table-layout: fixed` + 显式列宽 → 列宽不再由内容决定；
+   ② 单元格单行 + 省略号 → 长 JSON 不再撑高行（否则 40+ 行各 1000px+，页面无法浏览）。
+   ⚠️ 单行截断只用在**列表页**：完整值仍在详情侧可见，且 `title` 保留全文（见 audit.js）。 */
+#mw-main table.mw-audit { table-layout: fixed; width: 100%; }
+#mw-main table.mw-audit th,
+#mw-main table.mw-audit td {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+}
+/* 列宽按**实测内容**定（真 Chromium 逐格量）：
+   · 时间 `2026-09-14 18:24` 文本宽 180px，但 Pico 的 `td` 还有 `padding-inline: 20px`
+     → **内容盒必须 ≥180px**，故列的 `width` 需 ≥220px。给 `13rem`(208px 内容)
+     留出余量：`11rem`(180px 内容) 恰好等于文本宽，实测会在临界点上**偶发**省略号。
+   · 事件名最长 18 字符（`autoretain_product`）→ `8rem` 足够。
+   · 对象与细节是长 URI/JSON，按比例分剩余宽度 —— 二者**允许**省略号，
+     全文由 `title` 与详情页承载。 */
+#mw-main table.mw-audit th:nth-child(1) { width: 13rem; }  /* 时间（含 padding 余量） */
+#mw-main table.mw-audit th:nth-child(2) { width: 8rem; }   /* 事件 */
+#mw-main table.mw-audit th:nth-child(3) { width: 11rem; }  /* 对象 */
+#mw-main table.mw-audit th:nth-child(4) { width: 8rem; }   /* 署名 */
+/* 短数字/单位单元格（如「17 字」）：不收窄也不折行，避免被拆成两行。 */
+.mw-num { white-space: nowrap; }

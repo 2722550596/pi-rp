@@ -1317,6 +1317,12 @@ export class MemoryStore {
 					.prepare("INSERT OR REPLACE INTO edges (node_id, target_uri, kind) VALUES (?, ?, ?)")
 					.run(edge.node_id, edge.target_uri, edge.kind);
 			}
+			// Glossary rows MUST be reindexed after insertion: `reindexNode` is what
+			// appends the keyword to the node's FTS text (see `reindexNode` below).
+			// The node loop above ran BEFORE these rows existed, so without this a
+			// snapshot's trigger words are in `glossary` but absent from `node_fts` —
+			// sentence-level search still works, the keyword itself never matches.
+			const reindex = new Set<string>();
 			for (const g of snapshot.glossary) {
 				if (!this.getNode(g.node_id)) {
 					throw new Error(`import: glossary ${g.keyword} targets missing node ${g.node_id}`);
@@ -1324,7 +1330,9 @@ export class MemoryStore {
 				this.db
 					.prepare("INSERT OR REPLACE INTO glossary (keyword, node_id) VALUES (?, ?)")
 					.run(g.keyword, g.node_id);
+				reindex.add(g.node_id);
 			}
+			for (const nodeId of reindex) this.reindexNode(nodeId);
 		});
 		this.logAudit("import_snapshot", { details: String(snapshot.nodes.length) });
 	}

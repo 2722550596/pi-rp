@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>记忆浏览器</title>
+  <link rel="stylesheet" href="/assets/vendor/pico.min.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <nav id="mw-nav" aria-label="主导航">
+    <ul>
+      <li><button type="button" id="mw-burger" class="mw-burger" aria-label="展开侧栏" aria-expanded="false">☰</button></li>
+      <li><strong>记忆浏览器</strong></li>
+    </ul>
+    <ul>
+      <li><input type="search" id="mw-q" name="mw-q" placeholder="搜索记忆…" aria-label="搜索记忆"></li>
+      <li><button type="button" id="mw-theme" class="secondary outline" aria-label="切换主题">跟随系统</button></li>
+      <li><button type="button" id="mw-reload" class="secondary outline">重新载入</button></li>
+    </ul>
+  </nav>
+
+  <div id="mw-shell">
+    <aside id="mw-sidebar" aria-label="记忆树"></aside>
+    <main id="mw-main" tabindex="-1"></main>
+  </div>
+
+  <div id="mw-scrim" hidden></div>
+
+  <dialog id="mw-drawer" aria-label="节点详情"></dialog>
+
+  <div id="mw-banner" role="status" aria-live="polite" hidden></div>
+  <div id="mw-toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>

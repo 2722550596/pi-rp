@@ -156,12 +156,24 @@ export function recencyBoost(docTs: string | null, nowDays: number): number {
  */
 export function keywordScore(queryTokens: string[], doc: MemoryNode, extraTerms = ""): number {
 	if (queryTokens.length === 0) return 0;
-	const docTokens = tokenizeForMatch(`${doc.uri} ${doc.disclosure ?? ""} ${extraTerms} ${doc.content}`);
+	const text = `${doc.uri} ${doc.disclosure ?? ""} ${extraTerms} ${doc.content}`;
+	const docTokens = tokenizeForMatch(text);
 	if (docTokens.length === 0) return 0;
 	const docTokenSet = new Set(docTokens);
+	// ⭐ CJK 单字只进**命中判定**，不进下面的覆盖率分母（2026-09-15）。
+	//   缺陷：tokenizeForMatch 对单字查询产出单字 token（其 `cjk.length === 1` 分支），
+	//   文档侧却只有 bigram —— 「日」「画」这类单字查询，FTS（jieba 空间）明明选中了
+	//   几十个确实含该字的候选，却全被 `requireKeywordHit` 的 `kw > 0` 过滤成 0 结果。
+	//   真库实测：`日` FTS 51 候选 / 字面命中 51 / kw>0 的 0 条。
+	//   ⚠️ 单字**不能**加进 `docTokenSet`：那会把分母从「bigram 数」涨成「bigram + 去重汉字数」，
+	//   使所有文档的 byDoc 一起缩小 —— 实测会把 `history://manual` 挤出 topK
+	//   （test/module.test.ts「hides this-session auto nodes…」因此变红）。
+	//   多字查询的 token 本就是 bigram，加单字不影响其 hits → 现有排序逐位不变。
+	const docMembership = new Set(docTokens);
+	for (const ch of text.match(/[\u4e00-\u9fff]/g) ?? []) docMembership.add(ch);
 	const querySet = new Set(queryTokens);
 	let hits = 0;
-	for (const t of querySet) if (docTokenSet.has(t)) hits++;
+	for (const t of querySet) if (docMembership.has(t)) hits++;
 	let covered = 0;
 	for (const t of docTokenSet) if (querySet.has(t)) covered++;
 	const byQuery = hits / querySet.size;

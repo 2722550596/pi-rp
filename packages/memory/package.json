@@ -12,12 +12,17 @@
 		},
 		"./package.json": "./package.json"
 	},
+	"bin": {
+		"pi-memory-web": "dist/web/cli.js"
+	},
 	"files": [
-		"dist"
+		"dist",
+		"README.md"
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "tsgo -p tsconfig.build.json",
+		"build": "tsgo -p tsconfig.build.json && npm run copy-assets",
+		"copy-assets": "shx mkdir -p dist/web/assets/vendor && shx cp -r src/web/assets/. dist/web/assets/ && shx chmod +x dist/web/cli.js",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run build"
 	},

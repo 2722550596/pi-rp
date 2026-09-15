@@ -5,7 +5,7 @@
  * glossary/diagnostic/recent/index) onto the local store. timeline 数据源 =
  * raw_log 消息级带 world_ts（§15.4）；纪要节点不入轴。
  */
-import { formatRelativeWorldTime } from "./recall.ts";
+import { formatRelativeWorldTime, toEpochDays } from "./recall.ts";
 import type { MemoryNode, MemoryStore } from "./store.ts";
 
 function snippet(node: MemoryNode, max = 80): string {
@@ -46,12 +46,15 @@ export function renderForgottenView(
 	limit = 5,
 	isVisible: (n: MemoryNode) => boolean = () => true,
 ): string {
-	const nowDays = epochDays(store.getWorldTime() ?? new Date().toISOString()) ?? 0;
+	// 沉睡天数 = 今天 - (last_accessed_at ?? created_at)：两侧都是真实墙钟。
+	// 世界钟（getWorldTime）只用于故事内展示，绝不能在此当"现在"——否则
+	// 世界钟（如 2020）减真实时间戳（如 2026）会得出恒负的荒谬天数。
+	const nowDays = toEpochDays(new Date().toISOString()) ?? 0;
 	const nodes = store
 		.listNodes(domain ? { domain } : {})
 		.filter((n) => !n.is_stub && isVisible(n))
 		// 沉睡基准 = last_accessed_at ?? created_at（从未被主动想起 = 出生即沉睡，§13/§16）。
-		.map((n) => ({ node: n, days: nowDays - (epochDays(n.last_accessed_at ?? n.created_at) ?? nowDays) }))
+		.map((n) => ({ node: n, days: nowDays - (toEpochDays(n.last_accessed_at ?? n.created_at) ?? nowDays) }))
 		.sort((a, b) => b.days - a.days)
 		.slice(0, limit);
 	const lines = [
@@ -72,12 +75,8 @@ export function renderForgottenView(
 	return lines.join("\n");
 }
 
-function epochDays(ts: string | null): number | null {
-	if (!ts) return null;
-	const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ts);
-	if (!m) return null;
-	return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000);
-}
+// 备注: epochDays 曾在此重复实现 recall.ts 导出的 toEpochDays，现已统一改用
+// 后者（本文件本就 import recall.ts 的 formatRelativeWorldTime，无新依赖）。
 
 /** MEM://wakeup/<N> — 意识焦点视图: awaken 清单全文 + 最近动态. */
 export function renderWakeupView(
@@ -181,11 +180,12 @@ export function renderIndexView(
 /** MEM://diagnostic/<domain> — 库健康诊断（stale / crowded / placeholder）. */
 export function renderDiagnosticView(store: MemoryStore, domain?: string, daysStale = 30, maxChildren = 10): string {
 	const nodes = store.listNodes(domain ? { domain } : {}).filter((n) => !n.is_stub);
-	const nowDays = epochDays(store.getWorldTime() ?? new Date().toISOString()) ?? 0;
+	// 同 forgotten：沉睡天数两侧都用真实墙钟，世界钟不参与。
+	const nowDays = toEpochDays(new Date().toISOString()) ?? 0;
 	// 越重要的记忆，容许沉睡的天数越短。沉睡基准 = last_accessed_at ?? created_at.
 	const importanceThreshold: Record<number, number> = { 10: 3, 9: 7, 8: 14 };
 	const stale = nodes
-		.map((n) => ({ node: n, days: nowDays - (epochDays(n.last_accessed_at ?? n.created_at) ?? nowDays) }))
+		.map((n) => ({ node: n, days: nowDays - (toEpochDays(n.last_accessed_at ?? n.created_at) ?? nowDays) }))
 		.filter(({ node, days }) => days > (importanceThreshold[node.importance] ?? daysStale))
 		.sort((a, b) => b.node.importance - a.node.importance || b.days - a.days);
 	const childCount = new Map<string, number>();

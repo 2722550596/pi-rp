@@ -168,10 +168,29 @@ const recallParams = Type.Object({
 	max_nodes: Type.Optional(Type.Number({ description: "子树模式下最多渲染多少条节点正文，防刷爆上下文。默认 200。" })),
 });
 
-/** Parse a MEM:// view limit segment: non-negative integer, min 1. */
-function parseViewCount(uri: string, partIndex: number, fallback: number): number {
-	const raw = Number(uri.split("/")[partIndex]);
-	return Number.isInteger(raw) && raw >= 1 ? raw : fallback;
+/**
+ * Parse the segments after a `MEM://<view>` prefix into a `{ domain, limit }`
+ * pair. `uri.split("/")` yields `["MEM:", "", "<view>", ...]`, so the segments
+ * MUST be read past the view name, not at a fixed index.
+ *
+ * Ambiguity rule: a purely numeric segment (min 1) is the limit; the first
+ * non-numeric segment is the domain. Views that ignore the domain (timeline,
+ * recent, wakeup) simply drop what comes back.
+ */
+function parseViewSegments(uri: string, view: string, fallbackLimit: number): { domain?: string; limit: number } {
+	const rest = uri.slice(`MEM://${view}`.length); // "" or "/<seg>/<seg>..."
+	let domain: string | undefined;
+	let limit = fallbackLimit;
+	for (const seg of rest.split("/")) {
+		if (seg === "") continue;
+		if (/^\d+$/.test(seg)) {
+			const raw = Number(seg);
+			if (Number.isInteger(raw) && raw >= 1) limit = raw;
+		} else if (domain === undefined) {
+			domain = seg;
+		}
+	}
+	return { domain, limit };
 }
 
 async function executeRecall(
@@ -182,7 +201,7 @@ async function executeRecall(
 	const { uri, depth, max_nodes: maxNodes } = params;
 	// System views never touch access times — browsing is not "想起" (§13/§5.6).
 	if (uri === "MEM://recent" || uri.startsWith("MEM://recent/")) {
-		const n = parseViewCount(uri, 2, 10);
+		const { limit: n } = parseViewSegments(uri, "recent", 10);
 		const rendered = renderRecentView(store, n, ctx.isVisible);
 		const nodes = store.listRecentNodes(n).filter((x) => (ctx.isVisible ? ctx.isVisible(x) : true));
 		auditRecall(
@@ -205,24 +224,21 @@ async function executeRecall(
 		return text(renderGlossaryView(store));
 	}
 	if (uri === "MEM://wakeup" || uri.startsWith("MEM://wakeup/")) {
-		const n = parseViewCount(uri, 2, 5);
+		const { limit: n } = parseViewSegments(uri, "wakeup", 5);
 		auditRecall(store, ctx, uri, [], { view: "wakeup" });
 		return text(renderWakeupView(store, getAwakenUris(store), n, ctx.isVisible));
 	}
 	if (uri === "MEM://timeline" || uri.startsWith("MEM://timeline/")) {
 		// Data source is raw_log (message-level, §15.4): the domain segment is
 		// accepted for uri compatibility but raw_log is domain-agnostic.
-		const n = parseViewCount(uri, 3, 20);
+		const { limit: n } = parseViewSegments(uri, "timeline", 20);
 		auditRecall(store, ctx, uri, [], { view: "timeline" });
 		return text(renderTimelineView(store, n));
 	}
 	if (uri === "MEM://forgotten" || uri.startsWith("MEM://forgotten/")) {
-		const parts = uri.split("/");
-		// <domain> must not be numeric: MEM://forgotten/<N> treats N as the
-		// limit, not a domain name.
-		const second = parts[2];
-		const domain = second && second !== "" && !/^\d+$/.test(second) ? second : undefined;
-		const n = parseViewCount(uri, /^\d+$/.test(second ?? "") ? 2 : 3, 5);
+		// A numeric segment is the limit (MEM://forgotten/<N>); the first
+		// non-numeric one is the domain (MEM://forgotten/<domain>[/<N>]).
+		const { domain, limit: n } = parseViewSegments(uri, "forgotten", 5);
 		auditRecall(store, ctx, uri, [], { view: "forgotten" });
 		return text(renderForgottenView(store, domain, n, ctx.isVisible));
 	}
