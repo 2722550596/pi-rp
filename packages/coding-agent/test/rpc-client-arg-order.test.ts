@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type RpcClientOptions, RpcClient } from "../src/modes/rpc/rpc-client.ts";
+import { RpcClient, type RpcClientOptions } from "../src/modes/rpc/rpc-client.ts";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
