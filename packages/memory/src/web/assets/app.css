@@ -230,3 +230,17 @@
 #mw-main table.mw-audit th:nth-child(4) { width: 8rem; }   /* 署名 */
 /* 短数字/单位单元格（如「17 字」）：不收窄也不折行，避免被拆成两行。 */
 .mw-num { white-space: nowrap; }
+
+/* ── 多库选择器（契约 §6.1）─────────────────────────────────────────── */
+/* ⚠️ Pico 不给 `nav select` 尺寸：不设 max-width 时空 `<select>` ≈20px（首帧假控件）。
+   ⚠️ `min-width: 0` 不是装饰：flex 子项默认 `min-width: auto`，长 label 会顶开 nav。 */
+#mw-db { max-width: 28rem; min-width: 0; margin-bottom: 0; }
+/* ⚠️ 原生 `<option>` 不接受 text-overflow / max-width：长 label 由浏览器从**中间**截断，
+   本项目无法修 —— 补偿是全路径进 `title`（§2），管理页逐库显示完整路径。 */
+.mw-db-note { font-size: 0.85em; color: var(--pico-muted-color); margin: 0.3rem 0 0.6rem; }
+.mw-db-path { font-family: var(--pico-font-family-monospace); word-break: break-all; }
+.mw-db-table td:first-child { width: 12rem; }        /* label 列 */
+.mw-db-table td:nth-child(2) { width: 5rem; }        /* 节点数 */
+/* 不可达行：可辨识但**绝不隐形**（与 `.mw-row--shadowed` 同柄）。 */
+.mw-db-row--unreachable { border-left: 3px dashed var(--pico-del-color); padding-left: 0.6rem; }
+.mw-db-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.8rem; }

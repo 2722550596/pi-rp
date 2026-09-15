@@ -12,6 +12,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { MemoryStore } from "../store.ts";
+import type { PathPolicy } from "./db-path-policy.ts";
+import type { StoreRegistry } from "./registry.ts";
 import { dispatch } from "./routes.ts";
 import { isLocalBind } from "./security.ts";
 
@@ -22,6 +24,23 @@ export interface ServerContext {
 	tempThreshold: number;
 	tempThresholdSource: "cli" | "settings" | "default";
 	startedAt: string;
+	/**
+	 * Multi-db registry. Absent = single-db degradation: `routes.ts` lazily
+	 * builds one that adopts only the process db (13-多库服务端API.md §12.2).
+	 *
+	 * ⚠️ All three fields are OPTIONAL on purpose: the five existing
+	 * `startServer({…})` call sites in `test/web/*.ts` must keep compiling and
+	 * passing untouched.
+	 */
+	registry?: StoreRegistry;
+	/**
+	 * The CLI `--host` value, verbatim. The multi-db gate reads ONLY this;
+	 * `req.headers.host` is guaranteed loopback by S2, so gating on it would be
+	 * a branch that is never true (§4.5 — a false-green dead-code trap).
+	 */
+	bindHost?: string;
+	/** CLI `--roots` / `--allow-any-path`. Defaults to `{ roots: [cwd], allowAnyPath: false }`. */
+	pathPolicy?: PathPolicy;
 }
 
 export interface RunningServer {
@@ -126,8 +145,18 @@ export async function startServer(
 			server.close(() => {
 				// The store may only be closed AFTER new connections stop and
 				// in-flight handlers drained — closing first hands handlers
-				// "database is not open".
-				ctx.store.db.close();
+				// "database is not open". The registry may hold other dbs' in-flight
+				// references, so it is closed here too, for the same reason.
+				//
+				// ⚠️ Optional chaining, NOT `registryOf(ctx)`: the lazy fallback is
+				//    built on demand, so a process that never used multi-db must not
+				//    grow a registry just to shut down. `closeAll()` is idempotent.
+				ctx.registry?.closeAll();
+				try {
+					ctx.store.db.close();
+				} catch {
+					/* already closed by closeAll() */
+				}
 				log("已关闭。");
 				resolve();
 			});

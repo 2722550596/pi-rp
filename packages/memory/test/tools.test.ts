@@ -115,14 +115,39 @@ describe("revise variants", () => {
 			],
 		});
 		expect(r.details.failed).toBe(0);
+		expect(r.details.failed_uris).toEqual([]);
 		expect(store.resolveUri("history://a")!.importance).toBe(2);
 		expect(store.resolveUri("history://b")!.content).toContain("（补）");
+	});
+
+	it("batch mode reports failed uris when a mod cannot apply (§16 S2/S3)", async () => {
+		const r = await run("revise", {
+			batch: [
+				{ uri: "history://a", importance: 2 },
+				{ uri: "history://nope", append: "（补）" },
+			],
+		});
+		expect(r.details.failed).toBe(1);
+		expect(r.details.failed_uris).toEqual(["history://nope"]);
+		expect(r.text).toContain("已修订：history://a");
+		expect(r.text).toContain("未找到：history://nope");
 	});
 
 	it("old_text uniqueness is enforced", async () => {
 		await run("memorize", { uri: "history://dup", content: "重复 重复" });
 		const r = await run("revise", { uri: "history://dup", old_text: "重复", new_text: "唯一" });
 		expect(r.text).toContain("不唯一");
+	});
+});
+
+describe("memorize result contract (§16 S2/S4)", () => {
+	it("no longer echoes the body, keeping uri + machine signal", async () => {
+		const r = await run("memorize", { uri: "core://q", content: "一大段正文不该出现在 result 里" });
+		expect(r.text).toContain("已记下：core://q");
+		expect(r.text).not.toContain("一大段正文");
+		expect(r.details.ok).toBe(true);
+		expect(r.details.uri).toBe("core://q");
+		expect(r.details.node_id).toBeTruthy();
 	});
 });
 

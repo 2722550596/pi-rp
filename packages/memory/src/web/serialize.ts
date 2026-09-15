@@ -214,6 +214,95 @@ export interface EventsDTO {
 	changed: boolean;
 }
 
+// ── Multi-database (plan/memory-web/13-多库服务端API.md §5) ──────────────────
+
+/** One memory db as it appears in a listing (contract §4.3, frozen shape). */
+export interface DatabaseDTO {
+	/** Absolute path — also the db id (contract §4.2). */
+	path: string;
+	/** Short display name (rules in the routes layer). */
+	label: string;
+	/** Already in the registry (false = discovered but never opened). */
+	registered: boolean;
+	/** File currently exists and probes read-only as a memory db. */
+	reachable: boolean;
+	/**
+	 * Node count; `null` when `reachable === false`.
+	 * ⚠️ `0` is a REAL state (an empty db) — the two MUST NOT be conflated.
+	 */
+	node_count: number | null;
+	/** World clock; `null` on the same terms as `node_count`. */
+	world_time: string | null;
+	/** Human-readable reason when unreachable; `null` when reachable. */
+	error: string | null;
+}
+
+/** Discovery-scan metadata (contract §4.3). */
+export interface DiscoveryMetaDTO {
+	/** Whether multi-db is enabled (false when bound to a non-loopback host). */
+	enabled: boolean;
+	/** ⚠️ Directories actually visited — NOT the db count. */
+	scanned: number;
+	/** Human-readable errors (path + errno name). */
+	errors: string[];
+}
+
+export interface DatabasesDTO {
+	/** The PROCESS db (the startup `--db`). NOT "the current selection" — that lives in the frontend. */
+	current: string;
+	/** Registered ∪ discovered, deduped by path, sorted deterministically. */
+	databases: DatabaseDTO[];
+	/** Effective roots. Meaning "unrestricted" when `--allow-any-path` is on, so `[]` (contract §5.4). */
+	roots: string[];
+	discovery: DiscoveryMetaDTO;
+}
+
+/** Returned by open/create on success; identical shape so the frontend renders both the same way. */
+export interface DatabaseOpenedDTO {
+	/** Normalized absolute path = db id. */
+	path: string;
+	label: string;
+	/** Always true: these endpoints only return 200 on success. */
+	registered: true;
+	reachable: true;
+	node_count: number;
+	world_time: string | null;
+	/** `open` → false; `create` → true. */
+	created: boolean;
+	/** Whether it was already registered (`open` called twice → true). Always false for `create`. */
+	already_registered: boolean;
+}
+
+/** Discovery result → the "unregistered and unreachable" baseline (probe failure path). */
+export function toUnreachableDatabaseDTO(path: string, label: string, error: string): DatabaseDTO {
+	return { path, label, registered: false, reachable: false, node_count: null, world_time: null, error };
+}
+
+/** Known node_count / world_time. ⚠️ No probing here — probing belongs to the discovery layer. */
+export function toDatabaseDTO(input: {
+	path: string;
+	label: string;
+	registered: boolean;
+	nodeCount: number | null;
+	worldTime: string | null;
+	error: string | null;
+}): DatabaseDTO {
+	return {
+		path: input.path,
+		label: input.label,
+		registered: input.registered,
+		reachable: input.error === null,
+		node_count: input.nodeCount,
+		world_time: input.worldTime,
+		error: input.error,
+	};
+}
+
+/** The sole construction point for `current`: it MUST be the process db path the caller passes in. */
+export function toDiscoveryMetaDTO(enabled: boolean, scanned: number, errors: string[]): DiscoveryMetaDTO {
+	return { enabled, scanned, errors };
+}
+
 // ── Converters ──────────────────────────────────────────────────────────────
 
 /** Collapse whitespace then cut — a tree row must never contain a newline. */

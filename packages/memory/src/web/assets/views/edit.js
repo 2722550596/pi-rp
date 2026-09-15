@@ -13,51 +13,28 @@
  * 避免在两个页面各写一份 HTTP 逻辑。
  */
 
-// ── 唯一碰 fetch 的地方 ──────────────────────────────────────────────────────
+// ⭐ 唯一的 import（本文件此前零 import）：读写一律走 `app.js` 的 HTTP 层。
+// ⚠️ 理由（契约 §7.1）：本文件原来自带一个裸 `fetch`（旧 `edit.js:38`），它**绕过** HTTP 层
+//    ⇒ 不会带 `?db=` ⇒ 切库后**读 A 写 B**（写还是静默的：服务端 200、前端 toast「已保存」）。
+// ⚠️ `?db=` 的唯一真相源是 `app.js` 的模块级选择状态；在本文件再读一次就是**第二个真相源**，
+//    两者漂移时静默写错库。收敛后 `requestJSON`/`unwrap` 那份重复实现也一并消失。
+// ⚠️ ESM 允许循环依赖（`app.js` 动态 import 本文件，本文件静态 import 它）：`get`/`post` 是
+//    hoisted 的函数声明，且本文件**没有任何模块顶层语句调用它们**（全部调用在函数体内，
+//    即挂载之后）⇒ 求值期不会访问未初始化绑定。
+// ⚠️ 实施约束：本文件 MUST NOT 在模块顶层调用 `get/post`，也 MUST NOT 新增任何顶层副作用语句
+//    —— 这是"环是安全的"的唯一前提。
+import { get, post } from "../app.js";
 
-/**
- * `postJSON` 是写路径出口，`getJSON` 是读路径出口 —— 全文件只有这一处 `fetch`。
- * 非 2xx 时解析契约 §7.3 的 `{error:{code,message}}` 并抛带 `.code` 的 Error
- * （**MUST NOT** 只抛 status）。**不自动重试**（写操作重试 = 可能重复写）。
- */
-async function requestJSON(path, method, payload) {
-	const url = new URL(path, location.href);
-	url.hash = "";
-	url.search = "";
-	const init = { method, headers: { Accept: "application/json" } };
-	if (method === "GET") {
-		for (const k of Object.keys(payload || {})) {
-			const v = payload[k];
-			if (v === null || v === undefined || v === "") continue;
-			url.searchParams.set(k, String(v));
-		}
-	} else {
-		init.headers["Content-Type"] = "application/json";
-		init.body = JSON.stringify(payload || {});
-	}
-	const res = await fetch(url, init);
-	let body = null;
-	try {
-		body = await res.json();
-	} catch {
-		body = null;
-	}
-	if (!res.ok) {
-		const info = body && body.error ? body.error : null;
-		const err = new Error((info && info.message) || `HTTP ${res.status}`);
-		err.code = (info && info.code) || "internal";
-		err.status = res.status;
-		throw err;
-	}
-	return body;
+// ── HTTP 出口（形状与旧 `requestJSON` 一致：非 2xx 抛带 `.code`/`.message` 的 Error）──
+
+/** 写路径出口。`query` 槽一并透传（`?db=` 由 HTTP 层注入；既有调用省略它 ⇒ 逐字不变）。 */
+export function postJSON(path, body, query) {
+	return post(path, body, query);
 }
 
-export function postJSON(path, body) {
-	return requestJSON(path, "POST", body);
-}
-
+/** 读路径出口。 */
 export function getJSON(path, query) {
-	return requestJSON(path, "GET", query);
+	return get(path, query);
 }
 
 /** 写成功后 MUST 主动广播（契约 §7.4 第②条：服务端自己的写入自己看不见）。 */

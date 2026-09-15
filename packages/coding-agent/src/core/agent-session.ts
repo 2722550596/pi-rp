@@ -179,6 +179,7 @@ import { spawnAgent } from "./subagent/spawn.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
+import { MEMORY_TOOL_RENDERERS } from "./tools/memory-renderers.ts";
 import { createGetStateToolDefinition, createStateUpdateToolDefinition } from "./tools/state-update.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
@@ -4367,6 +4368,9 @@ export class AgentSession {
 					parameters: tool.parameters as ToolDefinition["parameters"],
 					execute: async (_toolCallId, params) =>
 						(await tool.execute(_toolCallId, params as Record<string, unknown>)) as AgentToolResult<never>,
+					// Renderers are a pure coding-agent concern; the memory package stays
+					// headless, so they are injected by tool name here (§16 J1).
+					...MEMORY_TOOL_RENDERERS[tool.name],
 				};
 				synthetic.tools.set(tool.name, {
 					definition,

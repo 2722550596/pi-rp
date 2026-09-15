@@ -69,9 +69,12 @@ function withDetails(t: string, details: Record<string, unknown>): MemoryToolRes
 	return { content: [{ type: "text", text: t }], details };
 }
 
-function nodeRow(node: MemoryNode): string {
+/** Confirmation line: uri + world time. The body is not echoed — it already
+ * travels in the tool-call arguments (and thus reaches compaction's tool-calls
+ * section), so repeating it in the result is pure duplication (§16 S4). */
+function nodeLine(node: MemoryNode): string {
 	const time = node.world_ts ? ` @ ${node.world_ts}` : "";
-	return `${node.uri}${time}\n  ${node.content}`;
+	return `${node.uri}${time}`;
 }
 
 function snippet(node: MemoryNode, max = 80): string {
@@ -465,7 +468,7 @@ async function executeMemorize(store: MemoryStore, params: Static<typeof memoriz
 		anchor_session_id: ctx.sessionId ?? null,
 		world_ts: stampWorldTs(store, params.time),
 	});
-	return withDetails(`已记下：${nodeRow(node)}`, { node_id: node.node_id });
+	return withDetails(`已记下：${nodeLine(node)}`, { node_id: node.node_id, uri: node.uri, ok: true });
 }
 
 // ── revise ─────────────────────────────────────────────────────────────────
@@ -504,6 +507,13 @@ const reviseParams = Type.Object({
 	batch: Type.Optional(Type.Array(reviseModSchema, { description: "批量模式：每条 {uri, ...修改}" })),
 });
 
+/** One revise mod's outcome; `text` is the model-facing line, `ok` the machine signal. */
+export interface ReviseModOutcome {
+	ok: boolean;
+	uri: string;
+	text: string;
+}
+
 function applyReviseMod(
 	store: MemoryStore,
 	mod: {
@@ -518,15 +528,18 @@ function applyReviseMod(
 		time?: string;
 	},
 	editorModel: string | null,
-): string {
+): ReviseModOutcome {
 	const node = store.resolveUri(mod.uri);
-	if (!node) return `未找到：${mod.uri}`;
+	if (!node) return { ok: false, uri: mod.uri, text: `未找到：${mod.uri}` };
 	let content = node.content;
 	if (mod.old_text !== undefined) {
-		if (!content.includes(mod.old_text)) return `${mod.uri}：old_text 不在当前内容中`;
-		if (mod.new_text === undefined) return `${mod.uri}：old_text 需要配 new_text`;
+		if (!content.includes(mod.old_text))
+			return { ok: false, uri: mod.uri, text: `${mod.uri}：old_text 不在当前内容中` };
+		if (mod.new_text === undefined) return { ok: false, uri: mod.uri, text: `${mod.uri}：old_text 需要配 new_text` };
 		const first = content.indexOf(mod.old_text);
-		if (content.indexOf(mod.old_text, first + 1) !== -1) return `${mod.uri}：old_text 不唯一，请加长`;
+		if (content.indexOf(mod.old_text, first + 1) !== -1) {
+			return { ok: false, uri: mod.uri, text: `${mod.uri}：old_text 不唯一，请加长` };
+		}
 		content = content.replace(mod.old_text, mod.new_text);
 	}
 	if (mod.append !== undefined) {
@@ -534,7 +547,9 @@ function applyReviseMod(
 	}
 	if (mod.line !== undefined) {
 		const lines = content.split("\n");
-		if (mod.line < 1 || mod.line > lines.length) return `${mod.uri}：行号越界（共 ${lines.length} 行）`;
+		if (mod.line < 1 || mod.line > lines.length) {
+			return { ok: false, uri: mod.uri, text: `${mod.uri}：行号越界（共 ${lines.length} 行）` };
+		}
 		lines[mod.line - 1] = mod.line_content ?? "";
 		content = lines.join("\n");
 	}
@@ -550,7 +565,7 @@ function applyReviseMod(
 			mod.old_text !== undefined || mod.append !== undefined || mod.line !== undefined ? "manual" : undefined,
 		editor_model: editorModel,
 	});
-	return `已修订：${mod.uri}`;
+	return { ok: true, uri: mod.uri, text: `已修订：${mod.uri}` };
 }
 
 async function executeRevise(store: MemoryStore, params: Static<typeof reviseParams>, ctx: MemoryToolContext) {
@@ -646,8 +661,11 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 		},
 	];
 	const results = mods.map((m) => applyReviseMod(store, m, ctx.modelId ?? null));
-	const failed = results.filter((r) => !r.startsWith("已修订"));
-	return withDetails(results.join("\n"), { failed: failed.length });
+	const failed = results.filter((r) => !r.ok);
+	return withDetails(results.map((r) => r.text).join("\n"), {
+		failed: failed.length,
+		failed_uris: failed.map((r) => r.uri),
+	});
 }
 
 // ── forget ─────────────────────────────────────────────────────────────────

@@ -114,6 +114,73 @@ pi-memory-web --db ./memory.db --port 9000 --open   # 指定端口 / 直接开�
 - Web 界面与 pi 会话**各持一条 SQLite 连接**,靠 `PRAGMA data_version` 感知对方的写入;页面在库被外部改动后会自动刷新,不需要手动重开。
 - `pi-memory-web` 需要 `dist/web/` 存在:仓库里开发时先 `npm run build`。
 
+### 2.5 记忆库选择器(多库)
+
+一个 world 下往往有**几十个**记忆库 —— **world 级一个、每个角色各一个**,其中
+绝大多数还是空的。浏览器可以**同时连着它们**:页面顶部的下拉框选中哪个库,当前
+页面的**全部读视图与写操作**就作用于哪个库,不需要重启、也不需要换端口。
+
+#### 怎么用
+
+```bash
+# 起服务时告诉它「去哪找库」(可重复 --roots)
+pi-memory-web --db ~/projects/hackathon/worlds/fpal/.pi/memory.db \
+              --roots ~/projects/hackathon/worlds
+
+# 之后在浏览器顶部选择器里切换,无需重启
+```
+
+选择器显示**每个库的节点数**(如 `fpal/elias · 73 条`)—— 库一多、且大多数为空,
+不显示节点数根本认不出哪个是有内容的。选中状态记在浏览器里,刷新后保持。
+
+#### roots 怎么配
+
+| 手段 | 说明 |
+|---|---|
+| `--roots <dir>` | 允许被选择的目录,可重复。缺省 `[当前目录]` |
+| `--allow-any-path` | 跳过 roots 限制(显式开启后 stderr 打醒目警告) |
+| `--db <path>` | 启动时的**进程库**;它**不受** roots 约束(你显式指定的,可信) |
+
+**缺省不含 `$HOME` 或 `/`** —— 否则"默认就能读整机"。想让选择器看到哪些库,
+就把那个世界的根目录 `--roots` 进去。
+
+#### 安全边界(重要)
+
+- **非回环绑定 ⇒ 多库整体禁用。** 用 `--host 0.0.0.0` 启动时,库管理功能一律 `403`,
+  发现扫描**不执行**,`?db=` 只接受进程库。原因:无认证的服务对网络可达时,
+  "能注册任意路径"等于**网络上的任何人都能读写你机器上任意 SQLite 文件**。
+  单库(进程库)仍然可读写 —— 即退化成当前行为。
+- **只有通过校验的路径能被打开。** 进入可写列表前必须:归一化 → 落在 roots 内
+  (**逐段真实解析**,并核验「你写的路径」与「实际解析到的文件」是同一个,故
+  `..` 与符号链接都绕不出去) → 是**已存在的普通文件** → **只读探测**能读到
+  记忆库的 schema 版本。探测失败或版本不兼容一律拒绝,**绝不注册**。
+- **探测不改动库文件本身**:只读连接打开,主文件逐字节不变。对 WAL 模式的库,
+  读它可能留下 `-wal`/`-shm` 附属文件(任何只读客户端读 WAL 库的正常行为,删除安全)。
+- 选错路径的代价被挡住了:填一个**不是记忆库**的文件(笔记、别的应用的数据文件)
+  会被探测拒绝,而不是被写进一整套记忆库表。
+- **库正被另一个进程写入时会报「稍后重试」**,不是"服务挂了":同一个库被 pi 会话
+  与浏览器同时写时,SQLite 会短暂报锁;界面显示的是一条中文提示,等几秒重试即可
+  (冲突是暂时的,不是永久错误)。
+
+#### ⚠️ 首次列库可能卡一下(扫描是同步的)
+
+发现扫描用的是**同步目录遍历** —— `--roots` 给得越宽,首次打开选择器(或缓存
+过期后)越可能停顿一下,期间页面无响应。实测:扫 1 万多个目录要几百毫秒到几秒
+(取决于磁盘与负载)。
+
+建议:把 `--roots` 指到**世界根目录**即可,不必给整个 `~/projects`。
+
+#### 新建空库
+
+选择器旁可以**新建一个空记忆库**,但**必须显式确认**(前端会弹一个说明"将新建空
+记忆库"的确认框)。理由:路径不存在时静默新建,会把一个笔误变成一个莫名其妙的文件。
+
+#### 不做的事
+
+- **不做跨库内容迁移 / 合并 / 复制节点**。多库是"同时看多个库",不是"库之间搬东西"。
+- **不做库级别的删除 / 重命名 / 移动**。要删就删文件;注册表随进程消亡。
+- 库边界仍 = 进程边界,世界钟仍各库自存(见 §16)。
+
 ## 3. 架构:两层 API
 
 ```
@@ -438,7 +505,7 @@ store.export();  // { nodes, revisions, kv, aliases, edges, glossary } JSON 快�
 
 ## 17. 测试与验证
 
-- 包内测试:`packages/memory/test/` **152 例**(store 39 / tools 36 / recall 30 / module 28 / phase3 9 / slots 10,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、相对时间与想起条件渲染、审计完整列)。
+- 包内测试:`packages/memory/test/` **344 例** —— 引擎侧 173 例(store 39 / tools 36 / recall 30 / module 28 / mem-uri 11 / slots 10 / phase3 9 / search-keyword 7 / memory-views-sleep 3,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、相对时间与想起条件渲染、审计完整列),Web 端 171 例(api 77 / views-parity 42 / audit 13 / security 13 / visibility 12 / dto-contract 10 / snippet-guard 4)。
 - 集成测试:`packages/coding-agent/test/memory-module.test.ts`(9 例:真实 harness 工具注册/注入去重/raw_log 镜像/reroll active 标记与切回复活/autoretain 消费 side response/时间戳落库/preset 路径/dispose 幂等)、`settings-manager.test.ts`(61 例,含 MemorySettings 深合并)。
 - 全仓:`npm run check`(biome / pinned-deps / ts-imports / shrinkwrap / install-lock / tsgo / browser-smoke)。
 - Bun 编译冒烟:`bun build --compile` 含 `openDatabase` 的最小入口,验证动态导入不炸构建。

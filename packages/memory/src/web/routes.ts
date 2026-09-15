@@ -9,18 +9,27 @@
  * file contains no INSERT/UPDATE/DELETE. Read paths may query directly (§16.6),
  * which is how the editor columns, counts and P14 grouping are obtained.
  */
+import { statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import path from "node:path";
+import { openMemoryStore } from "../index.ts";
 import { search, toEpochDays } from "../recall.ts";
 import { SCHEMA_VERSION } from "../schema.ts";
-import type { MemoryNode } from "../store.ts";
+import type { MemoryNode, MemoryStore } from "../store.ts";
 import { buildTempNotifyContent, countActiveTempNodes } from "../temp-notify.ts";
 import { getAwakenUris, setAwakenUris } from "../tools.ts";
+import { checkPathAllowed, multiDbEnabled, type PathPolicy } from "./db-path-policy.ts";
+import { discoverMemoryDbs, type ProbeOutcome, probeMemoryDb, readMemoryDbStats } from "./discovery.ts";
+import { DbUnavailableError, type StoreEntry, StoreRegistry } from "./registry.ts";
 import { borrowDetector, visibilityFor } from "./runtime.ts";
 import { checkHost, checkOrigin } from "./security.ts";
 import {
 	buildChildCounts,
+	type DatabaseDTO,
+	type DatabaseOpenedDTO,
+	type DatabasesDTO,
 	type DeletedUriDTO,
 	type MetaDTO,
 	type RawResponseDTO,
@@ -32,10 +41,13 @@ import {
 	type TempResponseDTO,
 	type TreeResponseDTO,
 	toAuditDTO,
+	toDatabaseDTO,
+	toDiscoveryMetaDTO,
 	toNodeResponseDTO,
 	toRawDTO,
 	toRevisionDTO,
 	toTreeNodeDTO,
+	toUnreachableDatabaseDTO,
 } from "./serialize.ts";
 import type { ServerContext } from "./server.ts";
 import { buildView, isViewName, VIEW_NAMES } from "./views.ts";
@@ -116,6 +128,43 @@ export function mapStoreError(error: unknown, ctx: { uri?: string; to?: string }
 	if (msg.includes("incompatible with this build")) return fail(409, "invalid_db");
 	if (msg.includes("file is not a database")) return fail(409, "invalid_db");
 	if (msg.includes("unable to open database file")) return fail(409, "invalid_db");
+	// ── Multi-db (13-多库服务端API.md §8.3) ─────────────────────────────────
+	// Q5 (contract §2.8): once busy_timeout (5000) is exhausted, SQLite throws
+	// "database is locked". That is a TRANSIENT conflict (a retry after the
+	// writer COMMITs succeeds), not an environment failure. Falling through to
+	// internal(500) made the frontend show "the service may not be running" —
+	// flatly wrong.
+	if (msg.includes("database is locked") || msg.includes("database table is locked")) {
+		return fail(409, "conflict", "记忆库正被另一个进程写入，请稍后重试。");
+	}
+	// A registered db deleted (or turned into a directory) underneath us. The
+	// registry throws a NAMED error, so match on the class — never on message
+	// text (D1 made `reason`/`path` readonly fields for exactly this).
+	// ⚠️ Keep this before the trailing `internal` fallback, or it degrades
+	//    silently into a 500.
+	if (error instanceof DbUnavailableError) {
+		switch (error.reason) {
+			// Registration-time path-form rejection: the user picked a path we will
+			// not register (a hardlinked file — it would alias a db elsewhere on
+			// disk). That is a 400 on the submitted request, not a broken db.
+			case "hardlink":
+				return fail(400, "bad_request", `该路径不被接受：${error.message}`);
+			// An already-registered db that went bad under us: a resource-state
+			// problem, so 409 like every other invalid_db.
+			case "not-a-file":
+				return fail(409, "invalid_db", `该路径已不是一个文件：${error.path}`);
+			case "path-escalated":
+				return fail(409, "invalid_db", `该路径不在允许的 roots 内：${error.path}`);
+			case "missing":
+				return fail(409, "invalid_db", `记忆库文件已不存在：${error.path}`);
+			// Exhaustive by construction: a new reason without a case here is a
+			// compile error, not a silent fall-through to "file missing".
+			default: {
+				const unreachable: never = error.reason;
+				return fail(500, "internal", `未处理的记忆库错误：${String(unreachable)}`);
+			}
+		}
+	}
 	// conflict (409) — target occupied / restore clash (§7.3, contract change #8)
 	if (msg.includes("target occupied")) return fail(409, "conflict", `目标地址已被占用：${ctx.to ?? "（未知）"}`);
 	if (msg.includes("still exists"))
@@ -778,6 +827,401 @@ function postWorldTime(rc: RequestCtx): HandlerResult {
 	}
 }
 
+// ── Multi-database (plan/memory-web/13-多库服务端API.md) ────────────────────
+
+/**
+ * Short display name for a db id. A pure function: the same path always yields
+ * the same label (no global counter), so it cannot perturb sort determinism.
+ * Three steps:
+ *   ① drop the trailing `memory.db` (the db's filename, always the last segment).
+ *   ② drop EVERY structural segment `.pi` / `characters` — they appear at ANY
+ *      depth, they are not a trailing suffix. Stripping them as a suffix does
+ *      not work: `…/characters/elias/.pi/memory.db` keeps `characters` forever
+ *      because the tail after `.pi` is `…/characters/elias`.
+ *   ③ prefer what follows `worlds/`; else go `~`-relative to home; else literal.
+ */
+export function labelOf(absPath: string): string {
+	const resolved = path.resolve(absPath);
+	const parts = resolved.split(path.sep).filter(Boolean);
+	if (parts.length > 0 && parts[parts.length - 1] === "memory.db") parts.pop();
+	const kept = parts.filter((segment) => segment !== ".pi" && segment !== "characters");
+	const worldsAt = kept.lastIndexOf("worlds");
+	if (worldsAt >= 0 && worldsAt < kept.length - 1) return kept.slice(worldsAt + 1).join("/");
+	// The display separator is `/` on purpose (a UI string, never path math).
+	const stem = (resolved.startsWith(path.sep) ? path.sep : "") + kept.join(path.sep);
+	const home = homedir();
+	if (stem === home) return "~";
+	if (stem.startsWith(`${home}${path.sep}`)) return `~${stem.slice(home.length)}`;
+	return stem;
+}
+
+/** Contract §4.3: registered first → node_count desc → path asc. MUST be a pure function. */
+function compareDatabases(a: DatabaseDTO, b: DatabaseDTO): number {
+	if (a.registered !== b.registered) return a.registered ? -1 : 1;
+	// `null` (unreachable) sorts after every number: it means "unknown", not "zero".
+	const an = a.node_count ?? -1;
+	const bn = b.node_count ?? -1;
+	if (an !== bn) return bn - an;
+	// String comparison, NOT localeCompare: ICU/locale would break determinism.
+	return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+}
+
+const MANAGEMENT_PATHS = new Set(["/api/databases", "/api/databases/open", "/api/databases/create"]);
+const MGMT_DISABLED_MESSAGE = "多库功能只在回环绑定下可用（当前 --host 不是 127.0.0.1 / ::1 / localhost）。";
+
+/**
+ * Lazily built registry for a `ServerContext` that carries none (existing tests
+ * / single-db usage). MUST be treated as a compatibility shim, NOT the main
+ * path: `cli.ts` passes a real `registry` in production, so this WeakMap never
+ * participates there.
+ *
+ * - The key is the `ctx` object, which `startServer` holds for the whole server
+ *   lifetime, so one server builds exactly one registry.
+ * - It adopts the process db: without that, `?db=<process db>` would 404.
+ * - ⚠️ `:memory:` / `""` MUST be skipped: the registry normalizes keys and
+ *   rejects those, which would turn EVERY request into a 500.
+ */
+const fallbackRegistries = new WeakMap<ServerContext, StoreRegistry>();
+
+/** `:memory:` and the empty path are not registrable db paths. */
+function isRegistrable(pathValue: string): boolean {
+	return pathValue !== "" && pathValue !== ":memory:";
+}
+
+function registryOf(ctx: ServerContext): StoreRegistry {
+	if (ctx.registry) return ctx.registry;
+	let registry = fallbackRegistries.get(ctx);
+	if (!registry) {
+		registry = new StoreRegistry({
+			// The registry's `policy` is required (fail-closed). Bare tests have no
+			// policy to speak of, so fall back to the same default as the CLI.
+			policy: ctx.pathPolicy ?? { roots: [process.cwd()], allowAnyPath: false },
+		});
+		if (isRegistrable(ctx.dbPath)) registry.adopt(ctx.dbPath, ctx.store);
+		fallbackRegistries.set(ctx, registry);
+	}
+	return registry;
+}
+
+/** Whether `candidate` is the process db itself (the non-loopback gate + bare-test guard). */
+function isProcessDb(ctx: ServerContext, candidate: string): boolean {
+	if (!isRegistrable(ctx.dbPath)) return false;
+	return candidate === path.resolve(ctx.dbPath);
+}
+
+/**
+ * Resolve `?db=` into the `ServerContext` for this request (contract §3.3).
+ * - No switch (absent / empty string / management route) ⇒ the returned `ctx`
+ *   is REFERENCE-EQUAL to the argument and `entry === null`.
+ * - Hit ⇒ a NEW context plus that entry; the caller MUST `release(entry)` in a
+ *   `finally` so the entry survives LRU eviction for the request's duration.
+ * - Miss ⇒ a `HandlerResult` ready to `send` (404). An entry that is registered
+ *   but whose file vanished THROWS `DbUnavailableError`, which the outer
+ *   `dispatch` catch funnels through `mapStoreError` (§8.3).
+ */
+async function resolveTargetContext(
+	ctx: ServerContext,
+	url: URL,
+): Promise<{ ok: true; ctx: ServerContext; entry: StoreEntry | null } | { ok: false; result: HandlerResult }> {
+	// Management routes MUST stay inert: the frontend's HTTP layer appends ?db= to
+	// EVERY request, so erroring here would break "list the dbs" right after a switch.
+	if (MANAGEMENT_PATHS.has(url.pathname)) return { ok: true, ctx, entry: null };
+
+	const raw = url.searchParams.get("db");
+	// Absent and empty are both equivalent to the process db. The empty string
+	// returns BEFORE `path.resolve`: `resolve("")` is cwd and must never be used
+	// as a lookup key.
+	if (raw === null || raw === "") return { ok: true, ctx, entry: null };
+
+	// `?db=` is a LOOKUP KEY. Normalize first, then query the registry; the
+	// normalized value is never handed to `openMemoryStore`.
+	const candidate = path.resolve(raw);
+
+	// Non-loopback bind ⇒ multi-db is off entirely: only the process db passes.
+	// ⚠️ This MUST be explicit. The registry's CONTENT depends on whether the
+	//    user ever clicked "open", not on `--host`, so "the registry happens to
+	//    hold only the process db" is a coincidence, not an invariant.
+	// ⚠️ Gate on the CLI's --host (ctx.bindHost); S2 guarantees the request's
+	//    Host header is loopback, so using it would make this branch never true.
+	if (!multiDbEnabled(ctx.bindHost ?? "127.0.0.1") && !isProcessDb(ctx, candidate)) {
+		// The message must say WHY (non-loopback) without revealing whether the
+		// path is registered: the two 404 branches must stay indistinguishable on
+		// registry content, or a network visitor could enumerate the registry.
+		return { ok: false, result: notFound(`未注册的记忆库：${candidate}（非回环绑定下只能访问进程库）`) };
+	}
+
+	const entry = await registryOf(ctx).resolve(candidate);
+	if (!entry) {
+		// Unregistered ⇒ 404, and this file was never touched.
+		return { ok: false, result: notFound(`未注册的记忆库：${candidate}（请先在「记忆库」页选择或打开它）`) };
+	}
+	// Only store / dbPath change: every other field is process-level, so letting
+	// it vary per db would be a bug.
+	return { ok: true, ctx: { ...ctx, store: entry.store, dbPath: candidate }, entry };
+}
+
+function policyOf(ctx: ServerContext): PathPolicy {
+	return ctx.pathPolicy ?? { roots: [process.cwd()], allowAnyPath: false };
+}
+
+/**
+ * `ProbeOutcome` → response (§4.3.1). The four 400 messages prefix the reason
+ * the D1 probe already rendered in human terms; `incompatible` is NOT a form
+ * error (the path and db are fine, only the version differs) so it is the
+ * pre-existing `invalid_db`(409) — the same code the store path already emits
+ * for version skew, so the frontend needs one message.
+ */
+function probeFailure(outcome: ProbeOutcome & { ok: false }): HandlerResult {
+	const { reason, detail } = outcome;
+	if (reason === "incompatible") return fail(409, "invalid_db", detail);
+	return badRequest(detail);
+}
+
+/** open / create share one response shape so the frontend renders both the same way. */
+function openedBody(input: {
+	path: string;
+	nodeCount: number;
+	worldTime: string | null;
+	created: boolean;
+	alreadyRegistered: boolean;
+}): DatabaseOpenedDTO {
+	return {
+		path: input.path,
+		label: labelOf(input.path),
+		registered: true,
+		reachable: true,
+		node_count: input.nodeCount,
+		world_time: input.worldTime,
+		created: input.created,
+		already_registered: input.alreadyRegistered,
+	};
+}
+
+async function getDatabases(rc: RequestCtx): Promise<HandlerResult> {
+	const { ctx } = rc;
+	const policy = policyOf(ctx);
+	const registry = registryOf(ctx);
+	const registered = registry.list();
+	// Discovery is the ONLY thing a non-loopback bind suppresses, and this
+	// endpoint is the only discovery entry point — so gating it here is enough.
+	const found = await discoverMemoryDbs(policy.roots);
+
+	// Union, deduped by path. Discovered entries go in first, then the registry
+	// OVERWRITES them as registered — the registry always wins, because it means
+	// "the user explicitly opened this".
+	const seen = new Map<string, DatabaseDTO>();
+	for (const p of found.paths) {
+		// The discovery baseline: discovered but not yet registered, and not yet
+		// counted. The stats pass below overwrites this for every reachable db.
+		seen.set(p, toUnreachableDatabaseDTO(p, labelOf(p), "尚未打开（未注册）。"));
+	}
+	for (const db of registered) {
+		seen.set(
+			db.path,
+			toDatabaseDTO({
+				path: db.path,
+				label: labelOf(db.path),
+				registered: true,
+				nodeCount: null,
+				worldTime: null,
+				error: null,
+			}),
+		);
+	}
+	// The process db is a registered db BY DEFINITION, not as a patch: `cli.ts`
+	// adopts it at startup, so this only matters for bare contexts.
+	if (isRegistrable(ctx.dbPath)) {
+		const processPath = path.resolve(ctx.dbPath);
+		seen.set(
+			processPath,
+			toDatabaseDTO({
+				path: processPath,
+				label: labelOf(processPath),
+				registered: true,
+				nodeCount: null,
+				worldTime: null,
+				error: null,
+			}),
+		);
+	}
+
+	// Fill counters. Already-open dbs come free from their own connection;
+	// unopened ones go through the discovery layer's cached read-only probe.
+	// ⚠️ MUST NOT `registry.resolve()` here: that would lazy-open every
+	//    discovered db, blowing past the LRU cap just to render a list.
+	const databases = await Promise.all(
+		[...seen.values()].map(async (record) => {
+			const open = registry.entryOf(record.path);
+			if (open) {
+				return toDatabaseDTO({
+					path: record.path,
+					label: record.label,
+					registered: record.registered,
+					nodeCount: open.store.listNodes().length,
+					worldTime: open.store.getWorldTime(),
+					// A connection we hold reads as reachable; an external delete
+					// surfaces on the next real request as invalid_db. Listing must
+					// not manufacture a failure the user would blame on the page.
+					error: null,
+				});
+			}
+			// Unopened: a read-only probe via the discovery layer. Registered dbs
+			// that lie outside the roots land here too — registration does not
+			// exempt them from being counted.
+			const stats = await readMemoryDbStats(record.path);
+			if (stats) {
+				return toDatabaseDTO({
+					path: record.path,
+					label: record.label,
+					registered: record.registered,
+					nodeCount: stats.nodeCount,
+					worldTime: stats.worldTime,
+					error: null,
+				});
+			}
+			// ⚠️ `node_count: null`, NEVER 0: zero is the meaningful state "empty
+			//    db", and conflating the two leaves the UI unable to tell them apart.
+			// The reason comes from the probe, which already renders it in human
+			// terms (path + errno); this layer only re-labels it.
+			const probed = await probeMemoryDb(record.path);
+			return toDatabaseDTO({
+				path: record.path,
+				label: record.label,
+				registered: record.registered,
+				nodeCount: null,
+				worldTime: null,
+				error: probed.ok ? "无法读取该记忆库的统计信息。" : probed.detail,
+			});
+		}),
+	);
+	databases.sort(compareDatabases);
+
+	const body: DatabasesDTO = {
+		current: isRegistrable(ctx.dbPath) ? path.resolve(ctx.dbPath) : ctx.dbPath,
+		databases,
+		roots: policy.allowAnyPath ? [] : policy.roots,
+		discovery: toDiscoveryMetaDTO(multiDbEnabled(ctx.bindHost ?? "127.0.0.1"), found.scanned, found.errors),
+	};
+	return { status: 200, body };
+}
+
+/**
+ * Register a path the user pointed at. Order is load-bearing (contract §5.2
+ * R1): path policy → read-only probe → register. NO write may occur between the
+ * probe and the registration — the probe is the single gate that keeps
+ * `openMemoryStore` from flood-table-ing a stranger's SQLite file.
+ */
+async function postDatabasesOpen(rc: RequestCtx): Promise<HandlerResult> {
+	const obj = asObject(rc.body);
+	const raw = obj ? strField(obj, "path") : null;
+	if (!raw) return badRequest("缺少必需参数：path");
+
+	const allowed = checkPathAllowed(policyOf(rc.ctx), raw);
+	if (!allowed.ok) return badRequest(allowed.detail);
+
+	const outcome = await probeMemoryDb(allowed.path);
+	if (!outcome.ok) return probeFailure(outcome);
+
+	const registry = registryOf(rc.ctx);
+	const alreadyRegistered = registry.has(allowed.path);
+	const entry = await registry.register(allowed.path);
+	return {
+		status: 200,
+		body: openedBody({
+			path: allowed.path,
+			nodeCount: entry.store.listNodes().length,
+			worldTime: entry.store.getWorldTime(),
+			created: false,
+			alreadyRegistered,
+		}),
+	};
+}
+
+/**
+ * Create a NEW empty db. `confirm: true` must be explicit (strict `=== true`):
+ * silently creating a db turns a typo into a mystery file.
+ *
+ * The ordering exists because `openMemoryStore` does NOT validate a stranger's
+ * SQLite file — it just adds tables (contract §2.3). So an existing path must be
+ * refused outright, and the placeholder is created with `wx` to close the
+ * check-then-create window.
+ */
+async function postDatabasesCreate(rc: RequestCtx): Promise<HandlerResult> {
+	const obj = asObject(rc.body);
+	const raw = obj ? strField(obj, "path") : null;
+	if (!raw) return badRequest("缺少必需参数：path");
+	if (obj?.confirm !== true) return badRequest("新建记忆库需要 `confirm: true` 显式确认");
+
+	const allowed = checkPathAllowed(policyOf(rc.ctx), raw);
+	if (!allowed.ok) return badRequest(allowed.detail);
+	const target = allowed.path;
+
+	// MUST NOT `mkdir -p`: that turns one typo into a directory tree.
+	try {
+		if (!statSync(path.dirname(target)).isDirectory()) {
+			return badRequest(`父目录不存在：${path.dirname(target)}`);
+		}
+	} catch {
+		return badRequest(`父目录不存在：${path.dirname(target)}`);
+	}
+	// create NEVER overwrites anything, of any type.
+	try {
+		statSync(target);
+		return fail(409, "conflict", "该路径已存在，若要使用它请点「打开」。");
+	} catch {
+		/* does not exist — the expected case */
+	}
+	// Atomic placeholder. Zero bytes is a legal empty SQLite db, so nothing else
+	// is needed; `wx` makes a concurrent creator lose with EEXIST.
+	try {
+		writeFileSync(target, "", { flag: "wx" });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+			return fail(409, "conflict", "该路径已存在，若要使用它请点「打开」。");
+		}
+		return mapStoreError(error, {});
+	}
+
+	let store: MemoryStore | null = null;
+	try {
+		store = await openMemoryStore(target);
+	} catch (error) {
+		// Best-effort cleanup: only remove a file that is still the 0-byte
+		// placeholder, and never let cleanup failures mask the original error.
+		try {
+			if (statSync(target).size === 0) unlinkSync(target);
+		} catch {
+			/* leave it */
+		}
+		return mapStoreError(error, {});
+	}
+	// ⚠️ Close the creation connection BEFORE registering. `register` opens its
+	//    own connection (it takes no store — `adopt` does, and must not be used
+	//    here: adopt pins the connection so it is never evicted or closed, i.e.
+	//    an fd leak). Leaving this one open would leave TWO live connections on
+	//    one path, breaking "one path, one store" and desyncing the change
+	//    detector, with nobody holding the second.
+	try {
+		store.db.close();
+	} catch {
+		/* already closed */
+	}
+
+	// ⚠️ `register`, NOT `adopt`: a created db has no reason to be pinned.
+	const entry = await registryOf(rc.ctx).register(target);
+	// Counters come from the ENTRY's store — the creation handle above is closed.
+	return {
+		status: 200,
+		body: openedBody({
+			path: target,
+			nodeCount: entry.store.listNodes().length,
+			worldTime: entry.store.getWorldTime(),
+			created: true,
+			alreadyRegistered: false,
+		}),
+	};
+}
+
 // ── Static assets (§5.3 / §16.5) ────────────────────────────────────────────
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -852,6 +1296,11 @@ export const ROUTES: RouteDef[] = [
 	{ method: "POST", path: "/api/glossary/remove", handler: postGlossaryRemove },
 	{ method: "POST", path: "/api/awaken", handler: postAwaken },
 	{ method: "POST", path: "/api/world-time", handler: postWorldTime },
+	// Management routes are appended (not interleaved) so `git diff` shows the
+	// existing 21 rows as untouched: +3 -0.
+	{ method: "GET", path: "/api/databases", handler: getDatabases },
+	{ method: "POST", path: "/api/databases/open", handler: postDatabasesOpen },
+	{ method: "POST", path: "/api/databases/create", handler: postDatabasesCreate },
 ];
 
 const MAX_BODY = 1024 * 1024;
@@ -903,24 +1352,50 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, ctx: S
 
 		const normalized: Method = method === "HEAD" ? "GET" : (method as Method);
 		const route = ROUTES.find((r) => r.method === normalized && r.path === url.pathname);
-		if (route) {
-			try {
-				const body = req.method === "POST" ? await readJsonBody(req) : undefined;
-				const result = await route.handler({ req, url, ctx, body });
-				return send(res, result, headers, method === "HEAD");
-			} catch (error) {
-				if (error instanceof BadParam) return send(res, badRequest(error.message), headers);
-				return send(res, mapStoreError(error, {}), headers);
-			}
-		}
-
 		const samePath = ROUTES.filter((r) => r.path === url.pathname);
-		if (samePath.length > 0) {
+
+		// S4: a non-loopback bind disables all three management routes. The gate
+		// reads the CLI's --host (ctx.bindHost) — S2 has already guaranteed the
+		// request's Host header is loopback, so gating on that would be dead code.
+		// ⚠️ Before `ROUTES.find`: otherwise `POST /api/databases` (GET-only in the
+		//    table) would trip 405 first, both leaking that the path exists and
+		//    letting "disabled entirely" fall through.
+		if (MANAGEMENT_PATHS.has(url.pathname) && !multiDbEnabled(ctx.bindHost ?? "127.0.0.1")) {
+			return send(res, fail(403, "forbidden_origin", MGMT_DISABLED_MESSAGE), headers);
+		}
+		// 405 MUST precede target resolution: otherwise
+		// `DELETE /api/node?db=<unregistered>` would drift from 405 to 404 — a
+		// multi-db-unrelated semantic change that existing tests pin.
+		if (!route && samePath.length > 0) {
 			const allow = [...new Set(samePath.map((r) => r.method))].join(", ");
 			return send(res, fail(405, "method_not_allowed", `路径 ${url.pathname} 不支持方法 ${method}`), {
 				...headers,
 				Allow: allow,
 			});
+		}
+
+		if (route) {
+			// ⭐ `entry`'s lifetime: `resolve` raises the refcount, so this entry
+			// cannot be LRU-evicted while the request runs; `release` in the
+			// `finally` drops it again.
+			let entry: StoreEntry | null = null;
+			try {
+				const target = await resolveTargetContext(ctx, url);
+				if (!target.ok) return send(res, target.result, headers);
+				entry = target.entry;
+				const body = req.method === "POST" ? await readJsonBody(req) : undefined;
+				const result = await route.handler({ req, url, ctx: target.ctx, body });
+				return send(res, result, headers, method === "HEAD");
+			} catch (error) {
+				if (error instanceof BadParam) return send(res, badRequest(error.message), headers);
+				return send(res, mapStoreError(error, {}), headers);
+			} finally {
+				// `entry === null` for the default ?db= (the process db is adopted,
+				// so it is not inside the LRU) — never call release on a non-entry.
+				// ⚠️ Use the ORIGINAL ctx: the registry is process-level, and a
+				//    stable WeakMap key matters for the lazy fallback.
+				if (entry) registryOf(ctx).release(entry);
+			}
 		}
 
 		const stat = await serveStatic({ req, url, ctx, body: undefined }, url.pathname);

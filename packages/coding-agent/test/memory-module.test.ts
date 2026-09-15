@@ -13,6 +13,10 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createSchema, type MemoryDatabase, MemoryStore, openDatabase } from "@earendil-works/pi-memory";
 import { afterEach, describe, expect, it } from "vitest";
+import { createToolHtmlRenderer } from "../src/core/export-html/tool-renderer.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 import type { Harness } from "./suite/harness.ts";
 import { createHarness } from "./suite/harness.ts";
 
@@ -59,6 +63,87 @@ describe("memory module ↔ AgentSession integration", () => {
 		for (const name of ["recall", "retrieve", "memorize", "revise", "forget", "set_time", "awaken"]) {
 			expect(toolNames).toContain(name);
 		}
+
+		// §16 S1: the synthetic host spreads MEMORY_TOOL_RENDERERS by name, so the
+		// TUI reaches the streaming call view through the real registry.
+		for (const name of ["memorize", "revise"]) {
+			const definition = harness.session.getToolDefinition(name);
+			expect(definition?.renderCall).toBeTypeOf("function");
+			expect(definition?.renderResult).toBeTypeOf("function");
+		}
+		// Unmapped memory tools keep the graceful bare-name fallback.
+		expect(harness.session.getToolDefinition("recall")?.renderCall).toBeUndefined();
+	});
+
+	it("§16 S1: the session's memorize definition streams args into the TUI call slot", async () => {
+		initTheme("dark");
+		const { harness } = await createMemoryHarness();
+		const definition = harness.session.getToolDefinition("memorize");
+		expect(definition).toBeDefined();
+		// Drive the real registered definition through the real TUI component,
+		// mimicking interactive-mode's per-message_update updateArgs progression.
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-stream",
+			{},
+			{},
+			definition,
+			{ requestRender: () => {} } as never,
+			process.cwd(),
+		);
+		const frames: string[] = [];
+		for (const args of [
+			{},
+			{ uri: "core://identi" },
+			{ uri: "core://identity", content: "伊莱在酒" },
+			{ uri: "core://identity", content: "伊莱在酒馆遇到了薇拉" },
+		]) {
+			component.updateArgs(args);
+			frames.push(stripAnsi(component.render(60).join("\n")));
+		}
+		// The body becomes visible in the CALL slot progressively — this is the
+		// behaviour 明月 asked for, before any tool result exists.
+		expect(frames[0]).not.toContain("伊莱");
+		expect(frames[1]).toContain("core://identi");
+		expect(frames[2]).toContain("伊莱在酒");
+		expect(frames[3]).toContain("伊莱在酒馆遇到了薇拉");
+		// Never a crash on the pre-stream frames (F1/F4).
+		expect(() => component.updateResult({ content: [], details: {}, isError: false }, false)).not.toThrow();
+		expect(() => component.render(60)).not.toThrow();
+	});
+
+	it("§16 C2: export HTML shows the memorize body without a JSON dump or OSC-8", async () => {
+		initTheme("dark");
+		const { harness } = await createMemoryHarness();
+		// Drive the real registered definition through the real export renderer.
+		const renderer = createToolHtmlRenderer({
+			getToolDefinition: (name) => harness.session.getToolDefinition(name),
+			theme,
+			cwd: process.cwd(),
+			width: 80,
+		});
+		const callHtml = renderer.renderCall("mem-html", "memorize", {
+			uri: "core://x",
+			content: "正文要在导出里可见",
+		});
+		expect(callHtml).toBeDefined();
+		expect(callHtml).toContain("正文要在导出里可见");
+		expect(callHtml).toContain("core://x");
+		// OSC-8 hyperlinks are not matched by the SGR-only ANSI regex and would
+		// leak raw escapes into the export (§16 F2).
+		expect(callHtml).not.toContain("\u001b]");
+		expect(callHtml).not.toContain("\\u001b]");
+		// Not a JSON dump (the §5.4 whitespace degradation).
+		expect(callHtml).not.toContain("JSON");
+
+		const resultHtml = renderer.renderResult(
+			"mem-html",
+			"memorize",
+			[{ type: "text", text: "已记下：core://x" }],
+			{},
+			false,
+		);
+		expect(resultHtml?.expanded).toContain("已记下：core://x");
 	});
 
 	it("memorize through the real tool writes provenance into the store", async () => {

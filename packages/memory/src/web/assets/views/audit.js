@@ -56,6 +56,11 @@ function h(tag, props, children) {
 		else if (key === "text") node.textContent = String(v);
 		else if (key === "dataset") {
 			for (const dk of Object.keys(v)) node.dataset[dk] = String(v[dk]);
+		} else if (typeof v === "function") {
+			// ⚠️ 与 `app.js:el` 同款修正（2026-09-16）：`onclick: fn` MUST 走 addEventListener。
+			//    `setAttribute("onclick", String(fn))` 只把函数源码写成属性文本，浏览器当表达式语句
+			//    求值后丢弃 ⇒ **按钮点了没反应且不报错**。本页 168/176 行的分页按钮曾因此是死的。
+			node.addEventListener(key.slice(2), v);
 		} else node.setAttribute(key, v === true ? "" : String(v));
 	}
 	const kids = children === null || children === undefined ? [] : [].concat(children);

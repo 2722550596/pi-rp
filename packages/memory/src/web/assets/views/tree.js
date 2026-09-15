@@ -10,9 +10,11 @@
 // ⭐ 本文件零 POST、零 npm 依赖；一切来自 DB 的文本一律 textContent。
 
 import { el, clear, append, navigate, renderError, renderNotice, toast } from "../app.js";
+import { currentGen, ensureCacheFor, parentOf, treeCache } from "./tree-cache.js";
 
-// 树缓存：key = `${domain}|${parentUri ?? ""}` → { items, total }（§4.9，不设 TTL）
-export const treeCache = new Map();
+// 树缓存与库身份在 `./tree-cache.js`（契约 §7.6 / §7.10，D2 `12` §10）：
+// 键 = `${domain}|${parentUri ?? ""}`（§4.9，不设 TTL），但**值属于某个库** ——
+// 库标识与缓存同处一个模块才能做到单点失效。`ensureCacheFor`/`currentGen` 也来自那里。
 
 const PAGE_SIZE = 200; // 每层取数 / 渲染上限（§4.7 第 2 招）
 const WINDOW_THRESHOLD = 500; // 可见行 > 此值 → 固定行高窗口化（§4.7 第 3 招）
@@ -61,14 +63,6 @@ export function lastSegment(uri) {
   return i === -1 ? s : s.slice(i + 1) || s;
 }
 
-export function parentOf(uri) {
-  const s = String(uri ?? "");
-  const i = s.lastIndexOf("/");
-  if (i === -1) return "";
-  const head = s.slice(0, i);
-  return head.endsWith("://") ? "" : head; // `core://` 是根，再往上没有父层
-}
-
 export function ancestorChain(uri) {
   const chain = [];
   let cur = parentOf(uri);
@@ -106,7 +100,11 @@ async function loadLayer(t, parentUri, offset = 0) {
   }
   const q = { domain: t.domain, depth: 1, limit: PAGE_SIZE, offset };
   if (parentUri) q.parentUri = parentUri;
+  const gen = currentGen(); // ⭐ await 前抓（D2 `12` §10.2）
   const res = await t.ctx.api.tree(q);
+  // ⭐ await 期间若发生过切库，本响应属于**旧库** → 丢弃、绝不写缓存。
+  //    只做入口 clear 挡不住这个：切库前的在途响应落地时会把刚清干净的缓存重新污染成旧库数据。
+  if (gen !== currentGen()) return { items: [], total: 0 };
   const items = Array.isArray(res && res.items) ? res.items : [];
   const total = Number(res && res.total);
   const prev = offset === 0 ? { items: [] } : treeCache.get(key) ?? { items: [] };
@@ -590,6 +588,7 @@ let treeUid = 0;
 
 // ── 主区：`#/tree` ──────────────────────────────────────────────────
 export async function mount(el_, params, ctx) {
+  ensureCacheFor(ctx.currentDb); // ⭐ 唯一失效点（D2 `12` §10.3）——MUST 是第一句
   const uri = params.get("uri") || "";
   const requested = params.get("domain") || (uri ? uri.split("://")[0] : "");
   const t = createTree(ctx, { scroller: document.querySelector("#mw-main"), selected: uri || null });
@@ -657,6 +656,7 @@ function breadcrumb(domain, uri) {
 
 // ── 侧栏：常驻（切路由不重建，§3.4） ────────────────────────────────
 export async function mountSidebar(el_, ctx) {
+  ensureCacheFor(ctx.currentDb); // ⭐ 同上（侧栏与 `#/tree` 共用同一份缓存）
   let meta;
   try {
     meta = await ctx.api.meta();
@@ -767,16 +767,8 @@ export async function mountSidebar(el_, ctx) {
   };
 }
 
-// ── 精确失效（§4.9 第 2 条）：只删该 uri 的祖先层与自身层，不整树重拉 ──
-export function invalidateTreeFor(uri) {
-  if (!uri) {
-    treeCache.clear();
-    return;
-  }
-  const parent = parentOf(uri);
-  for (const key of [...treeCache.keys()]) {
-    const i = key.indexOf("|");
-    const prefix = i === -1 ? "" : key.slice(i + 1);
-    if (prefix === "" || prefix === uri || prefix === parent || uri.startsWith(`${prefix}/`)) treeCache.delete(key);
-  }
-}
+// ── 精确失效已搬到 `./tree-cache.js`（§4.9 第 2 条）──────────────────────────
+// ⚠️ 它是**缓存的所有者操作**，MUST 与 `treeCache` 同处一个模块：否则 `app.js` 的
+//    `memory:changed` handler 得 `import` 本文件才能用它，而本文件静态 import `../app.js`
+//    ⇒ 会把 DOM 副作用拖进一条纯数据路径（D2 `12` §10.0/§10.3 文件 C）。
+//    调用方（`app.js`）直接从 `./tree-cache.js` 取它。

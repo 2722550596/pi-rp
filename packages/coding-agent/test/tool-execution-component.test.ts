@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { MEMORY_TOOL_RENDERERS } from "../src/core/tools/memory-renderers.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
@@ -22,6 +23,11 @@ function createBaseToolDefinition(name = "custom_tool"): ToolDefinition {
 			details: {},
 		}),
 	};
+}
+
+/** Mirrors agent-session's synthetic host: renderers spread over a full definition. */
+function createMemoryToolDefinition(name: "memorize" | "revise"): ToolDefinition {
+	return { ...createBaseToolDefinition(name), ...MEMORY_TOOL_RENDERERS[name] };
 }
 
 function createFakeTui(): TUI {
@@ -544,4 +550,134 @@ describe("ToolExecutionComponent parity", () => {
 			expect(collapsed.indexOf(":120-329")).toBeLessThan(collapsed.indexOf("to expand"));
 		});
 	}
+});
+
+describe("memory tool renderers (§16)", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	test("memorize renders streaming args in the call slot (§16 S1)", () => {
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-1",
+			{},
+			{},
+			createMemoryToolDefinition("memorize"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateArgs({ uri: "core://identity", content: "伊莱在酒馆遇到了薇拉" });
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("core://identity");
+		expect(rendered).toContain("伊莱在酒馆遇到了薇拉");
+	});
+
+	test("memorize call survives the pre-stream window with empty args (§16 F1/F5)", () => {
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-partial",
+			{},
+			{},
+			createMemoryToolDefinition("memorize"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateArgs(undefined);
+		expect(() => component.render(120)).not.toThrow();
+		component.updateArgs({ uri: "core://identi" });
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("core://identi");
+	});
+
+	test("memory renderResult never returns undefined (§16 F4 — undefined crashes the TUI)", () => {
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-2",
+			{},
+			{},
+			createMemoryToolDefinition("memorize"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [], details: {}, isError: false }, false);
+		expect(() => component.render(120)).not.toThrow();
+	});
+
+	test("memory renderResult echoes the confirmation text (§16 J4)", () => {
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-3",
+			{},
+			{},
+			createMemoryToolDefinition("memorize"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{ content: [{ type: "text", text: "已记下：core://x" }], details: {}, isError: false },
+			false,
+		);
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("已记下：core://x");
+	});
+
+	test("revise call summarises a batch, and never throws on a mod with no uri (§16 F6)", () => {
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-1",
+			{},
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateArgs({
+			batch: [{ uri: "core://a", importance: 2 }, { uri: "core://b", append: "（补）" }, { importance: 3 }],
+		});
+		let rendered = "";
+		expect(() => {
+			rendered = stripAnsi(component.render(120).join("\n"));
+		}).not.toThrow();
+		expect(rendered).toContain("core://a");
+		expect(rendered).toContain("重要度 → 2");
+		expect(rendered).toContain("＋追加「（补）」");
+	});
+
+	test("long memorize bodies are truncated to MAX_CALL_LINES (§16 F7)", () => {
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-long",
+			{},
+			{},
+			createMemoryToolDefinition("memorize"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		const body = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行`).join("\n");
+		component.updateArgs({ uri: "core://long", content: body });
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("第 1 行");
+		expect(rendered).not.toContain("第 40 行");
+		expect(rendered).toContain("30 more lines, 40 total");
+	});
+
+	test("expanding shows the rest of a long memorize body (§16 F7)", () => {
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-long-expanded",
+			{},
+			{},
+			createMemoryToolDefinition("memorize"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		const body = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行`).join("\n");
+		component.updateArgs({ uri: "core://long", content: body });
+		component.setExpanded(true);
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("第 40 行");
+	});
+
+	test("memory renderers are injected for exactly the §16 tool names", () => {
+		expect(Object.keys(MEMORY_TOOL_RENDERERS).sort()).toEqual(["memorize", "revise"]);
+	});
 });

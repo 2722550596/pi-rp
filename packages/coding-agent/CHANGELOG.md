@@ -21,6 +21,12 @@
 - Changed syntax highlighting to initialize only twenty common languages eagerly and defer the remaining grammars until after the initial TUI render, reducing CLI startup time.
 - The `read` tool now accepts an array of paths to read multiple files in one call (each file truncated independently), and returns a directory entry listing when the path is a directory. `ReadOperations` gained optional `stat` and `listDirectory` hooks for remote backends.
 - Added per-model compaction token budgets: `compaction.modelOverrides` maps exact `"provider/modelId"` keys to `reserveTokens` / `keepRecentTokens`, resolved per model for manual compaction, threshold checks, overflow recovery, and extension-visible `preparation.settings` ([#8133](https://github.com/earendil-works/pi/issues/8133)).
+- Added a database selector to the memory browser: one `pi-memory-web` process can now serve several memory DBs, and the page's dropdown switches every read view and write action to the selected DB without a restart or a new port. This matches how worlds are laid out — one DB for the world plus one per character — where the browser previously had to be started once per DB on a separate port.
+- Added `pi-memory-web --roots <dir>` (repeatable; defaults to the current directory) and `--allow-any-path` to bound which DBs the selector may open. A candidate path must resolve inside a root (checked both lexically and via the real path, so a symlink cannot escape), be an existing regular file, and pass a **read-only** probe that reads the memory schema version before it can be opened — a non-memory SQLite file is rejected instead of having the memory schema written into it. Multi-DB is disabled entirely when `--host` is not loopback: the three database-management endpoints return `403`, discovery does not run, and `?db=` accepts only the process DB.
+
+### Changed
+- `GET /api/meta` without a `?db=` parameter still reports the process DB's `db_path`, so the `/memories web` reuse probe keeps its existing meaning. The launcher is unchanged: it passes only `--db`/`--port` and borrows nothing but the DB path.
+- `memorize` tool results now confirm with `已记下：<uri>` only; the body is carried by the tool-call arguments and shown streaming in the TUI, so it is no longer echoed back into the model's context a second time.
 
 ### Fixed
 - Fixed the `read` tool failing with `ENOENT` when an LLM supplies a JSON-serialized string array (such as `"[\"file1.png\", \"file2.png\"]"`) instead of a native JSON array: the input is now defensively parsed into an array of path strings before path resolution and execution.
@@ -41,6 +47,7 @@
 - Fixed the `bash`, `edit`, `find`, `grep`, `ls`, `read`, and `write` tools ignoring `ctx.cwd` (the extension-provided working directory), so subagents and remote backends resolved relative paths against the process cwd ([#8627](https://github.com/earendil-works/pi/issues/8627)).
 - Fixed RPC `steer` and `follow_up` bypassing extension `input` handlers; direct session steers now run the same interception, skill expansion, and template expansion as prompts ([#8718](https://github.com/earendil-works/pi/issues/8718)).
 - Fixed RPC `abort` reporting success while leaving a manual compaction running, so the next prompt raced an in-flight compaction. `abort` now cancels manual compaction and branch summarization and waits for the session to go idle ([#8920](https://github.com/earendil-works/pi/issues/8920)).
+- Fixed the memory browser reporting a locked database as a server failure: when a `pi` session and the browser write the same DB at the same time, SQLite returns `database is locked` after the busy timeout, which was unmapped and surfaced as `internal` (HTTP 500) — the UI then showed "the service may not be running or has exited". It now maps to `conflict` (HTTP 409) with a retry message. Switching databases in the same browser makes hitting a DB that a live session is writing far more likely, so this was fixed as part of the multi-DB work.
 
 ## [0.84.2] - 2026-08-14
 
