@@ -15,17 +15,21 @@ import { resolveConfigValue } from "./resolve-config-value.ts";
 export interface CompactionModelOverride {
 	reserveTokens?: number;
 	keepRecentTokens?: number;
+	/** Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation. */
+	summaryMaxTokens?: number;
 }
 
-const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<CompactionModelOverride> = {
-	reserveTokens: 16384,
-	keepRecentTokens: 20000,
-};
+const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<Pick<CompactionModelOverride, "reserveTokens" | "keepRecentTokens">> =
+	{
+		reserveTokens: 16384,
+		keepRecentTokens: 20000,
+	};
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	summaryMaxTokens?: number; // default: undefined - derived from reserveTokens
 	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
 }
 
@@ -915,7 +919,7 @@ export class SettingsManager {
 	}
 
 	private getCompactionTokenSetting(
-		field: keyof CompactionModelOverride,
+		field: "reserveTokens" | "keepRecentTokens",
 		model?: Pick<Model<string>, "provider" | "id">,
 	): number {
 		const compaction = this.settings.compaction;
@@ -950,16 +954,48 @@ export class SettingsManager {
 		return this.getCompactionTokenSetting("keepRecentTokens", model);
 	}
 
+	/**
+	 * Resolve the explicit summarization output cap, or undefined when unset.
+	 * Unlike reserve/keepRecent there is no built-in default: undefined means the
+	 * summarizer derives its cap from reserveTokens.
+	 */
+	getCompactionSummaryMaxTokens(model?: Pick<Model<string>, "provider" | "id">): number | undefined {
+		const compaction = this.settings.compaction;
+		const ordinary = compaction?.summaryMaxTokens;
+		if (ordinary !== undefined && (typeof ordinary !== "number" || !Number.isSafeInteger(ordinary) || ordinary < 0)) {
+			throw new Error(
+				`Invalid compaction.summaryMaxTokens setting: ${String(ordinary)}. Expected a non-negative safe integer.`,
+			);
+		}
+
+		const modelKey = model ? `${model.provider}/${model.id}` : undefined;
+		const entry = modelKey !== undefined ? compaction?.modelOverrides?.[modelKey] : undefined;
+		if (entry !== undefined && !isMergeableObject(entry)) {
+			throw new Error(
+				`Invalid compaction.modelOverrides["${modelKey}"] setting: ${String(entry)}. Expected an object.`,
+			);
+		}
+		const override = entry?.summaryMaxTokens;
+		if (override !== undefined && (typeof override !== "number" || !Number.isSafeInteger(override) || override < 0)) {
+			throw new Error(
+				`Invalid compaction.modelOverrides["${modelKey}"].summaryMaxTokens setting: ${String(override)}. Expected a non-negative safe integer.`,
+			);
+		}
+		return override ?? ordinary;
+	}
+
 	/** Resolve each token setting through model override, ordinary setting, then built-in default. */
 	getCompactionSettings(model?: Pick<Model<string>, "provider" | "id">): {
 		enabled: boolean;
 		reserveTokens: number;
 		keepRecentTokens: number;
+		summaryMaxTokens?: number;
 	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(model),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(model),
+			summaryMaxTokens: this.getCompactionSummaryMaxTokens(model),
 		};
 	}
 

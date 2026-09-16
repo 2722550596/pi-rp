@@ -134,6 +134,8 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/** Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation. */
+	summaryMaxTokens?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -569,6 +571,24 @@ export function getSummarizationFailure(response: AssistantMessage, label: strin
 	return undefined;
 }
 
+/**
+ * Resolve the output cap for a summarization request.
+ *
+ * Without `summaryMaxTokens` the cap is derived as `ratio * reserveTokens`, which
+ * couples the "when to compact" threshold to the summary's output room and can
+ * truncate reasoning-heavy summaries. An explicit value replaces that derivation;
+ * the model's own output limit always still applies.
+ */
+function resolveSummaryMaxTokens(
+	model: Model<any>,
+	reserveTokens: number,
+	ratio: number,
+	summaryMaxTokens: number | undefined,
+): number {
+	const cap = summaryMaxTokens ?? Math.floor(ratio * reserveTokens);
+	return Math.min(cap, model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+}
+
 function createSummarizationOptions(
 	model: Model<any>,
 	maxTokens: number,
@@ -632,6 +652,7 @@ export async function generateSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	resolveCustomType?: CustomTypeResolver,
+	summaryMaxTokens?: number,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -650,9 +671,11 @@ export async function generateSummary(
 			callbacks,
 			undefined,
 			resolveCustomType,
+			summaryMaxTokens,
 		)
 	).text;
 }
+
 export async function generateSummaryWithUsage(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
@@ -669,11 +692,9 @@ export async function generateSummaryWithUsage(
 	callbacks?: RetryCallbacks,
 	overrides?: CompactionPromptOverrides,
 	resolveCustomType?: CustomTypeResolver,
+	summaryMaxTokens?: number,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.8 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	);
+	const maxTokens = resolveSummaryMaxTokens(model, reserveTokens, 0.8, summaryMaxTokens);
 
 	let basePrompt = previousSummary
 		? (overrides?.updatePrompt ?? UPDATE_SUMMARIZATION_PROMPT)
@@ -900,6 +921,7 @@ export async function compact(
 				callbacks,
 				overrides,
 				resolveCustomType,
+				settings.summaryMaxTokens,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -918,6 +940,7 @@ export async function compact(
 			callbacks,
 			overrides,
 			resolveCustomType,
+			settings.summaryMaxTokens,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -940,6 +963,7 @@ export async function compact(
 			callbacks,
 			overrides,
 			resolveCustomType,
+			settings.summaryMaxTokens,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -976,11 +1000,9 @@ async function generateTurnPrefixSummary(
 	callbacks?: RetryCallbacks,
 	overrides?: CompactionPromptOverrides,
 	resolveCustomType?: CustomTypeResolver,
+	summaryMaxTokens?: number,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	); // Smaller budget for turn prefix
+	const maxTokens = resolveSummaryMaxTokens(model, reserveTokens, 0.5, summaryMaxTokens);
 	const llmMessages = convertToLlm(messages, resolveCustomType, true);
 	const conversationText = serializeConversation(llmMessages);
 	const promptText = (overrides?.turnPrefixPrompt ?? TURN_PREFIX_SUMMARIZATION_PROMPT).replace(

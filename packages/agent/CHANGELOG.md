@@ -39,6 +39,7 @@
 - Added `JsonlSessionRepo`, a v4 append-only JSONL session repository with metadata validation and shared storage semantics ([#7611](https://github.com/earendil-works/pi/pull/7611) by [@davidbrai](https://github.com/davidbrai)).
 - Added indexed `Session.findOpenOperations()` recovery queries and `RecordQuery.operationKind` filtering ([#7646](https://github.com/earendil-works/pi/pull/7646)).
 - Added `AgentOptions.shouldStopAfterTurn` for gracefully stopping after a completed turn before queued messages or another model call are processed. See [Agent Options](README.md#agent-options) ([#7367](https://github.com/earendil-works/pi/pull/7367) by [@acmerfight](https://github.com/acmerfight)).
+- Added optional `summaryMaxTokens` to `CompactionSettings` and the summarization functions, letting callers set the summary output cap explicitly instead of deriving it from `reserveTokens`.
 - Added proxy forwarding for arbitrary OpenAI-compatible `samplingParams` ([#7568](https://github.com/earendil-works/pi/pull/7568) by [@mrexodia](https://github.com/mrexodia)).
 
 ### Fixed

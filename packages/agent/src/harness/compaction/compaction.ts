@@ -152,6 +152,8 @@ export interface CompactionSettings {
 	reserveTokens: number;
 	/** Approximate recent-context tokens to keep after compaction. */
 	keepRecentTokens: number;
+	/** Explicit summarization output cap; replaces the derived `ratio * reserveTokens`. */
+	summaryMaxTokens?: number;
 }
 
 /** Default compaction settings used by the harness. */
@@ -497,6 +499,24 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
+/**
+ * Resolve the output cap for a summarization request.
+ *
+ * Without `summaryMaxTokens` the cap is derived as `ratio * reserveTokens`, which
+ * couples the "when to compact" threshold to the summary's output room and can
+ * truncate reasoning-heavy summaries. An explicit value replaces that derivation;
+ * the model's own output limit always still applies.
+ */
+function resolveSummaryMaxTokens(
+	model: Model<Api>,
+	reserveTokens: number,
+	ratio: number,
+	summaryMaxTokens: number | undefined,
+): number {
+	const cap = summaryMaxTokens ?? Math.floor(ratio * reserveTokens);
+	return Math.min(cap, model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+}
+
 /** Generate or update a conversation summary for compaction. */
 export async function generateSummary(
 	currentMessages: AgentMessage[],
@@ -509,6 +529,7 @@ export async function generateSummary(
 	thinkingLevel?: ThinkingLevel,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	summaryMaxTokens?: number,
 ): Promise<Result<string, CompactionError>> {
 	const result = await generateSummaryWithUsage(
 		currentMessages,
@@ -521,6 +542,7 @@ export async function generateSummary(
 		thinkingLevel,
 		retry,
 		callbacks,
+		summaryMaxTokens,
 	);
 	return result.ok ? ok(result.value.text) : err(result.error);
 }
@@ -537,11 +559,9 @@ export async function generateSummaryWithUsage(
 	thinkingLevel?: ThinkingLevel,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	summaryMaxTokens?: number,
 ): Promise<Result<{ text: string; usage: Usage }, CompactionError>> {
-	const maxTokens = Math.min(
-		Math.floor(0.8 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	);
+	const maxTokens = resolveSummaryMaxTokens(model, reserveTokens, 0.8, summaryMaxTokens);
 	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
 	if (customInstructions) {
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
@@ -743,6 +763,7 @@ export async function compact(
 				thinkingLevel,
 				retry,
 				callbacks,
+				settings.summaryMaxTokens,
 			);
 			if (!historyResult.ok) return err(historyResult.error);
 			historyText = historyResult.value.text;
@@ -757,6 +778,7 @@ export async function compact(
 			thinkingLevel,
 			retry,
 			callbacks,
+			settings.summaryMaxTokens,
 		);
 		if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value.text}`;
@@ -775,6 +797,7 @@ export async function compact(
 			thinkingLevel,
 			retry,
 			callbacks,
+			settings.summaryMaxTokens,
 		);
 		if (!summaryResult.ok) return err(summaryResult.error);
 		summary = summaryResult.value.text;
@@ -801,11 +824,9 @@ async function generateTurnPrefixSummary(
 	thinkingLevel?: ThinkingLevel,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	summaryMaxTokens?: number,
 ): Promise<Result<{ text: string; usage: Usage }, CompactionError>> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	);
+	const maxTokens = resolveSummaryMaxTokens(model, reserveTokens, 0.5, summaryMaxTokens);
 	const llmMessages = convertToLlm(messages);
 	const conversationText = serializeConversation(llmMessages);
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;

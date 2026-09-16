@@ -116,7 +116,8 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 | `compaction.enabled` | boolean | `true` | Enable auto-compaction |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
-| `compaction.modelOverrides` | object | - | Per-model `reserveTokens` and `keepRecentTokens` overrides keyed by exact `"provider/modelId"` |
+| `compaction.summaryMaxTokens` | number | - | Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation |
+| `compaction.modelOverrides` | object | - | Per-model `reserveTokens`, `keepRecentTokens`, and `summaryMaxTokens` overrides keyed by exact `"provider/modelId"` |
 
 ```json
 {
@@ -140,6 +141,9 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
       "some-provider/big-model": {
         "reserveTokens": 400000
       },
+      "some-provider/reasoning-model": {
+        "summaryMaxTokens": 50000
+      },
       "local/small-model": {
         "reserveTokens": 2048,
         "keepRecentTokens": 4096
@@ -158,6 +162,9 @@ Global and project settings merge recursively **before** model lookup. A project
 `enabled` is not model-specific. The active model's token settings apply to manual compaction, automatic threshold checks (including between assistant turns), and overflow recovery. Switching models takes effect on the next check or compaction. Configure overrides in JSON; `/settings` retains the ordinary auto-compaction toggle.
 
 See [compaction.md](compaction.md) for trigger and summarization behavior.
+
+
+`summaryMaxTokens` decouples the summary's output budget from `reserveTokens`. Without it the cap is `floor(0.8 * reserveTokens)`, which ties the "when to compact" threshold to how much room the summary gets — a problem for reasoning models, where thinking and the summary share that budget and a small cap truncates the summary (surfacing as `Compaction failed: Summarization failed: generation hit the token cap`). The model's own output limit still applies as a hard ceiling, so a value above `model.maxTokens` is clamped rather than rejected. Set it on the ordinary `compaction` object or per model under `modelOverrides`; unlike `reserveTokens`/`keepRecentTokens` it has no built-in default (unset means "derive it").
 
 ### Branch Summary
 

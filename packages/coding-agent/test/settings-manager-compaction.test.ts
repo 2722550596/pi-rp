@@ -189,4 +189,34 @@ describe("compaction model overrides", () => {
 		});
 		expect(manager.getCompactionSettings(model)).toEqual({ enabled: true, reserveTokens: 0, keepRecentTokens: 0 });
 	});
+
+	describe("summaryMaxTokens", () => {
+		it("defaults to undefined so the summary cap stays derived", () => {
+			const manager = SettingsManager.inMemory();
+			expect(manager.getCompactionSummaryMaxTokens(model)).toBeUndefined();
+			expect(manager.getCompactionSettings(model).summaryMaxTokens).toBeUndefined();
+		});
+
+		it("resolves model override over ordinary value", () => {
+			const manager = SettingsManager.inMemory({
+				compaction: { summaryMaxTokens: 30000, modelOverrides: { [modelKey]: { summaryMaxTokens: 50000 } } },
+			});
+			expect(manager.getCompactionSummaryMaxTokens(model)).toBe(50000);
+			expect(manager.getCompactionSummaryMaxTokens({ provider: "other", id: "x" })).toBe(30000);
+			expect(manager.getCompactionSummaryMaxTokens()).toBe(30000);
+			// reserveTokens keeps its built-in default even though summaryMaxTokens is set.
+			expect(manager.getCompactionSettings(model).reserveTokens).toBe(16384);
+		});
+
+		it.each([null, -1, 1.5, "50000", true, Number.MAX_SAFE_INTEGER + 1])(
+			"rejects invalid ordinary values: %j",
+			(value) => {
+				const storage = new InMemorySettingsStorage();
+				storage.withLock("global", () => JSON.stringify({ compaction: { summaryMaxTokens: value } }));
+				expect(() => SettingsManager.fromStorage(storage).getCompactionSettings()).toThrow(
+					`Invalid compaction.summaryMaxTokens setting: ${String(value)}. Expected a non-negative safe integer.`,
+				);
+			},
+		);
+	});
 });

@@ -164,4 +164,65 @@ describe("generateSummary reasoning options", () => {
 		});
 		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
 	});
+
+	it("uses summaryMaxTokens instead of the reserveTokens-derived cap", async () => {
+		// Derived cap would be floor(0.8 * 2000) = 1600; the explicit 50000 wins
+		// (still capped by the model's own 100000 output limit).
+		await generateSummaryWithUsage(
+			messages,
+			createModel(false, 100000),
+			2000,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			50000,
+		);
+		expect(completeSimpleMock.mock.calls[0][2]?.maxTokens).toBe(50000);
+	});
+
+	it("still clamps an explicit summaryMaxTokens to the model output cap", async () => {
+		await generateSummaryWithUsage(
+			messages,
+			createModel(false, 8192),
+			2000,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			50000,
+		);
+		expect(completeSimpleMock.mock.calls[0][2]?.maxTokens).toBe(8192);
+	});
+
+	it("applies summaryMaxTokens to the turn prefix budget too", async () => {
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: [],
+			turnPrefixMessages: messages,
+			isSplitTurn: true,
+			tokensBefore: 100,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20, summaryMaxTokens: 40000 },
+		};
+
+		await compact(preparation, createModel(false, 100000), "test-key");
+		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([40000]);
+	});
 });

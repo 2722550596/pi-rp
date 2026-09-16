@@ -397,6 +397,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `summaryMaxTokens` | - | Explicit summarization output cap (defaults to `0.8 * reserveTokens`) |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 
@@ -412,15 +413,22 @@ Use `compaction.modelOverrides` to tune token budgets for different models:
     "modelOverrides": {
       "some-provider/big-model": {
         "reserveTokens": 400000
+      },
+      "some-provider/reasoning-model": {
+        "summaryMaxTokens": 50000
       }
     }
   }
 }
 ```
 
-For a model with a 1M context window, this override triggers compaction above 600K tokens and keeps the ordinary 20000 recent tokens. Other models retain the ordinary 16384-token reserve. `reserveTokens` also influences summarization output limits, capped by the model's maximum output tokens; it is not solely a trigger threshold.
+For a model with a 1M context window, this override triggers compaction above 600K tokens and keeps the ordinary 20000 recent tokens. Other models retain the ordinary 16384-token reserve.
+
+By default the summarization output cap is `floor(0.8 * reserveTokens)` for history summaries and `floor(0.5 * reserveTokens)` for split-turn prefixes, so `reserveTokens` is not solely a trigger threshold. That derivation couples "when to compact" to "how much room the summary gets": on a reasoning model, thinking and the summary share the output budget, and a small derived cap truncates the summary. Such a truncation is rejected rather than persisted — it surfaces as `Compaction failed: Summarization failed: generation hit the token cap and the summary is incomplete` (manual `/compact`) or `Auto-compaction failed: ...` / `Context overflow recovery failed: ...` (automatic). Set `compaction.summaryMaxTokens` (ordinary or per-model) to give the summary an explicit budget independent of `reserveTokens`; the model's own `maxTokens` always remains a hard ceiling.
 
 Keys are exact, case-sensitive `provider/modelId` values, including any slashes within the model ID. Each `reserveTokens` and `keepRecentTokens` value falls back independently from the model override to the ordinary setting to the built-in default. Values must be non-negative safe integers. Invalid values in the matching model override produce an error when read; only omitted fields fall back to the ordinary setting. Model override entries must be objects. Invalid ordinary token settings produce an error when read, even if the active model has a valid override. Only omitted ordinary values use built-in defaults. `enabled` remains global, not model-specific.
+`summaryMaxTokens` resolves the same way as the other two: matching model override → ordinary `compaction` setting → unset. Unset keeps the derived cap.
+
 
 These resolved values are used for manual compaction, all automatic threshold checks, overflow recovery, and extension-visible `preparation.settings`. Model switches affect subsequent checks and compactions without changing ordinary settings. Compaction already in progress uses the model and settings captured for that operation. Branch summarization settings are unaffected.
 
