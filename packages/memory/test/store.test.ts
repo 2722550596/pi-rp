@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
-import { createSchema, SCHEMA_VERSION } from "../src/schema.ts";
+import { createSchema, SCHEMA_VERSION_KEY } from "../src/schema.ts";
 import { type MemoryNode, MemoryStore } from "../src/store.ts";
 
 let db: MemoryDatabase;
@@ -169,7 +169,10 @@ describe("seed", () => {
 		expect(store.resolveUri("index://")).not.toBeNull();
 		expect(store.resolveUri("history://")).not.toBeNull();
 		expect(store.resolveUri("meta://")).not.toBeNull();
-		expect(store.getKv("schema_version")).toBe(SCHEMA_VERSION);
+		// `seed()` stamps SCHEMA_VERSION via setKv, so reading it back with the same
+		// constant is a tautology and cannot catch a version bump (T15). The real
+		// non-tautological check lives in `schema-migration.test.ts` (literal "3").
+		expect(store.getKv(SCHEMA_VERSION_KEY)).toBe("3");
 	});
 });
 
@@ -545,13 +548,18 @@ describe("export snapshot asset classes (§19)", () => {
 		buildAssets();
 		const snap = store.export();
 		expect(snap.aliases).toEqual([
-			{ alias_uri: "自己", target_node_id: snap.nodes.find((n) => n.uri === "core://self")!.node_id },
+			{
+				alias_uri: "自己",
+				target_node_id: snap.nodes.find((n) => n.uri === "core://self")!.node_id,
+				disclosure: null,
+			},
 		]);
 		expect(snap.edges).toEqual([
 			{
 				node_id: snap.nodes.find((n) => n.uri === "core://self")!.node_id,
 				target_uri: "core://other",
 				kind: "relates",
+				disclosure: null,
 			},
 		]);
 		expect(snap.glossary).toEqual([

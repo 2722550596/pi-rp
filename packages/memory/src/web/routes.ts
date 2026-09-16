@@ -277,7 +277,9 @@ function getTree(rc: RequestCtx): HandlerResult {
 		}
 	}
 
-	const items = candidates.map((n) => toTreeNodeDTO(n, childCount.get(n.node_id) ?? 0, vis.isShadowed(n.node_id)));
+	const items = candidates.map((n) =>
+		toTreeNodeDTO(n, childCount.get(n.node_id) ?? 0, vis.isShadowed(n.node_id), store.effectiveDisclosure(n.uri)),
+	);
 	const body: TreeResponseDTO = {
 		items: items.slice(offset, offset + limit),
 		total: items.length,
@@ -309,7 +311,13 @@ function getNode(rc: RequestCtx): HandlerResult {
 	const uri = rc.url.searchParams.get("uri");
 	if (uri === null || uri === "") return badRequest("缺少必需参数：uri");
 	const { store } = rc.ctx;
-	const node = store.resolveUri(uri);
+	// ⭐ The request uri is kept as the ENTRY scope: `resolveUri` may land on
+	//    another node (it resolves aliases), but "which address did the caller
+	//    come in through" is what its `disclosure` must answer. Dropping this
+	//    would make the node page silently report the canonical entry's
+	//    condition for every alias, i.e. the whole per-entry dimension invisible.
+	const requestedUri = uri;
+	const node = store.resolveUri(requestedUri);
 	if (!node) return notFound(`未找到：${uri}`);
 	const vis = visibilityFor(rc.ctx);
 	return {
@@ -317,6 +325,7 @@ function getNode(rc: RequestCtx): HandlerResult {
 		body: toNodeResponseDTO(store, node, {
 			isShadowed: vis.isShadowed,
 			childCount: buildChildCounts(store),
+			entryUri: requestedUri,
 		}),
 	};
 }
@@ -348,7 +357,11 @@ async function getSearch(rc: RequestCtx): Promise<HandlerResult> {
 			return {
 				node_id: item.node_id,
 				uri: item.uri,
-				disclosure: item.disclosure,
+				// ⭐ D2 ruling (b) / D1 §3-M7 #12: the SINGLE read entry for the whole
+				//    site. Value-identical to `item.disclosure` (search candidates are
+				//    canonical uris), but routing it here means a future alias-semantics
+				//    change cannot silently leave the search page behind.
+				disclosure: store.effectiveDisclosure(item.uri),
 				summary: item.summary,
 				content: item.content,
 				score: item.score,
@@ -494,7 +507,9 @@ function getTemp(rc: RequestCtx): HandlerResult {
 		.filter((n) => n.is_stub === 0);
 	const childCount = buildChildCounts(store);
 	const body: TempResponseDTO = {
-		items: tempNodes.map((n) => toTreeNodeDTO(n, childCount.get(n.node_id) ?? 0, vis.isShadowed(n.node_id))),
+		items: tempNodes.map((n) =>
+			toTreeNodeDTO(n, childCount.get(n.node_id) ?? 0, vis.isShadowed(n.node_id), store.effectiveDisclosure(n.uri)),
+		),
 		count,
 		count_all: countAll,
 		threshold: rc.ctx.tempThreshold,
@@ -632,15 +647,31 @@ function postNode(rc: RequestCtx): HandlerResult {
 	if (content === null) return badRequest("缺少必需参数：content");
 	const { store } = rc.ctx;
 	// put() is an upsert: an existing uri is OVERWRITTEN with 200, never 409.
+	// ⚠️ `""` MUST be normalized HERE (not only in the client): `edit.js` already
+	//    maps empty → null, but the HTTP surface cannot rely on clients being
+	//    well-behaved — curl and future clients bypass it. A stored `''` would
+	//    make `effectiveDisclosure` treat it as a real value, permanently cutting
+	//    the `??` inheritance, and `discBadge("")` renders nothing ⇒ invisible.
 	const node = store.put({
 		uri,
 		content,
-		disclosure: typeof obj.disclosure === "string" ? (obj.disclosure as string) : undefined,
+		disclosure: normalizeDisclosure(obj.disclosure),
 		importance: numField(obj, "importance") ?? undefined,
 		source: "manual",
 		model: null,
 	});
 	return nodeResponse(rc, node);
+}
+
+/**
+ * ⭐ Route-layer `""` → `null` normalization (frozen §8.2 / D1 §7.5). The store
+ * only accepts `string | null | undefined`; `undefined` means "do not touch".
+ * Non-string, non-null input is also "do not touch" — matching the pre-existing
+ * lenient behaviour for unrecognized JSON types.
+ */
+function normalizeDisclosure(value: unknown): string | null | undefined {
+	if (typeof value !== "string") return value === null ? null : undefined;
+	return value === "" ? null : value;
 }
 
 function postRevise(rc: RequestCtx): HandlerResult {
@@ -652,18 +683,21 @@ function postRevise(rc: RequestCtx): HandlerResult {
 	const node = store.resolveUri(uri);
 	if (!node) return notFound(`未找到：${uri}`);
 
+	// ⭐ `disclosure` is SPLIT OFF from the node patch (frozen §8.2 / D1 §3-M4):
+	//    it is an ENTRY-level field, written through `setEntryDisclosure`, which
+	//    resolves to the layer this uri STRUCTURALLY denotes (alias row vs node
+	//    column). Folding it into `updateNode` would always hit `nodes.disclosure`
+	//    ⇒ editing from an alias entry would silently overwrite the condition
+	//    shared by the canonical entry and every other alias.
 	const patch: {
 		content?: string;
-		disclosure?: string | null;
 		importance?: number;
 		world_ts?: string | null;
 		editor_source: "manual";
 		editor_model: null;
 	} = { editor_source: "manual", editor_model: null };
 	if (typeof obj.content === "string") patch.content = obj.content as string;
-	if (typeof obj.disclosure === "string" || obj.disclosure === null) {
-		patch.disclosure = obj.disclosure as string | null;
-	}
+	const disclosure = normalizeDisclosure(obj.disclosure);
 	if (typeof obj.importance === "number") {
 		const importance = obj.importance as number;
 		if (!Number.isInteger(importance) || importance < 0 || importance > 10) {
@@ -674,25 +708,29 @@ function postRevise(rc: RequestCtx): HandlerResult {
 	if (typeof obj.world_ts === "string" || obj.world_ts === null) patch.world_ts = obj.world_ts as string | null;
 	if (
 		patch.content === undefined &&
-		patch.disclosure === undefined &&
+		disclosure === undefined &&
 		patch.importance === undefined &&
 		patch.world_ts === undefined
 	) {
 		return badRequest("至少需要一个可改字段：content / disclosure / importance / world_ts");
 	}
 
+	// `setEntryDisclosure` throws on an unknown uri, but `resolveUri` above has
+	// already guaranteed the uri exists — the throw is unreachable here.
+	if (disclosure !== undefined) store.setEntryDisclosure(uri, disclosure);
 	const version = store.updateNode(node.node_id, patch);
-	const response = nodeResponse(rc, store.getNode(node.node_id) ?? node);
+	const response = nodeResponse(rc, store.getNode(node.node_id) ?? node, uri);
 	return { ...response, body: { ...(response.body as object), version } };
 }
 
-function nodeResponse(rc: RequestCtx, node: MemoryNode): HandlerResult {
+function nodeResponse(rc: RequestCtx, node: MemoryNode, entryUri?: string): HandlerResult {
 	const vis = visibilityFor(rc.ctx);
 	return {
 		status: 200,
 		body: toNodeResponseDTO(rc.ctx.store, node, {
 			isShadowed: vis.isShadowed,
 			childCount: buildChildCounts(rc.ctx.store),
+			entryUri,
 		}),
 	};
 }
@@ -970,6 +1008,10 @@ function policyOf(ctx: ServerContext): PathPolicy {
  * error (the path and db are fine, only the version differs) so it is the
  * pre-existing `invalid_db`(409) — the same code the store path already emits
  * for version skew, so the frontend needs one message.
+ *
+ * ⭐ `incompatible` now covers ONLY versions with no in-place migrator (frozen
+ * §8.5 / D3 §8.5): an older-but-migratable db is ADMITTED by the probe and
+ * upgraded by the write-open path, so it never reaches this branch.
  */
 function probeFailure(outcome: ProbeOutcome & { ok: false }): HandlerResult {
 	const { reason, detail } = outcome;

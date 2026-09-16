@@ -87,7 +87,10 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			state: getState(toolCallId),
 			cwd,
 			executionStarted: true,
-			argsComplete: true,
+			// Exports replay history: a live preview (which reads the current file /
+			// store) would show post-hoc state, not what the session saw. The
+			// authoritative diff still arrives through `details`.
+			argsComplete: false,
 			isPartial,
 			expanded,
 			showImages: false,

@@ -179,7 +179,7 @@ import { spawnAgent } from "./subagent/spawn.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
-import { MEMORY_TOOL_RENDERERS } from "./tools/memory-renderers.ts";
+import { createMemoryToolRenderers } from "./tools/memory-renderers.ts";
 import { createGetStateToolDefinition, createStateUpdateToolDefinition } from "./tools/state-update.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
@@ -4294,7 +4294,7 @@ export class AgentSession {
 			this._memoryModule = undefined;
 			const store = await getMemoryStoreSingleton(dbPath);
 			const module = createMemoryModule(store, { settings: settings.memory });
-			const host = this._createMemoryModuleHost();
+			const host = this._createMemoryModuleHost(store);
 			module.registerSession(host);
 			// Slots render in the prompt-preset compile path — register statically
 			// so presets can reference awaken/recent/index without an extension.
@@ -4340,9 +4340,11 @@ export class AgentSession {
 	 * by the current ExtensionRunner, so /reload discards them together with the
 	 * old runner and registerSession() runs again against a fresh host.
 	 */
-	private _createMemoryModuleHost(): MemoryModuleHost {
+	private _createMemoryModuleHost(store: MemoryStore): MemoryModuleHost {
 		const session = this;
 		const runner = this._extensionRunner;
+		// Bound to the session's store singleton — one build per runtime, not per tool.
+		const memoryRenderers = createMemoryToolRenderers(store);
 		// Synthetic extension: registrations ride the standard extension pipeline
 		// (tool registry rebuild, event emit, custom-type policies).
 		const synthetic: Extension = {
@@ -4365,12 +4367,16 @@ export class AgentSession {
 					label: tool.label,
 					description: tool.description,
 					promptSnippet: tool.promptSnippet,
+					// Disclosure self-trigger guidance rides the standard Guidelines
+					// channel (memory package is headless, so this hop is the last
+					// link of the four-hop chain — contract T22).
+					promptGuidelines: tool.promptGuidelines,
 					parameters: tool.parameters as ToolDefinition["parameters"],
 					execute: async (_toolCallId, params) =>
 						(await tool.execute(_toolCallId, params as Record<string, unknown>)) as AgentToolResult<never>,
 					// Renderers are a pure coding-agent concern; the memory package stays
 					// headless, so they are injected by tool name here (§16 J1).
-					...MEMORY_TOOL_RENDERERS[tool.name],
+					...memoryRenderers[tool.name],
 				};
 				synthetic.tools.set(tool.name, {
 					definition,

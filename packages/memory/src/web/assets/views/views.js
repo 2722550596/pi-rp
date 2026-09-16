@@ -86,6 +86,35 @@ function stars(importance) {
 	const v = Number(importance);
 	return h("span", { class: "mw-imp", text: `★${Number.isFinite(v) ? v : 0}` });
 }
+// ── 想起条件（disclosure）——本模块是**唯一视觉真相源** ─────────────────────
+// ⚠️ 这里用本文件的 `h()`（:50-71），**不是** app.js 的 `el()`/`append()`：views.js 零 import。
+//    两者都显式跳过 `null` 子项（`h()` 在 :64，`app.js` 的 append 在 :116），故返回 `null`
+//    在两条通道上都安全 —— 不会产生字面量 "null"。
+// ⚠️ 对标 nocturne 的琥珀徽章（`MemoryBrowser.jsx:555-570`）：色相纪律是「琥珀 = 想起条件
+//    （入口级）；灰虚线 = 关联条件（边）」。两者 MUST 一眼可辨（视觉语言也是契约）。
+export function discBadge(text, opts = {}) {
+	const t = foldWs(text);
+	if (!t) return null; // 空 = 不渲染（`""`/null/undefined 一律视为「无值」）
+	const kind = opts.kind || "entry";
+	const kids = [h("span", { class: "mw-disc__icon", "aria-hidden": "true" })];
+	// `compact`（= `discChip` 的形态）只省掉可见的标签前缀，**不**动 `title` 的标签：
+	// 树行装不下「想起条件」四个字，但 tooltip 仍须说清这是哪一类条件。
+	if (opts.label && !opts.compact) kids.push(h("span", { class: "mw-disc__label", text: opts.label }));
+	kids.push(h("span", { class: "mw-disc__text", text: t }));
+	return h("span", { class: `mw-disc mw-disc--${kind}`, title: `${opts.label || "想起条件"}：${t}` }, kids);
+}
+
+/**
+ * 行内短徽章（无可见标签前缀）：树行 28px 定高用，长文本会把 URI/摘要挤成零宽。
+ *
+ * ⚠️ **`label` 仍参与 `title`**，只是一行都不画：若照 `25-前端与文档.md` §2.3 原稿写成
+ *    `discBadge(text, { ...opts, label: "" })`，`discBadge` 的 `title` 兜底会把边条件
+ *    标成「想起条件」——而边条件恰恰**不是**想起条件（契约 §3.2 例外条款）。这是本轨
+ *    实现期推翻的一处文档事实断言。
+ */
+export function discChip(text, opts = {}) {
+	return discBadge(text, { ...opts, compact: true });
+}
 
 /** 冻结文案（契约 §6.6 + Main 广播 #2）：MUST NOT 写成「已隐藏」。 */
 export function shadowedBadge() {
@@ -375,8 +404,7 @@ export async function mount(el, params, ctx) {
 					" ",
 					stars(it.importance),
 					h("span", { class: "mw-muted", text: `（修改时间: ${formatUpdated(it.updated_ts)}）` }),
-					it.shadowed === true ? shadowedBadge() : null,
-					it.disclosure ? h("p", { class: "mw-muted", text: `想起条件: ${foldWs(it.disclosure)}` }) : null,
+					discBadge(it.disclosure, { label: "想起条件" }),
 				]),
 			),
 		);
@@ -467,9 +495,7 @@ export async function mount(el, params, ctx) {
 								f.world_ts_relative
 									? h("span", { class: "mw-muted", text: f.world_ts_relative })
 									: null,
-								f.disclosure
-									? h("span", { class: "mw-muted", text: `（当 ${foldWs(f.disclosure)}）` })
-									: null,
+								discChip(f.disclosure),
 							]),
 							h("pre", { text: f.content === null || f.content === undefined ? "" : String(f.content) }),
 							(f.children || []).length > 0
@@ -481,7 +507,7 @@ export async function mount(el, params, ctx) {
 												nodeLink(c.uri, ctx),
 												" ",
 												stars(c.importance),
-												c.disclosure ? h("span", { class: "mw-muted", text: `（当 ${foldWs(c.disclosure)}）` }) : null,
+												discChip(c.disclosure),
 												c.snippet ? h("span", { class: "mw-muted", text: `: ${foldWs(c.snippet)}` }) : null,
 											]),
 										),

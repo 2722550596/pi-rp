@@ -13,6 +13,7 @@
 
 import { el, clear, append, navigate, renderError } from "../app.js";
 import { impChip, shadowedChip, SHADOWED_TEXT, SHADOWED_TITLE } from "./tree.js";
+import { discBadge, discChip } from "./views.js";
 
 // ── 署名渲染（§9.2，冻结）—— 本模块是**唯一**署名渲染点，导出给 D5 复用 ──
 // 规则：`editor_model === null && editor_source === "manual"` → 「用户（Web UI）」。
@@ -199,6 +200,11 @@ function edgeList(edges, direction, selfUri) {
     }
     // `kind` 为 null 时不渲染空 chip
     if (e && e.kind) append(li, el("span", { class: "mw-chip", text: String(e.kind) }));
+    // ⭐ 关联条件（`edges.disclosure` 裸列）——**灰虚线 chip，绝不琥珀**。
+    //    琥珀是「想起条件」的专属色相（入口级）；两者 MUST 一眼可辨。
+    //    这里**不回退**到目标的 `effectiveDisclosure`：同一页面上目标节点自己的入口条件
+    //    已显示过一次，再回退会把同一个值印两遍，且让「边有条件」与「边无条件」不可区分。
+    if (e && e.disclosure) append(li, discChip(e.disclosure, { kind: "edge", label: "关联条件" }));
     // ⭐ 仅作排障：`node_id` 是「边的源」，**绝不用于链接目标**
     if (e && e.node_id) li.dataset.edgeSourceNodeId = String(e.node_id);
     list.append(li);
@@ -243,12 +249,11 @@ export function renderMeta(el_, node, currentVersion) {
   ];
   details.append(kv(rows.map(([k, v]) => [k, el("span", { class: "mw-content", text: dash(v) })])));
   const wrap = el("div");
-  wrap.append(details);
   el_.append(wrap);
 }
 
 // ── 主渲染 ──────────────────────────────────────────────────────────
-export function renderNode(el_, dto) {
+export function renderNode(el_, dto, entryUri) {
   clear(el_);
   const node = dto && dto.node;
   if (!node) {
@@ -293,11 +298,15 @@ export function renderNode(el_, dto) {
     el_.append(el("p", { class: "mw-muted", title: SHADOWED_TITLE, text: `⚠ ${SHADOWED_TEXT}——它锚定的原文已不在当前分支上，但节点仍在库里、仍可打开。` }));
   }
 
-  if (node.world_ts) el_.append(el("p", { class: "mw-muted", text: `世界时间 ${node.world_ts}` }));
-
-  // 想起条件（memorize 的 when）
+  const scopeUri = entryUri || node.uri;
   if (node.disclosure) {
-    el_.append(section("想起条件", "满足这个条件时，这条记忆会被想起。", el("p", { class: "mw-content", text: node.disclosure })));
+    el_.append(
+      section(
+        "想起条件",
+        `满足这个条件时，这条记忆会被想起（当前入口：${scopeUri}）。`,
+        el("p", { class: "mw-content", text: node.disclosure }),
+      ),
+    );
   }
 
   // 正文 / 占位节点
@@ -339,7 +348,7 @@ export function renderNode(el_, dto) {
   }
 
   renderEdges(el_, dto.edges);
-  renderAliases(el_, dto.aliases);
+  renderEntryDisclosures(el_, dto, scopeUri);
   renderGlossary(el_, dto.glossary);
   renderRevisions(el_, dto.revisions, dto.current_version);
 
@@ -355,6 +364,66 @@ export function renderNode(el_, dto) {
 
   renderMeta(el_, node, dto.current_version);
 }
+/**
+ * ⭐ 入口想起条件区块（D5 §3-M3）：列出规范入口 + 每个别名入口的**生效**条件。
+ *
+ * 只在入口数 ≥ 2 时渲染 —— 单入口（= 规范入口）已被上面的「想起条件」段覆盖，
+ * 重复展示是噪声。
+ *
+ * ⚠️ 与 `renderAliases`（寻址历史）是**两个语义**，MUST NOT 合并：前者说「这个地址
+ *    存在」，这里说「这个地址有自己的条件」。合并会让「共 N 个入口」的计数说谎
+ *    （`node.disclosure` 与 `aliases[].disclosure` 不是同一集合的成员）。
+ */
+export function renderEntryDisclosures(el_, dto, entryUri) {
+  const node = dto && dto.node;
+  const aliases = Array.isArray(dto && dto.aliases) ? dto.aliases : [];
+  const entries = [{ alias_uri: node ? node.uri : "", disclosure: node ? node.disclosure : null, dead: false }].concat(
+    aliases.map((a) => ({
+      alias_uri: a && typeof a === "object" ? a.alias_uri : a,
+      disclosure: a && typeof a === "object" ? a.disclosure : null,
+      dead: a && typeof a === "object" ? a.dead === true : false,
+    })),
+  );
+  if (entries.length < 2) return;
+
+  const ul = el("ul", { class: "mw-entry-list" });
+  for (const entry of entries) {
+    const li = el("li");
+    li.append(el("code", { text: dash(entry.alias_uri) }));
+    if (entry.dead === true) {
+      // ⭐ 死别名（该地址同时是另一条记忆的地址 ⇒ 入口永不生效）：**列出但标记无效**。
+      //    文案纪律：MUST NOT 写「已失效」——那是「数据坏了」的暗示；准确语义是
+      //    「被同名的规范节点遮蔽」。**不隐藏**：隐藏 = 信息丢失（该行确实占用 aliases 表）。
+      //    **不给琥珀**：不把无效入口画成有效。
+      li.append(
+        el("span", {
+          class: "mw-chip mw-disc--dead",
+          title: "被遮蔽（同名节点优先）：该地址同时是另一条记忆的地址，此入口的条件不会生效",
+          text: "被遮蔽（同名节点优先）",
+        }),
+      );
+    } else {
+      const badge = discBadge(entry.disclosure, { label: "想起条件" });
+      if (badge) li.append(badge);
+      else li.append(el("span", { class: "mw-muted", text: "（继承节点级）" }));
+    }
+    if (entryUri && entry.alias_uri === entryUri) {
+      li.setAttribute("aria-current", "true");
+      li.append(el("span", { class: "mw-chip", text: "当前入口" }));
+    }
+    ul.append(li);
+  }
+  const body = el("div");
+  body.append(ul);
+  body.append(
+    el("p", {
+      class: "mw-muted",
+      text: "入口条件按「该地址解析到什么」生效；若某地址同时是另一条记忆的地址，它不构成入口（引擎已知缺陷，见 plan/memory-web/00-共同上下文.md §12 X6）。",
+    }),
+  );
+  el_.append(section("入口想起条件", "同一节点可经不同入口进入，各入口可有不同条件。", body));
+}
+
 
 // ── 挂载：全页 ──────────────────────────────────────────────────────
 export async function mount(el_, params, ctx) {
@@ -371,7 +440,7 @@ export async function mount(el_, params, ctx) {
     return () => {};
   }
   if (el_ && params.get("compact") === "1") el_.append(el("h3", { text: "节点详情" }));
-  renderNode(el_, dto);
+  renderNode(el_, dto, uri);
   return () => {};
 }
 

@@ -16,7 +16,7 @@ import { openMemoryStore } from "../../src/index.ts";
 import type { MemoryStore } from "../../src/store.ts";
 import { type RunningServer, startServer } from "../../src/web/server.ts";
 
-/** 契约 §6.5 冻结的 16 个事件名全集（逐字）。 */
+/** 契约 §6.5 的事件名全集（v3 起 18 个：新增 `add_alias` / `set_entry_disclosure`）。 */
 const AUDIT_EVENTS = [
 	"insert_node",
 	"promote_stub",
@@ -25,6 +25,8 @@ const AUDIT_EVENTS = [
 	"delete_node",
 	"restore_deleted",
 	"add_edge",
+	"add_alias",
+	"set_entry_disclosure",
 	"add_glossary",
 	"remove_glossary",
 	"set_world_time",
@@ -36,10 +38,7 @@ const AUDIT_EVENTS = [
 	"autoretain_product",
 ] as const;
 
-/**
- * 静态字面量表 → `Record`（见 `ts-set-map` 规则）。
- * 用于判断某 event 名是否属于冻结的 16 个。
- */
+/** 静态字面量表 → `Record`（见 `ts-set-map` 规则）。用于判断某 event 名是否已登记。 */
 const AUDIT_EVENT_LOOKUP: Record<string, true> = {
 	insert_node: true,
 	promote_stub: true,
@@ -48,6 +47,8 @@ const AUDIT_EVENT_LOOKUP: Record<string, true> = {
 	delete_node: true,
 	restore_deleted: true,
 	add_edge: true,
+	add_alias: true,
+	set_entry_disclosure: true,
 	add_glossary: true,
 	remove_glossary: true,
 	set_world_time: true,
@@ -217,7 +218,7 @@ describe("/api/audit 成功路径与分页（契约 §7.1 / §7.9）", () => {
 	});
 });
 
-describe("审计事件名 ∈ 契约 §6.5 的 16 个全集", () => {
+describe("审计事件名 ∈ 事件名全集", () => {
 	it("每条 item.event 都在全集内（不许出现未登记事件名）", async () => {
 		const dto = await audit("/api/audit?limit=500");
 		expect(dto.items.length).toBeGreaterThan(0);

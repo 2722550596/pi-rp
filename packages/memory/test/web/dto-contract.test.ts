@@ -213,3 +213,197 @@ describe("跨端点字段名不变量（契约 §16.1 / §16.3）", () => {
 		}
 	});
 });
+
+/**
+ * ⭐ 边级 disclosure 轨（D5 §10-B/§10-C/§10-G）的三张 DTO 新字段与入口作用域。
+ *
+ * 非空性：`TreeNodeDTO`/`EdgeDTO`/`AliasDTO` 三个 `disclosure` 与 `AliasDTO.dead`
+ * 在本轮之前**都不存在**（契约 §2.8 实测），故这些断言在旧代码上必红。
+ */
+describe("disclosure：三张 DTO 的新字段与入口作用域（D5 §2.1 / §10-B）", () => {
+	it("TreeNodeDTO / EdgeDTO / AliasDTO 都带可空 disclosure，AliasDTO 另带 dead", async () => {
+		const tree = asRecord((await get("/api/tree?domain=core")).body, "tree");
+		const treeItem = asRecord((tree.items as unknown[])[0], "TreeNodeDTO");
+		expect(Object.hasOwn(treeItem, "disclosure"), "TreeNodeDTO 缺 disclosure").toBe(true);
+
+		store.addEdge(nodeOf("core://dto/alpha").node_id, "core://dto/beta", "k");
+		store.addAlias("core://dto/old-alpha", nodeOf("core://dto/alpha").node_id, "入口级");
+		const dto = asRecord((await get("/api/node?uri=core://dto/alpha")).body, "node");
+		const edges = asRecord(dto.edges, "edges");
+		const out = asRecord((edges.outgoing as unknown[])[0], "EdgeDTO");
+		expect(Object.hasOwn(out, "disclosure"), "EdgeDTO 缺 disclosure").toBe(true);
+		const alias = asRecord((dto.aliases as unknown[])[0], "AliasDTO");
+		expect(Object.hasOwn(alias, "disclosure"), "AliasDTO 缺 disclosure").toBe(true);
+		expect(Object.hasOwn(alias, "dead"), "AliasDTO 缺 dead").toBe(true);
+		// `dead` 谓词：alias_uri 不是存活 nodes.uri ⇒ false。
+		expect(alias.dead).toBe(false);
+	});
+
+	it("⭐ 入口作用域：同一节点从别名进 vs 从规范 uri 进看到不同 disclosure", async () => {
+		store.insertNode({ uri: "core://dto/entry", content: "X", disclosure: "节点级", source: "manual" });
+		store.addAlias("core://dto/entry/alias", nodeOf("core://dto/entry").node_id, "入口级");
+
+		// ① 从别名进 → 入口值
+		const a = asRecord(asRecord((await get("/api/node?uri=core://dto/entry/alias")).body, "node").node, "node");
+		expect(a.disclosure).toBe("入口级");
+		// ② 从规范 uri 进 → 节点值（同一节点，不同答案）
+		const b = asRecord(asRecord((await get("/api/node?uri=core://dto/entry")).body, "node").node, "node");
+		expect(b.disclosure).toBe("节点级");
+		// ③ 从别名 revise → 只改别名层，规范入口不变（防跨入口污染）
+		const res = await fetch(`${server.url}/api/node/revise`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Host: new URL(server.url).host },
+			body: JSON.stringify({ uri: "core://dto/entry/alias", disclosure: "入口级2" }),
+		});
+		expect(res.status).toBe(200);
+		expect(store.effectiveDisclosure("core://dto/entry/alias")).toBe("入口级2");
+		expect(store.effectiveDisclosure("core://dto/entry")).toBe("节点级");
+
+		// ④ `renderEntryDisclosures` 需要 ≥2 入口才渲染 ⇒ 此节点的 aliases 非空。
+		const dto = asRecord((await get("/api/node?uri=core://dto/entry/alias")).body, "node");
+		expect((dto.aliases as unknown[]).length).toBeGreaterThan(0);
+	});
+
+	it('⭐ route 层 `""` 归一为 null（不写空串、不切断 ?? 回退）', async () => {
+		store.insertNode({ uri: "core://dto/blank", content: "Y", source: "manual" });
+		const post = async (path: string, payload: unknown): Promise<number> => {
+			const res = await fetch(`${server.url}${path}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Host: new URL(server.url).host },
+				body: JSON.stringify(payload),
+			});
+			return res.status;
+		};
+		expect(await post("/api/node/revise", { uri: "core://dto/blank", disclosure: "" })).toBe(200);
+		const after = asRecord(asRecord((await get("/api/node?uri=core://dto/blank")).body, "node").node, "node");
+		expect(after.disclosure, '空串必须归一为 null，不是 ""').toBeNull();
+		expect(store.effectiveDisclosure("core://dto/blank")).toBeNull();
+
+		// 别名入口上同理：空串 → 别名层 NULL ⇒ 仍能 `??` 继承节点级（没被空串截断）。
+		store.addAlias("core://dto/blank-alias", nodeOf("core://dto/blank").node_id, "别名条件");
+		expect(await post("/api/node/revise", { uri: "core://dto/blank-alias", disclosure: "" })).toBe(200);
+		expect(store.effectiveDisclosure("core://dto/blank-alias")).toBeNull();
+		// 节点级此时也是 null，故加一个再验继承真的走通。
+		expect(await post("/api/node/revise", { uri: "core://dto/blank", disclosure: "节点级" })).toBe(200);
+		expect(store.effectiveDisclosure("core://dto/blank-alias"), "?? 回退被空串切断").toBe("节点级");
+	});
+
+	it('⭐ POST /api/node 同样归一 `""`（不是只改 revise 一路）', async () => {
+		const res = await fetch(`${server.url}/api/node`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Host: new URL(server.url).host },
+			body: JSON.stringify({ uri: "core://dto/blank-node", content: "Z", disclosure: "" }),
+		});
+		expect(res.status).toBe(200);
+		const dto = asRecord((await get("/api/node?uri=core://dto/blank-node")).body, "node");
+		expect(asRecord(dto.node, "node").disclosure).toBeNull();
+	});
+
+	it("⭐ `EdgeDTO.disclosure` 是裸边列，不经 effectiveDisclosure（契约 §3.2 例外）", async () => {
+		store.insertNode({ uri: "core://dto/peer", content: "对端", disclosure: "对端的想起条件", source: "manual" });
+		store.addEdge(nodeOf("core://dto/alpha").node_id, "core://dto/peer", "k", "边自己的关联条件");
+		const dto = asRecord((await get("/api/node?uri=core://dto/alpha")).body, "node");
+		const edges = asRecord(dto.edges, "edges");
+		const edge = (edges.outgoing as unknown[])
+			.map((raw) => asRecord(raw, "EdgeDTO"))
+			.find((e) => e.uri === "core://dto/peer");
+		expect(edge, "找不到指向 peer 的边").toBeDefined();
+		expect(edge!.disclosure, "边条件被对端节点的想起条件顶替了").toBe("边自己的关联条件");
+		// 反向证明二者不是一回事：对端节点自己的入口条件不同。
+		expect(store.effectiveDisclosure("core://dto/peer")).toBe("对端的想起条件");
+	});
+});
+
+/**
+ * ⭐ 边级 disclosure 轨（D5 §10-B/§10-C/§10-G）的三张 DTO 新字段与入口作用域。
+ *
+ * 非空性：`TreeNodeDTO`/`EdgeDTO`/`AliasDTO` 三个 `disclosure` 与 `AliasDTO.dead`
+ * 在本轮之前**都不存在**（契约 §2.8 实测），故这些断言在旧代码上必红。
+ */
+describe("disclosure：三张 DTO 的新字段与入口作用域（D5 §2.1 / §10-B）", () => {
+	const jsonPost = async (path: string, payload: unknown): Promise<{ status: number; body: unknown }> => {
+		const res = await fetch(`${server.url}${path}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Host: new URL(server.url).host },
+			body: JSON.stringify(payload),
+		});
+		const text = await res.text();
+		return { status: res.status, body: text ? JSON.parse(text) : null };
+	};
+
+	it("TreeNodeDTO / EdgeDTO / AliasDTO 都带可空 disclosure，AliasDTO 另带 dead", async () => {
+		const tree = asRecord((await get("/api/tree?domain=core")).body, "tree");
+		const treeItem = asRecord((tree.items as unknown[])[0], "TreeNodeDTO");
+		expect(Object.hasOwn(treeItem, "disclosure"), "TreeNodeDTO 缺 disclosure").toBe(true);
+
+		store.addEdge(nodeOf("core://dto/alpha").node_id, "core://dto/beta", "k");
+		store.addAlias("core://dto/old-alpha", nodeOf("core://dto/alpha").node_id, "入口级");
+		const dto = asRecord((await get("/api/node?uri=core://dto/alpha")).body, "node");
+		const edges = asRecord(dto.edges, "edges");
+		const out = asRecord((edges.outgoing as unknown[])[0], "EdgeDTO");
+		expect(Object.hasOwn(out, "disclosure"), "EdgeDTO 缺 disclosure").toBe(true);
+		const alias = asRecord((dto.aliases as unknown[])[0], "AliasDTO");
+		expect(Object.hasOwn(alias, "disclosure"), "AliasDTO 缺 disclosure").toBe(true);
+		expect(Object.hasOwn(alias, "dead"), "AliasDTO 缺 dead").toBe(true);
+		// `dead` 谓词：alias_uri 不是存活 nodes.uri ⇒ false。
+		expect(alias.dead).toBe(false);
+	});
+
+	it("⭐ 入口作用域：同一节点从别名进 vs 从规范 uri 进看到不同 disclosure", async () => {
+		store.insertNode({ uri: "core://dto/entry", content: "X", disclosure: "节点级", source: "manual" });
+		store.addAlias("core://dto/entry/alias", nodeOf("core://dto/entry").node_id, "入口级");
+
+		// ① 从别名进 → 入口值
+		const a = asRecord(asRecord((await get("/api/node?uri=core://dto/entry/alias")).body, "node").node, "node");
+		expect(a.disclosure).toBe("入口级");
+		// ② 从规范 uri 进 → 节点值（同一节点，不同答案）
+		const b = asRecord(asRecord((await get("/api/node?uri=core://dto/entry")).body, "node").node, "node");
+		expect(b.disclosure).toBe("节点级");
+		// ③ 从别名 revise → 只改别名层，规范入口不变（防跨入口污染）
+		expect(
+			(await jsonPost("/api/node/revise", { uri: "core://dto/entry/alias", disclosure: "入口级2" })).status,
+		).toBe(200);
+		expect(store.effectiveDisclosure("core://dto/entry/alias")).toBe("入口级2");
+		expect(store.effectiveDisclosure("core://dto/entry")).toBe("节点级");
+
+		// ④ `renderEntryDisclosures` 需要 ≥2 入口才渲染 ⇒ 此节点的 aliases 非空。
+		const dto = asRecord((await get("/api/node?uri=core://dto/entry/alias")).body, "node");
+		expect((dto.aliases as unknown[]).length).toBeGreaterThan(0);
+	});
+
+	it('⭐ route 层 `""` 归一为 null（不写空串、不切断 ?? 回退）', async () => {
+		store.insertNode({ uri: "core://dto/blank", content: "Y", source: "manual" });
+		expect((await jsonPost("/api/node/revise", { uri: "core://dto/blank", disclosure: "" })).status).toBe(200);
+		const after = asRecord(asRecord((await get("/api/node?uri=core://dto/blank")).body, "node").node, "node");
+		expect(after.disclosure, '空串必须归一为 null，不是 ""').toBeNull();
+		expect(store.effectiveDisclosure("core://dto/blank")).toBeNull();
+
+		// 别名入口上同理：空串 → 别名层 NULL ⇒ 仍能 `??` 继承节点级（没被空串截断）。
+		store.addAlias("core://dto/blank-alias", nodeOf("core://dto/blank").node_id, "别名条件");
+		expect((await jsonPost("/api/node/revise", { uri: "core://dto/blank-alias", disclosure: "" })).status).toBe(200);
+		expect(store.effectiveDisclosure("core://dto/blank-alias")).toBeNull();
+		expect((await jsonPost("/api/node/revise", { uri: "core://dto/blank", disclosure: "节点级" })).status).toBe(200);
+		expect(store.effectiveDisclosure("core://dto/blank-alias"), "?? 回退被空串切断").toBe("节点级");
+	});
+
+	it('⭐ POST /api/node 同样归一 `""`（不是只改 revise 一路）', async () => {
+		const res = await jsonPost("/api/node", { uri: "core://dto/blank-node", content: "Z", disclosure: "" });
+		expect(res.status).toBe(200);
+		const dto = asRecord((await get("/api/node?uri=core://dto/blank-node")).body, "node");
+		expect(asRecord(dto.node, "node").disclosure).toBeNull();
+	});
+
+	it("⭐ `EdgeDTO.disclosure` 是裸边列，不经 effectiveDisclosure（契约 §3.2 例外）", async () => {
+		store.insertNode({ uri: "core://dto/peer", content: "对端", disclosure: "对端的想起条件", source: "manual" });
+		store.addEdge(nodeOf("core://dto/alpha").node_id, "core://dto/peer", "k", "边自己的关联条件");
+		const dto = asRecord((await get("/api/node?uri=core://dto/alpha")).body, "node");
+		const edges = asRecord(dto.edges, "edges");
+		const edge = (edges.outgoing as unknown[])
+			.map((raw) => asRecord(raw, "EdgeDTO"))
+			.find((e) => e.uri === "core://dto/peer");
+		expect(edge, "找不到指向 peer 的边").toBeDefined();
+		expect(edge?.disclosure, "边条件被对端节点的想起条件顶替了").toBe("边自己的关联条件");
+		// 反向证明二者不是一回事：对端节点自己的入口条件不同。
+		expect(store.effectiveDisclosure("core://dto/peer")).toBe("对端的想起条件");
+	});
+});

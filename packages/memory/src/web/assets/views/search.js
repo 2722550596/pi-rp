@@ -10,6 +10,7 @@
 
 import { el, clear, append, renderError } from "../app.js";
 import { impChip } from "./tree.js";
+import { discBadge } from "./views.js";
 
 const DEBOUNCE_MS = 350;
 const LIMITS = [20, 50, 100];
@@ -89,7 +90,11 @@ function renderCard(item, q) {
   summary.append(highlight(typeof item.summary === "string" ? item.summary : "", q));
   card.append(summary);
 
-  if (item.disclosure) card.append(el("p", { class: "mw-muted mw-content", text: `想起条件：${item.disclosure}` }));
+  // ⭐ 琥珀徽章（`mw-disc--entry`）：口径由服务端定（D2 裁定 (b) = `effectiveDisclosure(item.uri)`），
+  //    值与今日的节点级一致，故这一页**不需要第二种视觉**。
+  //    ⚠️ MUST 用 `append()` 辅助：`card.append(null)` 会把 `null` 按 DOM 规范
+  //    `ToString` 成**字面量 "null"**渲染出来（`discBadge` 对空值返回 `null`）。
+  append(card, discBadge(item.disclosure, { label: "想起条件" }));
 
   const meta = el("p", { class: "mw-muted" });
   const bits = [];

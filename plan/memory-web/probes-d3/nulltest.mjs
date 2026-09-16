@@ -1,0 +1,14 @@
+import { DatabaseSync } from "node:sqlite";
+const db = new DatabaseSync(":memory:");
+db.exec("CREATE VIRTUAL TABLE n USING fts5(node_id UNINDEXED, text, disclosure, tokenize='unicode61')");
+db.exec("CREATE VIRTUAL TABLE e USING fts5(node_id UNINDEXED, text, disclosure, tokenize='unicode61')");
+db.prepare("INSERT INTO n(node_id,text) VALUES(?,?)").run("a","hello world");
+db.prepare("INSERT INTO e(node_id,text,disclosure) VALUES(?,?,?)").run("a","hello world","");
+console.log("NULL row:", db.prepare("SELECT node_id, text, disclosure FROM n").all());
+console.log("'' row  :", db.prepare("SELECT node_id, text, disclosure FROM e").all());
+console.log("bm25 NULL-col:", db.prepare("SELECT bm25(n,0.0,1.0,1.0) bm FROM n WHERE n MATCH ?").all('"hello"'));
+console.log("bm25 ''-col  :", db.prepare("SELECT bm25(e,0.0,1.0,1.0) bm FROM e WHERE e MATCH ?").all('"hello"'));
+console.log("match disclosure on NULL-row:", db.prepare("SELECT count(*) c FROM n WHERE n MATCH ?").all('"hello"'));
+console.log("match on NULL disclosure col:", db.prepare("SELECT count(*) c FROM n WHERE n MATCH ?").all('disclosure:"x"'));
+console.log("match on '' disclosure col:", db.prepare("SELECT count(*) c FROM e WHERE e MATCH ?").all('disclosure:"x"'));
+db.close();

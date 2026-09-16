@@ -1,6 +1,6 @@
 import type { MemoryDatabase, MemoryStatement } from "./driver.ts";
 import { buildGlossaryTerms, buildPool, rank, toEpochDays } from "./recall.ts";
-import { SCHEMA_VERSION, SCHEMA_VERSION_KEY } from "./schema.ts";
+import { FTS_REBUILD_KEY, SCHEMA_VERSION, SCHEMA_VERSION_KEY } from "./schema.ts";
 import { tokenizeForSearch } from "./tokenize.ts";
 
 export type NodeSource = "auto" | "manual" | "import";
@@ -104,8 +104,14 @@ export interface ExportSnapshot {
 		created_at: string;
 	}>;
 	kv: Record<string, string>;
-	aliases: Array<{ alias_uri: string; target_node_id: string }>;
-	edges: Array<{ node_id: string; target_uri: string; kind: string | null }>;
+	/**
+	 * `disclosure` is optional on read: snapshots written before v3 have no such
+	 * key, and "absent" MUST stay distinguishable from "explicitly null" on
+	 * import (absent = keep the target row's value, null = clear it). `export`
+	 * always emits the key.
+	 */
+	aliases: Array<{ alias_uri: string; target_node_id: string; disclosure?: string | null }>;
+	edges: Array<{ node_id: string; target_uri: string; kind: string | null; disclosure?: string | null }>;
 	glossary: Array<{ keyword: string; node_id: string }>;
 }
 
@@ -151,12 +157,23 @@ const UNIT_SECONDS: Record<string, number> = {
 	y: 31536000,
 };
 
+/**
+ * bm25 column weights for `node_fts`, in DECLARATION order:
+ * `node_id`(UNINDEXED, weight irrelevant), `text`, `disclosure`.
+ * MUST stay a single source of truth: `bm25()` SILENTLY IGNORES extra
+ * weight args, so a column/weight arity mismatch fails without an error.
+ * `1.0` is FTS5's default weight, so this value is behavior-preserving.
+ */
+export const NODE_FTS_BM25_WEIGHTS = "0.0, 1.0, 1.0";
+
 const WORLD_TIME_KEY = "world_time";
 
 export class MemoryStore {
 	readonly db: MemoryDatabase;
 	private getStmt: MemoryStatement;
 	private byUriStmt: MemoryStatement;
+	private aliasEntryStmt: MemoryStatement;
+	private aliasListStmt: MemoryStatement;
 	private childrenStmt: MemoryStatement;
 	private blocklist: string[] = [];
 	private revisionRetention: number | undefined;
@@ -165,7 +182,27 @@ export class MemoryStore {
 		this.db = db;
 		this.getStmt = db.prepare("SELECT * FROM nodes WHERE node_id = ?");
 		this.byUriStmt = db.prepare("SELECT * FROM nodes WHERE uri = ?");
+		this.aliasEntryStmt = db.prepare("SELECT target_node_id, disclosure FROM aliases WHERE alias_uri = ?");
+		// `disclosure` is the EFFECTIVE value (`aliases.disclosure ?? nodes.disclosure`),
+		// except for a shadowed ("dead") alias, whose uri `resolveUri` never reaches:
+		// there the value comes from the node occupying that uri — the same answer
+		// `effectiveDisclosure` gives. One SQL, no N+1.
+		this.aliasListStmt = db.prepare(
+			`SELECT a.alias_uri,
+			        a.target_node_id,
+			        CASE WHEN shadow.node_id IS NULL
+			             THEN COALESCE(a.disclosure, target.disclosure)
+			             ELSE shadow.disclosure END AS disclosure,
+			        shadow.node_id IS NOT NULL AS dead
+			   FROM aliases a
+			   LEFT JOIN nodes target ON target.node_id = a.target_node_id
+			   LEFT JOIN nodes shadow ON shadow.uri = a.alias_uri
+			  WHERE a.target_node_id = ?`,
+		);
 		this.childrenStmt = db.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY created_at");
+		// Heals "structure migrated to v3, FTS content not yet rebuilt" — every
+		// entry point constructs a store, so no caller has to remember this.
+		this._healPendingFtsRebuild();
 	}
 
 	setDomainBlocklist(domains: string[]): void {
@@ -194,6 +231,87 @@ export class MemoryStore {
 
 	getNodeByUri(uri: string): MemoryNode | null {
 		return this.resolveUri(uri);
+	}
+
+	/**
+	 * Which entry a uri denotes, and which node it points at — the shared floor
+	 * under BOTH the read path (`effectiveDisclosure`) and the write path
+	 * (`setEntryDisclosure`), so the two cannot drift apart on precedence.
+	 * `nodes.uri` wins (mirrors `resolveUri`); then `aliases.alias_uri`; else null.
+	 *
+	 * ⚠️ A SHADOWED ("dead") alias — one whose string is also a live `nodes.uri` —
+	 * resolves to kind:"canonical" with `alias_uri: null`. So `alias_uri !== null`
+	 * is NOT a test for "an alias row exists"; use `hasAliasRow` for that.
+	 */
+	resolveEntry(uri: string): {
+		kind: "canonical" | "alias";
+		node_id: string;
+		alias_uri: string | null;
+		aliasDisclosure: string | null;
+	} | null {
+		const node = this.byUriStmt.get(uri) as NodeRow | undefined;
+		if (node) return { kind: "canonical", node_id: node.node_id, alias_uri: null, aliasDisclosure: null };
+		const alias = this.aliasEntryStmt.get(uri) as { target_node_id: string; disclosure: string | null } | undefined;
+		if (!alias) return null;
+		return {
+			kind: "alias",
+			node_id: alias.target_node_id,
+			alias_uri: uri,
+			aliasDisclosure: alias.disclosure,
+		};
+	}
+
+	/**
+	 * The single read entry point for the effective reminder condition ("想起条件").
+	 * Pure SELECT, no side effects, never throws: an unknown uri is `null`.
+	 * Derives from `resolveEntry` so it can never disagree with the write path.
+	 */
+	effectiveDisclosure(uri: string): string | null {
+		const entry = this.resolveEntry(uri);
+		if (!entry) return null;
+		if (entry.kind === "canonical") {
+			return (this.getStmt.get(entry.node_id) as NodeRow | undefined)?.disclosure ?? null;
+		}
+		// Alias entry: its own condition, else the target node's (`??`, not
+		// "first hit wins" — this is what lets a NULL alias inherit node-level).
+		if (entry.aliasDisclosure !== null) return entry.aliasDisclosure;
+		return (this.getStmt.get(entry.node_id) as NodeRow | undefined)?.disclosure ?? null;
+	}
+
+	/**
+	 * Does an `aliases` row exist for this uri — INCLUDING a dead alias hidden
+	 * behind a live `nodes.uri`? Orthogonal to `resolveEntry`: this answers
+	 * "is there a row", that one answers "who does this uri resolve to".
+	 */
+	hasAliasRow(uri: string): boolean {
+		return this.aliasEntryStmt.get(uri) !== undefined;
+	}
+
+	/**
+	 * Every alias entry of one node plus its EFFECTIVE condition — one SQL.
+	 * `disclosure` already includes the node-level fallback, so callers MUST NOT
+	 * fall back again. When `dead` is true that value comes from the node
+	 * occupying the alias uri (the alias itself is unreachable), never from
+	 * `aliases.disclosure`.
+	 */
+	listAliasEntries(targetNodeId: string): Array<{
+		alias_uri: string;
+		target_node_id: string;
+		disclosure: string | null;
+		dead: boolean;
+	}> {
+		const rows = this.aliasListStmt.all(targetNodeId) as Array<{
+			alias_uri: string;
+			target_node_id: string;
+			disclosure: string | null;
+			dead: number;
+		}>;
+		return rows.map((r) => ({
+			alias_uri: r.alias_uri,
+			target_node_id: r.target_node_id,
+			disclosure: r.disclosure,
+			dead: r.dead !== 0,
+		}));
 	}
 
 	// ── CRUD ──────────────────────────────────────────────────────────────────
@@ -325,6 +443,9 @@ export class MemoryStore {
 		if (patch.content === undefined || patch.content === node.content) {
 			// Non-content patches just touch columns without revision churn.
 			this.applyPatchColumns(nodeId, patch);
+			// A disclosure-only revise still has to rebuild the FTS disclosure
+			// column; this branch always skipped reindex (R1).
+			if (patch.disclosure !== undefined) this.reindexNode(nodeId);
 			return this.currentVersion(nodeId);
 		}
 		const version = this.archiveRevision(
@@ -591,20 +712,24 @@ export class MemoryStore {
 	 *     the moved set (or by an alias)
 	 *   - two moves whose targets collide (identical or ancestor/descendant)
 	 *   - two moves whose sources are ancestors of each other
-	 * On success every moved node's OLD canonical uri becomes an alias, every
-	 * descendant's uri/domain is rewritten, FTS is rebuilt per node, and
-	 * awaken_uris entries under an old canonical prefix are remapped.
+	 * On success every moved node's OLD canonical uri becomes an alias carrying
+	 * that member's PRE-MOVE effective condition, every descendant's uri/domain
+	 * is rewritten, FTS is rebuilt per node, and awaken_uris entries under an
+	 * old canonical prefix are remapped.
+	 *
+	 * `when` per move is tri-state: `undefined` inherits the pre-move effective
+	 * condition per member, `string` overrides it, `null` explicitly clears it.
 	 */
-	relocateMany(moves: Array<{ from: string; to: string }>): void {
+	relocateMany(moves: Array<{ from: string; to: string; when?: string | null }>): void {
 		if (moves.length === 0) return;
 		this.db.transaction(() => this._relocateMany(moves));
 	}
 
-	/** Transaction-free core of relocateMany() — for callers inside a tx. */
-	private _relocateMany(moves: Array<{ from: string; to: string }>): void {
+	private _relocateMany(moves: Array<{ from: string; to: string; when?: string | null }>): void {
 		const plans: Array<{
 			fromUri: string;
 			toRoot: string;
+			when: string | null | undefined;
 			members: Array<{ node: MemoryNode; rel: string }>;
 		}> = [];
 		const movedNodeIds = new Set<string>();
@@ -620,7 +745,7 @@ export class MemoryStore {
 				}
 			}
 			for (const member of members) movedNodeIds.add(member.node.node_id);
-			plans.push({ fromUri: node.uri, toRoot: m.to, members });
+			plans.push({ fromUri: node.uri, toRoot: m.to, when: m.when, members });
 		}
 		// Pass 2: cross-batch conflict checks, all before any write.
 		const rewritten = new Set<string>();
@@ -664,6 +789,10 @@ export class MemoryStore {
 			for (const member of plan.members) {
 				const newUri = this._rewriteUri(plan.toRoot, member.rel);
 				const isRoot = member.rel === "";
+				// MUST be read BEFORE the UPDATE below: afterwards the old uri is no
+				// longer a `nodes.uri` and not yet an alias, so it resolves to null.
+				const prior = this.effectiveDisclosure(member.node.uri);
+				const carried = plan.when === undefined ? prior : plan.when;
 				if (isRoot) {
 					this.db
 						.prepare("UPDATE nodes SET uri = ?, domain = ?, parent_id = ?, updated_ts = ? WHERE node_id = ?")
@@ -673,10 +802,20 @@ export class MemoryStore {
 						.prepare("UPDATE nodes SET uri = ?, domain = ?, updated_ts = ? WHERE node_id = ?")
 						.run(newUri, toDomain, updated, member.node.node_id);
 				}
-				// Old canonical uri becomes an alias; existing aliases kept.
+				// Old canonical uri becomes an alias carrying the member's pre-move
+				// condition. MUST list `disclosure` explicitly: `INSERT OR REPLACE`
+				// would drop it, silently wiping an existing alias's condition on
+				// every relocate.
 				this.db
-					.prepare("INSERT OR REPLACE INTO aliases (alias_uri, target_node_id) VALUES (?, ?)")
-					.run(member.node.uri, member.node.node_id);
+					.prepare(
+						`INSERT INTO aliases (alias_uri, target_node_id, disclosure) VALUES (?, ?, ?)
+						 ON CONFLICT(alias_uri) DO UPDATE SET
+						     target_node_id = excluded.target_node_id,
+						     disclosure     = excluded.disclosure`,
+					)
+					.run(member.node.uri, member.node.node_id, carried);
+				// Raw UPDATE above bypasses _updateNode, so the FTS row (uri + text)
+				// must be rebuilt here explicitly.
 				this.reindexNode(member.node.node_id);
 			}
 			this._remapAwakenUris(plan.fromUri, plan.toRoot);
@@ -753,38 +892,140 @@ export class MemoryStore {
 
 	// ── Edges / aliases / glossary ────────────────────────────────────────────
 
-	addEdge(nodeId: string, targetUri: string, kind?: string): void {
-		this.db
-			.prepare("INSERT OR REPLACE INTO edges (node_id, target_uri, kind) VALUES (?, ?, ?)")
-			.run(nodeId, targetUri, kind ?? null);
-		this.logAudit("add_edge", { node_id: nodeId, object: `${nodeId} -> ${targetUri}` });
+	/**
+	 * Upsert one association edge. `disclosure` is tri-state: `undefined` keeps
+	 * the existing value, `null` clears it, a string writes it.
+	 *
+	 * MUST be `ON CONFLICT … DO UPDATE`, never `INSERT OR REPLACE`: the latter
+	 * deletes then re-inserts, resetting unlisted columns — so re-associating an
+	 * existing edge (an idempotent call) would silently wipe its condition.
+	 */
+	addEdge(nodeId: string, targetUri: string, kind?: string, disclosure?: string | null): void {
+		if (disclosure === undefined) {
+			this.db
+				.prepare(
+					`INSERT INTO edges (node_id, target_uri, kind) VALUES (?, ?, ?)
+					 ON CONFLICT(node_id, target_uri) DO UPDATE SET kind = excluded.kind`,
+				)
+				.run(nodeId, targetUri, kind ?? null);
+		} else {
+			this.db
+				.prepare(
+					`INSERT INTO edges (node_id, target_uri, kind, disclosure) VALUES (?, ?, ?, ?)
+					 ON CONFLICT(node_id, target_uri) DO UPDATE SET kind = excluded.kind, disclosure = excluded.disclosure`,
+				)
+				.run(nodeId, targetUri, kind ?? null, disclosure);
+		}
+		this.logAudit("add_edge", {
+			node_id: nodeId,
+			object: `${nodeId} -> ${targetUri}`,
+			details: disclosure === undefined ? "disclosure: kept" : `disclosure: ${disclosure ?? "null"}`,
+		});
 	}
 
-	/** One-hop adjacency (both directions) for explicit retrieve diffusion. */
-	listRelated(
-		nodeId: string,
-	): Array<{ direction: "outgoing" | "incoming"; node_id: string; target_uri: string; kind: string | null }> {
+	/**
+	 * One-hop adjacency (both directions) for explicit retrieve diffusion.
+	 * `disclosure` is the EDGE's own column — this is a relation condition, not
+	 * an addressable entry condition, so it does NOT go through
+	 * `effectiveDisclosure` and does not join the fallback chain.
+	 */
+	listRelated(nodeId: string): Array<{
+		direction: "outgoing" | "incoming";
+		node_id: string;
+		target_uri: string;
+		kind: string | null;
+		disclosure: string | null;
+	}> {
 		const outgoing = this.db
-			.prepare(`SELECT 'outgoing' AS direction, node_id, target_uri, kind FROM edges WHERE node_id = ?`)
-			.all(nodeId) as Array<{ direction: "outgoing"; node_id: string; target_uri: string; kind: string | null }>;
+			.prepare(`SELECT 'outgoing' AS direction, node_id, target_uri, kind, disclosure FROM edges WHERE node_id = ?`)
+			.all(nodeId) as Array<{
+			direction: "outgoing";
+			node_id: string;
+			target_uri: string;
+			kind: string | null;
+			disclosure: string | null;
+		}>;
 		const node = this.getNode(nodeId);
 		const incoming = node
 			? (this.db
-					.prepare(`SELECT 'incoming' AS direction, node_id, target_uri, kind FROM edges WHERE target_uri = ?`)
+					.prepare(
+						`SELECT 'incoming' AS direction, node_id, target_uri, kind, disclosure FROM edges WHERE target_uri = ?`,
+					)
 					.all(node.uri) as Array<{
 					direction: "incoming";
 					node_id: string;
 					target_uri: string;
 					kind: string | null;
+					disclosure: string | null;
 				}>)
 			: [];
 		return [...outgoing, ...incoming];
 	}
 
-	addAlias(aliasUri: string, targetNodeId: string): void {
-		this.db
-			.prepare("INSERT OR REPLACE INTO aliases (alias_uri, target_node_id) VALUES (?, ?)")
-			.run(aliasUri, targetNodeId);
+	/**
+	 * Upsert one alias entry. `disclosure` is tri-state, exactly as `addEdge`.
+	 * No guard against `aliasUri` already occupying a live `nodes.uri`: such an
+	 * alias is unreachable (`resolveUri` prefers `nodes.uri`) but the row is
+	 * still written, because detection and repair belong to the callers that
+	 * can warn the user — see `listAliasEntries(...).dead`.
+	 */
+	addAlias(aliasUri: string, targetNodeId: string, disclosure?: string | null): void {
+		if (disclosure === undefined) {
+			this.db
+				.prepare(
+					`INSERT INTO aliases (alias_uri, target_node_id) VALUES (?, ?)
+					 ON CONFLICT(alias_uri) DO UPDATE SET target_node_id = excluded.target_node_id`,
+				)
+				.run(aliasUri, targetNodeId);
+		} else {
+			this.db
+				.prepare(
+					`INSERT INTO aliases (alias_uri, target_node_id, disclosure) VALUES (?, ?, ?)
+					 ON CONFLICT(alias_uri) DO UPDATE SET target_node_id = excluded.target_node_id, disclosure = excluded.disclosure`,
+				)
+				.run(aliasUri, targetNodeId, disclosure);
+		}
+		this.logAudit("add_alias", {
+			node_id: targetNodeId,
+			object: aliasUri,
+			details: disclosure === undefined ? "disclosure: kept" : `disclosure: ${disclosure ?? "null"}`,
+		});
+	}
+
+	/**
+	 * The single write entry point for a reminder condition: it writes to the
+	 * layer the uri STRUCTURALLY denotes (derived from `resolveEntry`, the same
+	 * precedence the read path uses). It deliberately does NOT write "whichever
+	 * layer the fallback chain landed on" — for an alias whose own value is NULL
+	 * that would silently overwrite `nodes.disclosure`, i.e. the shared condition
+	 * of the canonical entry and every other alias.
+	 *
+	 * Throws on an unknown uri: a write path MUST surface the error rather than
+	 * no-op, so callers can answer `not_found`.
+	 */
+	setEntryDisclosure(uri: string, disclosure: string | null): { layer: "alias" | "node"; node_id: string } {
+		const entry = this.resolveEntry(uri);
+		if (!entry) throw new Error(`setEntryDisclosure: unknown uri ${uri}`);
+		// Which layer it touched is the whole point of this event — it is the only
+		// place that knows both, so it logs once here rather than per branch.
+		this.logAudit("set_entry_disclosure", {
+			node_id: entry.node_id,
+			object: uri,
+			details: `layer: ${entry.kind === "canonical" ? "node" : "alias"}, disclosure: ${disclosure ?? "null"}`,
+		});
+		if (entry.kind === "canonical") {
+			this._updateNode(entry.node_id, { disclosure });
+			return { layer: "node", node_id: entry.node_id };
+		}
+		this.setAliasDisclosure(uri, disclosure);
+		return { layer: "alias", node_id: entry.node_id };
+	}
+
+	/** Per-entry write for an alias row, skipping the layer decision above. */
+	setAliasDisclosure(aliasUri: string, disclosure: string | null): void {
+		const row = this.aliasEntryStmt.get(aliasUri) as { target_node_id: string } | undefined;
+		if (!row) throw new Error(`setAliasDisclosure: unknown alias uri ${aliasUri}`);
+		this.addAlias(aliasUri, row.target_node_id, disclosure);
 	}
 
 	listAliases(targetNodeId: string): string[] {
@@ -1004,9 +1245,12 @@ export class MemoryStore {
 			if (extra.length > 0) tokens = [...tokens, ...extra];
 			if (tokens.length === 0) continue;
 			const match = tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
+			// Explicit weights keep the column↔weight contract visible (bare
+			// bm25() ≡ these weights: 1.0 is FTS5's default). ORDER BY rank
+			// ignores them; they only reach recall.ts's 4th-level tiebreak.
 			const rows = this.db
 				.prepare(
-					`SELECT node_id, bm25(node_fts) AS bm FROM node_fts WHERE node_fts MATCH ?
+					`SELECT node_id, bm25(node_fts, ${NODE_FTS_BM25_WEIGHTS}) AS bm FROM node_fts WHERE node_fts MATCH ?
 					ORDER BY rank`,
 				)
 				.all(match) as Array<{ node_id: string; bm: number }>;
@@ -1236,10 +1480,10 @@ export class MemoryStore {
 		const kv: Record<string, string> = {};
 		for (const row of kvRows) kv[row.key] = row.value;
 		const aliases = this.db
-			.prepare("SELECT alias_uri, target_node_id FROM aliases ORDER BY alias_uri")
+			.prepare("SELECT alias_uri, target_node_id, disclosure FROM aliases ORDER BY alias_uri")
 			.all() as ExportSnapshot["aliases"];
 		const edges = this.db
-			.prepare("SELECT node_id, target_uri, kind FROM edges ORDER BY node_id, target_uri")
+			.prepare("SELECT node_id, target_uri, kind, disclosure FROM edges ORDER BY node_id, target_uri")
 			.all() as ExportSnapshot["edges"];
 		const glossary = this.db
 			.prepare("SELECT keyword, node_id FROM glossary ORDER BY keyword")
@@ -1296,6 +1540,11 @@ export class MemoryStore {
 					);
 			}
 			for (const [key, value] of Object.entries(snapshot.kv)) {
+				// The version key is the TARGET database's runtime state, not snapshot
+				// content: importing a v2 snapshot into a v3 store must not drag the
+				// stored version back to "2" (a migrator keyed on version would then
+				// re-run ADD COLUMN and fail with "duplicate column name").
+				if (key === SCHEMA_VERSION_KEY) continue;
 				this.setKv(key, value);
 			}
 			// Association surfaces — every reference must exist or the whole
@@ -1304,18 +1553,48 @@ export class MemoryStore {
 				if (!this.getNode(alias.target_node_id)) {
 					throw new Error(`import: alias ${alias.alias_uri} targets missing node ${alias.target_node_id}`);
 				}
-				this.db
-					.prepare("INSERT OR REPLACE INTO aliases (alias_uri, target_node_id) VALUES (?, ?)")
-					.run(alias.alias_uri, alias.target_node_id);
+				// Tri-state, mirroring addAlias: an absent key (pre-v3 snapshot) keeps
+				// the existing value, an explicit null clears it, a value writes it.
+				if (alias.disclosure === undefined) {
+					this.db
+						.prepare(
+							`INSERT INTO aliases (alias_uri, target_node_id) VALUES (?, ?)
+							 ON CONFLICT(alias_uri) DO UPDATE SET target_node_id = excluded.target_node_id`,
+						)
+						.run(alias.alias_uri, alias.target_node_id);
+				} else {
+					this.db
+						.prepare(
+							`INSERT INTO aliases (alias_uri, target_node_id, disclosure) VALUES (?, ?, ?)
+							 ON CONFLICT(alias_uri) DO UPDATE SET
+							     target_node_id = excluded.target_node_id,
+							     disclosure     = excluded.disclosure`,
+						)
+						.run(alias.alias_uri, alias.target_node_id, alias.disclosure);
+				}
 			}
 			for (const edge of snapshot.edges) {
 				const from = this.getNode(edge.node_id);
 				const to = this.resolveUri(edge.target_uri);
 				if (!from) throw new Error(`import: edge from missing node ${edge.node_id}`);
 				if (!to) throw new Error(`import: edge target missing ${edge.target_uri}`);
-				this.db
-					.prepare("INSERT OR REPLACE INTO edges (node_id, target_uri, kind) VALUES (?, ?, ?)")
-					.run(edge.node_id, edge.target_uri, edge.kind);
+				if (edge.disclosure === undefined) {
+					this.db
+						.prepare(
+							`INSERT INTO edges (node_id, target_uri, kind) VALUES (?, ?, ?)
+							 ON CONFLICT(node_id, target_uri) DO UPDATE SET kind = excluded.kind`,
+						)
+						.run(edge.node_id, edge.target_uri, edge.kind);
+				} else {
+					this.db
+						.prepare(
+							`INSERT INTO edges (node_id, target_uri, kind, disclosure) VALUES (?, ?, ?, ?)
+							 ON CONFLICT(node_id, target_uri) DO UPDATE SET
+							     kind       = excluded.kind,
+							     disclosure = excluded.disclosure`,
+						)
+						.run(edge.node_id, edge.target_uri, edge.kind, edge.disclosure);
+				}
 			}
 			// Glossary rows MUST be reindexed after insertion: `reindexNode` is what
 			// appends the keyword to the node's FTS text (see `reindexNode` below).
@@ -1411,10 +1690,11 @@ export class MemoryStore {
 	// ── Internals ─────────────────────────────────────────────────────────────
 
 	/**
-	 * Rebuild one node's FTS row from uri + disclosure + glossary keywords +
-	 * content, all through the unified tokenizer. Stubs never enter FTS.
-	 * insert / update / rename / stub-promotion / glossary changes all route
-	 * through here.
+	 * Rebuild one node's FTS row from uri + content + glossary keywords into
+	 * the `text` column and its disclosure into the separate `disclosure`
+	 * column, both through the unified tokenizer (one token space for index
+	 * and query). Stubs never enter FTS. insert / update / rename /
+	 * stub-promotion / glossary changes all route through here.
 	 */
 	reindexNode(nodeId: string): void {
 		const node = this.getNode(nodeId);
@@ -1426,15 +1706,57 @@ export class MemoryStore {
 				keyword: string;
 			}>
 		).map((r) => r.keyword);
-		let text = tokenizeForSearch([node.uri, node.disclosure ?? "", node.content].join(" "));
+		// disclosure is deliberately NOT folded into `text`: it is its own
+		// weighted column now, and double-indexing it would score the same
+		// tokens twice.
+		let text = tokenizeForSearch([node.uri, node.content].join(" "));
 		// Full glossary keywords are appended as whole tokens so proper nouns
 		// survive jieba splitting, without touching the global dictionary.
 		const extra = keywords.filter((k) => k.trim().length > 0).join(" ");
 		if (extra) text = `${text} ${extra}`;
-		if (!text) return;
-		this.db.prepare("INSERT INTO node_fts (node_id, text) VALUES (?, ?)").run(nodeId, text);
+		const disclosureText = tokenizeForSearch(node.disclosure ?? "");
+		// Both columns empty → no row at all (empty text alone must not drop a
+		// disclosure-only node's row).
+		if (!text && !disclosureText) return;
+		this.db
+			.prepare("INSERT INTO node_fts (node_id, text, disclosure) VALUES (?, ?, ?)")
+			.run(nodeId, text, disclosureText);
 	}
 
+	/**
+	 * Rebuild every non-stub node's FTS row. Bulk entry point for the v2→v3
+	 * migration and the pending-rebuild self-heal; incremental writes still
+	 * go through reindexNode.
+	 */
+	reindexAll(): void {
+		this.db.transaction(() => {
+			const rows = this.db.prepare("SELECT node_id FROM nodes WHERE is_stub = 0").all() as Array<{
+				node_id: string;
+			}>;
+			for (const r of rows) this.reindexNode(r.node_id);
+		});
+	}
+
+	/**
+	 * Clear the "structure migrated, FTS content not rebuilt" marker left by
+	 * `migrateV2`. The order matters: `reindexAll` MUST succeed BEFORE the
+	 * marker is deleted — clearing it first would turn a crash into a permanent
+	 * silent zero-recall state (v3 columns, no marker, empty FTS). A throw here
+	 * propagates and fails the open, so the next open retries.
+	 */
+	private _healPendingFtsRebuild(): void {
+		let pending: string | null = null;
+		try {
+			pending = this.getKv(FTS_REBUILD_KEY);
+		} catch {
+			// memory_kv missing entirely — not a memory database; let the caller
+			// surface whatever the real problem is.
+			return;
+		}
+		if (pending === null) return;
+		this.reindexAll();
+		this.db.prepare("DELETE FROM memory_kv WHERE key = ?").run(FTS_REBUILD_KEY);
+	}
 	private rowToNode(row: NodeRow | undefined): MemoryNode | null {
 		if (!row) return null;
 		return { ...row, source: row.source as NodeSource };

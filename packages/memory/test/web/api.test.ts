@@ -51,6 +51,8 @@ interface TreeNode {
 	child_count: number;
 	has_children: boolean;
 	content_head: string;
+	/** ⭐ 边级 disclosure 轨：入口作用域的生效想起条件（可空）。 */
+	disclosure: string | null;
 }
 
 interface TreeBody {
@@ -67,6 +69,8 @@ interface EdgeShape {
 	uri: string | null;
 	resolved_uri: string | null;
 	dangling: boolean;
+	/** ⭐ 裸 `edges.disclosure`（**不是** effectiveDisclosure——边不是可寻址入口）。 */
+	disclosure: string | null;
 }
 
 interface NodeBody {
@@ -76,7 +80,7 @@ interface NodeBody {
 	path: Array<{ node_id: string; uri: string }>;
 	children: TreeNode[];
 	revisions: Array<{ editor_source: string | null; editor_model: string | null }>;
-	aliases: unknown[];
+	aliases: Array<{ alias_uri: string; target_node_id: string; disclosure: string | null; dead: boolean }>;
 	edges: { outgoing: EdgeShape[]; incoming: EdgeShape[] };
 	glossary: Array<{ keyword: string; uri: string | null }>;
 }
@@ -353,8 +357,19 @@ describe("GET /api/tree", () => {
 		const { body } = await get<TreeBody>("/api/tree?domain=core");
 		expect(Object.hasOwn(body.items[0], "child_count")).toBe(true);
 		expect(Object.hasOwn(body.items[0], "has_children")).toBe(true);
+		expect(Object.hasOwn(body.items[0], "disclosure")).toBe(true);
 		expect(Object.hasOwn(body, "parent_uri")).toBe(true);
 		expect(Object.hasOwn(body, "parent_id")).toBe(false);
+	});
+
+	it("⭐ disclosure is ENTRY-scoped and flows through /api/tree (the default landing page)", async () => {
+		store.put({ uri: "core://identity", content: "伊莱的身份锚点", disclosure: "谈到身份时", importance: 9 });
+		const { body } = await get<TreeBody>("/api/tree?domain=core");
+		const item = body.items.find((i) => i.uri === "core://identity")!;
+		expect(item.disclosure).toBe("谈到身份时");
+		// 无条件的节点必须是 `null`，不是空串或 undefined（前端据此不渲染徽章）。
+		const habits = body.items.find((i) => i.uri === "core://identity/habits");
+		if (habits) expect(habits.disclosure).toBeNull();
 	});
 });
 

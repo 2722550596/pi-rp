@@ -2,9 +2,9 @@
    颜色/圆角/字号一律取 var(--pico-*) → 自动跟随暗色模式。
    Pico 白拿：排版、表单、卡片、表格、按钮、暗色模式、[aria-busy] 指示器、.grid、.modal-is-*。 */
 
-:root {
-  --mw-row-h: 28px; /* ⭐ JS 读同一个值（getComputedStyle），窗口化不得两处漂移 */
-}
+/* ⭐ `--mw-row-h` 由 JS 读同一个值（`getComputedStyle`），窗口化不得两处漂移。
+   `--mw-disc-*` = 想起条件徽章的琥珀三条：Pico 没有「警示色」token（已 grep `--pico-*` 全集确认）。 */
+:root { --mw-row-h: 28px; --mw-disc-fg: #8a5a00; --mw-disc-bg: #fdf3dd; --mw-disc-bd: #e6c982; }
 
 /* ── 应用外壳：Pico 无 app shell 概念 ─────────────────────────────── */
 /* ⭐ `padding-inline` 不是装饰：Pico 给 `nav ul:first-of-type` 设了
@@ -67,6 +67,28 @@
 }
 .mw-chip--shadowed { border-style: dashed; }
 
+/* ⭐ 想起条件（disclosure）——入口级视觉语言，对标 nocturne 的琥珀徽章 + ⚠ 图标
+   （`MemoryBrowser.jsx:555-570`）。色相纪律：**琥珀 = 想起条件（入口）**；
+   **灰/虚线 = 关联条件（边，契约 §3.2 例外）**。两者 MUST 一眼可辨。
+   ⚠️ 暗色要覆盖**两条**路径：`app.js:82-84` 的 `applyTheme` 在 `auto` 时**移除** `data-theme`
+   （交给 `prefers-color-scheme`），在 `light`/`dark` 时设属性值。漏任一条会出现
+   「跟随系统时是琥珀、手动切暗色后是浅琥珀」的错配。 */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --mw-disc-fg: #f0b429; --mw-disc-bg: #2b2210; --mw-disc-bd: #5c4a1c; } }
+[data-theme="dark"] { --mw-disc-fg: #f0b429; --mw-disc-bg: #2b2210; --mw-disc-bd: #5c4a1c; }
+.mw-disc {
+  display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%;
+  font-size: 0.72em; line-height: 1.5; padding: 0 0.35rem; white-space: nowrap;
+  border: 1px solid var(--mw-disc-bd); border-radius: var(--pico-border-radius);
+  background: var(--mw-disc-bg); color: var(--mw-disc-fg);
+}
+.mw-disc__icon::before { content: "⚠"; }                    /* 无 SVG：零资源、随字号缩放 */
+.mw-disc__label { font-weight: 600; }
+.mw-disc__text { font-style: italic; overflow: hidden; text-overflow: ellipsis; }
+.mw-disc--edge { background: none; border-style: dashed; border-color: var(--pico-muted-border-color); color: var(--pico-muted-color); }
+.mw-disc--dead { border-style: dotted; opacity: 0.65; }
+.mw-entry-list { list-style: none; padding: 0; margin: 0; }
+.mw-entry-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.15rem 0; }
+
 /* ⭐ importance：数值越大越重要（5 = 普通，必须最不起眼）。 */
 .mw-imp {
   font-size: 0.72em; line-height: 1.5; padding: 0 0.3rem;
@@ -120,26 +142,17 @@
 
 /* ── 骨架 / 空态 ─────────────────────────────────────────────────── */
 .mw-skeleton { display: flex; flex-direction: column; gap: 0.5rem; }
-.mw-skeleton span {
-  height: 0.9rem; border-radius: var(--pico-border-radius);
-  background: var(--pico-muted-border-color); animation: mw-pulse 1.2s ease-in-out infinite;
-}
+.mw-skeleton span { height: 0.9rem; border-radius: var(--pico-border-radius); background: var(--pico-muted-border-color); animation: mw-pulse 1.2s ease-in-out infinite; }
 .mw-skeleton span:nth-child(2) { width: 80%; }
 .mw-skeleton span:nth-child(3) { width: 62%; }
 @keyframes mw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-.mw-empty {
-  padding: 1.2rem; border: 1px dashed var(--pico-muted-border-color);
-  border-radius: var(--pico-border-radius); color: var(--pico-muted-color);
-}
+.mw-empty { padding: 1.2rem; border: 1px dashed var(--pico-muted-border-color); border-radius: var(--pico-border-radius); color: var(--pico-muted-color); }
 .mw-empty p { margin: 0.2rem 0; }
 
 /* ── 侧栏 ────────────────────────────────────────────────────────── */
 .mw-domain select { width: 100%; margin-bottom: 0.2rem; }
 /* 侧栏顶部的「新建记忆」入口：整条可点，视觉上比普通链接重一点。 */
-.mw-sidebar-create {
-  display: block; text-align: center; margin: 0 0 0.8rem;
-  font-size: 0.92em; text-decoration: none;
-}
+.mw-sidebar-create { display: block; text-align: center; margin: 0 0 0.8rem; font-size: 0.92em; text-decoration: none; }
 .mw-filter { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; font-size: 0.9em; }
 .mw-filter input { margin: 0; flex: 0 0 auto; }
 .mw-filter label { margin: 0; }
@@ -175,9 +188,7 @@
 .mw-temp-gauge { margin-bottom: 0.8rem; }
 .mw-temp-actions { margin-top: 0.4rem; }
 .mw-diff { white-space: pre-wrap; word-break: break-word; font-size: 0.9em; }
-/* 纯标记用的容器（布局由 Pico 的 article/段落负责）：
-   只声明它们存在，便于后续按需加规则时不必再改 class 名。 */
-.mw-raw, .mw-temp, .mw-temp-list, .mw-view, .mw-edit, .mw-deleted { display: block; }
+/* 兄弟视图的外层容器（`section`）：Pico 的 article/段落负责布局，此处不额外声明。 */
 
 /* ⭐ `raw_log.active = 0` 的历史分支行（D3 §3.2 冻结名字 `mw-raw--inactive`）：
    MUST 与 active=1 一眼看出 —— 斜纹背景 + 左侧 4px 灰边 + 整行降不透明度。

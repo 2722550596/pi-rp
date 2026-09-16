@@ -299,7 +299,11 @@ export function buildRecentView(
 			(n): RecentItem => ({
 				...toItem(n, isShadowed),
 				updated_ts: n.updated_ts,
-				disclosure: n.disclosure,
+				// ⭐ Entry-scoped via the single read entry (`views.ts:302` per D5 §4).
+				//    Value-identical to `n.disclosure` on a canonical uri, but routing it
+				//    through the store keeps view pages from drifting if alias semantics
+				//    ever change.
+				disclosure: store.effectiveDisclosure(n.uri),
 			}),
 		);
 	return { name: "recent", items, total: items.length };
@@ -385,7 +389,7 @@ export function buildWakeupView(
 				domain: child.domain,
 				importance: child.importance,
 				shadowed: isShadowed(child.node_id),
-				disclosure: child.disclosure,
+				disclosure: store.effectiveDisclosure(child.uri),
 				snippet: snippet(child, 100),
 			});
 		}
@@ -397,7 +401,7 @@ export function buildWakeupView(
 			shadowed: isShadowed(node.node_id),
 			world_ts: node.world_ts,
 			world_ts_relative: formatRelativeWorldTime(node.world_ts, worldTime),
-			disclosure: node.disclosure,
+			disclosure: store.effectiveDisclosure(node.uri),
 			content: node.content,
 			children,
 		});

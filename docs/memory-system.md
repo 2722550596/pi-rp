@@ -10,7 +10,7 @@ v5 由一轮逐枝设计评审产生,两路输入:用户对 v4 的四点观察(a
 
 1. **双轨溶解**:role/story 两套语义的切分取消。场景纪要不再是独立表,而是 autoretain 的一种产物——写进树里约定 domain(如 history)的普通节点。客观轨只剩一张新增的**原文日志表**(append-only 消息镜像);主观与客观共用同一棵树、同一套工具、同一条召回管线。
 2. **全面取代**:本包是所有 pi 消费者(独立角色、pi-rp RP 基础设施、作家)的唯一记忆系统。v4 的"standalone 长期共存"废止;nocturne Python 服务与胶水扩展在包达到功能对等后退役。
-3. **彻底放弃兼容**:不迁移、不导入、无过渡双读。旧库字段结构不同,冷启动重建;将来真要搬数据是用户自己写的百来行脚本。文档与实现不出现任何兼容代码。
+3. ~~**彻底放弃兼容**:不迁移、不导入、无过渡双读。旧库字段结构不同,冷启动重建;将来真要搬数据是用户自己写的百来行脚本。文档与实现不出现任何兼容代码。~~ ⚠️ **已作废(2026-09-16)**:迁移政策改为 **就地 v2→v3**——`schema.ts` 自带迁移器(`MIGRATABLE_FROM = ["2"]`),打开旧库时 `ALTER TABLE … ADD COLUMN aliases.disclosure / edges.disclosure` + 全量重建 FTS,存量 `aliases.disclosure` / `edges.disclosure` 一律留 **NULL**(= 继承节点级,前端可见行为逐位不变)。**仍不做**:导入旧库(不同产品的库)/过渡双读。本轨详见 `plan/memory-web/23-迁移.md` 与契约 T19。
 4. **引擎层内建**:署名(§6)、动态区(§7)、autoretain(§5)、注入与回滚联动(§8)都是 harness 能力,不再是 MCP 外部服务可企及的功能。
 
 ---
@@ -37,7 +37,8 @@ v5 由一轮逐枝设计评审产生,两路输入:用户对 v4 的四点观察(a
 ```
 memory.db
 ├── nodes              树。单节点单树:node_id 主键、parent_id、domain、
-│                      uri、content、disclosure(想起条件)、importance(10=最重要,
+│                      uri、content、disclosure(想起条件:本节点的规范入口条件;
+│                      入口级条件在 aliases.disclosure,见 §9.1)、importance(10=最重要,
 │                      5=普通,0=边角料;数值越大越重要;单列,无 priority 影子列)、
 │                      source(auto|manual|import)、model(写入引擎模型 id)、
 │                      anchor_entry_id、anchor_session_id(产出该节点的 session,
@@ -52,8 +53,10 @@ memory.db
 │                      裁剪点(可配):node_revisions 是库内唯一适合裁剪的表,
 │                      内容可重建;`memory.revisions.maxVersionsPerNode`(默认无限)
 │                      每次归档后剪掉最旧超额版本,删除前归档也应用同一策略
-├── edges              联想图(检索扩散面,挂 node_id;显式 retrieve 一跳扩散,v5.5)
-├── aliases            别名寻址(uri 稳定性:rename/relocate 不破链)
+├── edges              联想图(检索扩散面,挂 node_id;显式 retrieve 一跳扩散,v5.5;
+│                      disclosure = 沿该边扩散时的"关联条件",**不是**想起条件——见 §9.1)
+├── aliases            别名寻址(uri 稳定性:rename/relocate 不破链;
+│                      disclosure = 该别名入口的想起条件,为 NULL 时继承 nodes.disclosure)
 ├── raw_log            原文日志(见 §4;v5.5 起为稳定活动镜像:session_id +
 │                      active 标记,不再物理删除)
 ├── node_fts           FTS5(树节点:纪要/反思/定稿自动入召回;统一分词文本
@@ -139,6 +142,44 @@ memory.db
 - **访问追踪(v5.5)**:`last_accessed_at` 只由角色主动 `recall`(精确 URI/展开子树)与 `retrieve` 命中节点更新;**自动注入、slot、MEM:// 系统视图、/memories 浏览不算"想起"**——防止后台机制清空 forgotten 语义。forgotten/diagnostic 的沉睡基准 = `last_accessed_at ?? created_at`。
 - **compaction 交互**:raw_log 独立于 compaction(它是库的镜像,不是 session 内容),原文照常落库;注入的 rp-memories 沿用 compaction:exclude。**autoretain 纪要窗口从 raw_log 取而非活跃上下文**——compaction 把上下文摘要掉之后,纪要照常生成,这正是原文日志存在的意义之一。
 
+### 9.1 想起条件(disclosure)
+
+**定位**:每条记忆「什么时候该被想起」的标签。它不是给人读的注释,是给检索与读取决策用的**触发条件**。
+
+**权威位置 = 入口(entry),不是节点**。同一节点可经不同入口进入,各入口可有不同条件:
+
+| 入口 | 存放列 | 说明 |
+|---|---|---|
+| 规范入口(`nodes.uri`) | `nodes.disclosure` | 节点自身的地址;必然存在 |
+| 别名入口(`aliases.alias_uri`) | `aliases.disclosure` | rename / relocate 留下的旧地址;`associate(new_uri)` 建的新入口 |
+| 联想边(`edges`) | `edges.disclosure` | **不是想起条件**,是「沿这条边扩散时的关联条件」;不参与下面的回退链 |
+
+**生效想起条件(effective disclosure)**:按 uri 解析时的唯一口径,全仓只有一个实现(`MemoryStore.effectiveDisclosure`):
+1. 该 uri 命中 `nodes.uri` → `nodes.disclosure`
+2. 否则该 uri 命中 `aliases.alias_uri` → `aliases.disclosure ?? 目标节点的 nodes.disclosure`
+3. 否则 → `null`
+
+> 第 1 步优先是**刻意的**:同一次解析里「内容是谁的」与「条件是谁的」必须一致(`resolveUri` 的优先级即此)。
+> 第 2 步的 `??` 也是刻意的:别名条件为 NULL = 「继承节点级」,**不是**「无条件」。要表达「这个入口永不主动想起」目前**没有机制**,不要用哨兵字符串蒙混。
+
+**写入路径(`when` 参数,工具面语义不变)**:
+
+| 工具 | 写入层 |
+|---|---|
+| `memorize({uri, when})` | `nodes.disclosure`(新建节点,无入口) |
+| `associate({new_uri, when})` | `aliases.disclosure`(新入口) |
+| `associate({related_uri, when})` | `edges.disclosure`(关联条件) |
+| `revise({uri, when})` | **按 uri 的结构层**:命中别名 → `aliases.disclosure`;否则 → `nodes.disclosure`(**不是**"回退链命中哪层写哪层"——那会跨入口污染共享的节点级条件) |
+| `relocate` | 旧地址转别名时**继承移动前的生效条件**;显式传 `when` 则覆盖 |
+| Web UI(`#/edit`) | 同上(按当前入口 uri 的结构层) |
+
+**检索参与方式**:`node_fts` 有独立的 `disclosure` 列(bm25 权重对齐 nocturne),检索按**节点级** `nodes.disclosure` 匹配;UI 列表页标注「节点级」,进详情页后升级为**入口级**(详情页知道你是从哪个 uri 进来的)。
+
+**回退/降级**:别名条件为 NULL → 继承节点级;别名悬空(target 已删) → 返回 `null` 且不抛错。`edges.disclosure` 为空时的行为**分两个消费面**(二者刻意不同):
+- **`retrieve` 工具的一跳扩散输出****回退**显示 `effectiveDisclosure(node.uri)`——那里的行是「这一跳为什么到这里」的说明,回退能让替换目标的条件继续可见。
+- **Web 节点页的「关联(边)」列表**(`node.js` 的 `edgeList`)**不回退**,空则整块不渲染——那里的行已经在同一个页面上显示了目标节点自己的入口条件,再回退会把**同一个值印两遍**,且会让「边有自己的条件」与「边没有条件」在视觉上无法区分。
+> ⚠️ 两个消费面的判据都是「**这个位置显示它,用户能不能获得新信息**」。MUST NOT 把其中一处的行为照搬到另一处。
+
 ## 10. 工具面（统一、重命名与收敛）
 
 **一套工具服务角色与作家**，不因内容域割裂。摒弃机械去后缀，采用“高阶认知动词 + 语义无冲突”命名；全面吸收 `batch_*` 批处理与冗余工具，将原系统 16–18 个工具槽位精简收敛为 **12 个顶级工具**（v5.5 定名：recall / retrieve / memorize / revise / forget / relocate / associate / trigger / consolidate / retrace / set_time / awaken）。
@@ -187,6 +228,7 @@ memory.db
 - **不做 MCP wrapper**:nocturne Python 服务退役后,外部消费者走 MemoryStore 纯库层;协议层等真实需求出现再单独成包。
 - **便捷写库/引导(v5.1)**:空库是新会话的**常态**(如同新 jsonl 无消息),不属缺陷。包提供低成本写入口:`seed()`(导入初始树/Boot 节点)、`remember/put` 双向(单节点写入无需预置 parent)。参考实现引导即可,不搞自动化"空库自检"。
 - **恢复与迁移(v5.1;v5.5 扩展快照)**:DB 文件损坏/丢失 = 冷启动重建 + 从 session jsonl 重建 raw_log 镜像(真源在 jsonl,§4 对账已说明);记忆库本体提供 `export()/import()` 的 **JSON 快照 = nodes + revisions + kv + aliases + edges + glossary**(v5.5 三类资产齐备;import 时引用不存在节点的 alias/edge/glossary 立即抛错并整体回滚;重建每个活节点 FTS)供迁移/备份/审计。不做与 session 无关的二次冗余。
+  > ⚠️ **已作废(2026-09-16)**:上一条的「冷启动重建」不再是唯一路径——schema **就地 v2→v3 迁移**已落地(见 §0 决策 3 的作废标记与 `plan/memory-web/23-迁移.md`);`export()/import()` 快照仍是**跨库搬运**与备份审计的通道,二者分工不变。
 - **审计留痕(v5.1;v5.5 补全列)**:不埋 token/耗时这类成本 metric——那不是记忆系统的职责。取 pi 每次 LLM 请求都带 usage 的**透明姿态**:记忆系统每次对外动作(写入/编辑/删除/召回/注入/autoretain 任务产出)都出一条 **append-only 结构化审计记录**(时间 + world_ts、事件类型、对象(node_id + 人可读 URI)、来源与模型、所在回合/任务、anchor、details)。v5.5 补全 `node_id`/`source`/`model`/`turn`/`task`/`anchor`/`details` 列——工具 recall/retrieve 各记一条 `recall` audit(query/URI、命中 node ids、scores/mode),注入只在 fresh 时记 `inject`,autoretain 成功/失败都记 `autoretain_task`。**只留痕,不参与系统语义**——不投入回滚/查询/注入回路,系统正确性不依赖它;下游可用它对账、复盘、解释"记忆发生了什么"。默认开、可关、不设观测面板。
 
 ## 13. Phase 计划(存储先行,autoretain 殿后)
@@ -201,7 +243,7 @@ memory.db
 
 ## 14. 已定决策清单
 
-1. 全面取代 nocturne 胶水与 Python 服务(对 pi 消费者);不迁移不兼容。
+1. 全面取代 nocturne 胶水与 Python 服务(对 pi 消费者);~~不迁移不兼容~~ ⚠️ **已作废(2026-09-16)**:**同产品旧库(schema v2)就地迁移**;不迁移的只是 nocturne 与其它产品的旧数据(冷启动重建仍适用)。
 2. 术语:context = 隔离单元(库),domain = 树根;per-project 一库(world 或角色档),`--memory-db` 可覆盖;非 per-session。
 2a. **多进程格局(作家与角色)**:同一 world project 下,**进程各一库**——主进程(GM/作家 agent)与角色子进程各有自己的 context(库边界 = 进程边界;session 自身已实现上下文隔离)。作家库记剧情大纲/伏笔/世界状态,角色库记主观记忆与自视角纪要(现网 elias 与全局 namespace 的分离已是此格局)。raw_log 各记各的 session;世界钟**各库自存**(memory_kv),包只提供读写 API,子进程如何跟随主进程推进由下游接线;两库不共享表,靠 world_ts 讲同一个时间故事。
 3. 树为脊,单节点单树,树根即 domain;TEMP 之外无特殊 domain。
@@ -223,7 +265,7 @@ memory.db
 19. **raw_log 无限增长不裁剪(v5.1;v5.5 修订)**:append-only 永久保留,不做 retention/归档/容量裁剪;成本极低,收益 = 原文永久可得。唯一"删"= 切换分支对账,且 v5.5 起为 **active 标记(不物理删除)**,曾入库行(含 world/wall 时间戳)永久可审计。
 20. **裁剪点只在 node_revisions(v5.1;v5.5 落地)**:修订版内容可重建,`memory.revisions.maxVersionsPerNode`(默认无限,正整数)每次归档后剪最旧超额版本,删除前归档也应用同一策略,保证至少保留一版可恢复正文。两表分工从此清晰。
 21. **写库接口与空库语义(v5.1)**:空库 = 新会话常态;包提供 seed()/put 低门槛写入口,不做自动化空库自检。
-22. **恢复与迁移(v5.1)**:损坏/丢失 → 冷启动重建 + jsonl 重建 raw_log;`export()/import()` JSON 快照供迁移/备份/审计。
+22. **恢复与迁移(v5.1)**:损坏/丢失 → 冷启动重建 + jsonl 重建 raw_log;`export()/import()` JSON 快照供迁移/备份/审计。⚠️ **已作废(2026-09-16)** 的部分:同产品旧库(schema v2)不再需要冷启动重建——**就地迁移**(见决策 3 与 34)。
 23. **审计留痕(v5.1;v5.5 补全)**:不是 usage/token 计量;而是每次写入/编辑/删除/召回/注入/autoretain 产出 append-only 结构化审计流(事件 + 对象(node_id + URI) + 来源/模型 + 时间/world_ts + 回合/任务 + anchor + details),供下游透明审计;除对外暴露外不参与系统语义。
 24. **重要性单列(v5.3,2026-09-11;v5.4 反转极性)**:`priority` 与 `importance` 合并为**一列 `importance`**,口径 **10=最重要 / 5=普通 / 0=边角料(数值越大越重要)**。工具参数名、schema 列名、召回权重(`W_IMPORTANCE` 0.15)、星级与诊断阈值全链路同名同向;§9 权重表里的"priority 0.15"即此列。落地见 `memory-system-audit.md` #10。
 25. **删除语义(v5.4)**:见决策 10 —— 真删指的是不留僵尸入口,不是不留数据;node_revisions 是唯一找回路径,`forget` 因此不再级联删修订。
@@ -235,6 +277,7 @@ memory.db
 31. **访问追踪(v5.5)**:`last_accessed_at` 仅由角色主动 recall/retrieve 更新;自动注入、slot、MEM:// 视图、/memories 浏览不 touch;forgotten/diagnostic 沉睡基准 = `last_accessed_at ?? created_at`。
 32. **keyword 注入档(v5.5)**:`memory.recall.keywordMinScore` 默认 0.12、要求 kw>0;vector 模式仍 minScore 0.35。显式 retrieve 两种模式 minScore:0,但 keyword 模式同样要求真实命中。
 33. **preset memory 声明 + 生命周期(v5.5)**:`PromptPreset.memory.dbPath` 接入解析链(`PI_MEMORY_DB > settings.memory.dbPath > activePreset.memory.dbPath > <cwd>/.pi/memory.db`);`_setupMemoryModule` 每次 reload 先 dispose 旧 module 再按当前配置重建;preset 切换解析路径变化时 `requestReload()` 干净重绑;`/memories` 只用 AgentSession 已解析路径(`ctx.getMemoryDbPath()`)。
+34. **想起条件入口化(v5.6)**:disclosure 的权威位置从「节点」迁到「入口」(`aliases.disclosure`);生效口径由唯一函数 `effectiveDisclosure(uri)` 定义(`nodes.uri` 优先,别名次之,`??` 继承节点级);`edges.disclosure` 是**关联条件**(pi-rp 扩展,**非** nocturne 对应物),不进回退链;检索按节点级匹配,UI 列表页标注「节点级」、详情页升级为入口级。
 
 ## 15. 本轮评审补充决策(2026-09-09,ask 批次)
 

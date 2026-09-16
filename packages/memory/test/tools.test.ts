@@ -3,7 +3,7 @@ import { resolveMemoryDbPath } from "../src/config.ts";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
 import { createSchema } from "../src/schema.ts";
 import { MemoryStore } from "../src/store.ts";
-import { createMemoryTools, getAwakenUris } from "../src/tools.ts";
+import { createMemoryTools, getAwakenUris, MAX_DIFF_BYTES, MAX_DIFF_ITEMS } from "../src/tools.ts";
 
 let db: MemoryDatabase;
 let store: MemoryStore;
@@ -518,5 +518,65 @@ describe("stub promotion through tools (§5.3)", () => {
 		expect(node.is_stub).toBe(0);
 		expect(node.content).toBe("被修订的身份");
 		expect(node.source).toBe("manual");
+	});
+});
+
+describe("revise details: authoritative diffs (§10.1 T-A / §10.2 T-F)", () => {
+	it("returns the pre-edit body as a diff the renderer can draw (T-A)", async () => {
+		await run("memorize", { uri: "core://r1", content: "甲\n乙\n丙" });
+		const r = await run("revise", { uri: "core://r1", old_text: "乙", new_text: "乙乙" });
+		const diffs = r.details.diffs as Array<{ uri: string; diff: string; firstChangedLine?: number }>;
+		expect(diffs).toHaveLength(1);
+		expect(diffs[0].uri).toBe("core://r1");
+		expect(diffs[0].diff).toContain("+2 乙乙");
+		expect(diffs[0].diff).toContain("-2 乙");
+		expect(diffs[0].firstChangedLine).toBe(2);
+		// `before` carries the same uuids in the same order.
+		expect(r.details.before).toEqual([{ uri: "core://r1", content: "甲\n乙\n丙" }]);
+	});
+
+	it("omits diffs for a metadata-only edit (no body touched)", async () => {
+		await run("memorize", { uri: "core://r2", content: "甲\n乙" });
+		const r = await run("revise", { uri: "core://r2", importance: 9 });
+		expect(r.details.diffs).toEqual([]);
+		expect(r.details.before).toEqual([]);
+	});
+
+	it("folds the truncation flags in only when a cap actually bites (T-F)", async () => {
+		await run("memorize", { uri: "core://big", content: "起点" });
+		const big = await run("revise", { uri: "core://big", append: "x".repeat(MAX_DIFF_BYTES + 1) });
+		expect(big.details.truncated).toBe(true);
+		// Item cap not reached: the key stays absent (absent ⇒ false).
+		expect(big.details.diffsTruncated).toBeUndefined();
+		expect((big.details.diffs as Array<{ diff: string }>)[0].diff).toContain("（已截断）");
+
+		await run("memorize", { uri: "core://small", content: "起点\n中点" });
+		const small = await run("revise", { uri: "core://small", old_text: "起点", new_text: "终点" });
+		expect(small.details.truncated).toBeUndefined();
+		expect(small.details.diffsTruncated).toBeUndefined();
+
+		// Sanity floor so a fat-fingered constant cannot silently green this.
+		expect(MAX_DIFF_BYTES).toBeGreaterThanOrEqual(1024);
+		expect(MAX_DIFF_ITEMS).toBeGreaterThanOrEqual(1);
+	});
+
+	it("keeps one diff segment per mod, in results order, for a batch", async () => {
+		await run("memorize", { uri: "core://b1", content: "一\n二" });
+		await run("memorize", { uri: "core://b2", content: "三\n四" });
+		const r = await run("revise", {
+			batch: [
+				{ uri: "core://b1", old_text: "二", new_text: "贰" },
+				{ uri: "core://b2", importance: 4 },
+				{ uri: "core://b2", append: "五" },
+			],
+		});
+		const diffs = r.details.diffs as Array<{ uri: string }>;
+		expect(diffs.map((d) => d.uri)).toEqual(["core://b1", "core://b2"]);
+	});
+
+	it("never emits a diff for a write-back no-op", async () => {
+		await run("memorize", { uri: "core://noop", content: "甲\n乙" });
+		const r = await run("revise", { uri: "core://noop", line: 2, line_content: "乙" });
+		expect(r.details.diffs).toEqual([]);
 	});
 });

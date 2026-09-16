@@ -74,6 +74,8 @@ export interface MemoryModuleHost {
 		label: string;
 		description: string;
 		promptSnippet?: string;
+		/** Extra "Guidelines:" lines (forwarded to ToolDefinition.promptGuidelines). */
+		promptGuidelines?: string[];
 		parameters: unknown;
 		execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>;
 	}): void;
@@ -181,8 +183,6 @@ function md5(text: string): string {
 	return createHash("md5").update(text, "utf-8").digest("hex");
 }
 
-// ── Injection format (port of nocturne-memory-recall.ts 685-698) ────────────
-
 export function buildMemoriesBlock(items: RecalledItem[]): string {
 	const lines: string[] = ["<memories>"];
 	items.forEach((item, i) => {
@@ -191,7 +191,13 @@ export function buildMemoriesBlock(items: RecalledItem[]): string {
 		if (item.disclosure) lines.push(`   想起条件: ${item.disclosure}`);
 		lines.push(`   摘要: ${item.summary}`);
 	});
-	lines.push("\n如果你想起了什么，主动用 recall 读取原文试试吧。", "</memories>");
+	// Second home for the disclosure self-trigger rule (the primary home is the
+	// tools' `promptGuidelines` — contract §6.6 puts it on both channels so the
+	// model still sees it if either one is dropped from the prompt).
+	lines.push(
+		"\n如果你想起了什么，主动用 recall 读取原文试试吧。若某条记忆的「想起条件」被当前情境触发，而你还不知道它的内容，MUST 先读取它再作答。",
+		"</memories>",
+	);
 	return lines.join("\n");
 }
 
@@ -556,6 +562,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 					label: tool.label,
 					description: tool.description,
 					promptSnippet: tool.description.split("\n")[0],
+					promptGuidelines: tool.promptGuidelines,
 					parameters: tool.parameters,
 					execute: async (toolCallId, params) => tool.execute(toolCallId, params),
 				});

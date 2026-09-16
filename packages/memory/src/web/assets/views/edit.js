@@ -683,7 +683,15 @@ async function mountEditor(el, params, ctx) {
 		});
 	}
 
-	/** 想起条件 / 节点世界时间：空输入 → **显式 null**（清除），不是空串（§4.4）。 */
+	/**
+	 * 想起条件 / 节点世界时间：空输入 → **显式 null**（清除），不是空串（§4.4）。
+	 *
+	 * ⭐ `uri` MUST be `state.uri`（哈希进来的地址），**不是** `node.uri`（规范地址）。
+	 *    服务端按 `resolveEntry(uri)` 的结构层写入：命中别名 → `aliases.disclosure`，
+	 *    否则 → `nodes.disclosure`。发 `node.uri` 会让「从别名入口编辑」静默改到规范入口，
+	 *    从而覆盖所有入口共享的那一列（契约 T4+T5 组合）。
+	 *    ⚠️ 同源要求：表单初值（`node.disclosure`）也来自 `load()` 的 `state.uri` ⇒ 读写同作用域。
+	 */
 	async function runSaveMeta() {
 		const node = nodeOf(state.dto);
 		if (!node) return;
@@ -692,7 +700,7 @@ async function mountEditor(el, params, ctx) {
 		await withBusy(async () => {
 			try {
 				const res = await reviseNode({
-					uri: node.uri,
+					uri: state.uri,
 					disclosure: disclosure === "" ? null : disclosure,
 					world_ts: world_ts === "" ? null : world_ts,
 				});
@@ -1027,6 +1035,15 @@ async function mountEditor(el, params, ctx) {
 				h("code", { text: node.uri }),
 				" ",
 				h("span", { class: "mw-muted", text: `当前 v${current === undefined ? 0 : current}` }),
+				// ⭐ 从别名入口打开时（`state.uri !== node.uri`），页头 MUST 显示**入口**：
+				//    否则用户以为在编辑节点本体，实际改的是别名层的条件（D5 §6.4）。
+				state.uri && state.uri !== node.uri
+					? h("span", {
+							class: "mw-chip",
+							title: "你从旧地址进来；想起条件会写到该入口，不动规范入口",
+							text: `入口：${state.uri}`,
+						})
+					: null,
 				isStub ? h("span", { class: "mw-chip", text: "占位节点（尚无正文）" }) : null,
 				node.shadowed === true ? h("span", { class: "mw-chip", text: "已遮蔽（原分支已回滚）" }) : null,
 			]),
@@ -1076,9 +1093,12 @@ async function mountEditor(el, params, ctx) {
 				h("dt", { text: "parent_uri" }),
 				h("dd", { text: node.parent_uri === null ? "（根节点）" : node.parent_uri }),
 			]),
+			// ⭐ entryHint：说明这次编辑落在**哪个入口**上。规范入口与别名入口的写入层不同
+			//    （`nodes.disclosure` vs `aliases.disclosure`），`state.uri` 才是真相。
+			h("p", { class: "mw-muted", text: entryHint(node) }),
 			h("form", { dataset: { form: "meta" } }, [
 				h("label", {}, [
-					"想起条件 disclosure（留空 = 清除）",
+					`想起条件 disclosure（当前入口 ${state.uri}；留空 = 清除该入口的条件）`,
 					h("input", {
 						type: "text",
 						dataset: { field: "disclosure" },
@@ -1311,6 +1331,25 @@ async function mountEditor(el, params, ctx) {
 				}),
 			]),
 		]);
+	}
+
+	/**
+	 * ⭐ 这次编辑写的是哪个入口的条件（D5 §3-M4-3）。
+	 *
+	 * `state.uri` 是哈希进来的地址；`node.uri` 是它解析到的规范地址。两者不同 = 从别名入口进来。
+	 * `dto.aliases[].dead === true` 时该入口被同名节点遮蔽，条件不会生效 —— **必须说出来**，
+	 * 否则用户设了条件、刷新、发现什么都没变（契约 T5 的形态，这次在 UI 侧）。
+	 */
+	function entryHint(node) {
+		const aliases = Array.isArray(state.dto && state.dto.aliases) ? state.dto.aliases : [];
+		const entry = aliases.find((a) => a && a.alias_uri === state.uri);
+		if (entry) {
+			return entry.dead === true
+				? `你正在编辑入口 ${state.uri}。此入口被同名节点遮蔽，条件不会生效。`
+				: `你正在编辑入口 ${state.uri} 的条件。`;
+		}
+		if (state.uri && node && state.uri !== node.uri) return `你正在编辑入口 ${state.uri} 的条件。`;
+		return `你正在编辑规范入口 ${node ? node.uri : state.uri} 的条件。`;
 	}
 }
 

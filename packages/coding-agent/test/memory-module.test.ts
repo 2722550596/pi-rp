@@ -64,8 +64,8 @@ describe("memory module ↔ AgentSession integration", () => {
 			expect(toolNames).toContain(name);
 		}
 
-		// §16 S1: the synthetic host spreads MEMORY_TOOL_RENDERERS by name, so the
-		// TUI reaches the streaming call view through the real registry.
+		// §16 S1: the synthetic host spreads the store-bound memory renderers by
+		// name, so the TUI reaches the streaming call view through the registry.
 		for (const name of ["memorize", "revise"]) {
 			const definition = harness.session.getToolDefinition(name);
 			expect(definition?.renderCall).toBeTypeOf("function");
@@ -73,6 +73,20 @@ describe("memory module ↔ AgentSession integration", () => {
 		}
 		// Unmapped memory tools keep the graceful bare-name fallback.
 		expect(harness.session.getToolDefinition("recall")?.renderCall).toBeUndefined();
+
+		// Hop ⑤ (cross-package): the synthetic host's ToolDefinition literal must
+		// carry the memory package's guidelines out to the registry. Asserting on
+		// this accessor — not on a repo grep — is the only way to catch a dropped
+		// key: agent-session.ts already contains six `promptGuidelines` occurrences.
+		for (const name of ["recall", "retrieve"]) {
+			expect(harness.session.getToolDefinition(name)?.promptGuidelines?.join(" ")).toContain("想起条件");
+		}
+		expect(harness.session.getToolDefinition("memorize")?.promptGuidelines).toBeUndefined();
+		// Strongest form of the same gate (contract T22 §10 T9 ④): the compiler's
+		// collected guideline list (what feeds the "Guidelines:" block) must
+		// carry it. `lastCompiledSystemPrompt` is "" here — preset mode with
+		// async slots deliberately skips the static compile.
+		expect(harness.session.systemPromptOptions.promptGuidelines?.join(" ")).toContain("想起条件");
 	});
 
 	it("§16 S1: the session's memorize definition streams args into the TUI call slot", async () => {
@@ -112,7 +126,7 @@ describe("memory module ↔ AgentSession integration", () => {
 		expect(() => component.render(60)).not.toThrow();
 	});
 
-	it("§16 C2: export HTML shows the memorize body without a JSON dump or OSC-8", async () => {
+	it("§16 C2: export HTML shows the memorize body in the call slot, not repeated in the result", async () => {
 		initTheme("dark");
 		const { harness } = await createMemoryHarness();
 		// Drive the real registered definition through the real export renderer.
@@ -136,14 +150,38 @@ describe("memory module ↔ AgentSession integration", () => {
 		// Not a JSON dump (the §5.4 whitespace degradation).
 		expect(callHtml).not.toContain("JSON");
 
+		// P1-3: memorize ≈ write — the call slot owns uri + body, so the result
+		// slot must NOT echo them again (that was the uri-twice duplication).
 		const resultHtml = renderer.renderResult(
 			"mem-html",
 			"memorize",
 			[{ type: "text", text: "已记下：core://x" }],
-			{},
+			{ node_id: "n1", uri: "core://x", ok: true },
 			false,
 		);
-		expect(resultHtml?.expanded).toContain("已记下：core://x");
+		expect(resultHtml?.expanded ?? "").not.toContain("已记下：core://x");
+	});
+
+	it("§10.4: export HTML keeps the revise diff, which arrives only via details", async () => {
+		initTheme("dark");
+		const { harness } = await createMemoryHarness();
+		const renderer = createToolHtmlRenderer({
+			getToolDefinition: (name) => harness.session.getToolDefinition(name),
+			theme,
+			cwd: process.cwd(),
+			width: 80,
+		});
+		// The export context is argsComplete:false, so no live preview is taken;
+		// the authoritative diff must still reach the HTML through `details`.
+		const html = renderer.renderResult(
+			"rev-html",
+			"revise",
+			[{ type: "text", text: "已修订：core://r1" }],
+			{ failed: 0, diffs: [{ uri: "core://r1", diff: " 1 甲\n-2 乙\n+2 乙乙\n 3 丙" }] },
+			false,
+		);
+		expect(html?.expanded).toContain("+2 乙乙");
+		expect(html?.expanded).toContain("-2 乙");
 	});
 
 	it("memorize through the real tool writes provenance into the store", async () => {

@@ -1,0 +1,12 @@
+const { initTheme, theme } = await import("/home/yoshix7ti/projects/pi-rp/packages/coding-agent/src/modes/interactive/theme/theme.ts");
+initTheme("dark");
+const { renderDiff } = await import("/home/yoshix7ti/projects/pi-rp/packages/coding-agent/src/modes/interactive/components/diff.ts");
+const { generateDiffString } = await import("/home/yoshix7ti/projects/pi-rp/packages/coding-agent/src/core/tools/edit-diff.ts");
+const { diff } = generateDiffString("甲\n乙", "甲\n乙乙");
+console.log("diff=", JSON.stringify(diff));
+const colored = renderDiff(diff);
+console.log("ANSI=", JSON.stringify(colored));
+console.log("hasRemoved204:", colored.includes("\u001b[38;2;204;102;102m-2 乙\u001b[39m"));
+console.log("hasAdded181:", colored.includes("\u001b[38;2;181;189;104m+2 乙乙\u001b[39m"));
+console.log("grayRemoved:", colored.includes("\u001b[38;2;128;128;128m-2 乙"));
+console.log("contextFG:", JSON.stringify(theme.fg("toolDiffContext","-2 乙")));

@@ -19,6 +19,7 @@ export {
 	runAutoretainTask,
 } from "./autoretain.ts";
 export { type MemorySettings, type PresetMemoryDeclaration, resolveMemoryDbPath } from "./config.ts";
+export { generateDiffString } from "./diff.ts";
 export { type MemoryDatabase, type MemoryStatement, openDatabase } from "./driver.ts";
 export {
 	chunkText,
@@ -82,7 +83,15 @@ export {
 	W_KEYWORD,
 	W_VECTOR,
 } from "./recall.ts";
-export { createSchema, SCHEMA_VERSION, SCHEMA_VERSION_KEY } from "./schema.ts";
+export {
+	createSchema,
+	FTS_REBUILD_KEY,
+	MIGRATABLE_FROM,
+	NODE_FTS_DDL,
+	SCHEMA_VERSION,
+	SCHEMA_VERSION_KEY,
+	type SchemaOpenResult,
+} from "./schema.ts";
 export {
 	createMemorySlots,
 	type MemorySlotDefinition,
@@ -112,6 +121,7 @@ export {
 export { tokenizeForMatch, tokenizeForSearch } from "./tokenize.ts";
 export {
 	AWAKEN_URIS_KEY,
+	computeRevisedContent,
 	createMemoryTools,
 	getAwakenUris,
 	type MemoryToolContext,

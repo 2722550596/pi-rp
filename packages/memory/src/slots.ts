@@ -32,10 +32,10 @@ export interface MemorySlotsOptions {
 	isVisible?: VisibilityPredicate;
 }
 
-function snippet(node: { uri: string; content: string; disclosure?: string | null }, max = 80): string {
+function snippet(store: MemoryStore, node: { uri: string; content: string }, max = 80): string {
 	const oneLine = node.content.replace(/\s+/g, " ").trim();
-	const disc = "disclosure" in node && node.disclosure ? ` (${node.disclosure})` : "";
-	return `${node.uri}${disc}: ${oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine}`;
+	const disc = store.effectiveDisclosure(node.uri);
+	return `${node.uri}${disc ? ` (${disc})` : ""}: ${oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine}`;
 }
 
 /**
@@ -63,15 +63,20 @@ export function createMemorySlots(store: MemoryStore, opts: MemorySlotsOptions =
 					const rel = formatRelativeWorldTime(node.world_ts, worldTime);
 					lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
 				}
-				if (node.disclosure) {
-					lines.push(`> 什么时候想起：${node.disclosure}\n`);
+				// The awaken entry is what the user registered — it may be an alias,
+				// and that entry's own condition is what belongs here (not the
+				// resolved node's, which would show another entry's disclosure).
+				const disc = store.effectiveDisclosure(uri);
+				if (disc) {
+					lines.push(`> 什么时候想起：${disc}\n`);
 				}
 				lines.push(node.content);
 				const childLines: string[] = [];
 				for (const child of store.children(node.node_id)) {
 					if (child.is_stub || !visible(child)) continue;
 					if (fullUris.has(child.uri)) continue; // 已作为完整 awaken 块渲染的 URI 不再作为子 snippet 重复显示
-					const disc = child.disclosure ? ` (${child.disclosure})` : "";
+					const childDisc = store.effectiveDisclosure(child.uri);
+					const disc = childDisc ? ` (${childDisc})` : "";
 					const rawContent = (child.content || "").replace(/\s+/g, " ").trim();
 					const snip = rawContent.length > 100 ? `${rawContent.slice(0, 100)}...` : rawContent;
 					const snipStr = snip ? ` — ${snip}` : "";
@@ -106,10 +111,10 @@ export function createMemorySlots(store: MemoryStore, opts: MemorySlotsOptions =
 				// rolled-back variants, §3.2).
 				const rows = upto > 0 ? store.listRaw(Math.max(1, upto - rawCount + 1), upto, { activeOnly: true }) : [];
 				const rawLines = rows.map((r) => `[${r.raw_id}] ${r.role}: ${r.text.slice(0, 200)}`);
-				const snippetLines = nodes.slice(0, options.snippetCount ?? 10).map((x) => snippet(x));
+				const snippetLines = nodes.slice(0, options.snippetCount ?? 10).map((x) => snippet(store, x));
 				return [...rawLines, ...snippetLines].join("\n");
 			}
-			return nodes.map((x) => snippet(x)).join("\n");
+			return nodes.map((x) => snippet(store, x)).join("\n");
 		},
 	};
 
@@ -121,7 +126,7 @@ export function createMemorySlots(store: MemoryStore, opts: MemorySlotsOptions =
 			const lines: string[] = [];
 			for (const domain of store.listDomains()) {
 				const roots = store.listNodes({ domain }).filter((x) => !x.is_stub && x.parent_id === null && visible(x));
-				for (const root of roots) lines.push(snippet(root));
+				for (const root of roots) lines.push(snippet(store, root));
 			}
 			return lines.join("\n");
 		},

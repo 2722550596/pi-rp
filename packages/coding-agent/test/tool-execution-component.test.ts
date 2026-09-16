@@ -1,13 +1,15 @@
 import { join, resolve } from "node:path";
+import { createSchema, generateDiffString, MemoryStore, openDatabase } from "@earendil-works/pi-memory";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
-import { MEMORY_TOOL_RENDERERS } from "../src/core/tools/memory-renderers.ts";
+import { createMemoryToolRenderers } from "../src/core/tools/memory-renderers.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { renderDiff } from "../src/modes/interactive/components/diff.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -25,9 +27,16 @@ function createBaseToolDefinition(name = "custom_tool"): ToolDefinition {
 	};
 }
 
-/** Mirrors agent-session's synthetic host: renderers spread over a full definition. */
+/** Bound renderers for the memory describe block, built in its beforeAll. */
+let memoryRenderers: Record<string, unknown>;
+let memoryStore: MemoryStore;
+
+/**
+ * Mirrors agent-session's synthetic host: renderers spread over a full
+ * definition, bound to the live store the renderers were built with.
+ */
 function createMemoryToolDefinition(name: "memorize" | "revise"): ToolDefinition {
-	return { ...createBaseToolDefinition(name), ...MEMORY_TOOL_RENDERERS[name] };
+	return { ...createBaseToolDefinition(name), ...(memoryRenderers[name] as object) };
 }
 
 function createFakeTui(): TUI {
@@ -553,8 +562,12 @@ describe("ToolExecutionComponent parity", () => {
 });
 
 describe("memory tool renderers (§16)", () => {
-	beforeAll(() => {
+	beforeAll(async () => {
 		initTheme("dark");
+		const db = await openDatabase(":memory:");
+		createSchema(db);
+		memoryStore = new MemoryStore(db);
+		memoryRenderers = createMemoryToolRenderers(memoryStore) as Record<string, unknown>;
 	});
 
 	test("memorize renders streaming args in the call slot (§16 S1)", () => {
@@ -604,7 +617,7 @@ describe("memory tool renderers (§16)", () => {
 		expect(() => component.render(120)).not.toThrow();
 	});
 
-	test("memory renderResult echoes the confirmation text (§16 J4)", () => {
+	test("memorize result de-duplicates the uri shown by the call slot (§10.1 T-H)", () => {
 		const component = new ToolExecutionComponent(
 			"memorize",
 			"mem-3",
@@ -614,11 +627,270 @@ describe("memory tool renderers (§16)", () => {
 			createFakeTui(),
 			process.cwd(),
 		);
+		component.updateArgs({ uri: "core://r1", content: "甲" });
 		component.updateResult(
-			{ content: [{ type: "text", text: "已记下：core://x" }], details: {}, isError: false },
+			{
+				content: [{ type: "text", text: "已记下：core://r1" }],
+				details: { node_id: "n1", uri: "core://r1", ok: true },
+				isError: false,
+			},
 			false,
 		);
-		expect(stripAnsi(component.render(120).join("\n"))).toContain("已记下：core://x");
+		// The renderer must return a component, never undefined (that crashes render()).
+		expect(() => component.render(120)).not.toThrow();
+		const out = stripAnsi(component.render(120).join("\n"));
+		expect(out.split("core://r1").length - 1).toBe(1);
+	});
+
+	test("memorize still renders the error text on failure", () => {
+		const component = new ToolExecutionComponent(
+			"memorize",
+			"mem-err",
+			{},
+			{},
+			createMemoryToolDefinition("memorize"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{ content: [{ type: "text", text: "已存在：core://x" }], details: {}, isError: true },
+			false,
+		);
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("已存在：core://x");
+	});
+
+	test("revise result renders the authoritative diff from details (§10.1 T-B)", () => {
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-b",
+			{ uri: "core://r1" },
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "已修订：core://r1" }],
+				details: { failed: 0, diffs: [{ uri: "core://r1", diff: " 1 甲\n-2 乙\n+2 乙乙\n 3 丙" }] },
+				isError: false,
+			},
+			false,
+		);
+		const out = stripAnsi(component.render(120).join("\n"));
+		expect(out).toContain("+2 乙乙");
+		expect(out).toContain("-2 乙");
+		expect(out).toContain("已修订：core://r1");
+	});
+
+	test("revise keeps the confirmation line when there is no diff (§10.1 T-I)", () => {
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-i",
+			{ uri: "core://r1" },
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		// A metadata-only revise: legal input, no diffs key at all.
+		component.updateResult(
+			{ content: [{ type: "text", text: "已修订：core://r1" }], details: { failed: 0 }, isError: false },
+			false,
+		);
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("已修订：core://r1");
+	});
+
+	test("revise survives a hook that replaces details wholesale (§12 U6-6)", () => {
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-hook",
+			{ uri: "core://r1" },
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "已修订：core://r1" }],
+				details: { diffs: "not-an-array" },
+				isError: false,
+			},
+			false,
+		);
+		expect(() => component.render(120)).not.toThrow();
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("已修订：core://r1");
+	});
+
+	test("revise diffs land in BOTH slots, never suppressed by the preview (§10.1 T-D)", () => {
+		const DIFF = " 1 甲\n-2 乙\n+2 乙乙";
+		// Seed the store so path B has a before-body to preview.
+		const node = memoryStore.put({
+			uri: "core://p1",
+			content: "甲\n乙",
+			parent_uri: null,
+			disclosure: null,
+			importance: 5,
+			source: "manual",
+			model: null,
+			anchor_entry_id: null,
+			anchor_session_id: null,
+			world_ts: null,
+		});
+		expect(node.uri).toBe("core://p1");
+
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-p1",
+			{ uri: "core://p1", old_text: "乙", new_text: "乙乙" },
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.setArgsComplete(); // call slot computes the preview
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "已修订：core://p1" }],
+				details: { diffs: [{ uri: "core://p1", diff: DIFF }] },
+				isError: false,
+			},
+			false,
+		);
+		const out = stripAnsi(component.render(120).join("\n"));
+		// Preview (call slot) + authoritative (result slot) = 2 each. A de-dup
+		// filter or a missing wire-up both drop this to 1.
+		expect(out.split("-2 乙").length - 1).toBe(2);
+		expect(out.split("+2 乙乙").length - 1).toBe(2);
+	});
+
+	test("revise call previews the pre-edit body once args are complete (§10.1 T-C)", () => {
+		memoryStore.put({
+			uri: "core://p2",
+			content: "甲\n乙\n丙",
+			parent_uri: null,
+			disclosure: null,
+			importance: 5,
+			source: "manual",
+			model: null,
+			anchor_entry_id: null,
+			anchor_session_id: null,
+			world_ts: null,
+		});
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-p2",
+			{},
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateArgs({ uri: "core://p2", old_text: "乙", new_text: "乙乙" });
+		const before = stripAnsi(component.render(120).join("\n"));
+		expect(before).toContain("替换「乙」->「乙乙」");
+		expect(before).not.toContain("+2 乙乙");
+
+		component.setArgsComplete();
+		const after = stripAnsi(component.render(120).join("\n"));
+		expect(after).toContain("-2 乙");
+		expect(after).toContain("+2 乙乙");
+	});
+
+	test("the call preview re-reads when only the uri changes", () => {
+		for (const [uri, content] of [
+			["core://fp1", "一\n二\n三"],
+			["core://fp2", "壹\n贰\n叁"],
+		] as const) {
+			memoryStore.put({
+				uri,
+				content,
+				parent_uri: null,
+				disclosure: null,
+				importance: 5,
+				source: "manual",
+				model: null,
+				anchor_entry_id: null,
+				anchor_session_id: null,
+				world_ts: null,
+			});
+		}
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-fp",
+			{},
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		// Same body edit, different node: a fingerprint that ignored the uri would
+		// keep the first node's diff on screen.
+		component.updateArgs({ uri: "core://fp1", line: 2, line_content: "二改" });
+		component.setArgsComplete();
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("-2 二");
+
+		component.updateArgs({ uri: "core://fp2", line: 2, line_content: "二改" });
+		const out = stripAnsi(component.render(120).join("\n"));
+		expect(out).toContain("-2 贰");
+		expect(out).not.toContain("-2 二 ");
+	});
+
+	test("argsComplete:false still renders the authoritative diff (§10.4 export path)", () => {
+		// The HTML export renders with argsComplete:false (tool-renderer.ts:93):
+		// the live preview is suppressed, but `details` must still carry the diff.
+		memoryStore.put({
+			uri: "core://p3",
+			content: "甲\n乙\n丙",
+			parent_uri: null,
+			disclosure: null,
+			importance: 5,
+			source: "manual",
+			model: null,
+			anchor_entry_id: null,
+			anchor_session_id: null,
+			world_ts: null,
+		});
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-p3",
+			{ uri: "core://p3", old_text: "乙", new_text: "乙乙" },
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		// No setArgsComplete(): args stay "in flight", as in an export.
+		expect(stripAnsi(component.render(120).join("\n"))).not.toContain("+2 乙乙");
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "已修订：core://p3" }],
+				details: { diffs: [{ uri: "core://p3", diff: " 1 甲\n-2 乙\n+2 乙乙\n 3 丙" }] },
+				isError: false,
+			},
+			false,
+		);
+		const out = stripAnsi(component.render(120).join("\n"));
+		expect(out).toContain("-2 乙");
+		expect(out).toContain("+2 乙乙");
+	});
+
+	test('revise call renders when:"" as a clear, not an empty condition (§10.1 T-G)', () => {
+		const component = new ToolExecutionComponent(
+			"revise",
+			"rev-when",
+			{},
+			{},
+			createMemoryToolDefinition("revise"),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateArgs({ uri: "core://r1", when: "" });
+		component.setArgsComplete();
+		const out = stripAnsi(component.render(120).join("\n"));
+		expect(out).toContain("清除");
+		expect(out).not.toContain("「」");
 	});
 
 	test("revise call summarises a batch, and never throws on a mod with no uri (§16 F6)", () => {
@@ -678,6 +950,15 @@ describe("memory tool renderers (§16)", () => {
 	});
 
 	test("memory renderers are injected for exactly the §16 tool names", () => {
-		expect(Object.keys(MEMORY_TOOL_RENDERERS).sort()).toEqual(["memorize", "revise"]);
+		expect(Object.keys(memoryRenderers).sort()).toEqual(["memorize", "revise"]);
+	});
+
+	test("memory diffs never degrade to grey context lines (§10.2 T-E)", () => {
+		const { diff } = generateDiffString("甲\n乙", "甲\n乙乙");
+		const colored = renderDiff(diff);
+		// A hand-built "-乙\n+乙乙" would land in grey context: no line-number slot.
+		expect(colored).toContain("\u001b[38;2;204;102;102m-2 乙\u001b[39m");
+		expect(colored).toContain("\u001b[38;2;181;189;104m+2 乙乙\u001b[39m");
+		expect(colored).not.toContain("\u001b[38;2;128;128;128m-2 乙");
 	});
 });

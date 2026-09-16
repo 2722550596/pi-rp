@@ -7,8 +7,11 @@
  *   1. **Probing must never write.** A probe opens the file `readOnly`, reads
  *      one `memory_kv` row, closes. It MUST NOT go through `openMemoryStore`
  *      (which would run `createSchema` and pour the memory schema into whatever
- *      SQLite file the user picked — score 1 for every wrong path). This is the
- *      only admission gate a path ever passes.
+ *      SQLite file the user picked — score 1 for every wrong path). Probing
+ *      stays read-only even for an in-place-migratable version (v2): the
+ *      upgrade happens on the WRITE-open path (`openMemoryStore` →
+ *      `createSchema`), never here. This is the only admission gate a path
+ *      ever passes.
  *   2. **Read-only opens must never wedge the process.** `DatabaseSync` is
  *      synchronous, so a FIFO would block the event loop forever. The guard for
  *      that lives inside `openDatabaseReadonly` (one sinking point for all
@@ -22,7 +25,7 @@
 import { type Dirent, readdirSync, type Stats, statSync } from "node:fs";
 import path from "node:path";
 import { type MemoryDatabase, openDatabaseReadonly, ReadonlyOpenError } from "../driver.ts";
-import { SCHEMA_VERSION } from "../schema.ts";
+import { MIGRATABLE_FROM, SCHEMA_VERSION } from "../schema.ts";
 
 /** The result of probing a candidate path (§7.1, frozen in the contract §8.1). */
 export type ProbeOutcome =
@@ -186,12 +189,15 @@ export async function probeMemoryDb(candidate: string): Promise<ProbeOutcome> {
 				detail: `不是记忆库（memory_kv 里没有 schema_version 行）：${candidate}`,
 			};
 		}
-		// ── ④ Version comparison: same predicate as `createSchema` (stored !== SCHEMA_VERSION).
-		if (stored !== SCHEMA_VERSION) {
+		// ── ④ Version comparison: same predicate as `createSchema` — only a
+		// version with no migrator is refused. An in-place-migratable version
+		// (v2) is admitted; the write-open path upgrades it. Probing stays
+		// READ-ONLY either way: migration never happens here.
+		if (stored !== SCHEMA_VERSION && !MIGRATABLE_FROM.includes(stored)) {
 			return {
 				ok: false,
 				reason: "incompatible",
-				detail: `记忆库 schema v${stored} 与本版本 v${SCHEMA_VERSION} 不兼容（无就地迁移）：${candidate}`,
+				detail: `记忆库 schema v${stored} 与本版本 v${SCHEMA_VERSION} 不兼容（该版本无就地迁移）：${candidate}`,
 			};
 		}
 		return { ok: true, schemaVersion: stored };

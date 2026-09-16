@@ -50,6 +50,13 @@ export interface TreeNodeDTO {
 	child_count: number;
 	has_children: boolean;
 	content_head: string;
+	/**
+	 * ⭐ ENTRY-scoped: `store.effectiveDisclosure(uri)` — "when this address is
+	 * entered, when should it be remembered". NOT the raw `nodes.disclosure`
+	 * column (a node may be reachable through several entries, each with its
+	 * own condition). `null` = no condition; the UI renders nothing for it.
+	 */
+	disclosure: string | null;
 }
 
 export interface TreeResponseDTO {
@@ -70,11 +77,38 @@ export interface EdgeDTO {
 	resolved_uri: string | null;
 	kind: string | null;
 	dangling: boolean;
+	/**
+	 * ⭐ THE RAW `edges.disclosure` COLUMN — deliberately NOT routed through
+	 * `effectiveDisclosure` (frozen-contract §3.2 exception, D1 §11-C1).
+	 *
+	 * Semantics: the ASSOCIATION condition ("when diffusing along this edge"),
+	 * which is NOT a "想起条件". An edge is not an addressable entry, so
+	 * `effectiveDisclosure(peerUri)` would (a) duplicate the node's own
+	 * condition already shown on the same page and (b) make the per-edge
+	 * dimension invisible. The UI renders it as a grey dashed chip, never amber
+	 * — the two must stay distinguishable at a glance.
+	 */
+	disclosure: string | null;
 }
 
 export interface AliasDTO {
 	alias_uri: string;
 	target_node_id: string;
+	/** ⭐ ENTRY-scoped: "when entering through THIS address". `??` inherits the target node's condition. */
+	disclosure: string | null;
+	/**
+	 * ⭐ DERIVED, never a column (frozen-contract §12-U1): true ⟺ the alias uri
+	 * is ALSO a live `nodes.uri`, so `resolveUri` shadows the alias forever and
+	 * this entry can never take effect.
+	 *
+	 * Invariant (keep in sync with `effectiveDisclosure`): `dead === true` ⟹
+	 * `effectiveDisclosure(alias_uri)` is the SHADOWING node's condition, not
+	 * this row's. That is exactly why the UI must NOT paint the amber entry
+	 * badge for a dead alias — doing so would claim an entry works when it does
+	 * not. `dead` must stay sourced from the same `nodes.uri`-first precedence
+	 * as `resolveUri`; if that precedence ever changes, this predicate changes.
+	 */
+	dead: boolean;
 }
 
 export interface GlossaryDTO {
@@ -313,7 +347,23 @@ export function contentHead(content: string, max = 60): string {
 
 export function toNodeDTO(
 	n: MemoryNode,
-	extra: { shadowed: boolean; foreignSession?: boolean; parentUri?: string | null },
+	extra: {
+		shadowed: boolean;
+		foreignSession?: boolean;
+		parentUri?: string | null;
+		/**
+		 * ⭐ ENTRY-scoped override. Callers that know which uri the request came
+		 * in through MUST pass `store.effectiveDisclosure(entryUri)` here: the
+		 * condition is a function of the ADDRESS, and `MemoryNode` carries no
+		 * "which entry did we arrive through" dimension.
+		 *
+		 * `undefined` → fall back to the node-level `n.disclosure` (canonical
+		 * entry). An explicit `null` is honoured as-is — `effectiveDisclosure`
+		 * already applied the `??` inheritance, so falling back again here would
+		 * resurrect a condition the entry deliberately cleared.
+		 */
+		disclosure?: string | null;
+	},
 ): NodeDTO {
 	return {
 		node_id: n.node_id,
@@ -321,7 +371,7 @@ export function toNodeDTO(
 		domain: n.domain,
 		parent_uri: extra.parentUri ?? null,
 		content: n.content,
-		disclosure: n.disclosure,
+		disclosure: extra.disclosure === undefined ? n.disclosure : extra.disclosure,
 		importance: n.importance,
 		source: n.source,
 		model: n.model,
@@ -418,7 +468,14 @@ export function readEditorColumns(
  * is exactly the P1 compensation this function exists for.
  */
 export function toEdgeDTO(
-	e: { direction: "outgoing" | "incoming"; node_id: string; target_uri: string; kind: string | null },
+	e: {
+		direction: "outgoing" | "incoming";
+		node_id: string;
+		target_uri: string;
+		kind: string | null;
+		/** Raw `edges.disclosure` — see `EdgeDTO.disclosure` for why it is not resolved. */
+		disclosure: string | null;
+	},
 	store: MemoryStore,
 	cache: Map<string, string | null>,
 ): EdgeDTO {
@@ -431,6 +488,7 @@ export function toEdgeDTO(
 		resolved_uri: peerUri,
 		kind: e.kind,
 		dangling: peerUri === null,
+		disclosure: e.disclosure,
 	};
 }
 
@@ -441,8 +499,23 @@ function resolveCached(store: MemoryStore, cache: Map<string, string | null>, ur
 	return resolved;
 }
 
-export function toAliasDTO(targetNodeId: string, aliasUri: string): AliasDTO {
-	return { alias_uri: aliasUri, target_node_id: targetNodeId };
+/**
+ * ⭐ Every alias entry of ONE node, with its effective condition, in a single
+ * `store.listAliasEntries` query — this replaces the old `toAliasDTO` +
+ * `listAliases()` pair (`N` × `effectiveDisclosure` calls).
+ *
+ * `listAliasEntries` already returns the EFFECTIVE value (`aliases.disclosure ??
+ * target node's nodes.disclosure`) plus the derived `dead`, so this function
+ * MUST NOT re-resolve: a second fallback here would be a second read entry for
+ * the same question, free to drift from the store's own precedence.
+ */
+export function toAliasEntryDTOs(store: MemoryStore, targetNodeId: string): AliasDTO[] {
+	return store.listAliasEntries(targetNodeId).map((e) => ({
+		alias_uri: e.alias_uri,
+		target_node_id: e.target_node_id,
+		disclosure: e.disclosure,
+		dead: e.dead,
+	}));
 }
 
 export function toGlossaryDTO(entry: { keyword: string; node_id: string }, uriIndex: Map<string, string>): GlossaryDTO {
@@ -469,7 +542,18 @@ export function toAuditDTO(row: {
 	return { id: row.id, ts: row.ts, event: row.event, object: row.object, details };
 }
 
-export function toTreeNodeDTO(n: MemoryNode, childCount: number, shadowed: boolean): TreeNodeDTO {
+export function toTreeNodeDTO(
+	n: MemoryNode,
+	childCount: number,
+	shadowed: boolean,
+	/**
+	 * ⭐ Passed IN rather than read off `n`: the entry condition is a function of
+	 * the ADDRESS, and computing it at the call site is what makes "every
+	 * disclosure on this page comes from the same source" structurally true
+	 * rather than a convention.
+	 */
+	disclosure: string | null,
+): TreeNodeDTO {
 	return {
 		node_id: n.node_id,
 		uri: n.uri,
@@ -480,6 +564,7 @@ export function toTreeNodeDTO(n: MemoryNode, childCount: number, shadowed: boole
 		child_count: childCount,
 		has_children: childCount > 0,
 		content_head: contentHead(n.content),
+		disclosure,
 	};
 }
 
@@ -508,22 +593,42 @@ export function buildPath(store: MemoryStore, node: MemoryNode): Array<{ node_id
 export function toNodeResponseDTO(
 	store: MemoryStore,
 	node: MemoryNode,
-	opts: { isShadowed: (nodeId: string) => boolean; childCount: Map<string, number> },
+	opts: {
+		isShadowed: (nodeId: string) => boolean;
+		childCount: Map<string, number>;
+		/**
+		 * ⭐ The uri the request actually came in through — possibly an alias.
+		 * Its condition is what `node.disclosure` reports (V4: the field is
+		 * entry-scoped). Omitted → the canonical node uri.
+		 */
+		entryUri?: string;
+	},
 ): NodeResponseDTO {
 	const edgeCache = new Map<string, string | null>();
 	const related = store.listRelated(node.node_id);
 	const uriIndex = buildUriIndex(store);
 	return {
 		current_version: store.currentVersion(node.node_id),
-		node: toNodeDTO(node, { shadowed: opts.isShadowed(node.node_id), parentUri: parentUriOf(store, node) }),
+		node: toNodeDTO(node, {
+			shadowed: opts.isShadowed(node.node_id),
+			parentUri: parentUriOf(store, node),
+			disclosure: store.effectiveDisclosure(opts.entryUri ?? node.uri),
+		}),
 		path: buildPath(store, node),
 		children: store
 			.children(node.node_id)
-			.map((c) => toTreeNodeDTO(c, opts.childCount.get(c.node_id) ?? 0, opts.isShadowed(c.node_id))),
+			.map((c) =>
+				toTreeNodeDTO(
+					c,
+					opts.childCount.get(c.node_id) ?? 0,
+					opts.isShadowed(c.node_id),
+					store.effectiveDisclosure(c.uri),
+				),
+			),
 		revisions: store
 			.listRevisions(node.node_id)
 			.map((row) => toRevisionDTO(node.node_id, row, readEditorColumns(store, node.node_id, row.uri, row.version))),
-		aliases: store.listAliases(node.node_id).map((aliasUri) => toAliasDTO(node.node_id, aliasUri)),
+		aliases: toAliasEntryDTOs(store, node.node_id),
 		edges: {
 			outgoing: related.filter((e) => e.direction === "outgoing").map((e) => toEdgeDTO(e, store, edgeCache)),
 			incoming: related.filter((e) => e.direction === "incoming").map((e) => toEdgeDTO(e, store, edgeCache)),

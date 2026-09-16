@@ -100,14 +100,16 @@ export function renderWakeupView(
 			const rel = formatRelativeWorldTime(node.world_ts, worldTime);
 			lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
 		}
-		if (node.disclosure) lines.push(`> 什么时候想起：${node.disclosure}\n`);
+		const disc = store.effectiveDisclosure(uri);
+		if (disc) lines.push(`> 什么时候想起：${disc}\n`);
 		lines.push(node.content);
 		const childLines: string[] = [];
 		for (const child of store.children(node.node_id)) {
 			if (child.is_stub || !isVisible(child)) continue;
 			if (fullUris.has(child.uri)) continue;
 			listed.add(child.uri);
-			const disc = child.disclosure ? ` (${child.disclosure})` : "";
+			const childDisc = store.effectiveDisclosure(child.uri);
+			const disc = childDisc ? ` (${childDisc})` : "";
 			const rawContent = (child.content || "").replace(/\s+/g, " ").trim();
 			const snip = rawContent.length > 100 ? `${rawContent.slice(0, 100)}...` : rawContent;
 			const snipStr = snip ? ` — ${snip}` : "";
@@ -155,7 +157,8 @@ export function renderRecentView(
 	}
 	for (const n of nodes) {
 		lines.push(`- ${n.uri}${stars(n.importance)} (修改时间: ${n.updated_ts.slice(0, 16).replace("T", " ")})`);
-		if (n.disclosure) lines.push(`  想起条件: ${n.disclosure}`);
+		const disc = store.effectiveDisclosure(n.uri);
+		if (disc) lines.push(`  想起条件: ${disc}`);
 	}
 	return lines.join("\n");
 }

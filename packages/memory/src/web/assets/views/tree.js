@@ -11,6 +11,10 @@
 
 import { el, clear, append, navigate, renderError, renderNotice, toast } from "../app.js";
 import { currentGen, ensureCacheFor, parentOf, treeCache } from "./tree-cache.js";
+// ⭐ 唯一的视觉真相源（D5 §2.3）。安全方向：`views.js` **零 import**、无顶层 DOM 副作用，
+//    故 `tree.js → views.js` 不成环。**反向禁止**（`views.js → tree.js`）：本模块静态 import
+//    `app.js`（含 `document` 副作用），反向会把它拖进 views.js（`tree-cache.js:544` 记过此坑）。
+import { discChip } from "./views.js";
 
 // 树缓存与库身份在 `./tree-cache.js`（契约 §7.6 / §7.10，D2 `12` §10）：
 // 键 = `${domain}|${parentUri ?? ""}`（§4.9，不设 TTL），但**值属于某个库** ——
@@ -230,6 +234,8 @@ function buildRow(t, row, idx) {
   const labelParts = [];
   if (stub) labelParts.push("占位节点");
   labelParts.push(`${lastSegment(n.uri)}，重要度 ${Number(n.importance ?? 0)}`);
+  // ⭐ 无障碍必需：`mw-snippet` 与 chip 都是 `aria-hidden`，屏幕阅读器读不到条件。
+  if (n.disclosure) labelParts.push(`想起条件 ${n.disclosure}`);
   if (shadowed) labelParts.push(SHADOWED_TEXT);
 
   // ⭐ 用真实 href（中键 / 右键复制链接都工作），单击则交给抽屉 peek。
@@ -260,6 +266,10 @@ function buildRow(t, row, idx) {
 
   const tail = el("span", { class: "mw-tail" });
   append(tail, impChip(n.importance));
+  // ⭐ 树行是 28px 定高（`--mw-row-h`）：用短徽章而非带标签的 full badge，
+  //    否则长条件会把 `mw-uri`/`mw-snippet` 挤成零宽（`:53` 的 `flex: 0 1 auto`）。
+  //    `null`（无值）时 `discChip` 返回 null，`append` 首行即跳过 —— 不产生字面量 "null"。
+  append(tail, discChip(n.disclosure));
   if (shadowed) append(tail, shadowedChip());
   if (!t.compact) {
     const reveal = el("button", {

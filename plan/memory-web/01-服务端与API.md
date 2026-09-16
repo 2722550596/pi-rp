@@ -88,6 +88,12 @@ export function buildShadowedIndex(store: MemoryStore): Map<string, boolean>;  /
 export function contentHead(content: string, max?: number): string;            // NEW，默认 60
 ```
 
+> ⚠️ **已作废（2026-09-16，边级 disclosure 轨，D5 标记）** —— 上方签名是**上一轮的现状记录**，本批次被推翻的有三处：
+> - **`toAliasDTO`（`:83`）整体删除**：唯一调用点 `serialize.ts:526` 已由 `toAliasEntryDTOs(store, targetNodeId)` 取代（保留即死代码）。见 `25-前端与文档.md` §8.1 与 §11-C9。
+> - **`toEdgeDTO` 入参行形状加 `disclosure: string | null`**（`edges.disclosure` 裸列；契约 §3.2 例外条款）。
+> - **`toTreeNodeDTO` 加第 4 参 `disclosure: string | null`**（= `effectiveDisclosure(uri)`），**3 个调用点同批改**（`routes.ts:280`/`:497`、`serialize.ts:522`）。见 `25` §8.1。
+> ⚠️ **MUST NOT 照抄上方 `toAliasDTO` 签名**——它已不存在。
+
 ### 2.5 `security.ts` — S1/S2/S3
 
 ```ts
@@ -443,6 +449,7 @@ export interface EdgeDTO {
   dangling: boolean;              // ⭐ uri === null 时为 true（悬空引用）
 }
 ```
+> ⚠️ **已作废（2026-09-16，边级 disclosure 轨，D5 标记）**：本 interface 本批次新增 `disclosure: string | null`（= `edges.disclosure` 裸列，**不是** `effectiveDisclosure`——边不是可寻址入口，契约 §3.2 例外条款）。见 `25` §2.1。
 
 ⭐ **P1 的落法（#11 更正后）**：`listRelated(nodeId)`（`store.ts:764-783`，已逐行读）的两个分支**都是** `SELECT ... node_id ... FROM edges`，所以：
 
@@ -463,6 +470,7 @@ const edges = rows.map(r => {
 
 ⚠️ **`target_uri` 是裸存储值**，relocate 后可能指向旧地址（P1/P15）→ **UI MUST 用 `uri`/`resolved_uri`，不得用 `target_uri`**；D1 也**不把 `target_uri` 放进 DTO**。
 
+
 成本：`edges` 行数远小于 `nodes`（UI 单页个位数）；用 `Map<string,string>` 缓存 `resolveUri` 结果避免重复解析。
 
 ```ts
@@ -474,6 +482,7 @@ export interface AuditDTO {
   details: Record<string, unknown> | string | null;  // parse 失败则原样保留字符串
 }
 ```
+> ⚠️ **已作废（2026-09-16，边级 disclosure 轨，D5 标记）**：本 interface 本批次新增 `disclosure: string | null`（= `effectiveDisclosure(alias_uri)`）与 `dead: boolean`（派生属性、非列：`EXISTS(SELECT 1 FROM nodes WHERE uri = alias_uri)`）。见 `25` §2.1 与 §12-U1。
 
 `listAliases(targetNodeId)`（`store.ts:790`）返回 **alias_uri 字符串数组**（不是对象数组），`target_node_id` 由调用方填入。`listGlossary(nodeId?)`（`store.ts:813-823`）返回 `{ keyword, node_id }[]`。`listAudit(limit)`（`store.ts:1370`）的 `details` 在库里是 TEXT JSON；serialize 层 parse，**parse 失败 MUST 保留原始字符串**，**MUST NOT** 返回 `null` 把信息丢掉。
 
@@ -497,6 +506,7 @@ export interface TreeResponseDTO {
   parent_uri: string | null;
 }
 ```
+> ⚠️ **已作废（2026-09-16，边级 disclosure 轨，D5 标记）**：本 interface 本批次新增 `disclosure: string | null`（= `effectiveDisclosure(uri)`）。**不加则默认落地页 `tree.js` 物理上拿不到数据**（`/api/tree` 只回本 DTO）。见 `25` §2.1/§8.1。
 
 ⭐ **P10 的落法**：`child_count` 不能靠逐节点 `children(nodeId).length`（N 节点 = N 查询）。用**一次全表扫描建计数索引**：
 
@@ -589,6 +599,7 @@ export interface TempResponseDTO {
 export interface DeletedUriDTO { uri: string; node_id: string; versions: number; last_seen: string }
 export interface EventsDTO { version: number; changed: boolean }
 ```
+> ⚠️ **口径变更（2026-09-16，边级 disclosure 轨，D5 标记）**：`SearchResponseDTO.items[].disclosure` 的**值**改由 `store.effectiveDisclosure(item.uri)` 计算（D2 `22` §5.6 裁定 (b)，主 agent 批准）；**接口形状不变**。在规范 uri 上与 `nodes.disclosure` 值恒等，改口径只为「全站单读入口」。见 `25` §8.1/§8.2。
 
 ⭐ **P7 的落法**：`RecalledItem`（`recall.ts:45-57`）只有 `node_id/uri/disclosure/summary/content/score/kw/vec/bm25`，**没有** `importance`/`source`/`world_ts`。serialize 层按 `node_id` 回接：
 

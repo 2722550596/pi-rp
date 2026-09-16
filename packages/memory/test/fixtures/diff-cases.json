@@ -1,0 +1,44 @@
+[
+	{
+		"name": "single-line-replace",
+		"before": "甲\n乙\n丙",
+		"after": "甲\n乙乙\n丙",
+		"expectDiff": " 1 甲\n-2 乙\n+2 乙乙\n 3 丙",
+		"firstChangedLine": 2
+	},
+	{
+		"name": "append-paragraph",
+		"before": "伊莱走进酒馆。\n他看见薇拉。",
+		"after": "伊莱走进酒馆。\n他看见薇拉。\n桌上有一封信。",
+		"expectDiff": " 1 伊莱走进酒馆。\n-2 他看见薇拉。\n+2 他看见薇拉。\n+3 桌上有一封信。",
+		"firstChangedLine": 2
+	},
+	{
+		"name": "delete-line",
+		"before": "第一行\n第二行\n第三行",
+		"after": "第一行\n第三行",
+		"expectDiff": " 1 第一行\n-2 第二行\n 3 第三行",
+		"firstChangedLine": 2
+	},
+	{
+		"name": "no-change",
+		"before": "相同\n内容",
+		"after": "相同\n内容",
+		"expectDiff": "",
+		"firstChangedLine": null
+	},
+	{
+		"name": "long-context-skip",
+		"before": "第 1 行\n第 2 行\n第 3 行\n第 4 行\n第 5 行\n第 6 行\n第 7 行\n第 8 行\n第 9 行\n第 10 行\n第 11 行\n第 12 行\n第 13 行\n第 14 行\n第 15 行\n第 16 行\n第 17 行\n第 18 行\n第 19 行\n第 20 行",
+		"after": "第 1 行\n第 2 行\n第 3 行\n第 4 行\n第 5 行\n第 6 行\n第 7 行\n第 8 行\n第 9 行\n第 10 行\n第 11 行（改）\n第 12 行\n第 13 行\n第 14 行\n第 15 行\n第 16 行\n第 17 行\n第 18 行\n第 19 行\n第 20 行",
+		"expectDiff": "    ...\n  7 第 7 行\n  8 第 8 行\n  9 第 9 行\n 10 第 10 行\n-11 第 11 行\n+11 第 11 行（改）\n 12 第 12 行\n 13 第 13 行\n 14 第 14 行\n 15 第 15 行\n    ...",
+		"firstChangedLine": 11
+	},
+	{
+		"name": "line-edit",
+		"before": "a\nb\nc\nd",
+		"after": "a\nB\nc\nd",
+		"expectDiff": " 1 a\n-2 b\n+2 B\n 3 c\n 4 d",
+		"firstChangedLine": 2
+	}
+]
