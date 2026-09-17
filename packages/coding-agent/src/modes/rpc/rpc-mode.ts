@@ -995,6 +995,22 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "append_message", { entryId });
 			}
 
+			case "append_entry": {
+				// 通用 append_entry（角色 session 记忆写入，不进 LLM 上下文）：
+				// 落 custom entry（type=custom），TUI 无渲染器时不显示、前端
+				// 未知 customType 静默忽略，由扩展 get_entries 扫描重建内部
+				// 状态（对照 session-manager.appendCustomEntry）。不接收调用方
+				// 指定 parent/entry id、不修改已有记录。customType 必填。
+				if (!command.customType) {
+					return error(id, "append_entry", "customType is required");
+				}
+				const entryId = session.sessionManager.appendCustomEntry(
+					command.customType,
+					command.data,
+				);
+				return success(id, "append_entry", { entryId });
+			}
+
 			// =================================================================
 			// Commands (available for invocation via prompt)
 			// =================================================================

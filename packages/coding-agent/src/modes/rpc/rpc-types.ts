@@ -119,6 +119,14 @@ export type RpcCommand =
 			/** 扩展专用元数据（不进 LLM 上下文）。 */
 			details?: unknown;
 	  }
+	| {
+			id?: string;
+			type: "append_entry";
+			/** 扩展自定义类型（customType）。 */
+			customType: string;
+			/** 扩展专用数据（不进 LLM 上下文、不在 TUI 显示，供扩展 scan 重建内部状态）。 */
+			data?: unknown;
+	  }
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
