@@ -382,6 +382,11 @@ function closeDrawerEl() {
   const d = $("#mw-drawer");
   if (d && d.open) d.close();
 }
+// 换页兜底:关闭任何仍开着的弹窗(ui.confirmModal 家族挂 document.body,不随视图 dispose)。
+// dialog.close() 触发 close→done() 完整清理(移除 DOM + 焦点归还,settled 防双触发)。
+function closeAllDialogs() {
+  document.querySelectorAll("dialog[open]").forEach((d) => { try { d.close(); } catch { /* 已关 */ } });
+}
 
 async function mountRoute(path, params) {
   const host = $("#mw-main");
@@ -397,6 +402,7 @@ async function mountRoute(path, params) {
   }
   unbindDocListeners();
   closeDrawerEl();
+  closeAllDialogs();
   currentPath = path;
   currentParams = params;
   currentDispose = null;

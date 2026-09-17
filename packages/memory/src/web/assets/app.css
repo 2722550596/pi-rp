@@ -564,6 +564,13 @@ tbody tr:hover { background: var(--mw-bg-raised-hover); }
 
 /* ── dialog / modal(§7.10;F1 的样式面)─────────────────────────────────── */
 dialog {
+  /* 显式居中:全局 `* { margin: 0 }` 会吃掉 UA 给 showModal 的 margin:auto,
+     弹窗会锚死在视口左上(2026-09-18 明月实测)。不依赖 UA/pico 保底。 */
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: fit-content;
+  height: fit-content;
   border: 1px solid var(--mw-border-strong);
   border-radius: var(--mw-radius-lg);
   background: var(--mw-bg-raised);
