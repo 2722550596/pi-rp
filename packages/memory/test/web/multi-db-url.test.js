@@ -240,7 +240,7 @@ describe("V13d · the three management paths never carry `?db=`", () => {
 describe("V13e · static assets never carry `?db=`", () => {
 	it("assets are returned unchanged", () => {
 		setSelectedDb("/tmp/memory.db");
-		for (const url of ["/assets/app.js", "/assets/app.css", "/", "index.html"]) {
+		for (const url of ["/assets/app.js", "/assets/app.css", "/assets/tokens.css", "/", "index.html"]) {
 			expect(withDbParam(url), url).toBe(url);
 		}
 	});

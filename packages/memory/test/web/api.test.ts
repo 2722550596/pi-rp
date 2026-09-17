@@ -104,7 +104,14 @@ interface RawBody {
 }
 
 interface SessionsBody {
-	items: Array<{ session_id: string; total: number; active: number; last_raw_id: number }>;
+	items: Array<{
+		session_id: string;
+		total: number;
+		active: number;
+		first_raw_id: number;
+		last_raw_id: number;
+		first_text: string | null;
+	}>;
 	total: number;
 }
 
@@ -137,6 +144,49 @@ interface ViewBody {
 
 interface ListBody {
 	items: Array<{ raw_id: number }>;
+}
+
+// ── Graph (plan/memory-web-redesign/04-图谱.md §2) ──────────────────────────
+
+interface GraphDomainsBody {
+	mode: "domains";
+	world_time: string | null;
+	domains: Array<{ domain: string; node_count: number; edge_count: number }>;
+}
+
+interface GraphNodeItem {
+	node_id: string;
+	uri: string;
+	domain: string;
+	importance: number;
+	is_stub: boolean;
+	label: string;
+	parent_uri: string | null;
+}
+
+interface GraphEdgeItem {
+	source_id: string;
+	target_id: string | null;
+	kind: string | null;
+	dangling: boolean;
+	target_uri: string;
+}
+
+interface GraphAliasItem {
+	alias_uri: string;
+	target_node_id: string;
+	dead: boolean;
+}
+
+interface GraphDataBody {
+	mode: "graph";
+	world_time: string | null;
+	domain: string;
+	total_nodes: number;
+	truncated: boolean;
+	nodes: GraphNodeItem[];
+	edges: GraphEdgeItem[];
+	aliases: GraphAliasItem[];
 }
 
 // ── harness ─────────────────────────────────────────────────────────────────
@@ -640,12 +690,266 @@ describe("GET /api/raw and /api/sessions", () => {
 		expect(ids).toEqual([...ids].sort((a, b) => b - a));
 	});
 
+	it("⭐ F4-B: first_text is the FIRST row's text, whitespace-folded and cut to 80 chars", async () => {
+		appendRaw([
+			{ session: "s1", entry: "e1", text: "第一行\n第二行 " + "细".repeat(200) },
+			{ session: "s1", entry: "e2", text: "绝不是摘要来源" },
+			{ session: "s2", entry: "e3", text: "商队从北方来" },
+		]);
+		const { body } = await get<SessionsBody>("/api/sessions");
+		const byId = new Map(body.items.map((i) => [i.session_id, i]));
+		const s1 = byId.get("s1")!;
+		// substr(120) up front, then `\s+ → " "` folding (no newline survives), then the 80-char cut.
+		expect(s1.first_text).toBe("第一行 第二行 " + "细".repeat(72));
+		expect(s1.first_text!.length).toBe(80);
+		expect(s1.first_text).not.toContain("\n");
+		// short text passes through folded and uncut; each session digests its OWN first row
+		expect(byId.get("s2")!.first_text).toBe("商队从北方来");
+		// the additive field leaves the rest of SessionDTO untouched
+		expect(s1.total).toBe(2);
+		expect(s1.active).toBe(2);
+		expect(s1.first_raw_id).toBeLessThan(s1.last_raw_id);
+	});
+
+	it("⭐ F4-B reverse whitelist: NodeDTO never grows a first_text", async () => {
+		store.put({ uri: "core://solo", content: "独节点" });
+		const { body } = await get<NodeBody>("/api/node?uri=core://solo");
+		expect("first_text" in body.node).toBe(false);
+	});
+
 	it("⭐ D3: /api/temp exposes thresholdSource and a real notifyPreview", async () => {
 		store.put({ uri: "TEMP://draft-1", content: "草稿" });
 		const { body } = await get<TempBody>("/api/temp");
 		expect(["cli", "settings", "default"]).toContain(body.thresholdSource);
 		expect(body.notifyPreview).toBe(buildTempNotifyContent(body.count, body.threshold));
 		expect(body.count_all).toBe(store.countTempNodes());
+	});
+});
+
+// ── Graph (plan/memory-web-redesign/04-图谱.md §2) ──────────────────────────
+
+describe("GET /api/graph (04 图谱)", () => {
+	/** Fixture reads go through the store's own resolver — never hand-made ids. */
+	function idOf(uri: string): string {
+		return store.resolveUri(uri)!.node_id;
+	}
+
+	it("domain listing: mode/world_time, counts bidirectional-equal to SQL, zero-edge domain shows 0", async () => {
+		seedTree();
+		store.put({ uri: "history://war", content: "战记" });
+		store.addEdge(idOf("core://identity"), "core://identity/habits", "relates");
+		const { status, body } = await get<GraphDomainsBody>("/api/graph");
+		expect(status).toBe(200);
+		expect(body.mode).toBe("domains");
+		expect(body.world_time).toBe(store.getWorldTime());
+		const sqlNodes = store.db.prepare("SELECT domain, COUNT(*) AS c FROM nodes GROUP BY domain").all() as Array<{
+			domain: string;
+			c: number;
+		}>;
+		const sqlEdges = store.db
+			.prepare(
+				"SELECT n.domain AS domain, COUNT(*) AS c FROM edges e JOIN nodes n ON n.node_id = e.node_id GROUP BY n.domain",
+			)
+			.all() as Array<{ domain: string; c: number }>;
+		const dtoNodes = new Map(body.domains.map((d) => [d.domain, d.node_count]));
+		const dtoEdges = new Map(body.domains.map((d) => [d.domain, d.edge_count]));
+		expect(dtoNodes.size).toBe(sqlNodes.length);
+		for (const r of sqlNodes) expect(dtoNodes.get(r.domain)).toBe(Number(r.c));
+		for (const r of sqlEdges) expect(dtoEdges.get(r.domain)).toBe(Number(r.c));
+		// edge_count = edges SOURCED from the domain; a domain with no source edges reports 0, not absence
+		expect(dtoEdges.get("core")).toBe(1);
+		expect(dtoEdges.get("history")).toBe(0);
+		// `domain=""` is the same listing mode (§2.1: null or "" → domains)
+		expect((await get<GraphDomainsBody>("/api/graph?domain=")).body.mode).toBe("domains");
+	});
+
+	it("empty db: the listing is an empty 200, not a 404", async () => {
+		// boot() seeds the index/history/meta roots; drop them to reach a truly empty node table
+		for (const uri of ["index://", "history://", "meta://"]) {
+			store.deleteCascade(store.resolveUri(uri)!.node_id);
+		}
+		const { status, body } = await get<GraphDomainsBody>("/api/graph");
+		expect(status).toBe(200);
+		expect(body.domains).toEqual([]);
+	});
+
+	it("graph mode: every item is exactly the whitelist field set — no passthrough", async () => {
+		seedTree();
+		store.addEdge(idOf("core://identity"), "core://identity/habits", "relates");
+		store.addAlias("core://tea-address", idOf("core://identity/habits/tea"));
+		const { body } = await get<GraphDataBody>("/api/graph?domain=core");
+		expect(body.mode).toBe("graph");
+		expect(body.nodes.length).toBeGreaterThan(0);
+		expect(body.edges.length).toBeGreaterThan(0);
+		expect(body.aliases.length).toBeGreaterThan(0);
+		for (const n of body.nodes) {
+			expect(Object.keys(n).sort()).toEqual([
+				"domain",
+				"importance",
+				"is_stub",
+				"label",
+				"node_id",
+				"parent_uri",
+				"uri",
+			]);
+		}
+		for (const e of body.edges) {
+			expect(Object.keys(e).sort()).toEqual(["dangling", "kind", "source_id", "target_id", "target_uri"]);
+		}
+		for (const a of body.aliases) {
+			expect(Object.keys(a).sort()).toEqual(["alias_uri", "dead", "target_node_id"]);
+		}
+	});
+
+	it("label is the uri's last segment, computed server-side; tail-empty falls back to the whole uri", async () => {
+		seedTree();
+		store.put({ uri: "core://identity/茶道", content: "茶艺" });
+		const { body } = await get<GraphDataBody>("/api/graph?domain=index");
+		const labelOf = new Map(body.nodes.map((n) => [n.uri, n.label]));
+		// seed() materializes the index:// domain root — the tail-empty-segment case
+		expect(labelOf.get("index://")).toBe("index://");
+		const core = await get<GraphDataBody>("/api/graph?domain=core");
+		const coreLabels = new Map(core.body.nodes.map((n) => [n.uri, n.label]));
+		expect(coreLabels.get("core://identity/habits")).toBe("habits");
+		expect(coreLabels.get("core://identity/茶道")).toBe("茶道"); // non-ASCII segment verbatim
+	});
+
+	it("parent_uri resolves parent_id to the parent's uri; unmaterialized domain root → null; auto stubs are marked", async () => {
+		seedTree();
+		store.put({ uri: "core://health/sleep", content: "早睡" }); // auto-creates the core://health stub
+		const { body } = await get<GraphDataBody>("/api/graph?domain=core");
+		const byUri = new Map(body.nodes.map((n) => [n.uri, n]));
+		// put() never materializes "core://" itself, so the first segment's parent_id is null (domain-root null)
+		expect(byUri.get("core://identity")!.parent_uri).toBeNull();
+		expect(byUri.get("core://identity/habits")!.parent_uri).toBe("core://identity");
+		expect(byUri.get("core://health")!.is_stub).toBe(true); // auto-created ancestor
+		expect(byUri.get("core://health")!.parent_uri).toBeNull();
+		expect(byUri.get("core://health/sleep")!.parent_uri).toBe("core://health");
+		expect(byUri.get("core://identity/habits")!.is_stub).toBe(false);
+	});
+
+	it("in-domain edge: target resolved, kind passed through, target_uri verbatim", async () => {
+		seedTree();
+		store.addEdge(idOf("core://identity"), "core://identity/habits", "relates");
+		const { body } = await get<GraphDataBody>("/api/graph?domain=core");
+		expect(body.edges).toEqual([
+			{
+				source_id: idOf("core://identity"),
+				target_id: idOf("core://identity/habits"),
+				kind: "relates",
+				dangling: false,
+				target_uri: "core://identity/habits",
+			},
+		]);
+	});
+
+	it("dangling edge: nothing resolves → target_id null, target_uri kept for the tooltip", async () => {
+		seedTree();
+		store.addEdge(idOf("core://identity"), "core://ghost");
+		const { body } = await get<GraphDataBody>("/api/graph?domain=core");
+		expect(body.edges).toHaveLength(1);
+		expect(body.edges[0].dangling).toBe(true);
+		expect(body.edges[0].target_id).toBeNull();
+		expect(body.edges[0].target_uri).toBe("core://ghost");
+	});
+
+	it("cross-domain edge: a resolvable target outside the domain is skipped, not drawn", async () => {
+		seedTree();
+		store.put({ uri: "history://war", content: "战记" });
+		store.addEdge(idOf("core://identity"), "history://war");
+		const { body } = await get<GraphDataBody>("/api/graph?domain=core");
+		expect(body.edges).toEqual([]);
+	});
+
+	it("edge to a node cut by limit is skipped too (no dangling endpoints on the canvas)", async () => {
+		store.put({ uri: "spec://a", content: "重要", importance: 10 });
+		store.put({ uri: "spec://a/b", content: "次要", importance: 1 });
+		store.addEdge(idOf("spec://a/b"), "spec://a");
+		const { body } = await get<GraphDataBody>("/api/graph?domain=spec&limit=1");
+		expect(body.nodes.map((n) => n.uri)).toEqual(["spec://a"]); // importance DESC keeps ★10 through the cut
+		expect(body.edges).toEqual([]);
+	});
+
+	it("edge via alias resolves to the alias target (resolveUri precedence); target_uri keeps the alias uri", async () => {
+		seedTree();
+		store.addAlias("core://tea-alias", idOf("core://identity/habits/tea"));
+		store.addEdge(idOf("core://identity"), "core://tea-alias", "likes");
+		const { body } = await get<GraphDataBody>("/api/graph?domain=core");
+		expect(body.edges).toEqual([
+			{
+				source_id: idOf("core://identity"),
+				target_id: idOf("core://identity/habits/tea"),
+				kind: "likes",
+				dangling: false,
+				target_uri: "core://tea-alias",
+			},
+		]);
+	});
+
+	it("aliases: live alias dead=false; uri colliding with a live node uri dead=true; out-of-domain target absent", async () => {
+		seedTree();
+		store.put({ uri: "history://war", content: "战记" });
+		store.addAlias("core://tea-address", idOf("core://identity/habits/tea"));
+		store.addAlias("core://identity", idOf("core://identity/habits/tea")); // shadows itself: alias_uri is a live nodes.uri
+		store.addAlias("core://war-address", idOf("history://war")); // target in another domain
+		const { body } = await get<GraphDataBody>("/api/graph?domain=core");
+		const byUri = new Map(body.aliases.map((a) => [a.alias_uri, a]));
+		expect(byUri.get("core://tea-address")).toEqual({
+			alias_uri: "core://tea-address",
+			target_node_id: idOf("core://identity/habits/tea"),
+			dead: false,
+		});
+		expect(byUri.get("core://identity")!.dead).toBe(true); // the aliasListStmt dead predicate, set form
+		expect(byUri.has("core://war-address")).toBe(false);
+	});
+
+	it("limit: default 200 truncates a 201+ node domain explicitly (total_nodes is the denominator)", async () => {
+		for (let i = 0; i < 201; i++) store.put({ uri: `big://n${i}`, content: `节点 ${i}` });
+		store.put({ uri: "big://top", content: "最重要的", importance: 10 });
+		const { body } = await get<GraphDataBody>("/api/graph?domain=big");
+		expect(body.total_nodes).toBe(202);
+		expect(body.truncated).toBe(true);
+		expect(body.nodes).toHaveLength(200);
+		expect(body.nodes[0].uri).toBe("big://top"); // importance DESC: the ★10 survives the cut
+	});
+
+	it("limit boundary: 1 applies; 0 / 501 / abc are 400 naming the legal range", async () => {
+		seedTree();
+		expect((await get<GraphDataBody>("/api/graph?domain=core&limit=1")).body.nodes).toHaveLength(1);
+		for (const bad of ["limit=0", "limit=501", "limit=abc"]) {
+			const { status, body } = await get<GraphDomainsBody>(`/api/graph?domain=core&${bad}`);
+			expect(status).toBe(400);
+			expect(errorOf(body).message).toContain("1-500");
+		}
+	});
+
+	it("unknown domain is a legal empty graph, not a 404", async () => {
+		const { status, body } = await get<GraphDataBody>("/api/graph?domain=ghost");
+		expect(status).toBe(200);
+		expect(body.mode).toBe("graph");
+		expect(body.domain).toBe("ghost");
+		expect(body.nodes).toEqual([]);
+		expect(body.edges).toEqual([]);
+		expect(body.aliases).toEqual([]);
+		expect(body.total_nodes).toBe(0);
+		expect(body.truncated).toBe(false);
+	});
+
+	it("POST /api/graph is 405 method_not_allowed with Allow: GET", async () => {
+		const { status, body, headers } = await request("/api/graph", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "{}",
+		});
+		expect(status).toBe(405);
+		expect(errorOf(body).code).toBe("method_not_allowed");
+		expect(headers.get("allow")).toContain("GET");
+	});
+
+	it("the graph path keeps dispatch's store-error mapping (locked db → 409 conflict, no new error code)", () => {
+		const mapped = mapStoreError(new Error("database is locked"), {});
+		expect(mapped.status).toBe(409);
+		expect(codeOf(mapped)).toBe("conflict");
 	});
 });
 

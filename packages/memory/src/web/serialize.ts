@@ -171,6 +171,13 @@ export interface SessionDTO {
 	last_raw_id: number;
 	wall_first: string;
 	wall_last: string;
+	/**
+	 * ⭐ F4-B (plan/memory-web-redesign/03 §10.3): the session's first row's
+	 * text, whitespace-folded and cut to 80 chars — the raw page's session
+	 * picker renders it inside the human label. `null` when the row's text is
+	 * missing. Explicit whitelist field, never a passthrough.
+	 */
+	first_text: string | null;
 }
 
 // ── The rest ────────────────────────────────────────────────────────────────
@@ -246,6 +253,115 @@ export interface DeletedUriDTO {
 export interface EventsDTO {
 	version: number;
 	changed: boolean;
+}
+
+// ── Graph (plan/memory-web-redesign/00-context.md §4, 04-图谱.md §2) ────────
+
+/** 域清单模式的一行：选域卡片的数据。 */
+export interface GraphDomainDTO {
+	domain: string;
+	/** 域内节点总数(stub 含在内——stub 也是图上的节点)。 */
+	node_count: number;
+	/** 以该域节点为**源**的边数(04 §2.8 细化 2)。 */
+	edge_count: number;
+}
+
+/** 域清单模式响应(无 domain)。 */
+export interface GraphDomainsDTO {
+	/** 判别字段:两模式共用 response 一个稳定判别式(同 ViewDTO 风格)。 */
+	mode: "domains";
+	world_time: string | null;
+	domains: GraphDomainDTO[];
+}
+
+/** 图谱节点。字段集 = 契约 §4 骨架,一个不多一个不少。 */
+export interface GraphNodeDTO {
+	node_id: string;
+	uri: string;
+	domain: string;
+	importance: number;
+	is_stub: boolean;
+	/** = uri 末段,服务端算(04 §2.5),语义 = tree.js lastSegment(含尾空段回退)。 */
+	label: string;
+	/** 域根为 null。来自 parent_id → uri 的解析,**不是**表列。 */
+	parent_uri: string | null;
+}
+
+/** 图谱边。契约骨架 4 字段 + target_uri 细化字段(04 §2.8 细化 3)。 */
+export interface GraphEdgeDTO {
+	source_id: string;
+	/** dangling(解析不到任何活节点/活别名)时为 null。 */
+	target_id: string | null;
+	kind: string | null;
+	dangling: boolean;
+	/** 原始 `edges.target_uri`(可能是别名 uri):悬停提示需要「指向哪」。 */
+	target_uri: string;
+}
+
+/** 图谱别名(挂在本域节点上的别名地址)。字段集 = 契约 §4 骨架。 */
+export interface GraphAliasDTO {
+	alias_uri: string;
+	target_node_id: string;
+	/** 语义同 AliasDTO.dead:alias_uri 同时是活 nodes.uri(shadow 永远赢)。 */
+	dead: boolean;
+}
+
+/** 图谱模式响应(带 domain)。 */
+export interface GraphDataDTO {
+	mode: "graph";
+	world_time: string | null;
+	/** 回显请求的域,前端状态确认用(04 §2.8 细化 5)。 */
+	domain: string;
+	/** 域内节点总数(limit 之前)——截断提示的分母(细化 4)。 */
+	total_nodes: number;
+	/** total_nodes > nodes.length 时 true,前端必须显式提示。 */
+	truncated: boolean;
+	nodes: GraphNodeDTO[];
+	edges: GraphEdgeDTO[];
+	aliases: GraphAliasDTO[];
+}
+
+export type GraphResponseDTO = GraphDomainsDTO | GraphDataDTO;
+
+/** 语义 = tree.js lastSegment:末段,尾空段回退整串("core://" → "core://")。 */
+export function graphLabel(uri: string): string {
+	const s = String(uri ?? "");
+	const i = s.lastIndexOf("/");
+	return i === -1 ? s : s.slice(i + 1) || s;
+}
+
+/**
+ * `parentUri` 由调用方传入而非转换器内查库——与 `toTreeNodeDTO` 的 `disclosure`
+ * 同款哲学(「每页数据来自同一来源」是结构事实,不是约定),也避免逐节点
+ * `parentUriOf` 的 N+1。
+ */
+export function toGraphNodeDTO(n: MemoryNode, parentUri: string | null): GraphNodeDTO {
+	return {
+		node_id: n.node_id,
+		uri: n.uri,
+		domain: n.domain,
+		importance: n.importance,
+		is_stub: n.is_stub === 1, // 0/1 列 → boolean,口径同 toNodeDTO
+		label: graphLabel(n.uri),
+		parent_uri: parentUri,
+	};
+}
+
+export function toGraphEdgeDTO(
+	row: { node_id: string; target_uri: string; kind: string | null },
+	targetId: string | null,
+): GraphEdgeDTO {
+	return {
+		source_id: row.node_id,
+		target_id: targetId,
+		kind: row.kind,
+		dangling: targetId === null,
+		target_uri: row.target_uri,
+	};
+}
+
+export function toGraphAliasDTO(row: { alias_uri: string; target_node_id: string }, dead: boolean): GraphAliasDTO {
+	return { alias_uri: row.alias_uri, target_node_id: row.target_node_id, dead };
 }
 
 // ── Multi-database (plan/memory-web/13-多库服务端API.md §5) ──────────────────

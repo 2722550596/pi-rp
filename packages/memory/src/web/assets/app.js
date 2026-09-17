@@ -11,6 +11,7 @@
 //   （`applyTheme` / `document.addEventListener` / `boot()`）⇒ `node -e import('./app.js')` 会抛
 //   `ReferenceError: document is not defined`（实测）⇒ D5 的 V13 系列无法 import 它们。
 //   判据：`node -e "import('./views/url.js')"` MUST 不抛。
+//   第二个零顶层副作用层是 `ui.js`（02 §4.1）：判据 `node -e "import('./ui.js')"` MUST 不抛。
 import {
 	DB_ADMIN,
 	DB_KEY,
@@ -27,6 +28,15 @@ import {
 // ⭐ 再导出：D5 的静态断言锚点（`V8` 系列 / `V13`）与跨模块约定都以 `app.js` 为入口面，
 //    但**实现**只有 `views/url.js` 一份（契约 §7.10；未导出 = import 失败而非断言失败）。
 export { DB_ADMIN, DB_KEY, DB_PARAM, buildQuery, dbOptionText, getProcessDbPath, getSelectedDb, setProcessDbPath, setSelectedDb, withDbParam };
+
+// ── 公共层（02 §4.1「迁出」）：`$` / `el` / `append` / `clear` / `renderNotice` 的**实现**
+//    只有 `ui.js` 一份（六份 DOM 工厂 + renderNotice 合并），本文件**原地保留再导出**保持兼容面
+//    （先例 = 上面 url.js 的再导出锚点；视图侧 `import { el } from "../app.js"` 零改动）。
+//    内部消费（骨架、URI 校验等）走值导入；统一版 el 语义矩阵（dataset 支持、函数值走
+//    addEventListener、true→空属性、false/null/undefined 跳过）以 ui.js §A 为准。
+import { $, append, clear, el, isValidUri, renderNotice, skeleton } from "./ui.js";
+
+export { $, append, clear, el, renderNotice } from "./ui.js";
 
 // ── 多库：本文件侧的运行状态（选择状态本身在 `views/url.js`）──────────────
 /** 选择器内置的「管理记忆库…」哨兵项（§4.4）。 */
@@ -88,42 +98,6 @@ export function applyTheme(mode) {
 
 let themeMode = readTheme();
 applyTheme(themeMode);
-
-// ── 极简 DOM 助手（全站复用；只 createElement / textContent，无 HTML 串） ──
-export function $(sel, root) {
-  return (root ?? document).querySelector(sel);
-}
-
-export function el(tag, opts, children) {
-  const node = document.createElement(tag);
-  if (opts) {
-    for (const [k, v] of Object.entries(opts)) {
-      if (v === undefined || v === null) continue;
-      if (k === "class") node.className = String(v);
-      else if (k === "text") node.textContent = String(v);
-      else if (k === "children") continue;
-      // ⚠️ `onclick: fn` 这类**函数值** MUST 走 addEventListener，MUST NOT 走 setAttribute：
-      //    `setAttribute("onclick", String(fn))` 只会把函数源码写成属性文本，浏览器把它当**表达式语句**
-      //    求值后丢弃 ⇒ 按钮**点了没反应**，且不报错（实测：D4 的错误卡「切回进程库」曾是死按钮）。
-      else if (typeof v === "function") node.addEventListener(k.slice(2), v);
-      else node.setAttribute(k, String(v));
-    }
-  }
-  return append(node, (opts && opts.children) ?? children);
-}
-
-export function append(node, kids) {
-  if (kids === undefined || kids === null) return node;
-  if (Array.isArray(kids)) for (const k of kids) append(node, k);
-  else if (kids instanceof Node) node.append(kids);
-  else node.append(document.createTextNode(String(kids)));
-  return node;
-}
-
-export function clear(node) {
-  if (node) node.replaceChildren();
-  return node;
-}
 
 // ── HTTP：唯一取数入口 ────────────────────────────────────────────────
 export function httpError(code, message, extra) {
@@ -213,6 +187,7 @@ const ROUTES = {
   "/edit": () => import("./views/edit.js"), // D5
   "/deleted": () => import("./views/edit.js"), // D5（恢复入口）
   "/databases": () => import("./views/databases.js"), // D4（库管理页）
+  "/graph": () => import("./views/graph.js"), // 04（记忆图谱；模块未落地前 mountRoute 落「该页面尚未可用」错误卡，不白屏）
 };
 
 const KNOWN_PATHS = Object.keys(ROUTES);
@@ -329,6 +304,9 @@ function buildCtx(route) {
       databases: (q, opts) => get(DB_ADMIN, q, opts),
       dbOpen: (body) => post(`${DB_ADMIN}/open`, body),
       dbCreate: (body) => post(`${DB_ADMIN}/create`, body),
+      // ⭐ 04 冻结新增（02 §4.3）：图谱数据端点（GET /api/graph，mode=domains/graph 两态）。
+      //    `?db=` 注入由 HTTP 层统一负责；响应形状与 limit 语义归 04。
+      graph: (q) => get("/api/graph", q),
     },
     toast,
     navigate,
@@ -343,15 +321,7 @@ function buildCtx(route) {
 }
 
 // ── 错误 / 空态渲染（统一一个 renderError，§7.2） ────────────────────
-export function renderNotice(el_, lines, actionLabel, action) {
-  clear(el_);
-  const box = el("div", { class: "mw-empty" });
-  for (const line of lines) if (line) append(box, el("p", { text: line }));
-  if (actionLabel && action) {
-    append(box, el("p", null, [el("button", { type: "button", class: "secondary outline", text: actionLabel, onclick: action })]));
-  }
-  el_.append(box);
-}
+// ⭐ `renderNotice` 已迁 ui.js（02 §4.1；本文件头部再导出，databases.js/tree.js 的 import 零改动）。
 
 const ERROR_TEXT = {
   not_found: (m) => [m || "未找到。", "该地址在记忆库里不存在（可能已被移动或删除）。"],
@@ -434,9 +404,7 @@ async function mountRoute(path, params) {
 
   host.replaceChildren();
   host.setAttribute("aria-busy", "true");
-  const skel = el("div", { class: "mw-skeleton", "aria-busy": "true" });
-  for (let i = 0; i < 4; i++) skel.append(el("span"));
-  host.append(skel);
+  host.append(skeleton()); // 统一骨架形状（4×span + label，02 §4.1 迁出行）
 
   let mod;
   try {
@@ -490,9 +458,7 @@ export async function renderSidebar() {
     sidebarDispose = null;
   }
   clear(host);
-  const skel = el("div", { class: "mw-skeleton", "aria-busy": "true" });
-  for (let i = 0; i < 3; i++) skel.append(el("span"));
-  host.append(skel);
+  host.append(skeleton({ lines: 3 })); // 统一骨架形状（3×span + label，02 §4.1 迁出行）
   try {
     const { mountSidebar } = await import("./views/tree.js");
     if (seq !== sidebarSeq) return; // ⭐ 慢的那个回来时不覆盖新库侧栏
@@ -500,11 +466,26 @@ export async function renderSidebar() {
     const dispose = await mountSidebar(host, buildCtx({ path: currentPath, params: currentParams }));
     if (seq !== sidebarSeq) return; // ⭐ mountSidebar 内部 await 之后同样校验
     sidebarDispose = typeof dispose === "function" ? dispose : null;
+    addGraphEntry(host); // ⭐ F10（04 §4.2）：图谱入口插在「系统视图」分组之上
   } catch (err) {
     if (seq !== sidebarSeq) return;
     console.error("侧栏加载失败", err);
     renderNotice(host, ["侧栏加载失败。", "服务可能未启动。"]);
   }
+}
+
+// ⭐ F10（04 §4.2）：侧栏图谱入口。位置 = 「系统视图」分组（`.mw-view-links` 的父容器，01 §7.3
+//    冻结类）**之上**、独立于该分组；形态 = 01 §7.3 的普通链接行（无新类也可），文案与
+//    href 冻结：「记忆图谱」→ #/graph。落点在本壳而非 tree.js mountSidebar（Main 裁定
+//    2026-09-18：侧栏 DOM 属树机制面，app.js 是挂载协调点、对 tree.js 零侵入）——
+//    mountSidebar 每次以 clear(el_) 起手重挂，故只能在它成功后追加；renderSidebar 的
+//    seq 守卫保证旧调用不插入，重挂（切路由/切库/memory:changed）天然幂等不重复。
+function addGraphEntry(host) {
+  const group = host.querySelector(".mw-view-links");
+  // mountSidebar 的「侧栏不可用」早退分支没有分组可插 ⇒ 静默跳过（错误卡本身已是交代）。
+  if (!group || !group.parentElement) return;
+  if (group.parentElement.querySelector(':scope > a[href="#/graph"]')) return; // 双保险防重复
+  group.parentElement.before(el("a", { href: "#/graph", text: "记忆图谱" }));
 }
 
 // ── 变更检测轮询（§2.7；`PRAGMA data_version` 口径见契约 §7.4） ────────
@@ -748,6 +729,15 @@ function installKeybindings() {
       for (const n of document.querySelectorAll("#mw-toasts .mw-toast")) dismissToast(n);
       const q = $("#mw-q");
       if (q && document.activeElement === q) q.value = "";
+      // F3（02 §4.2 步骤5）：jump 的 Esc 清错误并失焦，**不清值**（粘贴成本高）。
+      // modal 打开时焦点在 dialog 内 ⇒ 下面条件不成立，不劫持 <dialog> 自己的 Esc 链。
+      const jump = $("#mw-jump input");
+      if (jump && document.activeElement === jump) {
+        const jumpError = $("#mw-jump-error");
+        if (jumpError) jumpError.hidden = true;
+        jump.removeAttribute("aria-invalid");
+        jump.blur();
+      }
     }
   };
   document.addEventListener("keydown", onKey);
@@ -761,8 +751,11 @@ function measureNav() {
 }
 
 function renderShell() {
-  const toasts = $("#mw-toasts");
-  if (toasts) toasts.addEventListener("mw:toast", (e) => showToast(e.detail));
+  // ⭐ toast 监听 MUST 挂 document（02 §4.4 死线修复）：toast() 在 document 上派发 `mw:toast`，
+  //    而 DOM 事件只沿**目标 → 祖先**链传播 —— 旧实现挂在后代 `#mw-toasts` 上，监听 0 次触发，
+  //    全站 toast（写成功/切库失败/复制反馈）从未亮过。事件名/形状/派发点零变化；
+  //    `#mw-toasts` 回归纯容器职责（showToast 内部照旧读它做挂载点）。
+  document.addEventListener("mw:toast", (e) => showToast(e.detail));
 
   const themeBtn = $("#mw-theme");
   if (themeBtn) {
@@ -791,6 +784,51 @@ function renderShell() {
       const value = q.value.trim();
       if (value) navigate(`#/search?q=${encodeURIComponent(value)}`);
     });
+  }
+
+  // ── F3 全局 URI 直达（02 §4.2；槽位结构归 01 §7.2，index.html 初载 hidden） ──
+  // 顶栏只把「格式不对」与「节点不在」分层：**不做导航前预检**（不发 GET 探节点存在性 ——
+  // 顶栏必须保持廉价），不存在的节点由节点页的 renderError 管线出错误卡。
+  const jumpForm = $("#mw-jump");
+  if (jumpForm) {
+    const jumpInput = $("input", jumpForm);
+    const jumpError = $("#mw-jump-error");
+    const failJump = () => {
+      // 行内报错（F3 验收原文）：role=status 的 #mw-jump-error + aria-invalid，不弹 toast。
+      if (jumpError) {
+        jumpError.textContent = "地址需形如 domain://path(不含空白)";
+        jumpError.hidden = false;
+      }
+      if (jumpInput) jumpInput.setAttribute("aria-invalid", "true");
+    };
+    const clearJumpError = () => {
+      if (jumpError) jumpError.hidden = true;
+      if (jumpInput) jumpInput.removeAttribute("aria-invalid");
+    };
+    const jumpGo = () => {
+      const value = jumpInput ? jumpInput.value.trim() : "";
+      if (!isValidUri(value)) {
+        failJump();
+        return;
+      }
+      clearJumpError();
+      // 目标就是当前节点时由 navigate 原地重挂，无需特判（app.js navigate 同 hash 分支）。
+      navigate(`#/node?uri=${encodeURIComponent(value)}`);
+    };
+    if (jumpInput) {
+      jumpInput.addEventListener("input", clearJumpError); // 用户开始改就别再喊（§4.2 步骤4）
+      jumpInput.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        // ⭐ IME 守卫：与 #mw-q 同款（§4.2 步骤2）—— 组词中的 Enter 是选候选，不是提交。
+        if (e.isComposing === true || e.keyCode === 229) return;
+        // 拦下单输入框表单的隐式提交，统一走 jumpGo()（防 keydown + submit 双触发）。
+        e.preventDefault();
+        jumpGo();
+      });
+    }
+    // 兜底：非 Enter 路径的隐式提交只防默认行为（防整页刷新），不重复导航。
+    jumpForm.addEventListener("submit", (e) => e.preventDefault());
+    jumpForm.hidden = false; // 接线完成 ⇒ 启用（01 §7.2：接线前保持 hidden）
   }
 
   const burger = $("#mw-burger");

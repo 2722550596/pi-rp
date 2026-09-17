@@ -7,13 +7,26 @@
  *
  * 本页与 `MEM://timeline`（`#/view?name=timeline`）同源同口径（`raw_log` + `active=1`），
  * 额外提供分页、session 筛选与「历史分支行」开关（契约 §8.3 的双端点互验钉住了这一点）。
+ *
+ * F4（03 §10.3）：`from/to raw_id` 参数名不暴露给用户——主输入是「定位」框
+ * （`#123` / `123`，parseLocateInput 纯函数，非法行内报错），范围模式收进「高级」折叠；
+ * session 选择器用 ui.sessionLabel 人类标签（起始时间 + 首条摘要，B 档；旧服务端无
+ * `first_text` 时自动降级 A 档仅时间）；UUID 只在详情 / title 等宽展示，不再裸铺。
  */
+
+import {
+	el,
+	errorCard,
+	roleBadge,
+	select,
+	sessionLabel,
+	skeleton,
+	uriCopy,
+	uriLine,
+} from "../ui.js";
 
 /** 每页行数。服务端 `limit` 取值域 1..500（D1 §7.5）。 */
 const PAGE_SIZE = 50;
-
-/** 已知 role 的展示（`rp-notify` 是 TEMP 触发通知的 customType，`temp-notify.ts:12`）。 */
-const KNOWN_ROLES = new Set(["user", "assistant", "system", "tool", "rp-notify"]);
 
 /** 历史分支行的悬停说明（契约 §6.2：行永不物理删除）。 */
 const INACTIVE_TITLE =
@@ -32,46 +45,13 @@ function paramOf(params) {
 	return (k) => (src[k] === null || src[k] === undefined ? "" : String(src[k]));
 }
 
-/** 只构造元素、只写 `textContent` —— 原文必须字面呈现，不得被当 HTML。 */
-function h(tag, props, children) {
-	const node = document.createElement(tag);
-	const p = props || {};
-	for (const key of Object.keys(p)) {
-		const v = p[key];
-		if (v === null || v === undefined || v === false) continue;
-		if (key === "class") node.className = v;
-		else if (key === "text") node.textContent = String(v);
-		else if (key === "dataset") {
-			for (const dk of Object.keys(v)) node.dataset[dk] = String(v[dk]);
-		} else node.setAttribute(key, v === true ? "" : String(v));
-	}
-	const kids = children === null || children === undefined ? [] : [].concat(children);
-	for (const c of kids) {
-		if (c === null || c === undefined || c === false) continue;
-		node.append(c instanceof Node ? c : document.createTextNode(String(c)));
-	}
-	return node;
-}
-
-function toast(ctx, msg, type) {
-	if (ctx && typeof ctx.toast === "function") ctx.toast(msg, type);
-}
-
-/** role 徽章：**必须容错未知值**（契约 §12-P5：每个 role 都可能是 customType）。 */
-export function roleBadge(role) {
-	const value = role === null || role === undefined || role === "" ? "(无角色)" : String(role);
-	const known = KNOWN_ROLES.has(value);
-	return h("span", {
-		class: "mw-chip",
-		dataset: { role: value, known: known ? "1" : "0" },
-		title:
-			value === "rp-notify"
-				? "系统通知（TEMP 触发通知使用的 customType）"
-				: known
-					? undefined
-					: "自定义角色类型（原样显示）",
-		text: value,
-	});
+/**
+ * F4 定位输入（纯函数，供单测）：`#123` / `123` → `{ from: 123 }`；其余 → null。
+ * 调用方对 null 行内报错、不发请求。API 查询参数仍叫 `from`（功能性参数，不是展示标签）。
+ */
+export function parseLocateInput(value) {
+	const m = /^#?(\d+)$/.exec(typeof value === "string" ? value.trim() : "");
+	return m ? { from: Number(m[1]) } : null;
 }
 
 /** 行状态 class：`active=0` 与 `active=1` 必须一眼可辨（契约 §6.2 / D3 §3.2）。 */
@@ -79,9 +59,16 @@ export function activeStyle(row) {
 	return row && row.active === 0 ? "mw-row mw-raw--inactive" : "mw-row";
 }
 
+/** 选中会话后的头部回显：人类标签（ui.sessionLabel）+ 计数；UUID 不出现。 */
+function sessionMetaText(s) {
+	const label = sessionLabel(s);
+	const counts = `${Number(s.total) || 0} 条 · 活跃 ${Number(s.active) || 0}`;
+	return label ? `${label} · ${counts}` : counts;
+}
+
 // ── 页面 ──────────────────────────────────────────────────────────────────────
 
-export async function mount(el, params, ctx) {
+export async function mount(el_, params, ctx) {
 	const P = paramOf(params);
 	const ac = new AbortController();
 	const { signal } = ac;
@@ -107,10 +94,10 @@ export async function mount(el, params, ctx) {
 		error: null,
 	};
 
-	// 单一委托层：子节点随便重建，监听器挂在 `el` 上并随 signal 一起解绑（dispose 的落点）。
-	el.addEventListener("click", onClick, { signal });
-	el.addEventListener("change", onChange, { signal });
-	el.addEventListener("submit", onSubmit, { signal });
+	// 单一委托层：子节点随便重建，监听器挂在 `el_` 上并随 signal 一起解绑（dispose 的落点）。
+	el_.addEventListener("click", onClick, { signal });
+	el_.addEventListener("change", onChange, { signal });
+	el_.addEventListener("submit", onSubmit, { signal });
 
 	await boot();
 	return function dispose() {
@@ -175,21 +162,13 @@ export async function mount(el, params, ctx) {
 
 	async function onClick(ev) {
 		const target =
-			ev.target instanceof Element ? ev.target.closest("[data-action],[data-copy],[data-nav]") : null;
+			ev.target instanceof Element ? ev.target.closest("[data-action],[data-nav]") : null;
 		if (!target) return;
 
 		const nav = target.getAttribute("data-nav");
 		if (nav) {
 			ev.preventDefault();
 			navigate(ctx, nav);
-			return;
-		}
-
-		const copy = target.getAttribute("data-copy");
-		if (copy) {
-			ev.preventDefault();
-			await copyText(copy);
-			toast(ctx, "已复制 entry_id", "info");
 			return;
 		}
 
@@ -237,11 +216,38 @@ export async function mount(el, params, ctx) {
 
 	function onSubmit(ev) {
 		ev.preventDefault();
-		const target = ev.target;
-		const from = target.querySelector('[data-field="from"]');
-		const to = target.querySelector('[data-field="to"]');
-		state.from = from ? from.value.trim() : "";
-		state.to = to ? to.value.trim() : "";
+		const form = ev.target;
+		const locateInput = form.querySelector('input[name="locate"]');
+		const errEl = form.querySelector("[data-locate-error]");
+
+		// F4：定位框优先（`#123`/`123`）；非法 → 行内报错，不发请求。
+		// 报错直接改 DOM（不走 render()）：重画会连输入框一起重建，用户刚敲的字就没了。
+		const locateValue = locateInput ? locateInput.value : "";
+		const parsed = parseLocateInput(locateValue);
+		if (locateValue.trim() !== "" && !parsed) {
+			if (errEl) {
+				errEl.textContent = "请输入数字编号（原文行的永久编号）";
+				errEl.setAttribute("style", "color: var(--mw-danger)");
+			}
+			if (locateInput) locateInput.setAttribute("aria-invalid", "true");
+			return;
+		}
+		if (errEl) {
+			errEl.textContent = "";
+			errEl.removeAttribute("style");
+		}
+		if (locateInput) locateInput.removeAttribute("aria-invalid");
+
+		if (parsed) {
+			state.from = String(parsed.from);
+			state.to = "";
+		} else {
+			// 「高级」折叠里的范围模式：兼容原 from+to 语义（仍不带 raw_id 字样）。
+			const from = form.querySelector('[data-field="from"]');
+			const to = form.querySelector('[data-field="to"]');
+			state.from = from ? from.value.trim() : "";
+			state.to = to ? to.value.trim() : "";
+		}
 		state.stack = [{ before: null, around: "" }];
 		state.index = 0;
 		void load();
@@ -250,119 +256,133 @@ export async function mount(el, params, ctx) {
 	// ── 渲染 ────────────────────────────────────────────────────────────────
 
 	function render() {
-		el.replaceChildren(h("section", { class: "mw-raw" }, [renderHeader(), renderBody(), renderFooter()]));
+		el_.replaceChildren(el("section", { class: "mw-raw" }, [renderHeader(), renderBody(), renderFooter()]));
 	}
 
 	function renderHeader() {
 		const sessionMeta = state.session ? state.sessions.find((s) => s.session_id === state.session) : null;
 		const roleOptions = uniqueRoles(state.items);
 
-		const sessionSelect = h(
-			"select",
-			{ dataset: { field: "session" }, "aria-label": "会话筛选" },
-			[h("option", { value: "", text: "全部会话", selected: state.session === "" })].concat(
-				state.sessions.map((s) =>
-					h("option", {
-						value: s.session_id,
-						selected: s.session_id === state.session,
-						text: sessionOptionLabel(s),
-					}),
-				),
+		// F4：选项文本是人类标签（时间 + 首条摘要；旧服务端无 first_text → 仅时间），
+		// UUID 从选项文本消失。`value` 仍是 session_id（功能性参数，不是展示标签）。
+		const sessionSelect = select({
+			options: [{ value: "", label: "全部会话" }].concat(
+				state.sessions.map((s) => ({ value: s.session_id, label: sessionLabel(s) })),
 			),
-		);
+			value: state.session,
+		});
+		sessionSelect.dataset.field = "session";
+		sessionSelect.setAttribute("aria-label", "会话筛选");
 		if (state.sessions.length === 0) sessionSelect.setAttribute("disabled", "");
 
-		const activeToggle = h("label", { class: "mw-muted" }, [
-			h("input", { type: "checkbox", dataset: { field: "activeOnly" }, checked: state.activeOnly }),
+		const activeToggle = el("label", { class: "mw-muted" }, [
+			el("input", { type: "checkbox", dataset: { field: "activeOnly" }, checked: state.activeOnly }),
 			" 只显示当前分支（active=1）",
 		]);
 
-		const roleSelect = h(
-			"select",
-			{ dataset: { field: "role" }, "aria-label": "角色筛选（仅当前页）" },
-			[h("option", { value: "", text: "全部角色", selected: state.role === "" })].concat(
-				roleOptions.map((r) =>
-					h("option", {
-						value: r,
-						selected: r === state.role,
-						text: r === "rp-notify" ? "rp-notify（系统通知）" : r,
-					}),
-				),
+		const roleSelect = select({
+			options: [{ value: "", label: "全部角色" }].concat(
+				roleOptions.map((r) => ({ value: r, label: r === "rp-notify" ? "rp-notify（系统通知）" : r })),
 			),
-		);
+			value: state.role,
+		});
+		roleSelect.dataset.field = "role";
+		roleSelect.setAttribute("aria-label", "角色筛选（仅当前页）");
 
-		const form = h("form", { class: "mw-raw-search" }, [
-			h("input", {
+		// F4 主输入：「定位」框（文本框，接受 `#123` / `123`）。不挂 data-field——
+		// change 委托会把它当状态字段触发整页重画、吞掉输入焦点；它的值只在 submit 读。
+		const locateInput = el("input", {
+			type: "text",
+			class: "mw-input-mono",
+			name: "locate",
+			placeholder: "定位：输入编号，如 123 或 #123",
+			value: /^\d+$/.test(state.from) ? `#${state.from}` : "",
+			"aria-label": "定位：原文行编号",
+		});
+
+		// F4 高级模式：双框范围（起始/结束编号），兼容原 from+to 语义。
+		const advanced = el("details", { class: "mw-raw-advanced" }, [
+			el("summary", { text: "高级：编号范围" }),
+			el("input", {
 				type: "number",
 				min: "1",
 				name: "from",
-				placeholder: "from raw_id",
+				placeholder: "起始编号",
 				value: state.from,
 				dataset: { field: "from" },
 			}),
-			h("input", {
+			el("input", {
 				type: "number",
 				min: "1",
 				name: "to",
-				placeholder: "to raw_id",
+				placeholder: "结束编号",
 				value: state.to,
 				dataset: { field: "to" },
 			}),
-			h("button", { type: "submit", class: "secondary outline", text: "定位窗口" }),
 		]);
 
-		return h("header", {}, [
-			h("h2", { text: "原文时间轴" }),
-			h("p", {}, [
+		// F4 行内错误位：渲染期恒为空；submit 校验失败时由 onSubmit 原地填（不重画）。
+		const locateError = el("p", {
+			class: "mw-muted",
+			role: "alert",
+			"data-locate-error": "",
+		});
+
+		const form = el("form", { class: "mw-raw-search" }, [
+			locateInput,
+			el("button", { type: "submit", text: "定位" }),
+			advanced,
+			locateError,
+		]);
+
+		return el("header", {}, [
+			el("h2", { text: "原文时间轴" }),
+			// 说明行（03 §10.3 明确保留）：它解释编号的含义，不是参数名。
+			el("p", {}, [
 				"数据源是 raw_log（消息级原文），不是 nodes。轴序按 ",
-				h("code", { text: "raw_id" }),
+				el("code", { text: "raw_id" }),
 				"（入库顺序，永不重排）——世界时间只作展示，会随世界钟变化。",
 			]),
-			h("div", { class: "mw-raw-filters" }, [
-				h("label", { class: "mw-muted" }, ["会话", sessionSelect]),
+			el("div", { class: "mw-raw-filters" }, [
+				el("label", { class: "mw-muted" }, ["会话", sessionSelect]),
 				activeToggle,
-				h("label", { class: "mw-muted" }, ["角色（本页内过滤）", roleSelect]),
+				el("label", { class: "mw-muted" }, ["角色（本页内过滤）", roleSelect]),
 				form,
-				h("button", {
+				el("button", {
 					type: "button",
-					class: "secondary outline",
 					dataset: { action: "toggle-order" },
 					text: state.desc ? "正序（旧→新）" : "倒序（新→旧）",
 				}),
 			]),
 			state.around && state.centered
-				? h("p", { class: "mw-muted" }, [
+				? el("p", { class: "mw-muted" }, [
 						"已定位：",
-						h("code", { text: state.around }),
+						uriLine(state.around),
 						"（该原文条目所在的页）",
 					])
 				: null,
-			state.session && sessionMeta ? h("p", { class: "mw-muted" }, [sessionOptionLabel(sessionMeta)]) : null,
+			state.session && sessionMeta ? el("p", { class: "mw-muted", text: sessionMetaText(sessionMeta) }) : null,
 		]);
 	}
 
 	function renderBody() {
 		if (state.loading && state.items.length === 0) {
-			return h("div", { class: "mw-skeleton", "aria-busy": "true", text: "载入中…" });
+			return skeleton();
 		}
 		if (state.error) {
-			return h("article", {}, [
-				h("header", { text: "无法载入原文日志" }),
-				h("p", { text: `${state.error.code}：${state.error.message}` }),
-				h("button", { type: "button", dataset: { action: "reload" }, text: "重试" }),
-			]);
+			return errorCard(state.error, { retry: () => void load() });
 		}
 
 		const visible = filterByRole(sortItems(state.items, state.desc), state.role);
 		if (visible.length === 0) {
-			return h("p", { class: "mw-muted" }, [
+			return el("p", { class: "mw-muted" }, [
 				state.items.length === 0
 					? "没有符合条件的原文行。"
 					: `本页 ${state.items.length} 行都被角色筛选排除了。`,
 			]);
 		}
 
-		return h(
+		return el(
 			"ol",
 			{ class: "mw-raw-list" },
 			visible.map((row) => renderRow(row)),
@@ -373,61 +393,54 @@ export async function mount(el, params, ctx) {
 		const isTarget = state.around !== "" && row.entry_id === state.around;
 		const inactive = row.active === 0;
 
-		const head = h("div", { class: "mw-raw-head" }, [
-			h("span", {
+		// F4：行头不再有 session UUID（移入「详情」，等宽 + 可复制）。
+		const head = el("div", { class: "mw-raw-head" }, [
+			el("span", {
 				class: "mw-chip",
 				text: `#${row.raw_id}`,
-				title: "原文行的永久编号（raw_id 永不回收）",
+				title: "原文行的永久编号（永不回收）",
 			}),
 			roleBadge(row.role),
 			inactive
-				? h("span", {
+				? el("span", {
 						class: "mw-chip",
 						dataset: { kind: "inactive" },
 						title: INACTIVE_TITLE,
 						text: `↩ ${INACTIVE_CHIP}`,
 					})
 				: null,
-			h("span", { class: "mw-muted", text: `世界时间 ${worldText(row.world_ts)}` }),
-			h("span", { class: "mw-muted", text: row.session_id }),
+			el("span", { class: "mw-muted", text: `世界时间 ${worldText(row.world_ts)}` }),
 		]);
 
-		const body = h("p", { text: row.text === "" || row.text === null ? "（空原文）" : row.text });
+		const body = el("p", { text: row.text === "" || row.text === null ? "（空原文）" : row.text });
 
-		const detail = h("details", {}, [
-			h("summary", { text: "详情" }),
-			h("dl", { class: "mw-kv" }, [
-				h("dt", { text: "entry_id" }),
-				h("dd", {}, [
-					h("code", { text: row.entry_id }),
+		// F4：UUID 只在详情等宽展示；entry_id/session_id 用 uriCopy（点击复制 + toast）。
+		const detail = el("details", {}, [
+			el("summary", { text: "详情" }),
+			el("dl", { class: "mw-kv" }, [
+				el("dt", { text: "entry_id" }),
+				el("dd", {}, [
+					uriCopy(row.entry_id),
 					" ",
-					h("button", {
+					el("button", {
 						type: "button",
-						class: "secondary outline",
-						dataset: { copy: row.entry_id },
-						text: "复制",
-					}),
-					" ",
-					h("button", {
-						type: "button",
-						class: "secondary outline",
 						dataset: { nav: rawDeepLink(row) },
 						title: "在原文轴上以该条目为中心定位（带上会话）",
 						text: "以它为锚点",
 					}),
 				]),
-				h("dt", { text: "session_id" }),
-				h("dd", { text: row.session_id }),
-				h("dt", { text: "wall_ts（记录于）" }),
-				h("dd", { text: worldText(row.wall_ts) }),
-				h("dt", { text: "world_ts（世界时间）" }),
-				h("dd", { text: worldText(row.world_ts) }),
-				h("dt", { text: "active" }),
-				h("dd", { text: inactive ? "0（已切走，不在当前分支）" : "1（在当前分支上）" }),
+				el("dt", { text: "session_id" }),
+				el("dd", {}, [uriCopy(row.session_id)]),
+				el("dt", { text: "wall_ts（记录于）" }),
+				el("dd", { text: worldText(row.wall_ts) }),
+				el("dt", { text: "world_ts（世界时间）" }),
+				el("dd", { text: worldText(row.world_ts) }),
+				el("dt", { text: "active" }),
+				el("dd", { text: inactive ? "0（已切走，不在当前分支）" : "1（在当前分支上）" }),
 			]),
 		]);
 
-		return h(
+		return el(
 			"li",
 			{
 				class: isTarget ? `${activeStyle(row)} mw-row--active` : activeStyle(row),
@@ -443,10 +456,10 @@ export async function mount(el, params, ctx) {
 		if (state.error) return null;
 
 		const otherBranch = inactiveCount();
-		const stats = [h("span", { class: "mw-muted", text: `共 ${state.total} 条（当前筛选）` })];
+		const stats = [el("span", { class: "mw-muted", text: `共 ${state.total} 条（当前筛选）` })];
 		if (state.totalAll > 0) {
 			stats.push(
-				h("span", {
+				el("span", {
 					class: "mw-muted",
 					text:
 						otherBranch > 0
@@ -456,18 +469,16 @@ export async function mount(el, params, ctx) {
 			);
 		}
 
-		const pager = h("div", { class: "mw-raw-pager" }, [
-			h("button", {
+		const pager = el("div", { class: "mw-raw-pager" }, [
+			el("button", {
 				type: "button",
-				class: "secondary outline",
 				dataset: { action: "prev" },
 				disabled: state.index === 0,
 				text: "较新一页",
 			}),
-			h("span", { class: "mw-muted", text: `第 ${state.index + 1} 页 · 每页 ${PAGE_SIZE}` }),
-			h("button", {
+			el("span", { class: "mw-muted", text: `第 ${state.index + 1} 页 · 每页 ${PAGE_SIZE}` }),
+			el("button", {
 				type: "button",
-				class: "secondary outline",
 				dataset: { action: "next" },
 				disabled: state.items.length < PAGE_SIZE,
 				text: "较早一页",
@@ -477,28 +488,27 @@ export async function mount(el, params, ctx) {
 		// §3.5 回执：勾选「只显示当前分支」且确有被过滤掉的行时必须回执，措辞是「过滤掉」。
 		const receipt =
 			state.activeOnly && otherBranch > 0
-				? h("p", { class: "mw-muted" }, [
+				? el("p", { class: "mw-muted" }, [
 						`已按分支过滤掉 ${otherBranch} 条历史行 · `,
-						h("button", {
+						el("button", {
 							type: "button",
-							class: "secondary outline",
 							dataset: { action: "show-inactive" },
 							text: "显示它们",
 						}),
 					])
 				: null;
 
-		return h("footer", {}, [
-			h("div", { class: "mw-raw-stats" }, stats),
+		return el("footer", {}, [
+			el("div", { class: "mw-raw-stats" }, stats),
 			pager,
 			receipt,
-			h("p", { class: "mw-muted" }, [
+			el("p", { class: "mw-muted" }, [
 				"回滚不丢原文：reroll / 切分支只翻 active 标记，行永不物理删除；切回该分支会原样复活" +
 					"（raw_id 与 world_ts 保留）。别的会话的行不受影响。",
 			]),
-			h("p", { class: "mw-muted" }, [
+			el("p", { class: "mw-muted" }, [
 				"本页与 ",
-				h("a", { href: "#/view?name=timeline", text: "MEM://timeline" }),
+				el("a", { href: "#/view?name=timeline", text: "MEM://timeline" }),
 				" 同源（raw_log，active=1）；本页多了分页与历史分支开关。",
 			]),
 		]);
@@ -544,15 +554,6 @@ function uniqueRoles(items) {
 	return Array.from(set).sort();
 }
 
-function sessionOptionLabel(session) {
-	const span = session.wall_first || session.wall_last ? `${short(session.wall_first)} ~ ${short(session.wall_last)}，` : "";
-	return `${session.session_id}（${span}${session.total} 条 · 活跃 ${session.active}）`;
-}
-
-function short(ts) {
-	return ts === null || ts === undefined ? "" : String(ts).slice(0, 10);
-}
-
 function worldText(value) {
 	return value === null || value === undefined || value === "" ? "—" : String(value);
 }
@@ -566,25 +567,4 @@ function rawDeepLink(row) {
 function navigate(ctx, hash) {
 	if (ctx && typeof ctx.navigate === "function") ctx.navigate(hash);
 	else location.hash = hash;
-}
-
-async function copyText(text) {
-	try {
-		if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-			await navigator.clipboard.writeText(text);
-			return;
-		}
-	} catch {
-		// 落到下面的兜底
-	}
-	const tmp = document.createElement("textarea");
-	tmp.value = text;
-	tmp.setAttribute("readonly", "");
-	document.body.append(tmp);
-	tmp.select();
-	try {
-		document.execCommand("copy");
-	} finally {
-		tmp.remove();
-	}
 }

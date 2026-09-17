@@ -10,34 +10,39 @@
 //   2. `aliases`（旧地址映射）与 `glossary`（触发词）是**两张不同的表** → 两块标题/文案都必须不同。
 //   3. `anchor_entry_id` / `anchor_session_id` 仅 `auto` 节点有值；深链 MUST **同时带 session**
 //      （`raw_log` 唯一索引是 `(session_id, entry_id)`，跨 session 重名时服务端返回 bad_request）。
+//
+// 徽章/面包屑/URI 件/署名一律取自公共层（02 §3.5/§3.6/§3.7）；不再 import tree.js / views.js。
 
-import { el, clear, append, navigate, renderError } from "../app.js";
-import { impChip, shadowedChip, SHADOWED_TEXT, SHADOWED_TITLE } from "./tree.js";
-import { discBadge, discChip } from "./views.js";
+import { navigate, renderError } from "../app.js";
+import {
+  append,
+  breadcrumb,
+  clear,
+  dash,
+  discBadge,
+  discChip,
+  editorLabel,
+  el,
+  importanceBadge,
+  lastSegment,
+  shadowedBadge,
+  sourceBadge,
+  stubChip,
+  uriCopy,
+  uriLine,
+} from "../ui.js";
 
-// ── 署名渲染（§9.2，冻结）—— 本模块是**唯一**署名渲染点，导出给 D5 复用 ──
-// 规则：`editor_model === null && editor_source === "manual"` → 「用户（Web UI）」。
-// ⚠️ 「没取到」与「取到了但未知」必须区分：字段**根本不存在** → `null`（UI 整块省略署名），
-//    而不是「未知来源」——否则会把「没取到」伪装成「取到了但未知」（§5.3）。
-export function editorLabel(rev) {
-  if (!rev || typeof rev !== "object") return null;
-  const src = rev.editor_source;
-  // ⭐ 「没取到」与「取到了但未知」必须区分（§5.3 / §12.2）：
-  //    `undefined`（服务端压根没带这列）→ null（整块省略署名）；
-  //    `null`（列在、值为空）→ 走下面的映射，最终是「未知来源」。
-  if (src === undefined) return null;
-  const model = rev.editor_model === undefined ? null : rev.editor_model;
-  if (typeof model === "string" && model.length > 0) return model; // 模型 id 全等才算「同款」
-  if (src === "manual") return "用户（Web UI）";
-  if (src === "auto") return "自动写入（模型未知）";
-  if (src === "import") return "导入";
-  return "未知来源";
-}
+// 冻结文案（契约 §6.6；与 ui.js shadowedBadge 内部常量逐字一致）。
+// 本页「已遮蔽」说明行是散文句而非徽章，故需单独引用这两个串。
+const SHADOWED_TEXT = "已遮蔽（原分支已回滚）";
+const SHADOWED_TITLE = "该节点由自动写入产生，而它锚定的那条原文已不在当前分支上（原分支已回滚）。";
 
-export function sourceChip(source) {
-  if (!source) return null;
-  return el("span", { class: "mw-chip", text: String(source) }); // 容错未知值：渲染原始字符串，不抛错
-}
+// ── 署名渲染（§9.2，冻结）── 实现已收编 ui.js（02 §3.10 统一版：两份对拍收敛，
+// 「没取到 ≠ 取到了但未知」两条边界纪律都保留）。本模块过渡期 re-export（02 裁定），
+// D5 消费方迁完后删除本行。
+// ⭐ 口径变化（Main 已裁定）：`editor_source === null`（restoreRevision 归档版 = 系统动作）
+//    统一版显示「系统」；旧 node.js 版曾把它回落成「未知来源」。
+export { editorLabel };
 
 function kv(list) {
   const dl = el("dl", { class: "mw-kv" });
@@ -51,10 +56,6 @@ function kv(list) {
   return dl;
 }
 
-function dash(v) {
-  return v === null || v === undefined || v === "" ? "—" : String(v);
-}
-
 function section(title, note, body) {
   const card = el("article");
   if (title) append(card, el("h3", { text: title }));
@@ -63,19 +64,30 @@ function section(title, note, body) {
   return card;
 }
 
-// ── 面包屑（§5.7） ──────────────────────────────────────────────────
+// ── 面包屑（§5.7；F7） ──────────────────────────────────────────────
 // 项来自 DTO 的 `path`（服务端按 implicitParentUri 算）；**不自己按 `/` 切**
 // （URI 里 `://` 与 `/` 混用，客户端切分容易在 `core://` 这种根上出错）。
+// F7：祖先逐级**段名**可点（链接目标保持现状 `#/tree?uri=<祖先完整 uri>`）；
+// 当前节点不可点，= uriCopy（aria-current + title 全 URI + 点击复制）。
 export function renderBreadcrumb(el_, path, uri) {
-  const nav = el("nav", { class: "mw-bc", "aria-label": "面包屑" });
-  const list = el("ol");
   const entries = Array.isArray(path) ? path : [];
+  const items = [];
   for (const p of entries) {
     if (!p || !p.uri || p.uri === uri) continue;
-    list.append(el("li", null, [el("a", { href: `#/tree?uri=${encodeURIComponent(p.uri)}`, text: p.uri })]));
+    items.push({ label: lastSegment(p.uri), title: p.uri, href: `#/tree?uri=${encodeURIComponent(p.uri)}` });
   }
-  if (uri) list.append(el("li", null, [el("span", { "aria-current": "page", text: uri })]));
-  nav.append(list);
+  const nav = breadcrumb(items, { label: "面包屑" });
+  // ui.breadcrumb 的 label 只收字符串 → 当前节点手动挂尾（其唯一子节点是 <ol>）。
+  if (uri) {
+    const li = el("li");
+    const current = uriCopy(uri);
+    if (current) {
+      current.setAttribute("aria-current", "page");
+      li.append(current);
+    }
+    const list = nav.lastElementChild;
+    if (list) list.append(li);
+  }
   return nav;
 }
 
@@ -88,7 +100,9 @@ export function renderRevisions(el_, revisions, current) {
     el_.append(section("历史版本", null, el("p", { class: "mw-muted", text: "该节点还没有历史版本（首版即 v1 的影子）。" })));
     return;
   }
-  const table = el("table", { class: "striped" });
+  // 注：不用 ui.dataTable——它发不了 `th[scope=row]` 行头，也发不了单元格级
+  // `mw-num`（「NN 字」禁止折行）与 `mw-muted`（无署名降灰），换它即回归。
+  const table = el("table", { class: "mw-table--striped" });
   const thead = el("thead");
   const hr = el("tr");
   for (const h of ["版本", "时间", "署名", "长度", "操作"]) hr.append(el("th", { text: h, scope: "col" }));
@@ -113,7 +127,7 @@ export function renderRevisions(el_, revisions, current) {
     // 「恢复到此版本」是**写操作 → 归 D5**：本模块只渲染按钮位，用事件委托转交（不 import D5）。
     const restore = el("button", {
       type: "button",
-      class: "secondary outline",
+      class: "mw-btn--outline",
       text: "恢复到此版本",
       "data-action": "restore",
       "data-version": String(r.version ?? ""),
@@ -184,9 +198,9 @@ function edgeList(edges, direction, selfUri) {
       const raw = e && typeof e.target_uri === "string" ? `：${e.target_uri}` : "";
       append(li, el("span", { text: `⚠ 悬空边${raw}（目标不存在）` }));
     } else {
+      // F2：对端链接 = uriLine（等宽、省略、title 全文）；链接目标语义不变。
       const href = `#/node?uri=${encodeURIComponent(peerUri)}`;
-      const text = direction === "incoming" ? peerUri : peerUri;
-      li.append(el("a", { href, text }));
+      append(li, uriLine(peerUri, { href }));
       if (direction === "incoming" && selfUri) {
         append(li, el("span", { class: "mw-muted", text: ` —→ ${selfUri}` }));
       } else {
@@ -198,7 +212,7 @@ function edgeList(edges, direction, selfUri) {
         append(li, el("small", { class: "mw-muted", text: "（旧地址）" }));
       }
     }
-    // `kind` 为 null 时不渲染空 chip
+    // `kind` 为 null 时不渲染空 chip；未知 kind 容错：原样显示（走 mw-chip 中性徽章底座）。
     if (e && e.kind) append(li, el("span", { class: "mw-chip", text: String(e.kind) }));
     // ⭐ 关联条件（`edges.disclosure` 裸列）——**灰虚线 chip，绝不琥珀**。
     //    琥珀是「想起条件」的专属色相（入口级）；两者 MUST 一眼可辨。
@@ -231,25 +245,29 @@ export function renderEdges(el_, edges) {
 }
 
 // ── 技术信息折叠区（§5.2；不另开页、不另开端点） ────────────────────
+// ⭐ 2026-09-18 接线修复（03 §2.4，Main 拍板）：此前 details 构建后从未挂进 DOM，
+//    「技术信息」折叠区从不显示；现在 details 挂进 el_。
 export function renderMeta(el_, node, currentVersion) {
   const details = el("details");
   append(details, el("summary", { text: "技术信息" }));
+  const textCell = (v) => el("span", { class: "mw-content", text: dash(v) });
+  // anchor 两列是 UUID：F2「UUID 仅详情中等宽展示」——uriLine(full) 等宽 + 单击全选可复制。
+  const idCell = (id) => (id ? uriLine(id, { full: true }) : textCell(null));
   const rows = [
-    ["node_id（内码，仅排障用）", node.node_id],
-    ["domain", node.domain],
-    ["source", node.source],
-    ["model", node.model],
-    ["created_at", node.created_at],
-    ["updated_ts", node.updated_ts],
-    ["world_ts", node.world_ts],
-    ["last_accessed_at", node.last_accessed_at],
-    ["current_version", Number.isFinite(Number(currentVersion)) ? String(currentVersion) : null],
-    ["anchor_entry_id", node.anchor_entry_id],
-    ["anchor_session_id", node.anchor_session_id],
+    ["node_id（内码，仅排障用）", textCell(node.node_id)],
+    ["domain", textCell(node.domain)],
+    ["source", textCell(node.source)],
+    ["model", textCell(node.model)],
+    ["created_at", textCell(node.created_at)],
+    ["updated_ts", textCell(node.updated_ts)],
+    ["world_ts", textCell(node.world_ts)],
+    ["last_accessed_at", textCell(node.last_accessed_at)],
+    ["current_version", textCell(Number.isFinite(Number(currentVersion)) ? String(currentVersion) : null)],
+    ["anchor_entry_id", idCell(node.anchor_entry_id)],
+    ["anchor_session_id", idCell(node.anchor_session_id)],
   ];
-  details.append(kv(rows.map(([k, v]) => [k, el("span", { class: "mw-content", text: dash(v) })])));
-  const wrap = el("div");
-  el_.append(wrap);
+  details.append(kv(rows));
+  el_.append(details);
 }
 
 // ── 主渲染 ──────────────────────────────────────────────────────────
@@ -263,22 +281,24 @@ export function renderNode(el_, dto, entryUri) {
 
   el_.append(renderBreadcrumb(el_, dto.path, node.uri));
 
+  // F2：页头 URI = uriCopy（uriLine 形态 + 点击复制 → mw:toast）。
   const head = el("h2", { class: "mw-h2" });
-  head.append(el("span", { class: "mw-content", text: node.uri }));
-  append(head, impChip(node.importance));
-  const chip = sourceChip(node.source);
+  append(head, uriCopy(node.uri));
+  append(head, importanceBadge(node.importance)); // F6：四档色阶（null-skip 纪律同徽章厂）
+  const chip = sourceBadge(node.source); // F6：data-src 属性驱动
   if (chip) append(head, chip);
-  if (node.shadowed === true) append(head, shadowedChip());
+  if (node.shadowed === true) append(head, shadowedBadge());
   append(el_, head);
 
   // ⭐ 写入口（2026-09-15）：节点页是「这条记忆」的自然归属地，编辑/删除都从这里进。
   //   D5 的设计（`05-编辑与写入路径.md` §2.1）把全部写操作挂在编辑页上；本页只「指向」它，
   //   不自己实现任何写逻辑（原语归 `edit.js`，见其 §2.2 的模块边界）。
   const controls = el("p", { class: "mw-actions" });
-  const locate = el("button", { type: "button", class: "secondary outline", text: "在树中定位" });
+  const locate = el("button", { type: "button", class: "mw-btn--outline", text: "在树中定位" });
   locate.addEventListener("click", () => navigate(`#/tree?domain=${encodeURIComponent(node.domain)}&uri=${encodeURIComponent(node.uri)}`));
   const edit = el("a", {
     role: "button",
+    class: "mw-btn--primary",
     href: `#/edit?uri=${encodeURIComponent(node.uri)}`,
     text: "编辑",
     title: "改正文 / 重要度 / 想起条件 / 触发词 / 关联 / 移动 / 删除",
@@ -286,7 +306,7 @@ export function renderNode(el_, dto, entryUri) {
   // 删除是危险操作，单独给入口但去掉 main 色：`edit.js` 进页后还有二次确认。
   const remove = el("a", {
     role: "button",
-    class: "secondary outline",
+    class: "mw-btn--outline",
     href: `#/edit?uri=${encodeURIComponent(node.uri)}&action=forget`,
     text: "删除",
     title: "危险操作：修订史保留，可从「已删除」页恢复",
@@ -325,10 +345,11 @@ export function renderNode(el_, dto, entryUri) {
     const ul = el("ul");
     for (const c of children) {
       const li = el("li");
-      li.append(el("a", { href: `#/node?uri=${encodeURIComponent(c.uri)}`, text: c.uri }));
-      append(li, impChip(c.importance));
-      if (c.is_stub === true) li.append(el("small", { class: "mw-muted", text: " 占位" }));
-      if (c.shadowed === true) li.append(shadowedChip());
+      // F2：子节点链接 = uriLine（等宽、省略、title 全文），链接目标不变。
+      append(li, uriLine(c.uri, { href: `#/node?uri=${encodeURIComponent(c.uri)}` }));
+      append(li, importanceBadge(c.importance)); // F6
+      if (c.is_stub === true) append(li, stubChip()); // F6：灰纹「占位」徽章
+      if (c.shadowed === true) append(li, shadowedBadge());
       ul.append(li);
     }
     childBody.append(ul);
@@ -343,7 +364,13 @@ export function renderNode(el_, dto, entryUri) {
     });
     const body = el("div");
     append(body, el("p", null, [link]));
-    append(body, el("p", { class: "mw-muted", text: `会话 ${node.anchor_session_id} · 消息 ${node.anchor_entry_id}` }));
+    // F2：说明行的裸 UUID 换 uriLine（等宽、title 全文、单击全选）。
+    append(body, el("p", { class: "mw-muted" }, [
+      "会话 ",
+      uriLine(node.anchor_session_id, { full: true }),
+      " · 消息 ",
+      uriLine(node.anchor_entry_id, { full: true }),
+    ]));
     el_.append(section("溯源", null, body));
   }
 

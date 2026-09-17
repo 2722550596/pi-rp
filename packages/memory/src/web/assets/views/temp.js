@@ -8,85 +8,34 @@
  * 术语冻结（契约 §10.1）：动态区叫 **TEMP**，动作叫 **整理**，目标 **清到零**。
  */
 
+import {
+	el,
+	fmtTs,
+	foldWs,
+	importanceBadge,
+	num,
+	select,
+	shadowedBadge,
+	skeleton,
+	sourceBadge,
+	uriLine,
+} from "../ui.js";
+
 /** 每行 enrich（`/api/node`）的上限：TEMP 按设计就该很小（阈值 10、目标 0），但要防病态库。 */
 const ENRICH_CAP = 60;
 const ENRICH_CONCURRENCY = 6;
 
-/** 阈值来源文案（`thresholdSource` 缺失时固定显示「默认值」，**不猜**：D3 §5.3）。 */
+/** 阈值来源文案（`threshold_source` 缺失时固定显示「默认值」，**不猜**：D3 §5.3）。 */
 const THRESHOLD_SOURCE_LABEL = {
 	cli: "来自命令行",
 	settings: "来自 .pi/settings.json",
 	default: "默认值",
 };
 
-// ── 小工具 ────────────────────────────────────────────────────────────────────
-
-function paramOf(params) {
-	if (params && typeof params.get === "function") return (k) => params.get(k) ?? "";
-	const src = params || {};
-	return (k) => (src[k] === null || src[k] === undefined ? "" : String(src[k]));
-}
-
-function h(tag, props, children) {
-	const node = document.createElement(tag);
-	const p = props || {};
-	for (const key of Object.keys(p)) {
-		const v = p[key];
-		if (v === null || v === undefined || v === false) continue;
-		if (key === "class") node.className = v;
-		else if (key === "text") node.textContent = String(v);
-		else if (key === "dataset") {
-			for (const dk of Object.keys(v)) node.dataset[dk] = String(v[dk]);
-		} else node.setAttribute(key, v === true ? "" : String(v));
-	}
-	const kids = children === null || children === undefined ? [] : [].concat(children);
-	for (const c of kids) {
-		if (c === null || c === undefined || c === false) continue;
-		node.append(c instanceof Node ? c : document.createTextNode(String(c)));
-	}
-	return node;
-}
-
-function navigate(ctx, hash) {
-	if (ctx && typeof ctx.navigate === "function") ctx.navigate(hash);
-	else location.hash = hash;
-}
-
-function snippet(text, max) {
-	const s = text === null || text === undefined ? "" : String(text).replace(/\s+/g, " ").trim();
-	return s.length > max ? `${s.slice(0, max)}…` : s;
-}
-
-function impClass(n) {
-	const v = Number(n);
-	if (!Number.isFinite(v) || v <= 0) return "mw-imp mw-imp--1";
-	if (v >= 9) return "mw-imp mw-imp--5";
-	if (v >= 7) return "mw-imp mw-imp--4";
-	if (v >= 6) return "mw-imp mw-imp--3";
-	if (v >= 4) return "mw-imp mw-imp--3";
-	if (v >= 1) return "mw-imp mw-imp--2";
-	return "mw-imp mw-imp--1";
-}
-
-/**
- * 状态分类（纯函数，D3 §5.4 / §12.3 T15–T19 的断言对象）。
- * `0.8` 用 `>=`（写 `>` 会在 8/10 这一档漏掉）；`active === threshold` 即「达标」
- * （引擎判据是 `count < threshold` 才不足，`module.ts:513`）。
- */
-export function calibrateStage(active, threshold) {
-	const a = Number.isFinite(Number(active)) ? Number(active) : 0;
-	const t = Number.isFinite(Number(threshold)) ? Number(threshold) : 0;
-	if (t <= 0) return a <= 0 ? "empty" : "normal";
-	if (a <= 0) return "empty";
-	if (a >= t) return "reached";
-	if (a >= t * 0.8) return "near";
-	return "normal";
-}
-
 // ── 页面 ──────────────────────────────────────────────────────────────────────
 
-export async function mount(el, params, ctx) {
-	const P = paramOf(params);
+export async function mount(el_, params, ctx) {
+	const P = (k) => (params && typeof params.get === "function" ? params.get(k) ?? "" : "");
 	const ac = new AbortController();
 	const { signal } = ac;
 
@@ -102,8 +51,8 @@ export async function mount(el, params, ctx) {
 		error: null,
 	};
 
-	el.addEventListener("click", onClick, { signal });
-	el.addEventListener("change", onChange, { signal });
+	el_.addEventListener("click", onClick, { signal });
+	el_.addEventListener("change", onChange, { signal });
 
 	await boot();
 	return function dispose() {
@@ -208,8 +157,8 @@ export async function mount(el, params, ctx) {
 	// ── 渲染 ────────────────────────────────────────────────────────────────
 
 	function render() {
-		el.replaceChildren(
-			h("section", { class: "mw-temp" }, [
+		el_.replaceChildren(
+			el("section", { class: "mw-temp" }, [
 				renderHeader(),
 				renderGauge(),
 				renderNotifyPreview(),
@@ -219,29 +168,31 @@ export async function mount(el, params, ctx) {
 	}
 
 	function renderHeader() {
-		return h("header", {}, [
-			h("h2", { text: "TEMP 动态区" }),
-			h("p", {}, [
+		return el("header", {}, [
+			el("h2", { text: "TEMP 动态区" }),
+			el("p", {}, [
 				"草稿缓冲区。动作叫",
-				h("strong", { text: "整理" }),
+				el("strong", { text: "整理" }),
 				"，目标是",
-				h("strong", { text: "清到零" }),
+				el("strong", { text: "清到零" }),
 				"——不是处理一部分（缓冲区留底即垃圾场）。",
 			]),
-			h("p", { class: "mw-muted", text: `整理进度：还剩 ${state.count} 条（目标 0）` }),
+			el("p", { class: "mw-muted", text: `整理进度：还剩 ${state.count} 条（目标 0）` }),
 		]);
 	}
 
 	function renderGauge() {
 		if (state.error) {
-			return h("article", {}, [
-				h("header", { text: "无法载入 TEMP 动态区" }),
-				h("p", { text: `${state.error.code}：${state.error.message}` }),
-				h("button", { type: "button", dataset: { action: "reload" }, text: "重试" }),
+			// 错误态保持全站统一形状：article > header「无法载入…」+ p + 重试（data-action=reload，
+			// app.css 用 :has 识别这张卡描红）。
+			return el("article", {}, [
+				el("header", { text: "无法载入 TEMP 动态区" }),
+				el("p", { text: `${state.error.code}：${state.error.message}` }),
+				el("button", { type: "button", dataset: { action: "reload" }, text: "重试" }),
 			]);
 		}
 		if (state.loading) {
-			return h("div", { class: "mw-skeleton", "aria-busy": "true", text: "载入中…" });
+			return skeleton();
 		}
 
 		const threshold = state.threshold;
@@ -251,13 +202,13 @@ export async function mount(el, params, ctx) {
 
 		// 空态（D3 §5.4）：真正清到零才报喜；若 count_all > 0 说明只是全被遮蔽了，不撒谎。
 		if (stage === "empty" && state.countAll === 0) {
-			return h("article", {}, [
-				h("p", { text: "✓ TEMP 暂存区是空的。清到零 ✅" }),
+			return el("article", {}, [
+				el("p", { text: "✓ TEMP 暂存区是空的。清到零 ✅" }),
 			]);
 		}
 
 		const ratio = threshold > 0 ? Math.min(1, state.count / threshold) : 0;
-		const bar = h("progress", { value: String(Math.round(ratio * 100)), max: "100" });
+		const bar = el("progress", { value: String(Math.round(ratio * 100)), max: "100" });
 		const stateText =
 			stage === "reached"
 				? `活跃草稿 ${state.count} 条 · 已达到整理阈值（阈值 ${threshold}，引擎已在达到时报过一次）`
@@ -267,26 +218,26 @@ export async function mount(el, params, ctx) {
 						? `活跃草稿 0 条 · 阈值 ${threshold}（${sourceLabel}）`
 						: `活跃草稿 ${state.count} 条 · 阈值 ${threshold}（${sourceLabel}）`;
 
-		return h("article", { class: "mw-temp-gauge", dataset: { stage } }, [
+		return el("article", { class: "mw-temp-gauge", dataset: { stage } }, [
 			// 阈值缺失/为 0 → 退化：不画进度条，只显示条数（D3 §5.3 第 4 条）。
 			threshold > 0 ? bar : null,
-			h("p", { text: stateText }),
+			el("p", { text: stateText }),
 			shadowedExtra
-				? h("p", {
+				? el("p", {
 						class: "mw-muted",
 						text: `另有 ${state.countAll - state.count} 条已遮蔽草稿（原分支已回滚，不计入触发）`,
 					})
 				: null,
-			threshold <= 0 ? h("p", { class: "mw-muted", text: "阈值不可用或为 0，无法绘制进度条。" }) : null,
+			threshold <= 0 ? el("p", { class: "mw-muted", text: "阈值不可用或为 0，无法绘制进度条。" }) : null,
 		]);
 	}
 
 	/** 「角色收到的通知」：只在服务端回传 `notifyPreview` 时渲染，**MUST NOT** 在前端复刻文案。 */
 	function renderNotifyPreview() {
 		if (!state.notifyPreview) return null;
-		return h("details", {}, [
-			h("summary", { text: "角色收到的通知（引擎原文）" }),
-			h("pre", { text: state.notifyPreview }),
+		return el("details", {}, [
+			el("summary", { text: "角色收到的通知（引擎原文）" }),
+			el("pre", { text: state.notifyPreview }),
 		]);
 	}
 
@@ -295,38 +246,35 @@ export async function mount(el, params, ctx) {
 
 		const nodes = sortNodes(state.nodes, state.sort);
 		if (nodes.length === 0) {
-			return h("p", { class: "mw-muted", text: "没有待整理的草稿。" });
+			return el("p", { class: "mw-muted", text: "没有待整理的草稿。" });
 		}
 
-		const sortControl = h("label", { class: "mw-muted" }, [
-			"排序",
-			h(
-				"select",
-				{ dataset: { field: "sort" }, "aria-label": "排序方式" },
-				[
-					h("option", {
-						value: "created_at",
-						selected: state.sort === "created_at",
-						text: "最早放入的在上",
-					}),
-					h("option", {
-						value: "importance",
-						selected: state.sort === "importance",
-						text: "重要度高的在上",
-					}),
-				],
-			),
-		]);
+		const sortSel = select({
+			options: [
+				{ value: "created_at", label: "最早放入的在上" },
+				{ value: "importance", label: "重要度高的在上" },
+			],
+			value: state.sort,
+			// ui.select 用 onchange 属性挂监听（可重复灌而不叠加）。⚠️ 页面级 onChange 委托只认
+			// HTMLInputElement，过去的下拉从未接到它 —— 真正能切换排序是本次接线的修复点。
+			onchange: (ev) => {
+				state.sort = ev.target.value;
+				render();
+			},
+		});
+		sortSel.dataset.field = "sort";
+		sortSel.setAttribute("aria-label", "排序方式");
+		const sortControl = el("label", { class: "mw-muted" }, ["排序", sortSel]);
 
-		return h("section", {}, [
+		return el("section", {}, [
 			sortControl,
-			h(
+			el(
 				"ol",
 				{ class: "mw-temp-list" },
 				nodes.map((n) => renderRow(n)),
 			),
 			state.nodes.length > ENRICH_CAP
-				? h("p", {
+				? el("p", {
 						class: "mw-muted",
 						text: `（仅前 ${ENRICH_CAP} 条补取创建时间与来源；其余行按返回顺序显示。）`,
 					})
@@ -335,24 +283,20 @@ export async function mount(el, params, ctx) {
 	}
 
 	function renderRow(node) {
-		const cls = node.shadowed === true ? "mw-row mw-row--shadowed" : "mw-row";
+		// 已遮蔽行只挂修饰类（不用 .mw-row 基类 —— 那现在是树行的 flex 定高语义）：
+		// 「可辨识但绝不隐形」的降不透明度 + 左虚线由 .mw-row--shadowed 独立成立。
+		const cls = node.shadowed === true ? "mw-row--shadowed" : "";
 
-		const head = h("div", { class: "mw-raw-head" }, [
-			h("span", { class: impClass(node.importance), text: `★${num(node.importance)}` }),
-			h("a", { href: `#/node?uri=${encodeURIComponent(node.uri)}`, text: node.uri }),
-			node.source ? h("span", { class: "mw-chip", text: String(node.source) }) : null,
-			node.shadowed === true
-				? h("span", {
-						class: "mw-chip",
-						title: "该节点所属的原文分支已被回滚，不计入整理触发",
-						text: "已遮蔽（原分支已回滚）",
-					})
-				: null,
+		const head = el("div", { class: "mw-raw-head" }, [
+			importanceBadge(node.importance),
+			uriLine(node.uri, { href: `#/node?uri=${encodeURIComponent(node.uri)}` }),
+			sourceBadge(node.source),
+			node.shadowed === true ? shadowedBadge() : null,
 			node.created_at
-				? h("span", { class: "mw-muted", text: `放入于 ${String(node.created_at).slice(0, 16).replace("T", " ")}` })
+				? el("span", { class: "mw-muted", text: `放入于 ${fmtTs(node.created_at)}` })
 				: null,
 			node.world_ts
-				? h("span", { class: "mw-muted", text: `世界时间 ${String(node.world_ts)}` })
+				? el("span", { class: "mw-muted", text: `世界时间 ${String(node.world_ts)}` })
 				: null,
 		]);
 
@@ -362,39 +306,52 @@ export async function mount(el, params, ctx) {
 				: typeof node.content_head === "string"
 					? node.content_head
 					: "";
+		const folded = foldWs(text); // P16：渲染自由文本前折叠空白（原 snippet 的正文版，上限 200）
 
-		const actions = h("div", { class: "mw-temp-actions" }, [
-			h("button", {
+		const actions = el("div", { class: "mw-temp-actions" }, [
+			el("button", {
 				type: "button",
-				class: "secondary outline",
 				dataset: { nav: `#/edit?uri=${encodeURIComponent(node.uri)}` },
 				title: "对应 revise / consolidate：把草稿归位到正式记忆域",
 				text: "归位",
 			}),
-			h("button", {
+			el("button", {
 				type: "button",
-				class: "secondary outline",
 				dataset: { nav: `#/edit?uri=${encodeURIComponent(node.uri)}&action=forget` },
 				title: "对应 forget：危险操作，编辑页会二次确认（修订史保留，可从恢复页找回）",
 				text: "删除",
 			}),
-			h("button", {
+			el("button", {
 				type: "button",
-				class: "secondary outline",
 				dataset: { nav: `#/node?uri=${encodeURIComponent(node.uri)}` },
 				text: "查看",
 			}),
 		]);
 
-		return h("li", { class: cls, dataset: { uri: node.uri } }, [
+		return el("li", { class: cls, dataset: { uri: node.uri } }, [
 			head,
-			h("p", { text: snippet(text, 200) || "（空）" }),
+			el("p", { text: folded.length > 200 ? `${folded.slice(0, 200)}…` : folded || "（空）" }),
 			actions,
 		]);
 	}
 }
 
 // ── 纯函数（供单测直接调用） ──────────────────────────────────────────────────
+
+/**
+ * 状态分类（纯函数，D3 §5.4 / §12.3 T15–T19 的断言对象）。
+ * `0.8` 用 `>=`（写 `>` 会在 8/10 这一档漏掉）；`active === threshold` 即「达标」
+ * （引擎判据是 `count < threshold` 才不足，`module.ts:513`）。
+ */
+export function calibrateStage(active, threshold) {
+	const a = Number.isFinite(Number(active)) ? Number(active) : 0;
+	const t = Number.isFinite(Number(threshold)) ? Number(threshold) : 0;
+	if (t <= 0) return a <= 0 ? "empty" : "normal";
+	if (a <= 0) return "empty";
+	if (a >= t) return "reached";
+	if (a >= t * 0.8) return "near";
+	return "normal";
+}
 
 /** 默认 `created_at` 升序（最老的草稿在上，D3 §5.6）；缺 `created_at` 的行排在末尾（保持原序）。 */
 export function sortNodes(nodes, mode) {
@@ -414,7 +371,9 @@ export function sortNodes(nodes, mode) {
 	return list;
 }
 
-function num(v) {
-	const n = Number(v);
-	return Number.isFinite(n) ? n : 0;
+// ── 局部工具 ──────────────────────────────────────────────────────────────────
+
+function navigate(ctx, hash) {
+	if (ctx && typeof ctx.navigate === "function") ctx.navigate(hash);
+	else location.hash = hash;
 }

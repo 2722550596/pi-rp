@@ -5,20 +5,38 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>记忆浏览器</title>
-  <link rel="stylesheet" href="/assets/vendor/pico.min.css">
+  <script>
+  /* 主题首帧自举:绘制前把持久化主题写到 <html>,消灭闪白(01-设计系统 §5.2)。
+     与 app.js readTheme/applyTheme(app.js:69-90)同用 localStorage key "mw:theme";
+     auto(缺省/值非法)时不设属性,交给 CSS 的 prefers-color-scheme 双轨。 */
+  try {
+    var m = localStorage.getItem("mw:theme");
+    if (m === "dark" || m === "light") document.documentElement.setAttribute("data-theme", m);
+  } catch (e) { /* 隐私模式:localStorage 不可读 → 跟随系统,可接受 */ }
+  </script>
+  <link rel="stylesheet" href="/assets/tokens.css">
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
   <nav id="mw-nav" aria-label="主导航">
     <ul>
-      <li><button type="button" id="mw-burger" class="mw-burger" aria-label="展开侧栏" aria-expanded="false">☰</button></li>
-      <li><strong>记忆浏览器</strong></li>
+      <li><button type="button" id="mw-burger" class="mw-burger mw-btn--ghost" aria-label="展开侧栏" aria-expanded="false">☰</button></li>
+      <li><strong class="mw-brand">记忆浏览器</strong></li>
     </ul>
     <ul>
       <li><select id="mw-db" aria-label="选择记忆库" title="选择记忆库" hidden></select></li>
+      <!-- F3 全局 URI 直达:结构冻结于 01 §7.2 / 02 §4.2;初载 hidden,接线归 03 -->
+      <li>
+        <form id="mw-jump" class="mw-jump" hidden novalidate>
+          <input type="text" class="mw-input-mono" placeholder="domain://path 直达…"
+                 aria-label="跳转到记忆地址" aria-describedby="mw-jump-error"
+                 autocomplete="off" spellcheck="false">
+          <span id="mw-jump-error" class="mw-jump-error" role="status" hidden></span>
+        </form>
+      </li>
       <li><input type="search" id="mw-q" name="mw-q" placeholder="搜索记忆…" aria-label="搜索记忆"></li>
-      <li><button type="button" id="mw-theme" class="secondary outline" aria-label="切换主题">跟随系统</button></li>
-      <li><button type="button" id="mw-reload" class="secondary outline">重新载入</button></li>
+      <li><button type="button" id="mw-theme" class="mw-btn--outline" aria-label="切换主题">跟随系统</button></li>
+      <li><button type="button" id="mw-reload" class="mw-btn--outline">重新载入</button></li>
     </ul>
   </nav>
 

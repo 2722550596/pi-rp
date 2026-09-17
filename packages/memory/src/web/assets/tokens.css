@@ -1,0 +1,257 @@
+/* tokens.css —— 记忆浏览器设计系统 · 变量层(唯一权威:plan/memory-web-redesign/01-设计系统.md §4 全表)。
+   本文件只准出现 --mw-* 变量与 color-scheme,不写任何组件规则;
+   app.css 只准引用 var(--mw-*),禁止任何第三方变量体系(01 §10.1 有哨兵盯着)。
+
+   ⭐ 主题三态与 app.js:82-87 的 applyTheme 协议逐字兼容(app.js 零改动):
+   · auto  → JS 移除 data-theme 属性 → media 块生效(prefers-color-scheme);
+   · light → JS 设 [data-theme="light"] → :root 默认(light),且 media 块被
+     `:not([data-theme="light"])` 关掉;
+   · dark  → JS 设 [data-theme="dark"] → 属性块生效。
+   ⚠️ 双轨是硬要求,不是风格:两条 dark 路径任何一条漏写,就会出现
+   「跟随系统是 A、手动切过去是 B」的错配(现 app.css:74-76 注释踩过的坑)。
+   因此全部 dark 值必须字面写两份,两块物理相邻、声明列表逐行一致
+   (校验法见 01 §5.1:sed 抽出两块声明逐行 diff 必须为空)。 */
+
+:root {
+  color-scheme: light;
+
+  /* ── 4.1 中性面层(深底多层面板,TablePlus 式层次感)────────────── */
+  --mw-bg: #f5f6f8;                  /* 应用底色(body、#mw-main 之下) */
+  --mw-bg-sunken: #eceef2;           /* 下沉面:#mw-sidebar、pre、代码底 */
+  --mw-bg-raised: #ffffff;           /* 浮起面:nav、article 卡、dialog、toast */
+  --mw-bg-raised-hover: #f0f2f6;     /* 行悬停、次级按钮悬停 */
+  --mw-bg-inset: #eef0f4;            /* 输入框、code、chip 底(介于 base 与 sunken) */
+  --mw-border: #e1e4ea;              /* 常规边框(卡片、表格行、分隔) */
+  --mw-border-strong: #c8cdd8;       /* 强边框(输入框、按钮描边、th 底线) */
+  --mw-stripe: rgba(15, 23, 42, 0.04); /* 斜纹/inactive 徽章的纹路色 */
+
+  /* ── 4.2 文字 ──────────────────────────────────────────────────── */
+  --mw-fg: #1f242c;                  /* 正文 */
+  --mw-fg-strong: #10151c;           /* 标题、强调 */
+  --mw-fg-muted: #5b6472;            /* 次要文本、label、元数据(.mw-muted 落点) */
+  --mw-fg-subtle: #8a93a3;           /* 最弱文本:URI 前缀、占位符、组标签 */
+
+  /* ── 4.3 主色(accent,专业工具蓝)──────────────────────────────── */
+  --mw-primary: #3563e9;             /* 链接、选中、主按钮、焦环 */
+  --mw-primary-hover: #2a53cc;
+  --mw-primary-fg: #ffffff;          /* 主按钮上的文字 */
+  --mw-primary-soft: rgba(53, 99, 233, 0.09);   /* 选中行底、info 类软底 */
+  --mw-primary-border: rgba(53, 99, 233, 0.40); /* 描边型主色变体 */
+
+  /* ── 4.4 语义色(各含 fg/soft/border 三件套)────────────────────── */
+  --mw-success: #1a7f42;
+  --mw-success-soft: rgba(26, 127, 66, 0.10);
+  --mw-success-border: rgba(26, 127, 66, 0.40);
+  --mw-warn: #b45309;
+  --mw-warn-soft: rgba(180, 83, 9, 0.10);
+  --mw-warn-border: rgba(180, 83, 9, 0.40);
+  --mw-danger: #cf3030;
+  --mw-danger-soft: rgba(207, 48, 48, 0.08);
+  --mw-danger-border: rgba(207, 48, 48, 0.40);
+  --mw-info: #0969da;
+  --mw-info-soft: rgba(9, 105, 218, 0.08);
+  --mw-info-border: rgba(9, 105, 218, 0.40);
+
+  /* ── 4.5 域着色板(10 色;图谱节点 + 域徽章 + 侧栏域点共用)────────
+     琥珀系刻意缺席:琥珀 = 想起条件的专属色相,域色板不得侵占。 */
+  --mw-dom-1: #3563e9;  /* 蓝 */
+  --mw-dom-2: #0e8ea3;  /* 青 */
+  --mw-dom-3: #1a7f42;  /* 绿 */
+  --mw-dom-4: #5c7f11;  /* 黄绿 */
+  --mw-dom-5: #c25517;  /* 橙 */
+  --mw-dom-6: #cb2f56;  /* 玫红 */
+  --mw-dom-7: #7443d6;  /* 紫 */
+  --mw-dom-8: #ad2fa8;  /* 品红 */
+  --mw-dom-9: #8a5f2e;  /* 棕 */
+  --mw-dom-10: #51637f; /* 灰蓝 */
+
+  /* ── 4.6 想起条件琥珀(沿用现网实测值,不重调;dark 值在下面两份 dark 块)── */
+  --mw-disc-fg: #8a5a00;
+  --mw-disc-bg: #fdf3dd;
+  --mw-disc-bd: #e6c982;
+
+  /* ── 4.7 高亮与杂项色 ──────────────────────────────────────────── */
+  --mw-highlight: #ffe9a3;                     /* mark(F9 搜索关键词) */
+  --mw-skeleton: rgba(81, 99, 127, 0.16);      /* 骨架条 */
+
+  /* ── 4.8 字体(主题无关;显式补中文字体,避免回退到衬线)────────── */
+  --mw-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mw-font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "JetBrains Mono", Menlo, "Liberation Mono", monospace;
+
+  /* ── 4.9 字号阶(工具密度:base 14,树/表 13)────────────────────── */
+  --mw-fs-xs: 12px;   /* 徽章、组标签、面包屑、时间戳 */
+  --mw-fs-sm: 13px;   /* 树行、表格、表单控件、按钮、snippet */
+  --mw-fs-md: 14px;   /* 正文默认(body) */
+  --mw-fs-lg: 16px;   /* 卡片题(h3) */
+  --mw-fs-xl: 18px;   /* 页题(h2) */
+  --mw-lh-tight: 1.35; /* 行类组件(树行/徽章行) */
+  --mw-lh: 1.55;       /* 散文正文 */
+
+  /* ── 4.10 间距(4px 网格)────────────────────────────────────────── */
+  --mw-sp-1: 4px;
+  --mw-sp-2: 8px;
+  --mw-sp-3: 12px;
+  --mw-sp-4: 16px;
+  --mw-sp-5: 20px;
+  --mw-sp-6: 24px;
+  --mw-sp-8: 32px;
+  --mw-sp-10: 40px;
+  --mw-sp-12: 48px;
+
+  /* ⭐ --mw-row-h 由 JS 读同一个值(tree.js getComputedStyle,失败回退 28),
+     窗口化行高不得两处漂移 → 值与「挂在 :root」这一位置都是契约,勿动勿移。 */
+  --mw-row-h: 28px;
+  /* --mw-nav-h 没有 :root 定义:它由 JS 量测后写在 documentElement.style
+     (app.js measureNav),CSS 一律以 var(--mw-nav-h, 52px) 消费。 */
+
+  /* ── 4.11 圆角 ─────────────────────────────────────────────────── */
+  --mw-radius-sm: 4px;    /* chip/badge/骨架 */
+  --mw-radius-md: 6px;    /* 按钮/输入/空态 */
+  --mw-radius-lg: 10px;   /* 卡片/dialog */
+  --mw-radius-full: 999px; /* 进度条/滚动条 */
+
+  /* ── 4.12 焦环(主题无关:由 var(--mw-primary) 自动跟随)────────── */
+  --mw-ring: 0 0 0 3px color-mix(in srgb, var(--mw-primary) 35%, transparent);
+
+  /* ── 4.13 z-index(沿用现状数值,token 化;dialog 走原生 top layer 不占栈)── */
+  --mw-z-banner: 20;
+  --mw-z-nav: 30;
+  --mw-z-scrim: 40;
+  --mw-z-sidebar: 50;
+  --mw-z-toast: 60;
+
+  /* ── 4.14 动效 ─────────────────────────────────────────────────── */
+  --mw-dur-fast: 120ms;
+  --mw-dur: 180ms;
+  --mw-ease: cubic-bezier(0.3, 0, 0.2, 1);
+
+  /* 阴影 light 值(light 靠边框补足层次,卡片永远有 1px border);dark 见下 */
+  --mw-shadow-1: 0 1px 2px rgb(16 24 40 / 0.06);
+  --mw-shadow-2: 0 4px 16px rgb(16 24 40 / 0.10);
+  --mw-shadow-3: 0 16px 48px rgb(16 24 40 / 0.18);
+}
+
+/* ═══ 暗色双轨 · 第一份(prefers-color-scheme 路径;auto 主题走这里)═══════
+   ⚠️ 与下方 [data-theme="dark"] 块物理相邻,声明列表必须逐行一致(01 §5.1)。 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --mw-bg: #101318;
+    --mw-bg-sunken: #0b0d11;
+    --mw-bg-raised: #161a21;
+    --mw-bg-raised-hover: #1b2029;
+    --mw-bg-inset: #0d1015;
+    --mw-border: #262c36;
+    --mw-border-strong: #39414e;
+    --mw-stripe: rgba(255, 255, 255, 0.035);
+
+    --mw-fg: #dde3ec;
+    --mw-fg-strong: #f2f5f9;
+    --mw-fg-muted: #8f99a8;
+    --mw-fg-subtle: #626c7c;
+
+    --mw-primary: #6e9bff;
+    --mw-primary-hover: #85abff;
+    --mw-primary-fg: #0a1226;
+    --mw-primary-soft: rgba(110, 155, 255, 0.14);
+    --mw-primary-border: rgba(110, 155, 255, 0.45);
+
+    --mw-success: #4ac07d;
+    --mw-success-soft: rgba(74, 192, 125, 0.13);
+    --mw-success-border: rgba(74, 192, 125, 0.45);
+    --mw-warn: #e0a83c;
+    --mw-warn-soft: rgba(224, 168, 60, 0.13);
+    --mw-warn-border: rgba(224, 168, 60, 0.50);
+    --mw-danger: #ef6f6f;
+    --mw-danger-soft: rgba(239, 111, 111, 0.13);
+    --mw-danger-border: rgba(239, 111, 111, 0.50);
+    --mw-info: #58a6ff;
+    --mw-info-soft: rgba(88, 166, 255, 0.13);
+    --mw-info-border: rgba(88, 166, 255, 0.50);
+
+    --mw-dom-1: #6e9bff;
+    --mw-dom-2: #4fc7d8;
+    --mw-dom-3: #57c78a;
+    --mw-dom-4: #a8c764;
+    --mw-dom-5: #f08d5e;
+    --mw-dom-6: #ef6f8b;
+    --mw-dom-7: #a78bfa;
+    --mw-dom-8: #e07de0;
+    --mw-dom-9: #c9a075;
+    --mw-dom-10: #8fa3bf;
+
+    --mw-disc-fg: #f0b429;
+    --mw-disc-bg: #2b2210;
+    --mw-disc-bd: #5c4a1c;
+
+    --mw-highlight: rgba(224, 168, 60, 0.30);
+    --mw-skeleton: rgba(143, 163, 191, 0.22);
+
+    --mw-shadow-1: 0 1px 2px rgb(0 0 0 / 0.5);
+    --mw-shadow-2: 0 4px 16px rgb(0 0 0 / 0.45);
+    --mw-shadow-3: 0 16px 48px rgb(0 0 0 / 0.55);
+  }
+}
+
+/* ═══ 暗色双轨 · 第二份([data-theme="dark"] 路径;手动暗色走这里)════════
+   ⚠️ 与上方 media 块互为镜像:本块任何一行改动必须同步另一块,
+   否则「跟随系统」与「手动切暗」会出现两种不同的暗色。 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --mw-bg: #101318;
+  --mw-bg-sunken: #0b0d11;
+  --mw-bg-raised: #161a21;
+  --mw-bg-raised-hover: #1b2029;
+  --mw-bg-inset: #0d1015;
+  --mw-border: #262c36;
+  --mw-border-strong: #39414e;
+  --mw-stripe: rgba(255, 255, 255, 0.035);
+
+  --mw-fg: #dde3ec;
+  --mw-fg-strong: #f2f5f9;
+  --mw-fg-muted: #8f99a8;
+  --mw-fg-subtle: #626c7c;
+
+  --mw-primary: #6e9bff;
+  --mw-primary-hover: #85abff;
+  --mw-primary-fg: #0a1226;
+  --mw-primary-soft: rgba(110, 155, 255, 0.14);
+  --mw-primary-border: rgba(110, 155, 255, 0.45);
+
+  --mw-success: #4ac07d;
+  --mw-success-soft: rgba(74, 192, 125, 0.13);
+  --mw-success-border: rgba(74, 192, 125, 0.45);
+  --mw-warn: #e0a83c;
+  --mw-warn-soft: rgba(224, 168, 60, 0.13);
+  --mw-warn-border: rgba(224, 168, 60, 0.50);
+  --mw-danger: #ef6f6f;
+  --mw-danger-soft: rgba(239, 111, 111, 0.13);
+  --mw-danger-border: rgba(239, 111, 111, 0.50);
+  --mw-info: #58a6ff;
+  --mw-info-soft: rgba(88, 166, 255, 0.13);
+  --mw-info-border: rgba(88, 166, 255, 0.50);
+
+  --mw-dom-1: #6e9bff;
+  --mw-dom-2: #4fc7d8;
+  --mw-dom-3: #57c78a;
+  --mw-dom-4: #a8c764;
+  --mw-dom-5: #f08d5e;
+  --mw-dom-6: #ef6f8b;
+  --mw-dom-7: #a78bfa;
+  --mw-dom-8: #e07de0;
+  --mw-dom-9: #c9a075;
+  --mw-dom-10: #8fa3bf;
+
+  --mw-disc-fg: #f0b429;
+  --mw-disc-bg: #2b2210;
+  --mw-disc-bd: #5c4a1c;
+
+  --mw-highlight: rgba(224, 168, 60, 0.30);
+  --mw-skeleton: rgba(143, 163, 191, 0.22);
+
+  --mw-shadow-1: 0 1px 2px rgb(0 0 0 / 0.5);
+  --mw-shadow-2: 0 4px 16px rgb(0 0 0 / 0.45);
+  --mw-shadow-3: 0 16px 48px rgb(0 0 0 / 0.55);
+}

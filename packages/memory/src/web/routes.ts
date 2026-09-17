@@ -27,10 +27,14 @@ import { borrowDetector, visibilityFor } from "./runtime.ts";
 import { checkHost, checkOrigin } from "./security.ts";
 import {
 	buildChildCounts,
+	contentHead,
 	type DatabaseDTO,
 	type DatabaseOpenedDTO,
 	type DatabasesDTO,
 	type DeletedUriDTO,
+	type GraphDataDTO,
+	type GraphDomainsDTO,
+	type GraphEdgeDTO,
 	type MetaDTO,
 	type RawResponseDTO,
 	type RawRow,
@@ -43,6 +47,9 @@ import {
 	toAuditDTO,
 	toDatabaseDTO,
 	toDiscoveryMetaDTO,
+	toGraphAliasDTO,
+	toGraphEdgeDTO,
+	toGraphNodeDTO,
 	toNodeResponseDTO,
 	toRawDTO,
 	toRevisionDTO,
@@ -484,15 +491,36 @@ function getSessions(rc: RequestCtx): HandlerResult {
 		wall_first: string;
 		wall_last: string;
 	}>;
-	const items: SessionDTO[] = rows.map((r) => ({
-		session_id: r.session_id,
-		total: Number(r.total),
-		active: Number(r.active),
-		first_raw_id: Number(r.first_raw_id),
-		last_raw_id: Number(r.last_raw_id),
-		wall_first: r.wall_first,
-		wall_last: r.wall_last,
-	}));
+	// ⭐ F4-B (plan/memory-web-redesign/03 §10.3): the session picker shows a
+	// first-message digest. ONE batched lookup over the already-indexed
+	// `first_raw_id`s — never a correlated GROUP BY subquery, which would scan
+	// a large raw_log once per session. substr(120) up front so that after
+	// whitespace folding there is still ≥80 chars of substance to cut.
+	const textById = new Map<number, string>();
+	const firstIds = rows.map((r) => Number(r.first_raw_id));
+	for (let i = 0; i < firstIds.length; i += 500) {
+		const chunk = firstIds.slice(i, i + 500);
+		const placeholders = chunk.map(() => "?").join(",");
+		const textRows = rc.ctx.store.db
+			.prepare(`SELECT raw_id, substr(text, 1, 120) AS head FROM raw_log WHERE raw_id IN (${placeholders})`)
+			.all(...chunk) as Array<{ raw_id: number; head: string | null }>;
+		for (const t of textRows) {
+			if (t.head !== null) textById.set(Number(t.raw_id), t.head);
+		}
+	}
+	const items: SessionDTO[] = rows.map((r) => {
+		const head = textById.get(Number(r.first_raw_id));
+		return {
+			session_id: r.session_id,
+			total: Number(r.total),
+			active: Number(r.active),
+			first_raw_id: Number(r.first_raw_id),
+			last_raw_id: Number(r.last_raw_id),
+			wall_first: r.wall_first,
+			wall_last: r.wall_last,
+			first_text: head === undefined ? null : contentHead(head, 80),
+		};
+	});
 	return { status: 200, body: { items, total: items.length } };
 }
 
@@ -616,6 +644,127 @@ function getRevisions(rc: RequestCtx): HandlerResult {
 
 function getEvents(rc: RequestCtx): HandlerResult {
 	return { status: 200, body: borrowDetector(rc.ctx).read() };
+}
+
+// ── Graph (plan/memory-web-redesign/04-图谱.md §2) ──────────────────────────
+
+const GRAPH_LIMIT = { min: 1, max: 500, def: 200 };
+
+/**
+ * GET /api/graph — two modes off one endpoint (contract §4):
+ *   no `domain`        → domain listing (mode:"domains"), the pick-a-domain step;
+ *   non-empty `domain` → one domain's nodes/edges/aliases (mode:"graph").
+ *
+ * Read-only inline SQL is the established routes-layer practice (§16.6; the
+ * file header, `getMeta`'s counts, `export()`'s full edge read). The joins the
+ * graph needs (parent_id→uri, the set form of the dead-alias predicate, the
+ * resolveUri precedence as two Maps) have no store method, and adding one-off
+ * read-model queries to the long-lived store API would be worse — so they live
+ * here, one thin-column pass each, joined in JS. No N+1: nothing here loops
+ * over nodes issuing per-node queries.
+ */
+function getGraph(rc: RequestCtx): HandlerResult {
+	const { store } = rc.ctx;
+	const sp = rc.url.searchParams;
+	const worldTime = store.getWorldTime();
+
+	// ── Mode 1: domain listing (no domain) ────────────────────────────────
+	const domain = sp.get("domain");
+	if (domain === null || domain === "") {
+		// Per-domain node counts in one GROUP BY (listDomains() is DISTINCT-only).
+		const nodeRows = store.db
+			.prepare("SELECT domain, COUNT(*) AS c FROM nodes GROUP BY domain ORDER BY domain")
+			.all() as Array<{ domain: string; c: number }>;
+		// edges has no domain column — an edge's domain is its SOURCE node's.
+		const edgeRows = store.db
+			.prepare(
+				"SELECT n.domain AS domain, COUNT(*) AS c FROM edges e JOIN nodes n ON n.node_id = e.node_id GROUP BY n.domain",
+			)
+			.all() as Array<{ domain: string; c: number }>;
+		const edgeByDomain = new Map(edgeRows.map((r) => [r.domain, Number(r.c)]));
+		const body: GraphDomainsDTO = {
+			mode: "domains",
+			world_time: worldTime,
+			domains: nodeRows.map((r) => ({
+				domain: r.domain,
+				node_count: Number(r.c),
+				edge_count: edgeByDomain.get(r.domain) ?? 0,
+			})),
+		};
+		return { status: 200, body };
+	}
+
+	// ── Mode 2: graph (with domain) ──────────────────────────────────────
+	const limit = intOrThrow(sp, "limit", GRAPH_LIMIT);
+
+	// ① One light full-table index pass (node_id/uri/parent_id — never the fat
+	//    content column), three uses:
+	//    a) parent_id → uri (parent_uri without per-node parentUriOf N+1);
+	//    b) the live-uri set — the set form of aliasListStmt's shadow JOIN,
+	//       i.e. the dead-alias predicate;
+	//    c) uri → node_id, the CANONICAL resolver — resolveUri's first
+	//       precedence (nodes.uri wins over aliases).
+	const indexRows = store.db.prepare("SELECT node_id, uri, parent_id FROM nodes").all() as Array<{
+		node_id: string;
+		uri: string;
+		parent_id: string | null;
+	}>;
+	const uriOf = new Map(indexRows.map((r) => [r.node_id, r.uri]));
+	const nodeIdOf = new Map(indexRows.map((r) => [r.uri, r.node_id]));
+
+	// ② This domain's nodes, then importance DESC / uri ASC before cutting:
+	//    truncation must drop the least important first (radius ∝ importance,
+	//    so what stays is what matters), and the uri tiebreak keeps the cut
+	//    boundary stable across requests so memory:changed hot refreshes do
+	//    not shuffle which points are on screen.
+	const domainNodes = store.listNodes({ domain });
+	domainNodes.sort((a, b) => b.importance - a.importance || (a.uri < b.uri ? -1 : a.uri > b.uri ? 1 : 0));
+	const nodes = domainNodes.slice(0, limit);
+	const inSet = new Set(nodes.map((n) => n.node_id));
+
+	// ③ Alias thin columns — the SECOND resolver precedence.
+	const aliasRows = store.db.prepare("SELECT alias_uri, target_node_id FROM aliases").all() as Array<{
+		alias_uri: string;
+		target_node_id: string;
+	}>;
+	const aliasIdOf = new Map(aliasRows.map((r) => [r.alias_uri, r.target_node_id]));
+
+	// ④ Full edge read (export()'s SQL), classified against the truncated set.
+	const edgeRows = store.db
+		.prepare("SELECT node_id, target_uri, kind FROM edges ORDER BY node_id, target_uri")
+		.all() as Array<{ node_id: string; target_uri: string; kind: string | null }>;
+	const edges: GraphEdgeDTO[] = [];
+	for (const row of edgeRows) {
+		if (!inSet.has(row.node_id)) continue; // source outside this domain's cut set
+		// resolveUri precedence: nodes.uri first, aliases second.
+		const target = nodeIdOf.get(row.target_uri) ?? aliasIdOf.get(row.target_uri) ?? null;
+		if (target === null) {
+			edges.push(toGraphEdgeDTO(row, null)); // dangling: nothing resolves
+		} else if (inSet.has(target)) {
+			edges.push(toGraphEdgeDTO(row, target)); // in-domain edge
+		}
+		// else: resolves OUTSIDE the set (a cross-domain node, or a same-domain
+		// node cut by limit) → not drawn. An edge to a missing endpoint would
+		// blur `dangling`'s meaning (which is reserved for truly dead targets).
+	}
+
+	// ⑤ Aliases pinned to nodes that made the cut; the dead predicate is the
+	//    set form of aliasListStmt's: alias_uri is ALSO a live nodes.uri.
+	const aliases = aliasRows
+		.filter((r) => inSet.has(r.target_node_id))
+		.map((r) => toGraphAliasDTO(r, nodeIdOf.has(r.alias_uri)));
+
+	const body: GraphDataDTO = {
+		mode: "graph",
+		world_time: worldTime,
+		domain,
+		total_nodes: domainNodes.length,
+		truncated: domainNodes.length > nodes.length,
+		nodes: nodes.map((n) => toGraphNodeDTO(n, n.parent_id ? (uriOf.get(n.parent_id) ?? null) : null)),
+		edges,
+		aliases,
+	};
+	return { status: 200, body };
 }
 
 // ── POST handlers ───────────────────────────────────────────────────────────
@@ -1328,6 +1477,7 @@ export const ROUTES: RouteDef[] = [
 	{ method: "GET", path: "/api/raw", handler: getRaw },
 	{ method: "GET", path: "/api/sessions", handler: getSessions },
 	{ method: "GET", path: "/api/events", handler: getEvents },
+	{ method: "GET", path: "/api/graph", handler: getGraph },
 	{ method: "POST", path: "/api/node", handler: postNode },
 	{ method: "POST", path: "/api/node/revise", handler: postRevise },
 	{ method: "POST", path: "/api/node/forget", handler: postForget },

@@ -11,10 +11,9 @@
 
 import { el, clear, append, navigate, renderError, renderNotice, toast } from "../app.js";
 import { currentGen, ensureCacheFor, parentOf, treeCache } from "./tree-cache.js";
-// ⭐ 唯一的视觉真相源（D5 §2.3）。安全方向：`views.js` **零 import**、无顶层 DOM 副作用，
-//    故 `tree.js → views.js` 不成环。**反向禁止**（`views.js → tree.js`）：本模块静态 import
-//    `app.js`（含 `document` 副作用），反向会把它拖进 views.js（`tree-cache.js:544` 记过此坑）。
-import { discChip } from "./views.js";
+// 徽章 / URI 件统一取自公共层（02 §3）：tree.js 不再是 node.js / search.js 的助手来源，
+// 对 views.js 的 discChip import（原「防环」注释）随之消失 —— 环风险根除。
+import { discChip, importanceBadge, lastSegment, shadowedBadge, stubChip, uriBreadcrumb, uriLine } from "../ui.js";
 
 // 树缓存与库身份在 `./tree-cache.js`（契约 §7.6 / §7.10，D2 `12` §10）：
 // 键 = `${domain}|${parentUri ?? ""}`（§4.9，不设 TTL），但**值属于某个库** ——
@@ -24,8 +23,8 @@ const PAGE_SIZE = 200; // 每层取数 / 渲染上限（§4.7 第 2 招）
 const WINDOW_THRESHOLD = 500; // 可见行 > 此值 → 固定行高窗口化（§4.7 第 3 招）
 const WINDOW_BUFFER = 5;
 
-export const SHADOWED_TEXT = "已遮蔽（原分支已回滚）";
-export const SHADOWED_TITLE = "该节点由自动写入产生，而它锚定的那条原文已不在当前分支上（原分支已回滚）。";
+// ⭐ shadowed 冻结文案与徽章的唯一真相源在 `../ui.js` §D（shadowedBadge）；本文件不再导出
+//    常量 / chip 助手 —— aria-label 处按 Main 裁定内联同一字面冻结文案（逐字一致）。
 export const FILTER_LABEL = "只看当前分支可见";
 
 const DOMAIN_ORDER = ["TEMP", "core", "history", "meta", "index"];
@@ -41,33 +40,8 @@ export const VIEW_LINKS = [
   ["diagnostic", "库健康"],
 ];
 
-// ── 纯展示助手（导出给 node.js / search.js 复用） ─────────────────────
-export function importanceClass(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "mw-imp--3";
-  if (v >= 9) return "mw-imp--5";
-  if (v >= 7) return "mw-imp--4";
-  if (v >= 4) return "mw-imp--3";
-  if (v >= 1) return "mw-imp--2";
-  return "mw-imp--1";
-}
-
-export function impChip(n) {
-  const v = Number.isFinite(Number(n)) ? Number(n) : 0;
-  return el("span", { class: `mw-imp ${importanceClass(v)}`, text: `★${v}`, title: `重要度 ${v}（10 = 最重要）` });
-}
-
-export function shadowedChip() {
-  return el("span", { class: "mw-chip mw-chip--shadowed", text: SHADOWED_TEXT, title: SHADOWED_TITLE });
-}
-
-export function lastSegment(uri) {
-  const s = String(uri ?? "");
-  const i = s.lastIndexOf("/");
-  return i === -1 ? s : s.slice(i + 1) || s;
-}
-
-export function ancestorChain(uri) {
+// ── 树域小助手（本模块私有；importance / 徽章 / lastSegment 统一从 ../ui.js 取） ──
+function ancestorChain(uri) {
   const chain = [];
   let cur = parentOf(uri);
   while (cur) {
@@ -77,12 +51,12 @@ export function ancestorChain(uri) {
   return chain;
 }
 
-export function domainRank(d) {
+function domainRank(d) {
   const i = DOMAIN_ORDER.indexOf(String(d));
   return i === -1 ? DOMAIN_ORDER.length : i;
 }
 
-export function sortDomains(domains) {
+function sortDomains(domains) {
   return [...(domains ?? [])].sort((a, b) => {
     const ra = domainRank(a);
     const rb = domainRank(b);
@@ -234,25 +208,25 @@ function buildRow(t, row, idx) {
   const labelParts = [];
   if (stub) labelParts.push("占位节点");
   labelParts.push(`${lastSegment(n.uri)}，重要度 ${Number(n.importance ?? 0)}`);
+  if (row.hasChildren && row.childCount > 0) labelParts.push(`子节点 ${row.childCount}`); // F8 新增计数控
   // ⭐ 无障碍必需：`mw-snippet` 与 chip 都是 `aria-hidden`，屏幕阅读器读不到条件。
   if (n.disclosure) labelParts.push(`想起条件 ${n.disclosure}`);
-  if (shadowed) labelParts.push(SHADOWED_TEXT);
+  if (shadowed) labelParts.push("已遮蔽（原分支已回滚）"); // ⭐ 冻结文案，与 ui.js §D shadowedBadge 逐字一致
 
   // ⭐ 用真实 href（中键 / 右键复制链接都工作），单击则交给抽屉 peek。
-  const a = el("a", {
-    class: "mw-uri",
-    role: "treeitem",
-    tabindex: "-1",
-    href: `#/node?uri=${encodeURIComponent(n.uri)}`,
-    "aria-level": String(row.depth + 1),
-    "aria-expanded": row.hasChildren ? String(row.expanded) : undefined,
-    "aria-label": labelParts.join("，"),
-    title: n.uri,
-  });
+  //    F8：URI 拆 mw-uri__prefix（弱化等宽前缀，可收缩省略）+ mw-uri__name（主段名，不截断），
+  //    双子结构由 ui.uriLine 生产（app.css §7.4 冻结类名）；title 全文由 uriLine 自带。
+  const a = uriLine(n.uri, { href: `#/node?uri=${encodeURIComponent(n.uri)}` });
+  a.setAttribute("role", "treeitem");
+  a.setAttribute("tabindex", "-1");
+  a.setAttribute("aria-level", String(row.depth + 1));
+  if (row.hasChildren) a.setAttribute("aria-expanded", String(row.expanded));
+  a.setAttribute("aria-label", labelParts.join("，"));
   a.dataset.nodeId = n.node_id ?? "";
-  append(a, el("span", { class: "mw-muted", "aria-hidden": "true", text: stub ? "◌ " : "● " }));
-  append(a, el("span", { text: lastSegment(n.uri) }));
-  if (stub) append(a, el("small", { class: "mw-muted", text: " 占位" }));
+  if (row.hasChildren && row.childCount > 0) {
+    // F8：分支行的 child_count 徽标（mw-uri__count 尚无专属皮，mw-muted 承担「弱化小字」）
+    append(a, el("span", { class: "mw-uri__count mw-muted", text: `×${row.childCount}` }));
+  }
   a.addEventListener("click", (e) => {
     if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; // 交给浏览器：全页 / 新标签
     e.preventDefault();
@@ -265,12 +239,13 @@ function buildRow(t, row, idx) {
   }
 
   const tail = el("span", { class: "mw-tail" });
-  append(tail, impChip(n.importance));
+  append(tail, importanceBadge(n.importance)); // F6 四档（ui §D；旧 mw-imp--1..5 类已废止）
   // ⭐ 树行是 28px 定高（`--mw-row-h`）：用短徽章而非带标签的 full badge，
   //    否则长条件会把 `mw-uri`/`mw-snippet` 挤成零宽（`:53` 的 `flex: 0 1 auto`）。
   //    `null`（无值）时 `discChip` 返回 null，`append` 首行即跳过 —— 不产生字面量 "null"。
   append(tail, discChip(n.disclosure));
-  if (shadowed) append(tail, shadowedChip());
+  if (stub) append(tail, stubChip()); // F6：● / ◌ 裸符号与行内「占位」small 并入 stub 徽章
+  if (shadowed) append(tail, shadowedBadge());
   if (!t.compact) {
     const reveal = el("button", {
       type: "button",
@@ -406,7 +381,7 @@ function moreBox(t) {
   const entry = treeCache.get(`${t.domain}|${lastParent}`);
   if (entry && Number.isFinite(entry.total) && entry.total > entry.items.length) {
     const rest = entry.total - entry.items.length;
-    const btn = el("button", { type: "button", class: "secondary outline", text: "载入更多" });
+    const btn = el("button", { type: "button", text: "载入更多" }); // 01 §8：secondary outline 废止，元素缺省即中性 outline
     btn.addEventListener("click", () => void loadMore(t, lastParent));
     append(box, el("span", { class: "mw-more", text: `… 还有 ${rest} 个 ` }));
     append(box, btn);
@@ -571,7 +546,7 @@ function renderStatus(node, s) {
   if (!s.filtered) return;
   if (s.dropped > 0) {
     append(node, el("span", { text: `已按分支可见性过滤掉 ${s.dropped} 条 ` }));
-    const showAll = el("button", { type: "button", class: "secondary outline", text: "显示全部" });
+    const showAll = el("button", { type: "button", text: "显示全部" }); // 01 §8：同上，元素缺省即中性 outline
     showAll.addEventListener("click", () => node.dispatchEvent(new CustomEvent("mw:show-all", { bubbles: true })));
     append(node, showAll);
   } else {
@@ -627,7 +602,17 @@ export async function mount(el_, params, ctx) {
   });
 
   clear(el_);
-  el_.append(breadcrumb(t.domain, uri));
+  // F7：面包屑换 ui.uriBreadcrumb —— 段名 = lastSegment，各级链回 `#/tree?domain=…&uri=…`
+  // （保持原面包屑的树内回溯语义）；无 uri（域根层）时组件按 null-skip 纪律不渲染。
+  if (uri) {
+    el_.append(
+      uriBreadcrumb({
+        uri,
+        domain: t.domain,
+        hrefFor: (u) => `#/tree?domain=${encodeURIComponent(t.domain)}&uri=${encodeURIComponent(u)}`,
+      }),
+    );
+  }
   append(el_, filterWrap);
   append(el_, status);
   const treeHost = el("div", { class: "mw-tree-host" });
@@ -645,23 +630,6 @@ export async function mount(el_, params, ctx) {
     }
     t.host = null;
   };
-}
-
-// 面包屑项来自 DTO 的 path 语义（服务端按 implicitParentUri 算）；客户端只按 uri 段做视觉回溯。
-function breadcrumb(domain, uri) {
-  const nav = el("nav", { class: "mw-bc", "aria-label": "面包屑" });
-  const list = el("ol");
-  const root = `${domain}://`;
-  let segs = uri ? ancestorChain(uri).concat(uri) : [];
-  if (segs.length > 0 && segs[0] === root) segs = segs.slice(1);
-  for (const [u, text] of [[root, root], ...segs.map((u) => [u, lastSegment(u)])]) {
-    const li = el("li");
-    if (u === uri) li.append(el("span", { "aria-current": "page", text }));
-    else li.append(el("a", { href: `#/tree?domain=${encodeURIComponent(domain)}&uri=${encodeURIComponent(u)}`, text }));
-    list.append(li);
-  }
-  nav.append(list);
-  return nav;
 }
 
 // ── 侧栏：常驻（切路由不重建，§3.4） ────────────────────────────────
