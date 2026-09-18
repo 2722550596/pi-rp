@@ -630,10 +630,7 @@ export class RpcClient {
 	 * 渲染器时不显示、前端未知 customType 静默忽略，由扩展经 get_entries
 	 * 扫描重建内部状态。返回持久化 entry id。
 	 */
-	async appendEntry(args: {
-		customType: string;
-		data?: unknown;
-	}): Promise<{ entryId: string }> {
+	async appendEntry(args: { customType: string; data?: unknown }): Promise<{ entryId: string }> {
 		const response = await this.send({ type: "append_entry", ...args });
 		return this.getData<{ entryId: string }>(response);
 	}

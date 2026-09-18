@@ -112,9 +112,6 @@ describe("append_entry 服务端持久化语义（SessionManager）", () => {
 		sm.appendCustomEntry("character_backlog", { segments: 3 });
 		const entries = sm.getEntries();
 		const customs = entries.filter((e) => e.type === "custom");
-		expect(customs.map((e) => (e as { customType: string }).customType)).toEqual([
-			"party_ack",
-			"character_backlog",
-		]);
+		expect(customs.map((e) => (e as { customType: string }).customType)).toEqual(["party_ack", "character_backlog"]);
 	});
 });

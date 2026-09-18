@@ -1004,10 +1004,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!command.customType) {
 					return error(id, "append_entry", "customType is required");
 				}
-				const entryId = session.sessionManager.appendCustomEntry(
-					command.customType,
-					command.data,
-				);
+				const entryId = session.sessionManager.appendCustomEntry(command.customType, command.data);
 				return success(id, "append_entry", { entryId });
 			}
 
