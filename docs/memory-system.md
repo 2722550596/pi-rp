@@ -135,7 +135,7 @@ memory.db
 - **候选集(v5.5)**:keyword 模式候选 = 节点 FTS `MATCH` 命中 ∩ `kw>0`(消除全库逐节点重分词);vector 模式保留全 pool 作语义空间,但只为 FTS 命中节点算 keyword overlap(未命中即 kw=0)。两条路径共用 `recall.ts` 一份实现。
 - **稳定同分次键(v5.5)**:`score DESC → kw DESC → vec DESC → bm25 ASC(null 最后)→ importance DESC → updated_ts DESC → uri ASC`——不再由插入顺序决定。
 - **向量通道(v5.4 落地;v5.5 隐私默认)**:`embeddings.ts` = 零依赖 fetch 客户端(默认 siliconflow `BAAI/bge-large-zh-v1.5`)。**未显式设置 `memory.embeddings.mode:"api"` 时恒为 `off`,即使环境有 key 也不出网**;只有明确 opt-in 才读 `PI_MEMORY_EMBEDDING_API_KEY` / `NOCTURNE_EMBEDDING_API_KEY` 外呼。超时 10s,外部 abort(会话 dispose/召回被取代)不触发 sticky failure latch,HTTP/响应错误仍 latch。向量缓存落在 `memory_embeddings`,命中即零调用。
-- **注入只出树节点**(线索 ≤80 字 + 软锚),原文日志不进注入——原文只能拿 id 主动取;场景记忆的"自然想起"由纪要节点承担(它就在树里,本来就会被召回)。
+- **注入只出树节点**(命中片段 ≤200 字 + 软锚),原文日志不进注入——原文只能拿 id 主动取;场景记忆的"自然想起"由纪要节点承担(它就在树里,本来就会被召回)。片段由共享打分器定位(`recall.ts buildExcerpt`):向量模式取最佳余弦块的原文范围(`chunkText` 500/80 步进确定,减 `uri+disclosure` 前缀映射回 content 坐标),keyword 模式以 intent query 的最早 token 命中为中心开窗,块内词命中(双证据)优先;两者皆无时退化为开头摘要。`retrieve` 工具同一管线,展示同一片段。
 - **domain 黑名单**:autorecall 的域级排除机制照搬(默认 maintenance 类运维噪音;TEMP **不进**默认黑名单——动态区随时可召回,前面已定)。`/recall domain add|remove` 交互沿袭。
 - **RRF 不引入召回通道**:那是工具查询场景的融合方案,与加权召回并存于各自场景(沿 v4)。
 - **注入通道**:`before_agent_start` → 混合召回 → `rp-memories` custom message(context:include / llmRole:user / compaction:exclude / display:false);去重每 prompt 从 `buildContextEntries()` 重建,审计只在真正 fresh 注入时记一条 `inject`。

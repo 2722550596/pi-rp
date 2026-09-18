@@ -249,7 +249,7 @@ export interface MemoryModule {
 | 工具 | 作用 | 要点 |
 |---|---|---|
 | `recall` | 回想与审视 | 精确 URI + 子树展开(`depth`/`max_nodes`); `depth 0` 渲染完整卡片(相对世界时间、想起条件、标签、关联联想 `@kw -> uri`、更深层的记忆列表); `depth > 0` 递归展开缩进子树(`■ uri`, 带想起条件与缩进正文); 命中记访问时间(§16 沉睡语义); 内置 `MEM://` 视图(§9) |
-| `retrieve` | 线索检索 | 关键词混合打分(`query`/`domain`/`limit`/`semantic?`); 结果结构化输出(命中数、重要性、想起条件、摘要); 显式检索无分数下限但 keyword 模式要求真实命中; 对直接命中做一跳边扩散(带 `↳` 关联来源与 kind) |
+| `retrieve` | 线索检索 | 关键词混合打分(`query`/`domain`/`limit`/`semantic?`); 结果结构化输出(命中数、重要性、想起条件、命中片段——命中段落的节选而非固定开头); 显式检索无分数下限但 keyword 模式要求真实命中; 对直接命中做一跳边扩散(带 `↳` 关联来源与 kind) |
 | `memorize` | 铭刻新记忆 | `uri`/`content`/`when`(=disclosure)/`parent_uri`(缺父链自动补 stub)/`time`;目标是 stub 时原地转正 |
 | `revise` | 修订记忆 | `action: edit\|history\|restore`(默认 edit)。edit 支 replace/append/行编辑 + 批量 `batch`;history 看修订史(不传 uri 列出已删可恢复清单);restore 从修订史恢复(活节点必传 version,已删节点缺省最新,按原 node_id 接回修订史) |
 | `forget` | 遗忘清理 | `target` 单/多条,`dry_run` 级联预览;节点真删、cascade 子树;**修订史全留**——`revise(action:"history")` 查清单、`revise(action:"restore")` 找回 |
@@ -296,7 +296,7 @@ slots:
 - 每次 `before_agent_start`,对当前 prompt 做 **双 query**:当前 prompt(检索意图)+ `Prior context:` 最近 6 条消息(陈述文本)。
 - 打分:权重 vec 0.55 / keyword 0.3 / importance 0.15(v5.4 单列;数值越大越重要),keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max),世界钟 recency 加成(0.08/0.04/0.02);vector 模式 `MIN_SCORE 0.35`、keyword 模式独立 `keywordMinScore 0.12`、`TOP_K 3`、`HIGH_CONFIDENCE 0.55`(唯一"高度相关"绝对档,keyword 模式按设计打不出)。
 - **候选集**:keyword 模式 = 节点 FTS `MATCH` 命中 ∩ kw>0(glossary 专名也算命中);vector 模式保留全 pool 语义空间但只为 FTS 命中节点算 kw。稳定同分次键:`score → kw → vec → bm25 → importance → updated_ts → uri`。
-- 注入只出 **树节点**(线索 ≤80 字 + 软锚),原文日志不进注入,只能 `retrace` 主动取。
+- 注入只出 **树节点**(命中片段 ≤200 字 + 软锚),原文日志不进注入,只能 `retrace` 主动取。片段定位:向量模式取最佳余弦块的原文范围,keyword 模式以最早 token 命中为中心开窗,退化时为开头摘要。
 - 去重:每 prompt 从 `buildContextEntries()` 重建 `uri → md5(uri|content)` 表;同内容版本不重复注入,修订后自动失效重注;只在真正 fresh 注入时记一条 `inject` 审计。
 - 通道:`rp-memories` custom message,`context: include / llmRole: user / compaction: exclude / display: false`。`/` 与 `\` 开头 prompt 跳过。
 - **domain 黑名单**:默认 `["maintenance", "history_raw"]`(运维噪音);`TEMP` 不在黑名单——动态区草稿随时可被召回,这正是"保险"在生效。

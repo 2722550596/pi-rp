@@ -239,13 +239,14 @@ describe("before_agent_start injection", () => {
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
 describe("buildMemoriesBlock", () => {
-	it("renders uri, disclosure and summary lines", async () => {
+	it("renders uri, disclosure and excerpt lines", async () => {
 		const block = buildMemoriesBlock([
 			{
 				node_id: "n1",
 				uri: "history://a",
 				disclosure: "进入酒馆时",
 				summary: "伊莱遇见薇拉",
+				excerpt: "……伊莱在酒馆遇见薇拉……",
 				content: "x",
 				score: 0.6,
 				kw: 1,
@@ -256,10 +257,10 @@ describe("buildMemoriesBlock", () => {
 		expect(block).toContain("<memories>");
 		expect(block).toContain("1. history://a");
 		expect(block).toContain("想起条件: 进入酒馆时");
-		expect(block).toContain("摘要: 伊莱遇见薇拉");
+		expect(block).toContain("片段: ……伊莱在酒馆遇见薇拉……");
 	});
 
-	it("truncates summaries to 80 chars", async () => {
+	it("renders the fallback summary under the 片段 label when nothing matched", async () => {
 		const long = "很".repeat(200);
 		const block = buildMemoriesBlock([
 			{
@@ -267,6 +268,7 @@ describe("buildMemoriesBlock", () => {
 				uri: "history://a",
 				disclosure: null,
 				summary: `${long.slice(0, 80)}……`,
+				excerpt: `${long.slice(0, 80)}……`,
 				content: long,
 				score: 0.5,
 				kw: 1,
@@ -274,6 +276,7 @@ describe("buildMemoriesBlock", () => {
 				bm25: null,
 			},
 		]);
+		expect(block).toContain("片段: ");
 		expect(block).toContain("……");
 	});
 });

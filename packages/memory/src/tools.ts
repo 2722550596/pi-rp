@@ -466,7 +466,10 @@ async function executeRetrieve(store: MemoryStore, params: Static<typeof retriev
 			lines.push(`  想起条件：${disc}`);
 		}
 		const rawContent = (node.content || "").replace(/\s+/g, " ").trim();
-		const snip = rawContent.length > 200 ? `${rawContent.slice(0, 200)}…` : rawContent;
+		// Hit-anchored excerpt from the shared scorer — the passage that
+		// matched, not a fixed head — falling back to the head summary when
+		// nothing locatable matched. Kept in sync with item.excerpt length.
+		const snip = item.excerpt || (rawContent.length > 200 ? `${rawContent.slice(0, 200)}…` : rawContent);
 		lines.push(`  ${snip}`);
 		lines.push("");
 	}

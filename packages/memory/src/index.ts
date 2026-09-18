@@ -65,9 +65,11 @@ export {
 	shouldCaptureCustomType,
 } from "./module.ts";
 export {
+	buildExcerpt,
 	buildGlossaryTerms,
 	buildPool,
 	computeVectorScores,
+	EXCERPT_LEN,
 	formatRelativeWorldTime,
 	importanceScore,
 	keywordScore,
@@ -77,8 +79,10 @@ export {
 	recencyBoost,
 	type SearchOptions,
 	search,
+	segmentRangeInDoc,
 	summarize,
 	toEpochDays,
+	type VectorHit,
 	W_IMPORTANCE,
 	W_KEYWORD,
 	W_VECTOR,

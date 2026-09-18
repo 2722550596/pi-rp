@@ -189,7 +189,7 @@ export function buildMemoriesBlock(items: RecalledItem[]): string {
 		const anchor = i === 0 && item.score >= RECALL_HIGH_CONFIDENCE ? " [高度相关，建议读取]" : "";
 		lines.push(`\n${i + 1}. ${item.uri}${anchor}`);
 		if (item.disclosure) lines.push(`   想起条件: ${item.disclosure}`);
-		lines.push(`   摘要: ${item.summary}`);
+		lines.push(`   片段: ${item.excerpt}`);
 	});
 	// Second home for the disclosure self-trigger rule (the primary home is the
 	// tools' `promptGuidelines` — contract §6.6 puts it on both channels so the

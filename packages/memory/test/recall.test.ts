@@ -9,9 +9,21 @@ import {
 	QUERY_INSTRUCTION,
 	resolveEmbeddingsConfig,
 } from "../src/embeddings.ts";
-import { formatRelativeWorldTime, rank, search, W_IMPORTANCE, W_KEYWORD, W_VECTOR } from "../src/recall.ts";
+import {
+	buildExcerpt,
+	formatRelativeWorldTime,
+	rank,
+	search,
+	segmentRangeInDoc,
+	summarize,
+	type VectorHit,
+	W_IMPORTANCE,
+	W_KEYWORD,
+	W_VECTOR,
+} from "../src/recall.ts";
 import { createSchema } from "../src/schema.ts";
 import { MemoryStore } from "../src/store.ts";
+import { tokenizeForMatch } from "../src/tokenize.ts";
 import { createFakeEmbeddingClient } from "./fake-embeddings.ts";
 
 let db: MemoryDatabase;
@@ -68,6 +80,50 @@ describe("embeddings client", () => {
 	});
 });
 
+describe("buildExcerpt (hit-anchored excerpts)", () => {
+	it("centers on the earliest keyword hit instead of the head, marking elisions", () => {
+		const head = "开头无关的铺垫文本。".repeat(10);
+		const content = head + "薇拉在酒馆留下了线索。" + "结尾的补充叙述。".repeat(20);
+		const out = buildExcerpt(content, tokenizeForMatch("薇拉 酒馆"));
+		expect(out).toContain("薇拉在酒馆留下了线索");
+		// Window starts mid-document (elided head) and stays within budget.
+		expect(out.startsWith("……")).toBe(true);
+		expect(out.replace(/……/g, "").length).toBeLessThanOrEqual(200);
+		// The hit sits mid-window (budget split around it), not at the head
+		// the old fixed summary always showed.
+		expect(out.indexOf("薇拉")).toBeGreaterThan(50);
+	});
+
+	it("falls back to the head summary when no token hits and no chunk is given", () => {
+		const content = "很".repeat(300);
+		expect(buildExcerpt(content, tokenizeForMatch("不存在的词"))).toBe(summarize(content));
+	});
+
+	it("maps a chunkText segment index back into content coordinates", () => {
+		const doc = { uri: "history://x", disclosure: "想起条件若干字", content: "甲".repeat(1000) };
+		const prefix = doc.uri.length + 1 + (doc.disclosure?.length ?? 0) + 1;
+		const step = EMBED_INPUT_MAX - EMBED_CHUNK_OVERLAP;
+		// Segment 2 lives at [2·step, 2·step+500) in embedDocText space; the
+		// uri+disclosure prefix shifts it left and the content end clamps it.
+		expect(segmentRangeInDoc(doc, 2)).toEqual({
+			start: 2 * step - prefix,
+			end: Math.min(2 * step + EMBED_INPUT_MAX - prefix, doc.content.length),
+		});
+		// A segment fully inside the prefix maps to an empty range → null.
+		expect(segmentRangeInDoc({ uri: "u".repeat(600), disclosure: null, content: "文" }, 0)).toBeNull();
+	});
+
+	it("trusts the winning chunk range when the token hit lies outside it", () => {
+		const content = "薇拉在开头。" + "甲".repeat(500) + "中段语义命中内容。" + "乙".repeat(500);
+		// The 甲 segment spans [6, 506); the semantic hit sits inside it while
+		// the token hit (薇拉) sits at the document head.
+		const hit = { start: 100, end: 200 };
+		const out = buildExcerpt(content, tokenizeForMatch("薇拉"), hit);
+		expect(out).toContain("甲".repeat(20));
+		expect(out).not.toContain("薇拉在开头");
+	});
+});
+
 describe("hybrid recall (§9)", () => {
 	it("sorts by score — the better match wins even when inserted last", () => {
 		// Half the query matches the first node, all of it the second: without
@@ -95,7 +151,7 @@ describe("hybrid recall (§9)", () => {
 	it("vector mode can clear HIGH_CONFIDENCE because W_VECTOR contributes", () => {
 		store.insertNode({ uri: "history://perfect", content: "薇拉", importance: 10 });
 		const pool = store.listNodes().filter((n) => !n.is_stub);
-		const vec = new Map(pool.map((n) => [n.node_id, 1]));
+		const vec = new Map<string, VectorHit>(pool.map((n) => [n.node_id, { score: 1, segIndex: 0 }]));
 		const items = rank(pool, { ...base, queries: ["薇拉"] }, vec, "vector");
 		expect(items[0].score).toBeGreaterThanOrEqual(0.55);
 		expect(W_VECTOR).toBe(0.55);

@@ -22,7 +22,16 @@
  * the query as whole tokens, keeping proper nouns recallable without touching
  * the global jieba dictionary.
  */
-import { chunkText, cosine, type EmbeddingClient, embedDocText, embedHash, QUERY_INSTRUCTION } from "./embeddings.ts";
+import {
+	chunkText,
+	cosine,
+	EMBED_CHUNK_OVERLAP,
+	EMBED_INPUT_MAX,
+	type EmbeddingClient,
+	embedDocText,
+	embedHash,
+	QUERY_INSTRUCTION,
+} from "./embeddings.ts";
 import type { MemoryNode, MemoryStore } from "./store.ts";
 import { tokenizeForMatch } from "./tokenize.ts";
 
@@ -47,6 +56,14 @@ export interface RecalledItem {
 	uri: string;
 	disclosure: string | null;
 	summary: string;
+	/**
+	 * Hit-anchored excerpt (≤ EXCERPT_LEN chars) centered on what matched:
+	 * vector mode uses the best-scoring chunk's original-text range, keyword
+	 * mode centers on the earliest query-token hit. Falls back to `summary`
+	 * when nothing locatable matched. This is what injection and the retrieve
+	 * tool render — `summary` stays for the web DTO and as the fallback shape.
+	 */
+	excerpt: string;
 	/** Full body: the injection dedup hash is version-sensitive. */
 	content: string;
 	score: number;
@@ -54,6 +71,18 @@ export interface RecalledItem {
 	vec: number;
 	/** BM25 of the node's best FTS hit (null when no FTS hit / vector-only). */
 	bm25: number | null;
+}
+
+/**
+ * Per-node vector evidence: the best segment score AND which chunk earned it
+ * (chunkText order over embedDocText(uri, disclosure, content)). The index is
+ * what lets vector-mode excerpts point at the matching passage instead of the
+ * document head — segment-level cosine already picks the winner, we just used
+ * to throw the position away.
+ */
+export interface VectorHit {
+	score: number;
+	segIndex: number;
 }
 
 export interface SearchOptions {
@@ -82,6 +111,100 @@ export interface SearchOptions {
 export function summarize(content: string): string {
 	const flat = content.replace(/\r?\n+/g, " ").trim();
 	return flat.length > MAX_SUMMARY_LEN ? `${flat.slice(0, MAX_SUMMARY_LEN)}……` : flat;
+}
+
+/** Injection/retrieve excerpt budget — matches the retrieve tool's old cap. */
+export const EXCERPT_LEN = 200;
+
+/**
+ * Best-effort token hit inside `content`. Tokens come from the intent query
+ * (tokenizeForMatch space: latin words lowercased + CJK bigrams), so matching
+ * runs on a lowercased copy; BMP text keeps the offsets valid on the original.
+ */
+function firstTokenHit(content: string, tokens: string[]): { start: number; end: number } | null {
+	if (tokens.length === 0 || content.length === 0) return null;
+	const lower = content.toLowerCase();
+	let best: { start: number; end: number } | null = null;
+	for (const t of tokens) {
+		if (!t) continue;
+		const idx = lower.indexOf(t);
+		if (idx >= 0 && (best === null || idx < best.start)) best = { start: idx, end: idx + t.length };
+	}
+	return best;
+}
+
+/**
+ * Flatten a window into a readable excerpt, marking elisions: `……` heads a
+ * window that starts mid-document, tails one that ends mid-document or was
+ * clipped by the budget. Window always contains the hit range; leftover
+ * budget extends left/right symmetrically, clamped to the content bounds.
+ */
+function windowAround(content: string, hitStart: number, hitEnd: number, maxLen: number): string {
+	const hitLen = hitEnd - hitStart;
+	let winStart: number;
+	let winEnd: number;
+	if (hitLen >= maxLen) {
+		winStart = hitStart;
+		winEnd = hitStart + maxLen;
+	} else {
+		const budget = maxLen - hitLen;
+		const leftRoom = hitStart;
+		const rightRoom = content.length - hitEnd;
+		let left = Math.min(Math.floor(budget / 2), leftRoom);
+		const right = Math.min(budget - left, rightRoom);
+		left += Math.min(budget - left - right, leftRoom - left);
+		winStart = hitStart - left;
+		winEnd = hitEnd + right;
+	}
+	const flat = content.slice(winStart, winEnd).replace(/\s+/g, " ").trim();
+	const clipped = flat.length > maxLen ? `${flat.slice(0, maxLen)}……` : flat;
+	return `${winStart > 0 ? "……" : ""}${clipped}${winEnd < content.length ? "……" : ""}`;
+}
+
+/**
+ * Map a chunkText segment index back into the node's content coordinates.
+ * Vectors embed `embedDocText` output (`uri\ndisclosure\ncontent`), so the
+ * content offset is the segment range minus that prefix length; step is
+ * deterministic (maxLen - overlap), same math as chunkText.
+ */
+export function segmentRangeInDoc(
+	doc: Pick<MemoryNode, "uri" | "disclosure" | "content">,
+	segIndex: number,
+): {
+	start: number;
+	end: number;
+} | null {
+	const prefixLen = doc.uri.length + 1 + (doc.disclosure?.length ?? 0) + 1;
+	const segStart = segIndex * (EMBED_INPUT_MAX - EMBED_CHUNK_OVERLAP);
+	const start = Math.min(Math.max(segStart - prefixLen, 0), doc.content.length);
+	const end = Math.min(Math.max(segStart + EMBED_INPUT_MAX - prefixLen, 0), doc.content.length);
+	return start < end ? { start, end } : null;
+}
+
+/**
+ * Hit-anchored excerpt for an item about to be injected/rendered. Priority:
+ * a token hit inside the vector chunk (word + semantic evidence agree) → the
+ * chunk range itself (pure semantic hit) → earliest token hit anywhere
+ * (keyword mode) → the deterministic head summary. Whichever fires, the
+ * window is ≤ maxLen chars, flattened, with elisions marked.
+ */
+export function buildExcerpt(
+	content: string,
+	queryTokens: string[],
+	hit?: { start: number; end: number } | null,
+	maxLen = EXCERPT_LEN,
+): string {
+	const tokenHit = firstTokenHit(content, queryTokens);
+	if (hit && tokenHit && tokenHit.start >= hit.start && tokenHit.end <= hit.end) {
+		return windowAround(content, tokenHit.start, tokenHit.end, maxLen);
+	}
+	if (hit) {
+		const start = Math.min(Math.max(hit.start, 0), content.length);
+		const end = Math.min(Math.max(hit.end, 0), content.length);
+		if (start < end) return windowAround(content, start, end, maxLen);
+	}
+	if (tokenHit) return windowAround(content, tokenHit.start, tokenHit.end, maxLen);
+	return summarize(content);
 }
 
 export function toEpochDays(ts: string | null): number | null {
@@ -214,14 +337,16 @@ export function buildGlossaryTerms(store: MemoryStore, nodes: MemoryNode[]): Map
 export function rank(
 	pool: MemoryNode[],
 	options: SearchOptions,
-	vecScores: Map<string, number> | null,
+	vecScores: Map<string, VectorHit> | null,
 	mode: RecallMode,
 	bm25: Map<string, number> | null = null,
 	glossaryTerms?: Map<string, string>,
 ): RecalledItem[] {
 	const queryTokensList = options.queries.map(tokenizeForMatch);
+	const intentTokens = queryTokensList[0] ?? [];
 	const scored: RecalledItem[] = pool.map((doc) => {
-		const vec = mode === "vector" ? (vecScores?.get(doc.node_id) ?? 0) : 0;
+		const vecHit = mode === "vector" ? vecScores?.get(doc.node_id) : undefined;
+		const vec = mode === "vector" ? (vecHit?.score ?? 0) : 0;
 		let kw = 0;
 		const extraTerms = glossaryTerms?.get(doc.node_id) ?? "";
 		for (const qTokens of queryTokensList) {
@@ -238,6 +363,7 @@ export function rank(
 			uri: doc.uri,
 			disclosure: doc.disclosure,
 			summary: summarize(doc.content),
+			excerpt: buildExcerpt(doc.content, intentTokens, vecHit ? segmentRangeInDoc(doc, vecHit.segIndex) : null),
 			content: doc.content,
 			score,
 			kw,
@@ -290,7 +416,7 @@ export async function computeVectorScores(
 	pool: MemoryNode[],
 	queries: string[],
 	signal?: AbortSignal,
-): Promise<Map<string, number> | null> {
+): Promise<Map<string, VectorHit> | null> {
 	if (!client?.enabled || pool.length === 0 || queries.length === 0) return null;
 	if (signal?.aborted) return null;
 	const model = client.config.model;
@@ -332,21 +458,28 @@ export async function computeVectorScores(
 	const queryVecs = await client.embed(queryInputs, signal);
 	if (!queryVecs || queryVecs.length !== queries.length) return null;
 
-	const scores = new Map<string, number>();
+	const scores = new Map<string, VectorHit>();
 	for (const doc of pool) {
 		const segs = cached.get(doc.node_id);
 		if (!segs || segs.length === 0) continue;
-		// Per query: segment-level cosine, best segment wins. Across queries:
-		// best query wins — any view (intent or context) justifies recalling.
+		// Per query: segment-level cosine, best segment wins — and the winning
+		// segment index rides along as the vector-mode excerpt anchor. Across
+		// queries: best query wins — any view (intent or context) justifies
+		// recalling.
 		let best = 0;
+		let bestSeg = 0;
 		for (const qv of queryVecs) {
-			for (const sv of segs) {
+			for (let si = 0; si < segs.length; si++) {
+				const sv = segs[si];
 				if (!sv) continue;
 				const c = cosine(qv, sv);
-				if (c > best) best = c;
+				if (c > best) {
+					best = c;
+					bestSeg = si;
+				}
 			}
 		}
-		scores.set(doc.node_id, best);
+		scores.set(doc.node_id, { score: best, segIndex: bestSeg });
 	}
 	return scores;
 }
