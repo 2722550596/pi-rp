@@ -692,7 +692,7 @@ describe("GET /api/raw and /api/sessions", () => {
 
 	it("⭐ F4-B: first_text is the FIRST row's text, whitespace-folded and cut to 80 chars", async () => {
 		appendRaw([
-			{ session: "s1", entry: "e1", text: "第一行\n第二行 " + "细".repeat(200) },
+			{ session: "s1", entry: "e1", text: `第一行\n第二行 ${"细".repeat(200)}` },
 			{ session: "s1", entry: "e2", text: "绝不是摘要来源" },
 			{ session: "s2", entry: "e3", text: "商队从北方来" },
 		]);
@@ -700,7 +700,7 @@ describe("GET /api/raw and /api/sessions", () => {
 		const byId = new Map(body.items.map((i) => [i.session_id, i]));
 		const s1 = byId.get("s1")!;
 		// substr(120) up front, then `\s+ → " "` folding (no newline survives), then the 80-char cut.
-		expect(s1.first_text).toBe("第一行 第二行 " + "细".repeat(72));
+		expect(s1.first_text).toBe(`第一行 第二行 ${"细".repeat(72)}`);
 		expect(s1.first_text!.length).toBe(80);
 		expect(s1.first_text).not.toContain("\n");
 		// short text passes through folded and uncut; each session digests its OWN first row

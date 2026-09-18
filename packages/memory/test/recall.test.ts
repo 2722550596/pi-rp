@@ -83,7 +83,7 @@ describe("embeddings client", () => {
 describe("buildExcerpt (hit-anchored excerpts)", () => {
 	it("centers on the earliest keyword hit instead of the head, marking elisions", () => {
 		const head = "开头无关的铺垫文本。".repeat(10);
-		const content = head + "薇拉在酒馆留下了线索。" + "结尾的补充叙述。".repeat(20);
+		const content = `${head}薇拉在酒馆留下了线索。${"结尾的补充叙述。".repeat(20)}`;
 		const out = buildExcerpt(content, tokenizeForMatch("薇拉 酒馆"));
 		expect(out).toContain("薇拉在酒馆留下了线索");
 		// Window starts mid-document (elided head) and stays within budget.
@@ -114,7 +114,7 @@ describe("buildExcerpt (hit-anchored excerpts)", () => {
 	});
 
 	it("trusts the winning chunk range when the token hit lies outside it", () => {
-		const content = "薇拉在开头。" + "甲".repeat(500) + "中段语义命中内容。" + "乙".repeat(500);
+		const content = `薇拉在开头。${"甲".repeat(500)}中段语义命中内容。${"乙".repeat(500)}`;
 		// The 甲 segment spans [6, 506); the semantic hit sits inside it while
 		// the token hit (薇拉) sits at the document head.
 		const hit = { start: 100, end: 200 };
