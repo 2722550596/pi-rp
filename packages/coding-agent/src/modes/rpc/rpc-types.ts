@@ -109,6 +109,9 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 	| {
 			id?: string;
+			// ⚠️ 只落盘、不触碰 agent.state.messages——调用方须随后
+			// navigateTree(返回的 entryId)（no-op 分支重放）同步 LLM 上下文，
+			// 否则下一次 prompt 缺这条消息。
 			type: "append_message";
 			/** 扩展自定义消息类型（customType），policy 由进程扩展注册或沿用默认语义。 */
 			customType: string;

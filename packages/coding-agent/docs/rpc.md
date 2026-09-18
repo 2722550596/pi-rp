@@ -286,6 +286,14 @@ Response:
 
 `entryId` is the persisted entry id — the caller can use it to correlate the message with later session reads or navigation.
 
+> **⚠️ Required follow-up: replay the agent state.** `append_message` only persists to the session tree — it does **not** touch the in-memory `agent.state.messages` that the turn loop consumes (unlike the in-process `sendCustomMessage` / `startLiveMessage`, which update both). The next `prompt` does not rebuild context from the session tree, so a message appended without a replay is silently missing from the LLM context. After appending, the caller MUST issue:
+>
+> ```json
+> {"type": "navigate_tree", "targetId": "entry-42"}
+> ```
+>
+> Navigating to the current leaf hits the no-op branch, which resynchronizes agent state from the session path — this is the writer's explicit "replay the session" signal. Appending is allowed while the agent is streaming (storage-level appends are always safe); the replay is deferred by the `navigate_tree` streaming guard until a safe point.
+
 ### Model
 
 #### set_model

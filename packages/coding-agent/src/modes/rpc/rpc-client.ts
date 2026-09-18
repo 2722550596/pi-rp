@@ -612,6 +612,10 @@ export class RpcClient {
 	 * 只追加、不允许指定 parent/entry id 或修改已有记录；customType 的 policy
 	 * 不写入协议，由进程扩展注册或沿用默认 custom message 语义（user 角色进
 	 * 上下文，display:false 时 TUI 隐藏）。返回持久化 entry id。
+	 *
+	 * ⚠️ 只落盘，不触碰服务端 agent.state.messages：返回后必须再调
+	 * `navigateTree(entryId)`（no-op 分支重放 agent state）同步 LLM 上下文，
+	 * 否则下一次 prompt 缺这条消息。
 	 */
 	async appendMessage(args: {
 		customType: string;

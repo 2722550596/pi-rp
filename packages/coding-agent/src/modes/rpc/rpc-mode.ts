@@ -983,6 +983,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// 消息；customType 的 policy 不写入协议——由进程扩展注册或
 				// 沿用默认 custom message 语义（user 角色进上下文，display:false
 				// 时 TUI 隐藏），角色子进程 --no-extensions 也能读取。
+				//
+				// ⚠️ 只落盘，不触碰 agent.state.messages（与进程内
+				// sendCustomMessage/startLiveMessage 的双写不同）。state.messages
+				// 是回合循环的权威内存态，prompt 不会从 session 树重建——调用方
+				// 落盘后必须再发一次 navigateTree(返回的 entryId)（no-op 分支
+				// 重放 agent state，f455c928a），否则下一次 prompt 的 LLM 上下文
+				// 缺这条消息（真实事故：cast_profile 落盘后不进 payload）。
+				// isStreaming 中落盘仍被允许（存储层纯追加永远安全），重放由
+				// navigateTree 的 isStreaming 守卫挡到安全点。
 				if (!command.customType) {
 					return error(id, "append_message", "customType is required");
 				}
