@@ -325,12 +325,12 @@ Implemented by [`@earendil-works/pi-memory`](../../../packages/memory/README.md)
 
 ### `recent`
 
-Renders the most recently modified memories (by `updated_ts`, newest first) with snippets.
+Renders the most recently modified memories (by `updated_ts`, newest first): the newest entries as full original text, the rest as one-line snippets.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `snippetCount` | number | `5` | Number of memory nodes to render. |
-| `rawCount` | number | — | Additionally render this many latest raw-log transcript rows. |
+| `rawCount` | number | `1` | Number of newest memory entries rendered as full original text. |
+| `snippetCount` | number | `4` | Number of following entries rendered as one-line snippets. |
 
 ### `index`
 

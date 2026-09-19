@@ -3,7 +3,9 @@
  *
  * awaken: preloaded URI list (原文 + 子 snippet + 世界时间行), reconciled
  *   against live URIs at render time (deleted nodes drop out, renames follow).
- * recent: most recently updated nodes (updated_ts desc), counts configurable.
+ * recent: most recently updated nodes (updated_ts desc): the newest rawCount
+ *   entries render as full text (default 1), the next snippetCount as
+ *   snippets (default 4).
  * index:  one snippet per domain root.
  *
  * All three filter hidden auto nodes through the module's live visibility
@@ -23,7 +25,9 @@ export interface MemorySlotDefinition {
 }
 
 export interface RecentSlotOptions {
+	/** Newest entries rendered as full original text. Default 1. */
 	rawCount?: number;
+	/** Following entries rendered as one-line snippets. Default 4. */
 	snippetCount?: number;
 }
 
@@ -36,6 +40,11 @@ function snippet(store: MemoryStore, node: { uri: string; content: string }, max
 	const oneLine = node.content.replace(/\s+/g, " ").trim();
 	const disc = store.effectiveDisclosure(node.uri);
 	return `${node.uri}${disc ? ` (${disc})` : ""}: ${oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine}`;
+}
+
+function fullText(store: MemoryStore, node: { uri: string; content: string }): string {
+	const disc = store.effectiveDisclosure(node.uri);
+	return `### ${node.uri}${disc ? ` (${disc})` : ""}\n${node.content}`;
 }
 
 /**
@@ -97,24 +106,18 @@ export function createMemorySlots(store: MemoryStore, opts: MemorySlotsOptions =
 
 	const recent: MemorySlotDefinition = {
 		name: "recent",
-		description: "最近记忆：按 updated_ts 倒序拉最新（raw / snippet 数量可配）",
+		description:
+			"最近记忆：按 updated_ts 倒序，最新 rawCount 条给完整原文（默认 1），其后 snippetCount 条给 snippet（默认 4）",
 		async: true,
 		render: (context) => {
 			const options = (context.item.options ?? {}) as RecentSlotOptions;
-			const nodes = store.listRecentNodes(Math.max(options.snippetCount ?? 10, 1)).filter((n) => visible(n));
+			const rawCount = Math.max(options.rawCount ?? 1, 0);
+			const snippetCount = Math.max(options.snippetCount ?? 4, 0);
+			const total = rawCount + snippetCount;
+			if (total === 0) return "";
+			const nodes = store.listRecentNodes(total).filter((n) => visible(n));
 			if (nodes.length === 0) return "";
-			const rawCount = options.rawCount ?? 0;
-			if (rawCount > 0) {
-				const last = store.db.prepare("SELECT MAX(raw_id) AS m FROM raw_log").get() as { m: number | null };
-				const upto = last.m ?? 0;
-				// Recent slot shows the ACTIVE transcript (inactive rows are
-				// rolled-back variants, §3.2).
-				const rows = upto > 0 ? store.listRaw(Math.max(1, upto - rawCount + 1), upto, { activeOnly: true }) : [];
-				const rawLines = rows.map((r) => `[${r.raw_id}] ${r.role}: ${r.text.slice(0, 200)}`);
-				const snippetLines = nodes.slice(0, options.snippetCount ?? 10).map((x) => snippet(store, x));
-				return [...rawLines, ...snippetLines].join("\n");
-			}
-			return nodes.map((x) => snippet(store, x)).join("\n");
+			return nodes.map((node, i) => (i < rawCount ? fullText(store, node) : snippet(store, node))).join("\n");
 		},
 	};
 

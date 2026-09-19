@@ -278,7 +278,7 @@ static 注册进 `SUPPORTED_SLOTS` + `PromptPresetSlot`,全部 `async: true`(异
 | slot | 内容 |
 |---|---|
 | `awaken` | 常驻觉知记忆: 首行带 `> 当前世界时间: YYYY-MM-DD`, 每条以 `### uri` 渲染原文正文, 附带发生时间与自然相对时间 `> (发生于: ...，昨天/约 N 天前)`、想起条件 `> 什么时候想起：...`、子节点 snippet 及想起条件 `(${child.disclosure})`。若子节点本身已在 awaken 顶层清单则自动去重跳过 snippet; 记忆块间以 `\n\n---\n\n` 分隔。渲染时按 uri 现值解析, 节点被删/被 relocate 天然对账 |
-| `recent` | 按 `updated_ts` 倒序的最新记忆;`{ rawCount?, snippetCount? }` 可配原文/snippet 数量 |
+| `recent` | 按 `updated_ts` 倒序的最新记忆：最新 `rawCount` 条（默认 1）渲染完整原文，其后 `snippetCount` 条（默认 4）渲染 snippet |
 | `index` | 所有 domain 根节点 snippet 一览 |
 
 preset 声明示例:

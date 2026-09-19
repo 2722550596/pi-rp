@@ -24,6 +24,11 @@ function renderItem(name: string, options?: Record<string, unknown>): Promise<st
 	return Promise.resolve(slot.render({ item: { options } }) as string);
 }
 
+/** Pin updated_ts so listRecentNodes ordering is deterministic across test runs. */
+function touch(uri: string, ts: string): void {
+	store.db.prepare("UPDATE nodes SET updated_ts = ? WHERE uri = ?").run(ts, uri);
+}
+
 describe("awaken slot", () => {
 	it("renders full text, child snippets and world time", async () => {
 		store.put({
@@ -80,23 +85,43 @@ describe("awaken slot", () => {
 });
 
 describe("recent slot", () => {
-	it("lists nodes by updated_ts desc with configurable count", async () => {
-		store.put({ uri: "history://one", content: "第一条", source: "manual" });
-		store.put({ uri: "history://two", content: "第二条", source: "manual" });
+	it("defaults to newest entry as full text plus 4 snippets", async () => {
+		for (let i = 1; i <= 6; i++) {
+			store.put({ uri: `history://n${i}`, content: `第${i}条\n换行保留`, source: "manual" });
+			touch(`history://n${i}`, `2026-06-0${i}T00:00:00.000Z`);
+		}
 		const out = await renderItem("recent");
-		expect(out).toContain("history://one: 第一条");
-		expect(out).toContain("history://two: 第二条");
-
-		const limited = await renderItem("recent", { snippetCount: 1 });
-		expect(limited.split("\n")).toHaveLength(1);
+		// newest entry renders as full text with its original line breaks
+		expect(out).toContain("### history://n6\n第6条\n换行保留");
+		// the next four render as snippets (newlines folded)
+		expect(out).toContain("history://n5: 第5条 换行保留");
+		expect(out).toContain("history://n2: 第2条 换行保留");
+		// only 5 entries total; the newest one never appears as a snippet
+		expect(out).not.toContain("history://n1");
+		expect(out).not.toContain("history://n6:");
 	});
 
-	it("includes raw_log rows when rawCount is set", async () => {
-		store.appendRaw([{ role: "user", text: "最新对话原文", entry_id: "e1", session_id: "session-1", wall_ts: "t" }]);
-		store.put({ uri: "history://one", content: "纪要", source: "manual" });
-		const out = await renderItem("recent", { rawCount: 1, snippetCount: 5 });
-		expect(out).toContain("[1] user: 最新对话原文");
-		expect(out).toContain("history://one: 纪要");
+	it("honours rawCount and snippetCount options", async () => {
+		for (let i = 1; i <= 5; i++) {
+			store.put({ uri: `history://n${i}`, content: `第${i}条`, source: "manual" });
+			touch(`history://n${i}`, `2026-06-0${i}T00:00:00.000Z`);
+		}
+		const out = await renderItem("recent", { rawCount: 2, snippetCount: 1 });
+		expect(out).toContain("### history://n5\n第5条");
+		expect(out).toContain("### history://n4\n第4条");
+		expect(out).toContain("history://n3: 第3条");
+		expect(out).not.toContain("n2");
+		expect(out).not.toContain("n1");
+	});
+
+	it("renders all snippets when rawCount is 0", async () => {
+		for (let i = 1; i <= 3; i++) {
+			store.put({ uri: `history://n${i}`, content: `第${i}条`, source: "manual" });
+			touch(`history://n${i}`, `2026-06-0${i}T00:00:00.000Z`);
+		}
+		const out = await renderItem("recent", { rawCount: 0, snippetCount: 3 });
+		expect(out).toContain("history://n3: 第3条");
+		expect(out).not.toContain("### ");
 	});
 
 	it("renders empty when there are no nodes", async () => {
