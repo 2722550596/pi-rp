@@ -2105,6 +2105,49 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// models.dev dropped the kimi-for-coding catalog (same drift as the
+		// gateway workers-ai passthroughs), which leaves the kimi-coding
+		// provider without models and breaks hydration and type checks.
+		// Synthesize the subscription entries from the Moonshot catalog: same
+		// models under their subscription ids, implied subscription costs.
+		if (!data["kimi-for-coding"]?.models) {
+			const moonshotModels = (data["moonshotai"]?.models ?? {}) as Record<string, ModelsDevModel>;
+			const subscriptionAliases = [
+				{ source: "kimi-k2.7-code", id: "kimi-for-coding", name: "Kimi For Coding" },
+				{ source: "kimi-k2.7-code-highspeed", id: "kimi-for-coding-highspeed", name: "Kimi For Coding Highspeed" },
+				{ source: "kimi-k3", id: "k3", name: "Kimi K3" },
+			] as const;
+			for (const { source, id, name } of subscriptionAliases) {
+				const m = moonshotModels[source];
+				if (!m || m.tool_call !== true) continue;
+				const isKimiK3 = id === "k3";
+				const impliedCost = KIMI_CODING_IMPLIED_COSTS[id];
+				models.push({
+					id,
+					name,
+					api: "anthropic-messages",
+					provider: "kimi-coding",
+					// Kimi For Coding's Anthropic-compatible API - SDK appends /v1/messages
+					baseUrl: "https://api.kimi.com/coding",
+					compat: {
+						...(isKimiK3 || id === "kimi-for-coding" ? { allowEmptySignature: true } : {}),
+						forceAdaptiveThinking: true,
+					},
+					reasoning: isKimiK3 || m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || impliedCost?.input || 0,
+						output: m.cost?.output || impliedCost?.output || 0,
+						cacheRead: m.cost?.cache_read || impliedCost?.cacheRead || 0,
+						cacheWrite: m.cost?.cache_write || impliedCost?.cacheWrite || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+				});
+				recordModelsDevReasoningOptions("kimi-coding", id, m);
+			}
+		}
+
 		// Process Moonshot AI models
 		const moonshotVariants = [
 			{ key: "moonshotai", provider: "moonshotai", baseUrl: "https://api.moonshot.ai/v1" },
