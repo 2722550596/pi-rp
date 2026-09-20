@@ -68,6 +68,21 @@ describe("memorize → recall → revise → forget chain", () => {
 		expect(store.resolveUri("history://scenes/tavern")).toBeNull();
 	});
 
+	it("forget target schema is anyOf array-first (Vertex function-declaration validation)", async () => {
+		// Vertex/Gemini merges anyOf branches; string-first unions yield an illegal
+		// `type: string` + `items` schema → 400 "schema type should be ARRAY".
+		// Same trap as the read tool's `path`: array branch MUST come first.
+		const forget = createMemoryTools(store).find((t) => t.name === "forget");
+		expect(forget).toBeTruthy();
+		// In-process TypeBox definition whose exact shape we control; TSchema's
+		// static type just doesn't expose object properties — named, shape-checked.
+		const params = forget!.parameters as { properties: { target: { anyOf: Array<{ type?: string; items?: { type: string } }> } } };
+		const target = params.properties.target;
+		expect(target.anyOf[0].type).toBe("array");
+		expect(target.anyOf[0].items?.type).toBe("string");
+		expect(target.anyOf[1].type).toBe("string");
+	});
+
 	it("memorize with missing parent creates stub chain filtered from FTS", async () => {
 		const result = await run("memorize", {
 			uri: "core://identity/habits/tea",
