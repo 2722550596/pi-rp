@@ -38,16 +38,22 @@ describe("MemoryStore CRUD", () => {
 		expect(nodeByUri("history://scene/001").content).toBe("v2");
 		const revs = store.listRevisions(node.node_id);
 		expect(revs).toHaveLength(1);
-		expect(revs[0].content).toBe("v1");
+		expect(revs[0].content).toBe("v2"); // §8 v4: post snapshot — the state AFTER the write
 		expect(revs[0].version).toBe(1);
 	});
 
-	it("restoreRevision brings old content back and archives again", () => {
-		const node = store.insertNode({ uri: "history://scene/001", content: "v1" });
+	it("restoreRevision brings the archived state back and archives again", () => {
+		const node = store.insertNode({
+			uri: "history://scene/001",
+			content: "v1",
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
 		store.updateNode(node.node_id, { content: "v2" });
+		// The archived birth state (§8 v4, first chain row) rolls the body back.
 		store.restoreRevision(node.node_id, 1);
 		expect(nodeByUri("history://scene/001").content).toBe("v1");
-		expect(store.currentVersion(node.node_id)).toBe(2);
+		expect(store.currentVersion(node.node_id)).toBe(3);
 	});
 
 	it("deleteCascade removes node, children, aliases and fts", () => {
@@ -171,8 +177,8 @@ describe("seed", () => {
 		expect(store.resolveUri("meta://")).not.toBeNull();
 		// `seed()` stamps SCHEMA_VERSION via setKv, so reading it back with the same
 		// constant is a tautology and cannot catch a version bump (T15). The real
-		// non-tautological check lives in `schema-migration.test.ts` (literal "3").
-		expect(store.getKv(SCHEMA_VERSION_KEY)).toBe("3");
+		// non-tautological check lives in `schema-migration.test.ts` (literal "4").
+		expect(store.getKv(SCHEMA_VERSION_KEY)).toBe("4");
 	});
 });
 
@@ -270,8 +276,10 @@ describe("forget keeps the recovery path (§10)", () => {
 		// No zombie entry: the node row is really gone.
 		expect(store.resolveUri("core://habit")).toBeNull();
 		// …but the history survives, ending with the content as it stood.
+		// Post snapshots (§8 v4): the first row is the state after the v2
+		// write, the last row is the content at deletion.
 		const revs = store.listRevisionsByUri("core://habit");
-		expect(revs.map((r) => r.content)).toEqual(["v1", "v2"]);
+		expect(revs.map((r) => r.content)).toEqual(["v2", "v2"]);
 		expect(revs.every((r) => r.alive === false)).toBe(true);
 	});
 
@@ -356,26 +364,185 @@ describe("TEMP dynamic zone", () => {
 });
 
 describe("anchor visibility predicate", () => {
-	it("manual nodes are always visible; auto nodes depend on anchor", () => {
+	it("anchored nodes follow the path regardless of source; un-anchored split by source (§8 v4)", () => {
 		const manual = store.insertNode({ uri: "history://m", content: "manual", source: "manual" });
+		const manualAnchored = store.insertNode({
+			uri: "history://m2",
+			content: "manual anchored",
+			source: "manual",
+			anchor_entry_id: "entry-1",
+			anchor_session_id: "s1",
+		});
+		const manualOffPath = store.insertNode({
+			uri: "history://m3",
+			content: "manual off path",
+			source: "manual",
+			anchor_entry_id: "entry-9",
+			anchor_session_id: "s1",
+		});
 		const autoActive = store.insertNode({
 			uri: "history://a1",
 			content: "auto on path",
 			source: "auto",
 			anchor_entry_id: "entry-1",
+			anchor_session_id: "s1",
 		});
 		const autoOrphan = store.insertNode({
 			uri: "history://a2",
 			content: "auto off path",
 			source: "auto",
 			anchor_entry_id: "entry-9",
+			anchor_session_id: "s1",
+		});
+		const autoNoSession = store.insertNode({
+			uri: "history://a3",
+			content: "auto without session anchor",
+			source: "auto",
+			anchor_entry_id: "entry-1",
 		});
 		const activeBranch = new Set(["entry-1"]);
 		const visible = (n: MemoryNode) =>
-			store.isVisible(n, n.anchor_entry_id === null || activeBranch.has(n.anchor_entry_id));
-		expect(visible(manual)).toBe(true);
+			store.isVisible(n, Boolean(n.anchor_session_id) && activeBranch.has(n.anchor_entry_id!));
+		expect(visible(manual)).toBe(true); // un-anchored manual: branch-independent
+		expect(visible(manualAnchored)).toBe(true);
+		expect(visible(manualOffPath)).toBe(false); // v4: anchored manual rolls back too
 		expect(visible(autoActive)).toBe(true);
 		expect(visible(autoOrphan)).toBe(false);
+		expect(visible(autoNoSession)).toBe(false); // auto without provenance stays hidden
+	});
+});
+
+describe("revision projection (§8 v4)", () => {
+	it("archives full post-write snapshots with the write's anchor", () => {
+		const node = store.insertNode({
+			uri: "history://p",
+			content: "v1",
+			importance: 3,
+			disclosure: "提到酒馆",
+			world_ts: "2026-01-01",
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
+		store.updateNode(node.node_id, { content: "v2" }, { anchor_entry_id: "e1", anchor_session_id: "s1" });
+		const revs = store.listRevisions(node.node_id);
+		expect(revs).toHaveLength(2); // v0 birth state + the write
+		expect(revs[1]).toMatchObject({
+			content: "v2",
+			importance: 3,
+			disclosure: "提到酒馆",
+			world_ts: "2026-01-01",
+			anchor_entry_id: "e1",
+			anchor_session_id: "s1",
+		});
+		// v0 carries the birth state under the creation's anchor.
+		expect(revs[0]).toMatchObject({ content: "v1", anchor_entry_id: "e0", anchor_session_id: "s1" });
+	});
+
+	it("attribute-only revise archives a snapshot so it can roll back", () => {
+		const node = store.insertNode({
+			uri: "history://attr",
+			content: "正文",
+			importance: 5,
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
+		const version = store.updateNode(
+			node.node_id,
+			{ importance: 8 },
+			{ anchor_entry_id: "e1", anchor_session_id: "s1" },
+		);
+		expect(version).toBe(2);
+		expect(store.listRevisions(node.node_id)[1]).toMatchObject({ content: "正文", importance: 8 });
+	});
+
+	it("un-anchored writes keep global semantics (NULL anchors)", () => {
+		const node = store.insertNode({ uri: "history://web", content: "v1" });
+		store.updateNode(node.node_id, { content: "v2" });
+		const revs = store.listRevisions(node.node_id);
+		expect(revs[0].anchor_entry_id).toBeNull();
+		expect(revs[0].anchor_session_id).toBeNull();
+	});
+
+	it("projects the node back after a rollback, and forward again on regret", () => {
+		const node = store.insertNode({
+			uri: "history://proj",
+			content: "主干版",
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
+		store.updateNode(node.node_id, { content: "主干修订版" }, { anchor_entry_id: "e1", anchor_session_id: "s1" });
+		// Reroll to before e1.
+		expect(store.reconcileNodeProjections("s1", ["e0"])).toBe(1);
+		expect(nodeByUri("history://proj").content).toBe("主干版");
+		expect(store.currentVersion(node.node_id)).toBe(2); // chain untouched — projection, not deletion
+		// Regret: back onto the branch containing e1.
+		expect(store.reconcileNodeProjections("s1", ["e0", "e1"])).toBe(1);
+		expect(nodeByUri("history://proj").content).toBe("主干修订版");
+	});
+
+	it("reverts importance/world_ts together with the content", () => {
+		const node = store.insertNode({
+			uri: "history://q",
+			content: "v1",
+			importance: 4,
+			world_ts: "2026-01-01",
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
+		store.updateNode(
+			node.node_id,
+			{ content: "v2", importance: 9 },
+			{ anchor_entry_id: "e1", anchor_session_id: "s1" },
+		);
+		expect(nodeByUri("history://q").importance).toBe(9);
+		store.reconcileNodeProjections("s1", ["e0"]);
+		const rolled = nodeByUri("history://q");
+		expect(rolled.content).toBe("v1");
+		expect(rolled.importance).toBe(4);
+		expect(rolled.world_ts).toBe("2026-01-01");
+	});
+
+	it("sibling branches land on their own revision states", () => {
+		const node = store.insertNode({
+			uri: "history://fork",
+			content: "base",
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
+		store.updateNode(node.node_id, { content: "X版" }, { anchor_entry_id: "e1", anchor_session_id: "s1" });
+		store.updateNode(node.node_id, { content: "Y版" }, { anchor_entry_id: "e2", anchor_session_id: "s1" });
+		store.reconcileNodeProjections("s1", ["e0", "e1"]);
+		expect(nodeByUri("history://fork").content).toBe("X版"); // Y happened off this path
+		store.reconcileNodeProjections("s1", ["e0", "e2"]);
+		expect(nodeByUri("history://fork").content).toBe("Y版");
+		store.reconcileNodeProjections("s1", ["e0"]);
+		expect(nodeByUri("history://fork").content).toBe("base"); // nothing on-path → birth state
+	});
+
+	it("other sessions' revisions always apply and never repaint", () => {
+		const node = store.insertNode({
+			uri: "history://shared",
+			content: "base",
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
+		store.updateNode(node.node_id, { content: "B修订" }, { anchor_entry_id: "eb", anchor_session_id: "s2" });
+		expect(store.reconcileNodeProjections("s1", ["e0"])).toBe(0);
+		expect(nodeByUri("history://shared").content).toBe("B修订");
+	});
+
+	it("repaints FTS so the projected body is searchable, not the rolled-back one", () => {
+		const node = store.insertNode({
+			uri: "history://fts",
+			content: "苹果馅饼的配方",
+			anchor_entry_id: "e0",
+			anchor_session_id: "s1",
+		});
+		store.updateNode(node.node_id, { content: "蜂蜜蛋糕的做法" }, { anchor_entry_id: "e1", anchor_session_id: "s1" });
+		store.reconcileNodeProjections("s1", ["e0"]);
+		const row = db.prepare("SELECT text FROM node_fts WHERE node_id = ?").get(node.node_id) as { text: string };
+		expect(row.text).toContain("苹果");
+		expect(row.text).not.toContain("蛋糕");
 	});
 });
 
@@ -516,10 +683,10 @@ describe("revision retention (§12)", () => {
 		store.updateNode(node.node_id, { content: "v2" });
 		store.updateNode(node.node_id, { content: "v3" });
 		store.updateNode(node.node_id, { content: "v4" });
-		// v4 is the CURRENT content — only archived versions live in the
-		// revision log; retention keeps the two newest of those (v2, v3).
+		// Post snapshots (§8 v4): each revision holds the state after its
+		// write; retention keeps the two newest (v3, v4).
 		const revs = store.listRevisionsByUri("core://r");
-		expect(revs.map((r) => r.content)).toEqual(["v2", "v3"]);
+		expect(revs.map((r) => r.content)).toEqual(["v3", "v4"]);
 	});
 
 	it("deleteCascade archives the final content and still prunes to the retention limit", () => {

@@ -1049,11 +1049,16 @@ describe("POST write endpoints", () => {
 		expect(body.version).toBe(1);
 	});
 
-	it("revise of importance alone archives nothing", async () => {
+	it("revise of importance alone archives a NULL-anchored snapshot (global, §8 v4)", async () => {
 		store.put({ uri: "core://r", content: "v1" });
 		const node = store.resolveUri("core://r")!;
 		await post("/api/node/revise", { uri: "core://r", importance: 3 });
-		expect(store.listRevisions(node.node_id)).toHaveLength(0);
+		// §8 v4: every state-moving write archives. The web has no branch
+		// context, so the row's anchors stay NULL = applies on every branch —
+		// the change stays global, but it is reproducible and revertible.
+		const revs = store.listRevisions(node.node_id);
+		expect(revs).toHaveLength(1);
+		expect(revs[0]).toMatchObject({ importance: 3, anchor_entry_id: null, anchor_session_id: null });
 		expect(store.resolveUri("core://r")!.importance).toBe(3);
 	});
 

@@ -14,6 +14,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createSchema, type MemoryDatabase, MemoryStore, openDatabase } from "@earendil-works/pi-memory";
 import { afterEach, describe, expect, it } from "vitest";
 import { createToolHtmlRenderer } from "../src/core/export-html/tool-renderer.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -53,6 +54,19 @@ function nodeByUri(store: MemoryStore, uri: string) {
 	const node = store.resolveUri(uri);
 	if (!node) throw new Error(`missing node ${uri}`);
 	return node;
+}
+
+/** The URIs injected by rp-memories custom messages on the branch — read from `details.ids` without casts. */
+function injectedUris(entries: SessionEntry[]): string[] {
+	const ids: string[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "custom_message" || entry.customType !== "rp-memories") continue;
+		const details = entry.details;
+		if (details && typeof details === "object" && "ids" in details && Array.isArray(details.ids)) {
+			for (const id of details.ids) if (typeof id === "string") ids.push(id);
+		}
+	}
+	return ids;
 }
 
 describe("memory module ↔ AgentSession integration", () => {
@@ -300,6 +314,44 @@ describe("memory module ↔ AgentSession integration", () => {
 		await Promise.resolve();
 		const activeIds2 = new Set(harness.sessionManager.getBranch().map((e) => e.id));
 		expect(activeIds2.has(summary.anchor_entry_id ?? "")).toBe(true);
+	});
+
+	it("v4: a memorize made on a branch is hidden after reroll and injectable again on switch-back", async () => {
+		const { harness, tempDir } = await createMemoryHarness();
+		const { store } = await openStore(join(tempDir, "memory.db"));
+
+		// The character memorizes through the REAL tool on the current branch.
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("memorize", { uri: "history://secret", content: "废弃分支上的约定" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("已记下"),
+		]);
+		await harness.session.prompt("记住这个约定");
+		const secret = store.resolveUri("history://secret");
+		expect(secret).not.toBeNull();
+		expect(secret?.anchor_entry_id).toBeTruthy();
+
+		const branch = harness.sessionManager.getBranch().filter((e) => e.type === "message");
+		const userEntry = branch.find((e) => e.message.role === "user");
+		const assistantEntry = branch.find((e) => e.message.role === "assistant");
+		expect(userEntry && assistantEntry).toBeTruthy();
+
+		// Reroll back to the user message: the memorize's anchor leaves the
+		// path. onLeafChange is fire-and-forget — one microtask tick runs it.
+		expect(await harness.session.reroll()).toBe(true);
+		await Promise.resolve();
+
+		harness.setResponses([fauxAssistantMessage("嗯")]);
+		await harness.session.prompt("约定是什么");
+		expect(injectedUris(harness.sessionManager.buildContextEntries())).not.toContain("history://secret");
+
+		// Switch back to the original leaf: the memory returns with the branch.
+		harness.sessionManager.branch(assistantEntry?.id ?? "");
+		await Promise.resolve();
+		harness.setResponses([fauxAssistantMessage("嗯嗯")]);
+		await harness.session.prompt("约定是什么");
+		expect(injectedUris(harness.sessionManager.buildContextEntries())).toContain("history://secret");
 	});
 });
 

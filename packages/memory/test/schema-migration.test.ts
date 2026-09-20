@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type MemoryDatabase, openDatabase, openDatabaseReadonly } from "../src/driver.ts";
 import { openMemoryStore } from "../src/index.ts";
-import { createSchema, FTS_REBUILD_KEY, MIGRATABLE_FROM, SCHEMA_VERSION } from "../src/schema.ts";
+import { createSchema, FTS_REBUILD_KEY, MIGRATABLE_FROM, NODE_FTS_DDL, SCHEMA_VERSION } from "../src/schema.ts";
 import { MemoryStore } from "../src/store.ts";
 import { probeMemoryDb } from "../src/web/discovery.ts";
 import { StoreRegistry } from "../src/web/registry.ts";
@@ -268,5 +268,112 @@ describe("multi-db path", () => {
 		} finally {
 			registry.closeAll();
 		}
+	});
+});
+
+describe("v3 → v4 in-place migration", () => {
+	/** Build a real v3-shaped database: current tables minus the v4 revision columns. */
+	async function openV3(name = "memory-v3.db"): Promise<MemoryDatabase> {
+		const db = await openDatabase(path.join(workdir, name));
+		open.push(db);
+		db.exec(`
+			CREATE TABLE memory_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
+			CREATE TABLE nodes (
+				node_id TEXT PRIMARY KEY,
+				parent_id TEXT,
+				domain TEXT NOT NULL,
+				uri TEXT NOT NULL UNIQUE,
+				content TEXT NOT NULL,
+				disclosure TEXT,
+				importance INTEGER NOT NULL DEFAULT 5,
+				source TEXT NOT NULL CHECK(source IN ('auto','manual','import')),
+				model TEXT,
+				anchor_entry_id TEXT,
+				anchor_session_id TEXT,
+				first_raw_id INTEGER,
+				last_raw_id INTEGER,
+				created_at TEXT NOT NULL,
+				world_ts TEXT,
+				updated_ts TEXT NOT NULL,
+				last_accessed_at TEXT,
+				content_hash TEXT NOT NULL,
+				is_stub INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE node_revisions (
+				node_id TEXT NOT NULL,
+				version INTEGER NOT NULL,
+				uri TEXT,
+				content TEXT NOT NULL,
+				editor_source TEXT,
+				editor_model TEXT,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (node_id, version)
+			);
+			CREATE TABLE aliases (
+				alias_uri TEXT PRIMARY KEY,
+				target_node_id TEXT NOT NULL,
+				disclosure TEXT
+			);
+			CREATE TABLE edges (
+				node_id TEXT NOT NULL,
+				target_uri TEXT NOT NULL,
+				kind TEXT,
+				disclosure TEXT,
+				PRIMARY KEY (node_id, target_uri)
+			);
+		`);
+		db.exec(NODE_FTS_DDL);
+		db.prepare(
+			"INSERT INTO nodes (node_id, domain, uri, content, importance, source, created_at, updated_ts, content_hash) VALUES ('n1', 'history', 'history://a', 'v3 正文', 6, 'manual', 't', 't', 'h')",
+		).run();
+		db.prepare(
+			"INSERT INTO node_revisions (node_id, version, uri, content, editor_source, editor_model, created_at) VALUES ('n1', 1, 'history://a', 'v3 修订前', 'manual', null, 't')",
+		).run();
+		setKv(db, "schema_version", "3");
+		return db;
+	}
+
+	it("adds the snapshot + anchor columns in place, keeps every row, does NOT rebuild FTS", async () => {
+		const db = await openV3();
+		const result = createSchema(db);
+		expect(result.migratedFrom).toBe("3");
+		// v3 node_fts already has the disclosure column — no DROP, no rebuild.
+		expect(result.ftsRebuildPending).toBe(false);
+		expect(kv(db, FTS_REBUILD_KEY)).toBeNull();
+		expect(kv(db, "schema_version")).toBe(SCHEMA_VERSION);
+		for (const column of [
+			"importance",
+			"disclosure",
+			"world_ts",
+			"updated_ts",
+			"anchor_entry_id",
+			"anchor_session_id",
+		]) {
+			expect(cols(db, "node_revisions")).toContain(column);
+		}
+		// Old rows keep NULL in every new column — the projection treats them
+		// as "applies unconditionally".
+		const rev = db.prepare("SELECT content, importance, anchor_session_id FROM node_revisions").get() as Record<
+			string,
+			unknown
+		>;
+		expect(rev.content).toBe("v3 修订前");
+		expect(rev.importance).toBeNull();
+		expect(rev.anchor_session_id).toBeNull();
+		expect(db.prepare("SELECT content FROM nodes").get()).toMatchObject({ content: "v3 正文" });
+	});
+
+	it("the migrated store opens and the projection skips NULL-anchored rows", async () => {
+		const db = await openV3("memory-v3-store.db");
+		createSchema(db);
+		const store = new MemoryStore(db);
+		expect(store.getKv("schema_version")).toBe(SCHEMA_VERSION);
+		// n1 has no session-anchored revisions → nothing to project.
+		expect(store.reconcileNodeProjections("s1", ["e1"])).toBe(0);
+	});
+
+	it("MIGRATABLE_FROM admits v2 and v3 together", () => {
+		expect(MIGRATABLE_FROM).toContain("2");
+		expect(MIGRATABLE_FROM).toContain("3");
 	});
 });

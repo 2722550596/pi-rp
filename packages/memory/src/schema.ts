@@ -2,16 +2,16 @@ import { existsSync } from "node:fs";
 import type { MemoryDatabase } from "./driver.ts";
 
 /**
- * Bumped whenever `STATEMENTS` changes shape. v2 → v3 is an in-place migration
- * (`migrateV2`); a version with no migrator (v1, v99, a future build's) is
- * still refused with "incompatible with this build".
+ * Bumped whenever `STATEMENTS` changes shape. v2 → v3 and v3 → v4 are
+ * in-place migrations (`migrateSchema`); a version with no migrator (v1, v99,
+ * a future build's) is still refused with "incompatible with this build".
  */
-export const SCHEMA_VERSION = "3";
+export const SCHEMA_VERSION = "4";
 export const SCHEMA_VERSION_KEY = "schema_version";
 
 /**
  * The one physical copy of the `node_fts` DDL. Both `STATEMENTS` (fresh DBs)
- * and `migrateV2` (DROP + re-create) reference it, so the column layout can
+ * and `migrateSchema` (DROP + re-create) reference it, so the column layout can
  * only ever drift in one place. FTS5 tables cannot be ALTERed, and
  * `CREATE VIRTUAL TABLE IF NOT EXISTS` on an existing table of the same name
  * is a silent no-op (it keeps the old columns) — hence the explicit DROP.
@@ -20,7 +20,7 @@ export const NODE_FTS_DDL =
 	"CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(node_id UNINDEXED, text, disclosure, tokenize='unicode61')";
 
 /**
- * `memory_kv` marker set by `migrateV2` and cleared once the FTS content has
+ * `memory_kv` marker set by `migrateSchema` and cleared once the FTS content has
  * been rebuilt (by `MemoryStore`'s constructor heal). A crash between the two
  * leaves "structure is v3 but node_fts is empty" — recoverable only because
  * this marker outlives the process.
@@ -28,7 +28,7 @@ export const NODE_FTS_DDL =
 export const FTS_REBUILD_KEY = "fts_rebuild_pending";
 
 /** Versions `createSchema` can migrate in place up to `SCHEMA_VERSION`. */
-export const MIGRATABLE_FROM: readonly string[] = ["2"];
+export const MIGRATABLE_FROM: readonly string[] = ["2", "3"];
 const STATEMENTS: string[] = [
 	`CREATE TABLE IF NOT EXISTS nodes (
 		node_id TEXT PRIMARY KEY,
@@ -57,6 +57,15 @@ const STATEMENTS: string[] = [
 	// addressable after its node row is gone: forget() hard-deletes the node
 	// (no zombie entries) but keeps the revisions as the recovery path
 	// (docs §10 / decision 10, v5.4).
+	//
+	// v4 rollback coupling (§8): every row is a FULL post-write snapshot
+	// (content + importance + disclosure + world_ts + updated_ts — the node
+	// state AFTER that write; v0 is the birth state) and carries the write's
+	// branch position (anchor_entry_id / anchor_session_id), so
+	// `reconcileNodeProjections` can repaint the node row to the newest
+	// revision that applies on the active path when the leaf moves. Rows with
+	// NULL anchors (pre-v4 rows, forget's final snapshot, web edits) apply
+	// unconditionally on every branch.
 	`CREATE TABLE IF NOT EXISTS node_revisions (
 		node_id TEXT NOT NULL,
 		version INTEGER NOT NULL,
@@ -65,9 +74,16 @@ const STATEMENTS: string[] = [
 		editor_source TEXT,
 		editor_model TEXT,
 		created_at TEXT NOT NULL,
+		importance INTEGER,
+		disclosure TEXT,
+		world_ts TEXT,
+		updated_ts TEXT,
+		anchor_entry_id TEXT,
+		anchor_session_id TEXT,
 		PRIMARY KEY (node_id, version)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_node_revisions_uri ON node_revisions(uri)`,
+	`CREATE INDEX IF NOT EXISTS idx_node_revisions_anchor ON node_revisions(anchor_session_id)`,
 	`CREATE TABLE IF NOT EXISTS edges (
 		node_id TEXT NOT NULL,
 		target_uri TEXT NOT NULL,
@@ -153,7 +169,7 @@ const STATEMENTS: string[] = [
 export type SchemaOpenResult = {
 	/** null = fresh database; string = the version migrated from. */
 	migratedFrom: string | null;
-	/** true = the structure is at v3 but `node_fts` still needs a full rebuild. */
+	/** true = the migration rebuilt `node_fts` empty and a full reindex is due. */
 	ftsRebuildPending: boolean;
 	/** Where the pre-migration backup landed, or why it was skipped. */
 	backup: { path: string } | { skipped: string } | null;
@@ -166,7 +182,7 @@ export type SchemaOpenResult = {
  * Reading the stored version first is what makes the failure actionable:
  * `CREATE INDEX IF NOT EXISTS` on a column the old shape lacks fails with a
  * raw "no such column" that reads like corruption. The v2/v1 split routes v2
- * into `migrateV2`, and recalcitrant versions into the same loud refusal as
+ * into `migrateSchema`, and recalcitrant versions into the same loud refusal as
  * before. This is the ONLY migration entry point — production goes through
  * `openMemoryStore` (`index.ts`), but seven test files call `createSchema`
  * directly and bypass it.
@@ -182,6 +198,7 @@ export function createSchema(db: MemoryDatabase): SchemaOpenResult {
 		);
 	}
 	let backup: SchemaOpenResult["backup"] = null;
+	let ftsRebuilt = false;
 	if (needsMigration) {
 		// Backup runs BEFORE `BEGIN`: `VACUUM INTO` refuses to run inside a
 		// transaction. A failed backup does not abort the migration — step 3
@@ -189,7 +206,7 @@ export function createSchema(db: MemoryDatabase): SchemaOpenResult {
 		// not the atomicity mechanism (the transaction is).
 		backup = backupBeforeMigration(db, stored);
 		try {
-			db.transaction(() => migrateV2(db));
+			ftsRebuilt = db.transaction(() => migrateSchema(db));
 		} catch (error) {
 			const where = "path" in backup ? `; backup: ${backup.path}` : `; backup skipped: ${backup.skipped}`;
 			throw new Error(
@@ -213,22 +230,23 @@ export function createSchema(db: MemoryDatabase): SchemaOpenResult {
 			new Date().toISOString(),
 		);
 	}
-	return { migratedFrom: needsMigration ? stored : null, ftsRebuildPending: needsMigration, backup };
+	return { migratedFrom: needsMigration ? stored : null, ftsRebuildPending: needsMigration && ftsRebuilt, backup };
 }
 
 /**
- * The v2 → v3 structure migration. MUST be called inside a transaction (the
- * caller owns it) so the DDL and the version bump commit or roll back as one.
+ * The v2→v3 and v3→v4 structure migrations. MUST be called inside a
+ * transaction (the caller owns it) so the DDL and the version bump commit or
+ * roll back as one. Returns whether `node_fts` was DROPped and rebuilt empty
+ * (v2→v3 only) — the store then recomputes its content via `reindexAll`,
+ * driven by FTS_REBUILD_KEY.
  *
  * Every action is gated on column EXISTENCE, never on the version number: a
  * snapshot import or a stray `seed()` can write a stale `schema_version` into
- * an already-v3 database, and a version-only migrator would then die with
+ * an already-current database, and a version-only migrator would then die with
  * `duplicate column name` on open.
- *
- * `node_fts` is rebuilt empty here; its content is recomputed by the store's
- * `reindexAll` (the sole tokenizer truth source), driven by FTS_REBUILD_KEY.
  */
-function migrateV2(db: MemoryDatabase): void {
+function migrateSchema(db: MemoryDatabase): boolean {
+	let ftsRebuilt = false;
 	if (!hasColumn(db, "aliases", "disclosure")) db.exec("ALTER TABLE aliases ADD COLUMN disclosure TEXT");
 	if (!hasColumn(db, "edges", "disclosure")) db.exec("ALTER TABLE edges ADD COLUMN disclosure TEXT");
 	// FTS5 tables cannot be ALTERed, and `CREATE VIRTUAL TABLE IF NOT EXISTS`
@@ -237,10 +255,27 @@ function migrateV2(db: MemoryDatabase): void {
 	if (!hasColumn(db, "node_fts", "disclosure")) {
 		db.exec("DROP TABLE IF EXISTS node_fts");
 		db.exec(NODE_FTS_DDL);
+		ftsRebuilt = true;
 	}
+	// v3 → v4: full pre-edit snapshots + branch anchors on node_revisions (§8).
+	// Pure additive columns — old rows keep NULL, which the projection treats
+	// as "applies unconditionally / snapshot domain not recoverable".
+	const revisionColumns: Array<[string, string]> = [
+		["importance", "INTEGER"],
+		["disclosure", "TEXT"],
+		["world_ts", "TEXT"],
+		["updated_ts", "TEXT"],
+		["anchor_entry_id", "TEXT"],
+		["anchor_session_id", "TEXT"],
+	];
+	for (const [column, type] of revisionColumns) {
+		if (!hasColumn(db, "node_revisions", column)) db.exec(`ALTER TABLE node_revisions ADD COLUMN ${column} ${type}`);
+	}
+	db.exec("CREATE INDEX IF NOT EXISTS idx_node_revisions_anchor ON node_revisions(anchor_session_id)");
 	const writeKv = db.prepare("INSERT OR REPLACE INTO memory_kv (key, value, updated_at) VALUES (?, ?, ?)");
 	writeKv.run(SCHEMA_VERSION_KEY, SCHEMA_VERSION, new Date().toISOString());
-	writeKv.run(FTS_REBUILD_KEY, "1", new Date().toISOString());
+	if (ftsRebuilt) writeKv.run(FTS_REBUILD_KEY, "1", new Date().toISOString());
+	return ftsRebuilt;
 }
 
 /** Column existence probe — the migration's idempotence predicate. */

@@ -332,6 +332,74 @@ describe("onLeafChange", () => {
 		});
 	}
 
+	it("v4: an anchored memorize hides on reroll and returns when the branch comes back", async () => {
+		const module = createMemoryModule(store, HYBRID);
+		// The character memorizes at leaf e1 (session-1's current branch tip).
+		store.insertNode({
+			uri: "history://secret",
+			content: "废弃分支上记下的约定",
+			source: "manual",
+			anchor_entry_id: "e1",
+			anchor_session_id: "session-1",
+		});
+
+		// On the branch containing e1: visible.
+		const h1 = createHostMock({ entryIds: ["e0", "e1"], entries: [] });
+		module.registerSession(h1.host);
+		await module.onLeafChange();
+		const r1 = await fireBeforeAgentStart(h1.hooks, "废弃分支上记下的约定");
+		expect(r1?.message?.content).toContain("history://secret");
+
+		// Reroll to e0: the conversation that produced the memory is gone.
+		const h2 = createHostMock({ entryIds: ["e0"], entries: [] });
+		module.registerSession(h2.host);
+		await module.onLeafChange();
+		const r2 = await fireBeforeAgentStart(h2.hooks, "废弃分支上记下的约定");
+		expect(r2?.message?.content ?? "").not.toContain("history://secret");
+
+		// Regret: navigate back — the memory returns with the branch.
+		const h3 = createHostMock({ entryIds: ["e0", "e1"], entries: [] });
+		module.registerSession(h3.host);
+		await module.onLeafChange();
+		const r3 = await fireBeforeAgentStart(h3.hooks, "废弃分支上记下的约定");
+		expect(r3?.message?.content).toContain("history://secret");
+	});
+
+	it("v4: onLeafChange repaints revised content per the active branch", async () => {
+		store.insertNode({
+			uri: "history://p",
+			content: "主干版",
+			source: "manual",
+			anchor_entry_id: "e0",
+			anchor_session_id: "session-1",
+		});
+		const node = nodeByUri("history://p");
+		// A revise lands on leaf e1 (the branch the player later rerolls away).
+		store.updateNode(
+			node.node_id,
+			{ content: "分支修订版" },
+			{ anchor_entry_id: "e1", anchor_session_id: "session-1" },
+		);
+
+		const module = createMemoryModule(store, OFFLINE);
+		const h1 = createHostMock({ entryIds: ["e0", "e1"], entries: [] });
+		module.registerSession(h1.host);
+		await module.onLeafChange();
+		expect(nodeByUri("history://p").content).toBe("分支修订版");
+
+		// Reroll to e0: the revise never happened on this branch.
+		const h2 = createHostMock({ entryIds: ["e0"], entries: [] });
+		module.registerSession(h2.host);
+		await module.onLeafChange();
+		expect(nodeByUri("history://p").content).toBe("主干版");
+
+		// Back to the branch: the revise is back too.
+		const h3 = createHostMock({ entryIds: ["e0", "e1"], entries: [] });
+		module.registerSession(h3.host);
+		await module.onLeafChange();
+		expect(nodeByUri("history://p").content).toBe("分支修订版");
+	});
+
 	it("hides this-session auto nodes whose anchor left the path and revives them on switch-back", async () => {
 		makeAutoNode("history://kept", "e-onpath");
 		makeAutoNode("history://orphan", "e-offpath");

@@ -307,10 +307,11 @@ slots:
 
 挂在 `_moveLeafAndRestoreState`(reroll 与 navigateTree 的共同 choke point)尾部,零成本可选链:
 
-1. **anchor 可见性重算**(session 维度):`source: auto` 的节点若缺 `anchor_session_id` 或 `anchor_entry_id` 恒不可见;来自**其他 session** 的 auto 节点恒可见(B 的 reroll 不隐藏 A 的产物);来自**当前 session** 的仅当 `anchor_entry_id` 在活动路径可见。`manual` 节点永不自动隐藏(角色主权)。
+1. **anchor 可见性重算**(session 维度,v4 起不区分 manual/auto):任何**有锚**节点(`memorize`/`revise` 等工具写入都会盖锚)若 `anchor_entry_id` 不在本 session 活动路径上则隐藏——角色在被 reroll 掉的对话里记下的东西,在这条时间线上就是从未发生过;**其他 session** 的锚恒可见(B 的 reroll 不隐藏 A 的产物)。**无锚**节点按 source 分叉:`auto` 无出处恒不可见(产物即出处),`manual`/`import` 无锚 = 时间线无关恒可见(存量数据安全)。
 2. **raw_log 对账**:`syncRawBranch` 把本 session 活动分支整体 upsert,并把本 session 不在路径的行置 `active=0`——**不物理删除、不碰其他 session 行**;切回旧分支旧行按原 `raw_id`/时间戳复活。`registerSession` 后立即 backfill 一次,resume/浏览不等下一回合。
+3. **revise 投影**(v4):`node_revisions` 每行是**修改后的全量快照**(content/importance/disclosure/world_ts/updated_ts)并盖写入时的分支锚;`reconcileNodeProjections` 把主表刷成「活动路径上最新适用修订」的状态——reroll 掉一次修订,正文/重要性/想起条件自动退回,切回分支自动恢复。NULL 锚行(pre-v4 行、forget 终快照、web 修改)恒适用;跨 session 修订恒适用。同一节点被多个 session 修订时,最后一次 reconcile 的 session 路径胜出(单面库的固有限制)。`forget`/`relocate`/`consolidate` 是全局操作,不随分支回退。
 
-行为验证场景:reroll 后纪要隐藏 + 原文行 active=0;切回旧分支后两者复活(原文 raw_id 不变)。
+行为验证场景:reroll 后纪要/手写记忆隐藏 + 原文行 active=0 + 分支上的 revise 退回;切回旧分支后全部复活(原文 raw_id 不变、修订链不删)。
 
 ## 9. MEM:// 视图
 
@@ -510,7 +511,7 @@ store.export();  // { nodes, revisions, kv, aliases, edges, glossary } JSON 快�
 
 ## 17. 测试与验证
 
-- 包内测试:`packages/memory/test/` **344 例** —— 引擎侧 173 例(store 39 / tools 36 / recall 30 / module 28 / mem-uri 11 / slots 10 / phase3 9 / search-keyword 7 / memory-views-sleep 3,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、相对时间与想起条件渲染、审计完整列),Web 端 171 例(api 77 / views-parity 42 / audit 13 / security 13 / visibility 12 / dto-contract 10 / snippet-guard 4)。
-- 集成测试:`packages/coding-agent/test/memory-module.test.ts`(9 例:真实 harness 工具注册/注入去重/raw_log 镜像/reroll active 标记与切回复活/autoretain 消费 side response/时间戳落库/preset 路径/dispose 幂等)、`settings-manager.test.ts`(61 例,含 MemorySettings 深合并)。
+- 包内测试:`packages/memory/test/` **575 例** —— 引擎侧 302 例(store 47 / tools 43 / recall 34 / module 30 / tools-disclosure 26 / store-disclosure 20 / schema-migration 13(v2→v3、v3→v4)/ slots 11 / mem-uri 11 / search-disclosure 10 / phase3 9 / diff-parity 8 / search-keyword 7 / memory-views-sleep 3,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、§8 v4 回滚投影(manual 遮蔽/分支修订退回/切回复活)、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、相对时间与想起条件渲染、审计完整列),Web 端 273 例(api 106 / views-parity 42 / multi-db 76 / dto-contract 20 / security 13 / audit 13 / visibility 12 / snippet-guard 4)。
+- 集成测试:`packages/coding-agent/test/memory-module.test.ts`(13 例:真实 harness 工具注册/注入去重/raw_log 镜像/reroll active 标记与切回复活/v4 memorize 随分支遮蔽与复活/autoretain 消费 side response/时间戳落库/preset 路径/dispose 幂等)、`settings-manager.test.ts`(61 例,含 MemorySettings 深合并)。
 - 全仓:`npm run check`(biome / pinned-deps / ts-imports / shrinkwrap / install-lock / tsgo / browser-smoke)。
 - Bun 编译冒烟:`bun build --compile` 含 `openDatabase` 的最小入口,验证动态导入不炸构建。

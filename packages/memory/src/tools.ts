@@ -626,10 +626,15 @@ function applyReviseMod(
 		when?: string;
 		time?: string;
 	},
-	editorModel: string | null,
+	ctx: MemoryToolContext,
 ): ReviseModOutcome {
 	const node = store.resolveUri(mod.uri);
 	if (!node) return { ok: false, uri: mod.uri, text: `未找到：${mod.uri}` };
+	// §8 v4: revisions carry the write's branch position, so a revise can be
+	// rolled back with the branch that wrote it. Un-anchored ctx → undefined
+	// → the change stays global (pre-v4 semantics).
+	const provenance =
+		ctx.leafId && ctx.sessionId ? { anchor_entry_id: ctx.leafId, anchor_session_id: ctx.sessionId } : undefined;
 	// One predicate for "a body edit happened", shared by the diff snapshot and
 	// the update below — splitting them yields diffs for edits that never land.
 	const touchedBody = mod.old_text !== undefined || mod.append !== undefined || mod.line !== undefined;
@@ -641,16 +646,21 @@ function applyReviseMod(
 		content = edited.content;
 	}
 	const worldTs = mod.time === "" ? null : (parseWorldTime(store, mod.time) ?? node.world_ts);
+	const versionBefore = store.currentVersion(node.node_id);
 	// 1) Body / importance / time — via updateNode. `disclosure` MUST NOT be
 	//    passed here: the entry layer is resolved by setEntryDisclosure (step 2)
 	//    and node_id is shared by aliases and their canonical node (§8.2).
-	store.updateNode(node.node_id, {
-		...(touchedBody ? { content } : {}),
-		importance: mod.importance,
-		world_ts: mod.time !== undefined ? worldTs : undefined,
-		editor_source: touchedBody ? "manual" : undefined,
-		editor_model: editorModel,
-	});
+	store.updateNode(
+		node.node_id,
+		{
+			...(touchedBody ? { content } : {}),
+			importance: mod.importance,
+			world_ts: mod.time !== undefined ? worldTs : undefined,
+			editor_source: touchedBody ? "manual" : undefined,
+			editor_model: ctx.modelId ?? null,
+		},
+		provenance,
+	);
 	// 2) `when` — the sole entry-disclosure write path. Tri-state: `undefined`
 	//    MUST skip the call entirely (an expression cannot express "don't call"
 	//    and every body-only revise would silently clear the condition, R5);
@@ -663,6 +673,32 @@ function applyReviseMod(
 		// Dead alias: the uri still resolves to a node, so the write lands on
 		// that node while the shadowed alias row keeps its own condition (E10).
 		masked = store.hasAliasRow(mod.uri) && store.resolveEntry(mod.uri)?.kind === "canonical";
+	}
+	// §8 v4: when a mod really changed state but produced no revision
+	// (when-only — the entry-disclosure path never archives), archive the
+	// post-write state under this mod's anchor so the projection keeps the
+	// change reproducible.
+	const after = store.resolveUri(mod.uri);
+	const stateChanged =
+		(after !== null && after.content !== node.content) ||
+		(after !== null && after.world_ts !== node.world_ts) ||
+		(mod.importance !== undefined && mod.importance !== node.importance) ||
+		(beforeDisclosure !== undefined && store.effectiveDisclosure(mod.uri) !== beforeDisclosure);
+	if (provenance && stateChanged && store.currentVersion(node.node_id) === versionBefore && after !== null) {
+		store.archiveRevision(
+			node.node_id,
+			after.content,
+			"manual",
+			ctx.modelId ?? null,
+			node.uri,
+			{
+				importance: after.importance,
+				disclosure: after.disclosure,
+				world_ts: after.world_ts,
+				updated_ts: after.updated_ts,
+			},
+			provenance,
+		);
 	}
 	const note = masked ? "（注意：该 URI 仍是规范节点，其别名入口的想起条件无法经 revise 修改）" : "";
 	return {
@@ -736,7 +772,14 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 			if (params.version === undefined) return text("活节点 restore 必须指定 version");
 			if (!Number.isInteger(params.version) || params.version < 1) return text(`无效版本：${params.version}`);
 			try {
-				store.restoreRevision(alive.node_id, params.version);
+				// §8 v4: the restore itself is a branched write — anchor it.
+				store.restoreRevision(
+					alive.node_id,
+					params.version,
+					ctx.leafId && ctx.sessionId
+						? { anchor_entry_id: ctx.leafId, anchor_session_id: ctx.sessionId }
+						: undefined,
+				);
 			} catch (error) {
 				return text(error instanceof Error ? error.message : String(error));
 			}
@@ -766,7 +809,7 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 			time: params.time,
 		},
 	];
-	const results = mods.map((m) => applyReviseMod(store, m, ctx.modelId ?? null));
+	const results = mods.map((m) => applyReviseMod(store, m, ctx));
 	const failed = results.filter((r) => !r.ok);
 	// Path A (authoritative): pair each mod's pre-edit snapshot with the body
 	// re-read after the write. Kept in `results` order so a batch renders 1:1.

@@ -60,6 +60,30 @@ export interface NodePatch {
 	world_ts?: string | null;
 }
 
+/**
+ * Full pre-edit node state archived with every v4 revision (§8), so a
+ * branch-switch projection can repaint the node row to any point of the
+ * revision chain. `updated_ts` travels with the snapshot: on a rollback the
+ * node's "last modified" reverts to the rolled-back-to state's timestamp.
+ */
+export interface RevisionSnapshot {
+	importance: number;
+	disclosure: string | null;
+	world_ts: string | null;
+	updated_ts: string;
+}
+
+/**
+ * Where a revision's write happened (the tool-call's leaf entry + session).
+ * A revision whose anchor is not on the active branch is skipped by the
+ * projection; NULL anchors (pre-v4 rows, forget's final snapshot,
+ * un-anchored writers) apply unconditionally on every branch.
+ */
+export interface RevisionAnchor {
+	anchor_entry_id: string | null;
+	anchor_session_id: string | null;
+}
+
 export interface RawEntry {
 	raw_id?: number;
 	role: string;
@@ -102,6 +126,13 @@ export interface ExportSnapshot {
 		editor_source: string | null;
 		editor_model: string | null;
 		created_at: string;
+		/** v4 fields — absent on pre-v4 snapshots, imported as NULL. */
+		importance?: number | null;
+		disclosure?: string | null;
+		world_ts?: string | null;
+		updated_ts?: string | null;
+		anchor_entry_id?: string | null;
+		anchor_session_id?: string | null;
 	}>;
 	kv: Record<string, string>;
 	/**
@@ -135,6 +166,16 @@ interface NodeRow {
 	last_accessed_at: string | null;
 	content_hash: string;
 	is_stub: number;
+}
+
+/** Full post-write snapshot of one node for a v4 revision row (§8). */
+function snapshotOf(node: MemoryNode): RevisionSnapshot {
+	return {
+		importance: node.importance,
+		disclosure: node.disclosure,
+		world_ts: node.world_ts,
+		updated_ts: node.updated_ts,
+	};
 }
 
 function hashContent(content: string): string {
@@ -362,6 +403,16 @@ export class MemoryStore {
 		if (!isStub) this.reindexNode(nodeId);
 		const node = this.getNode(nodeId);
 		if (!node) throw new Error(`insertNode: node ${nodeId} vanished`);
+		// §8 v4: an anchor-bearing creation archives v0 — its birth state — so
+		// the projection can repaint to it when every later revision is
+		// off-path. Un-anchored creations (imports, web, seed) are
+		// branch-independent and need no chain.
+		if (!isStub && input.anchor_entry_id && input.anchor_session_id) {
+			this.archiveRevision(nodeId, input.content, node.source, input.model ?? null, input.uri, snapshotOf(node), {
+				anchor_entry_id: input.anchor_entry_id,
+				anchor_session_id: input.anchor_session_id,
+			});
+		}
 		this.logAudit("insert_node", { node_id: nodeId, object: input.uri, source: node.source });
 		return node;
 	}
@@ -377,17 +428,24 @@ export class MemoryStore {
 		if (existing) {
 			// undefined = leave unchanged; explicit null clears nullable
 			// fields. When `world_ts` is omitted it is NOT wiped (v5.4).
-			this._updateNode(existing.node_id, {
-				content: input.content,
-				disclosure: input.disclosure,
-				importance: input.importance,
-				model: input.model,
-				anchor_entry_id: input.anchor_entry_id,
-				anchor_session_id: input.anchor_session_id,
-				first_raw_id: input.first_raw_id,
-				last_raw_id: input.last_raw_id,
-				world_ts: input.world_ts,
-			});
+			// The input's anchors double as the write's branch position (§8).
+			this._updateNode(
+				existing.node_id,
+				{
+					content: input.content,
+					disclosure: input.disclosure,
+					importance: input.importance,
+					model: input.model,
+					anchor_entry_id: input.anchor_entry_id,
+					anchor_session_id: input.anchor_session_id,
+					first_raw_id: input.first_raw_id,
+					last_raw_id: input.last_raw_id,
+					world_ts: input.world_ts,
+				},
+				input.anchor_entry_id && input.anchor_session_id
+					? { anchor_entry_id: input.anchor_entry_id, anchor_session_id: input.anchor_session_id }
+					: undefined,
+			);
 			return this.getNode(existing.node_id) as MemoryNode;
 		}
 		this.ensureStubAncestors(input.uri, input.parent_uri ?? null);
@@ -425,12 +483,14 @@ export class MemoryStore {
 		return prefix + segments.slice(0, -1).join("/");
 	}
 
-	private _updateNode(nodeId: string, patch: NodePatch): number {
+	private _updateNode(nodeId: string, patch: NodePatch, provenance?: RevisionAnchor): number {
 		const node = this.getNode(nodeId);
 		if (!node) throw new Error(`updateNode: unknown node ${nodeId}`);
 		// Stub promotion: any content write turns the placeholder into a real
 		// node in place — overwrite the empty body, no revision churn, into
-		// FTS. Fields not provided keep their current values.
+		// FTS. Fields not provided keep their current values. The caller's
+		// anchors (if any) ride the patch: promotion IS the node's birth on
+		// the branch that filled it, so its branch position moves there.
 		if (node.is_stub && patch.content !== undefined && patch.content !== node.content) {
 			this.applyPatchColumns(nodeId, patch);
 			this.db
@@ -446,20 +506,46 @@ export class MemoryStore {
 			// A disclosure-only revise still has to rebuild the FTS disclosure
 			// column; this branch always skipped reindex (R1).
 			if (patch.disclosure !== undefined) this.reindexNode(nodeId);
+			// §8 v4: a REAL attribute change still archives — every write that
+			// moves the node must be reproducible by the projection, otherwise
+			// the next reconcile would paint the change away. Cosmetic calls
+			// (no-op values) archive nothing.
+			const attributeChanged =
+				(patch.importance !== undefined && patch.importance !== node.importance) ||
+				(patch.disclosure !== undefined && patch.disclosure !== node.disclosure) ||
+				(patch.world_ts !== undefined && patch.world_ts !== node.world_ts);
+			if (attributeChanged) {
+				this.archiveRevision(
+					nodeId,
+					node.content,
+					patch.editor_source ?? null,
+					patch.editor_model ?? null,
+					node.uri,
+					snapshotOf(this.getNode(nodeId) as MemoryNode),
+					provenance,
+				);
+			}
 			return this.currentVersion(nodeId);
 		}
-		const version = this.archiveRevision(
-			nodeId,
-			node.content,
-			patch.editor_source ?? null,
-			patch.editor_model ?? null,
-			node.uri,
-		);
+		const now = new Date().toISOString();
 		this.applyPatchColumns(nodeId, { ...patch, content: patch.content });
 		this.db
 			.prepare("UPDATE nodes SET content_hash = ?, updated_ts = ? WHERE node_id = ?")
-			.run(hashContent(patch.content), new Date().toISOString(), nodeId);
+			.run(hashContent(patch.content), now, nodeId);
 		this.reindexNode(nodeId);
+		// §8 v4: the revision is a POST snapshot — the full node state AFTER
+		// this write. The projection repaints the main table to the newest
+		// revision that applies on the active path, so any point of the chain
+		// must be reconstructable without replaying other branches' writes.
+		const version = this.archiveRevision(
+			nodeId,
+			patch.content,
+			patch.editor_source ?? null,
+			patch.editor_model ?? null,
+			node.uri,
+			snapshotOf(this.getNode(nodeId) as MemoryNode),
+			provenance,
+		);
 		this.logAudit("update_node", { node_id: nodeId, object: node.uri, model: patch.editor_model ?? undefined });
 		return version;
 	}
@@ -509,8 +595,8 @@ export class MemoryStore {
 		this.db.prepare(`UPDATE nodes SET ${sets.join(", ")} WHERE node_id = ?`).run(...values);
 	}
 
-	updateNode(nodeId: string, patch: NodePatch): number {
-		return this.db.transaction(() => this._updateNode(nodeId, patch));
+	updateNode(nodeId: string, patch: NodePatch, provenance?: RevisionAnchor): number {
+		return this.db.transaction(() => this._updateNode(nodeId, patch, provenance));
 	}
 
 	archiveRevision(
@@ -519,14 +605,31 @@ export class MemoryStore {
 		editorSource: string | null,
 		editorModel: string | null,
 		uri: string | null = null,
+		snapshot?: RevisionSnapshot,
+		anchor?: RevisionAnchor,
 	): number {
 		const version = this.currentVersion(nodeId) + 1;
 		this.db
 			.prepare(
-				`INSERT INTO node_revisions (node_id, version, uri, content, editor_source, editor_model, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO node_revisions (node_id, version, uri, content, editor_source, editor_model, created_at,
+					importance, disclosure, world_ts, updated_ts, anchor_entry_id, anchor_session_id)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
-			.run(nodeId, version, uri, content, editorSource, editorModel, new Date().toISOString());
+			.run(
+				nodeId,
+				version,
+				uri,
+				content,
+				editorSource,
+				editorModel,
+				new Date().toISOString(),
+				snapshot?.importance ?? null,
+				snapshot?.disclosure ?? null,
+				snapshot?.world_ts ?? null,
+				snapshot?.updated_ts ?? null,
+				anchor?.anchor_entry_id ?? null,
+				anchor?.anchor_session_id ?? null,
+			);
 		this._applyRevisionRetention(nodeId);
 		return version;
 	}
@@ -561,10 +664,36 @@ export class MemoryStore {
 		return row?.v ?? 0;
 	}
 
-	listRevisions(nodeId: string): Array<{ version: number; uri: string | null; content: string; created_at: string }> {
+	listRevisions(nodeId: string): Array<{
+		version: number;
+		uri: string | null;
+		content: string;
+		created_at: string;
+		importance: number | null;
+		disclosure: string | null;
+		world_ts: string | null;
+		updated_ts: string | null;
+		anchor_entry_id: string | null;
+		anchor_session_id: string | null;
+	}> {
 		return this.db
-			.prepare("SELECT version, uri, content, created_at FROM node_revisions WHERE node_id = ? ORDER BY version")
-			.all(nodeId) as Array<{ version: number; uri: string | null; content: string; created_at: string }>;
+			.prepare(
+				`SELECT version, uri, content, created_at, importance, disclosure, world_ts, updated_ts,
+					anchor_entry_id, anchor_session_id
+				FROM node_revisions WHERE node_id = ? ORDER BY version`,
+			)
+			.all(nodeId) as Array<{
+			version: number;
+			uri: string | null;
+			content: string;
+			created_at: string;
+			importance: number | null;
+			disclosure: string | null;
+			world_ts: string | null;
+			updated_ts: string | null;
+			anchor_entry_id: string | null;
+			anchor_session_id: string | null;
+		}>;
 	}
 
 	/**
@@ -664,12 +793,12 @@ export class MemoryStore {
 		});
 	}
 
-	restoreRevision(nodeId: string, version: number): void {
+	restoreRevision(nodeId: string, version: number, provenance?: RevisionAnchor): void {
 		const rev = this.db
 			.prepare("SELECT content FROM node_revisions WHERE node_id = ? AND version = ?")
 			.get(nodeId, version) as { content: string } | undefined;
 		if (!rev) throw new Error(`restoreRevision: no version ${version} for ${nodeId}`);
-		this._updateNode(nodeId, { content: rev.content });
+		this._updateNode(nodeId, { content: rev.content }, provenance);
 	}
 
 	deleteCascade(nodeId: string): number {
@@ -691,9 +820,11 @@ export class MemoryStore {
 		this.db.prepare("DELETE FROM memory_embeddings WHERE node_id = ?").run(nodeId);
 		// Recovery path (docs §10, decision 10 v5.4): the node row is really
 		// gone — no zombie entry, no orphan pool — but the revision history
-		// stays, with the content as it stood at deletion archived as the
-		// final version. node_revisions.uri keeps it addressable afterwards.
-		this.archiveRevision(nodeId, node.content, node.source, node.model, node.uri);
+		// stays, with the FULL node state as it stood at deletion archived as
+		// the final version. node_revisions.uri keeps it addressable
+		// afterwards. No anchor: forget is a global operation (it does not
+		// roll back with a branch), so its final snapshot applies everywhere.
+		this.archiveRevision(nodeId, node.content, node.source, node.model, node.uri, snapshotOf(node));
 		this.db.prepare("UPDATE node_revisions SET uri = COALESCE(uri, ?) WHERE node_id = ?").run(node.uri, nodeId);
 		this.db.prepare("DELETE FROM nodes WHERE node_id = ?").run(nodeId);
 		this.logAudit("delete_node", { node_id: nodeId, object: node.uri });
@@ -1141,6 +1272,102 @@ export class MemoryStore {
 		});
 	}
 
+	/**
+	 * Repaint node rows so the main table IS the projection of the active
+	 * branch (§8 v4). After a reroll / tree navigation, every node whose
+	 * revision chain contains a revision written at THIS session's now-off-path
+	 * leaf is repainted to the state the active path implies.
+	 *
+	 * Every revision row is a POST snapshot (the full node state after that
+	 * write; v0 is the birth state). The projection is therefore simply the
+	 * newest revision that applies on the active path — an `applies` row is
+	 * one with a NULL anchor (global write, pre-v4 row, forget's final
+	 * snapshot), another session's anchor (B's writes always apply on A's
+	 * paths), or an anchor ON the path. When nothing applies, the chain start
+	 * is used as a best-effort fallback (only reachable after retention has
+	 * dropped the oldest rows, since anchored creations archive v0).
+	 *
+	 * The main table is repainted whenever it differs from the projection —
+	 * this is what makes "reroll, then navigate back" symmetric: rolling back
+	 * repaints to the on-path state, navigating back repaints to the chain's
+	 * newest state, no extra bookkeeping.
+	 *
+	 * Scope: nodes with at least one revision anchored at `sessionId`. One
+	 * shared main table means the LAST reconciling session wins when two
+	 * sessions revised the same node — an accepted limit of a single-plane
+	 * store.
+	 *
+	 * Returns the number of node rows repainted (test/audit observable).
+	 */
+	reconcileNodeProjections(sessionId: string, activeEntryIds: string[]): number {
+		const active = new Set(activeEntryIds);
+		const rows = this.db
+			.prepare("SELECT DISTINCT node_id FROM node_revisions WHERE anchor_session_id = ?")
+			.all(sessionId) as Array<{ node_id: string }>;
+		let repainted = 0;
+		for (const { node_id } of rows) {
+			const node = this.getNode(node_id);
+			if (!node) continue; // deleted: forget is global, nothing to project
+			const chain = this.db
+				.prepare(
+					`SELECT content, importance, disclosure, world_ts, updated_ts,
+						anchor_entry_id, anchor_session_id
+					FROM node_revisions WHERE node_id = ? ORDER BY version`,
+				)
+				.all(node_id) as Array<{
+				content: string;
+				importance: number | null;
+				disclosure: string | null;
+				world_ts: string | null;
+				updated_ts: string | null;
+				anchor_entry_id: string | null;
+				anchor_session_id: string | null;
+			}>;
+			let source = chain[0];
+			for (let i = chain.length - 1; i >= 0; i--) {
+				const r = chain[i];
+				const applies =
+					!r.anchor_session_id ||
+					!r.anchor_entry_id ||
+					r.anchor_session_id !== sessionId ||
+					active.has(r.anchor_entry_id);
+				if (applies) {
+					source = r;
+					break;
+				}
+			}
+			const same =
+				node.content === source.content &&
+				node.importance === (source.importance ?? node.importance) &&
+				node.disclosure === source.disclosure &&
+				node.world_ts === source.world_ts &&
+				node.updated_ts === (source.updated_ts ?? node.updated_ts);
+			if (same) continue; // main table already IS this path's projection
+			this.db
+				.prepare(
+					`UPDATE nodes SET content = ?, importance = ?, disclosure = ?, world_ts = ?,
+						updated_ts = ?, content_hash = ? WHERE node_id = ?`,
+				)
+				.run(
+					source.content,
+					source.importance ?? node.importance,
+					source.disclosure ?? null,
+					source.world_ts ?? null,
+					source.updated_ts ?? node.updated_ts,
+					hashContent(source.content),
+					node_id,
+				);
+			this.reindexNode(node_id);
+			// Embeddings of the repainted body are stale — drop the mismatched
+			// rows; the next vector recall re-embeds from the projected content.
+			this.db
+				.prepare("DELETE FROM memory_embeddings WHERE node_id = ? AND (content_hash IS NULL OR content_hash != ?)")
+				.run(node_id, hashContent(source.content));
+			repainted++;
+		}
+		return repainted;
+	}
+
 	listRaw(
 		fromRawId: number,
 		toRawId?: number,
@@ -1410,15 +1637,18 @@ export class MemoryStore {
 	}
 
 	/**
-	 * Visibility predicate (§8), raw form: auto nodes are visible only when
-	 * their anchor entry is on the active branch. Callers hold the branch
-	 * state — pass `anchorActive=false` for anchors that left the path. The
-	 * session-bound module keeps the live hidden-set; this store-level form
-	 * exists for tests and direct library consumers.
+	 * Visibility predicate (§8), raw form: anchored nodes are visible only
+	 * while their anchor entry is on the active branch. Callers hold the
+	 * branch state — pass `anchorActive=false` for anchors that left the
+	 * path. Un-anchored nodes split by source: `auto` without provenance is
+	 * hidden (an auto product IS its provenance), `manual`/`import` without
+	 * an anchor is branch-independent and stays visible. The session-bound
+	 * module keeps the live hidden-set; this store-level form exists for
+	 * tests and direct library consumers.
 	 */
 	isVisible(node: MemoryNode, anchorActive = true): boolean {
-		if (node.source !== "auto") return true;
-		return anchorActive && Boolean(node.anchor_entry_id);
+		if (!node.anchor_session_id || !node.anchor_entry_id) return node.source !== "auto";
+		return anchorActive;
 	}
 
 	/** Batch access tracking — ONLY the character actively recalling (§13). */
@@ -1473,7 +1703,9 @@ export class MemoryStore {
 		const nodes = this.listNodes();
 		const revisions = this.db
 			.prepare(
-				"SELECT node_id, version, uri, content, editor_source, editor_model, created_at FROM node_revisions ORDER BY node_id, version",
+				`SELECT node_id, version, uri, content, editor_source, editor_model, created_at,
+					importance, disclosure, world_ts, updated_ts, anchor_entry_id, anchor_session_id
+				FROM node_revisions ORDER BY node_id, version`,
 			)
 			.all() as ExportSnapshot["revisions"];
 		const kvRows = this.db.prepare("SELECT key, value FROM memory_kv").all() as Array<{ key: string; value: string }>;
@@ -1527,7 +1759,9 @@ export class MemoryStore {
 			for (const rev of snapshot.revisions) {
 				this.db
 					.prepare(
-						"INSERT OR REPLACE INTO node_revisions (node_id, version, uri, content, editor_source, editor_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+						`INSERT OR REPLACE INTO node_revisions (node_id, version, uri, content, editor_source, editor_model, created_at,
+							importance, disclosure, world_ts, updated_ts, anchor_entry_id, anchor_session_id)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					)
 					.run(
 						rev.node_id,
@@ -1537,6 +1771,12 @@ export class MemoryStore {
 						rev.editor_source,
 						rev.editor_model,
 						rev.created_at,
+						rev.importance ?? null,
+						rev.disclosure ?? null,
+						rev.world_ts ?? null,
+						rev.updated_ts ?? null,
+						rev.anchor_entry_id ?? null,
+						rev.anchor_session_id ?? null,
 					);
 			}
 			for (const [key, value] of Object.entries(snapshot.kv)) {
@@ -1739,7 +1979,7 @@ export class MemoryStore {
 
 	/**
 	 * Clear the "structure migrated, FTS content not rebuilt" marker left by
-	 * `migrateV2`. The order matters: `reindexAll` MUST succeed BEFORE the
+	 * `migrateSchema`. The order matters: `reindexAll` MUST succeed BEFORE the
 	 * marker is deleted — clearing it first would turn a crash into a permanent
 	 * silent zero-recall state (v3 columns, no marker, empty FTS). A throw here
 	 * propagates and fails the open, so the next open retries.

@@ -321,30 +321,30 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		}
 	}
 
-	/** Visibility predicate (§8): auto nodes hidden when their anchor left the path. */
+	/** Visibility predicate (§8): anchored nodes hidden when their anchor left the path. */
 	function isVisible(node: MemoryNode): boolean {
-		if (node.source !== "auto") return true;
 		return !hiddenAutoNodeIds.has(node.node_id);
 	}
 
 	/**
-	 * Anchor visibility recompute (§8, v5.5 session rules):
-	 * - manual/import nodes are always visible;
-	 * - auto nodes without BOTH anchor_session_id and anchor_entry_id are
-	 *   hidden (no provenance to walk back to);
-	 * - auto nodes from ANOTHER session are visible (B's reroll must never
+	 * Anchor visibility recompute (§8, v4 — manual nodes participate):
+	 * - nodes without BOTH anchors split by source: `auto` is hidden (an auto
+	 *   product IS its provenance), `manual`/`import` is branch-independent
+	 *   and stays visible;
+	 * - anchored nodes from ANOTHER session are visible (B's reroll must never
 	 *   hide A's products);
-	 * - auto nodes from THIS session are visible only while their anchor
-	 *   entry is on the active path.
+	 * - anchored nodes from THIS session are visible only while their anchor
+	 *   entry is on the active path — regardless of source. A memorize made
+	 *   on a since-rerolled leaf stays a memory of a conversation that, on
+	 *   this branch, never happened.
 	 */
 	function recomputeAnchorVisibility(entryIds: string[]): Set<string> {
 		const active = new Set(entryIds);
 		const currentSession = host?.getSessionInfo().sessionId;
 		const hidden = new Set<string>();
 		for (const node of store.listNodes()) {
-			if (node.source !== "auto") continue;
 			if (!node.anchor_session_id || !node.anchor_entry_id) {
-				hidden.add(node.node_id);
+				if (node.source === "auto") hidden.add(node.node_id);
 				continue;
 			}
 			if (currentSession && node.anchor_session_id !== currentSession) continue;
@@ -514,8 +514,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		}
 
 		// ── TEMP dynamic zone (§7): threshold check after write paths ───────
-		const isVisibleLocal = (node: { source: string; node_id: string }): boolean =>
-			node.source !== "auto" || !hiddenAutoNodeIds.has(node.node_id);
+		const isVisibleLocal = (node: { node_id: string }): boolean => !hiddenAutoNodeIds.has(node.node_id);
 		if (countActiveTempNodes(store, isVisibleLocal) < tempThreshold) {
 			tempNotified = false; // cleaned below threshold — re-arm
 			return;
@@ -595,7 +594,8 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		async onLeafChange(): Promise<void> {
 			try {
 				const snapshot = host?.getBranchSnapshot();
-				// ① anchor visibility recompute (§8 ①) — session-aware rules
+				// ① anchor visibility recompute (§8 ①) — session-aware rules,
+				// manual nodes included (v4)
 				hiddenAutoNodeIds = recomputeAnchorVisibility(snapshot ? snapshot.entryIds : []);
 				// A branch switch makes in-flight recall stale — cancel it so
 				// superseded results never inject (§4.8).
@@ -613,6 +613,14 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 						sessionId,
 						active.map((m) => toRawEntry(m, sessionId, worldTs)),
 					);
+				}
+				// ③ revision projection (§8 ③, v4): repaint node rows whose
+				// revision chain has off-branch revisions, so the main table
+				// IS the current branch's view (revise rolls back with the
+				// branch that wrote it). Runs after the raw sync so the anchor
+				// entries this session's rows exist before anything reads them.
+				if (sessionId && snapshot) {
+					store.reconcileNodeProjections(sessionId, snapshot.entryIds);
 				}
 			} catch {
 				// Never break the engine path-change flow; zero-cost when no store.

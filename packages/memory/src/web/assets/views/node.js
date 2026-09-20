@@ -8,7 +8,8 @@
 //   1. `EdgeDTO.node_id` 是**边的源**（两个方向都一样），**不是对端** → MUST NOT 用于渲染链接。
 //      可点链接只来自 `edge.uri`（回退 `edge.resolved_uri`）。
 //   2. `aliases`（旧地址映射）与 `glossary`（触发词）是**两张不同的表** → 两块标题/文案都必须不同。
-//   3. `anchor_entry_id` / `anchor_session_id` 仅 `auto` 节点有值；深链 MUST **同时带 session**
+//   3. `anchor_entry_id` / `anchor_session_id` 在 v4 起所有工具写入都有值
+//      （manual 也盖锚）；深链 MUST **同时带 session**
 //      （`raw_log` 唯一索引是 `(session_id, entry_id)`，跨 session 重名时服务端返回 bad_request）。
 //
 // 徽章/面包屑/URI 件/署名一律取自公共层（02 §3.5/§3.6/§3.7）；不再 import tree.js / views.js。
@@ -35,7 +36,7 @@ import {
 // 冻结文案（契约 §6.6；与 ui.js shadowedBadge 内部常量逐字一致）。
 // 本页「已遮蔽」说明行是散文句而非徽章，故需单独引用这两个串。
 const SHADOWED_TEXT = "已遮蔽（原分支已回滚）";
-const SHADOWED_TITLE = "该节点由自动写入产生，而它锚定的那条原文已不在当前分支上（原分支已回滚）。";
+const SHADOWED_TITLE = "该节点锚定的那条原文已不在当前分支上（原分支已回滚）。";
 
 // ── 署名渲染（§9.2，冻结）── 实现已收编 ui.js（02 §3.10 统一版：两份对拍收敛，
 // 「没取到 ≠ 取到了但未知」两条边界纪律都保留）。本模块过渡期 re-export（02 裁定），
@@ -356,7 +357,7 @@ export function renderNode(el_, dto, entryUri) {
   }
   el_.append(section("子节点", null, childBody));
 
-  // anchor 深链（§16.14）：⭐ 只有 auto 节点两列都有值；任一为 null → **不渲染链接**（绝不生成半截 URL）
+  // anchor 深链（§16.14）：v4 起 manual 写入也盖锚，两列都有值即渲染；任一为 null → **不渲染链接**（绝不生成半截 URL）
   if (node.anchor_entry_id && node.anchor_session_id) {
     const link = el("a", {
       href: `#/raw?session=${encodeURIComponent(node.anchor_session_id)}&around=${encodeURIComponent(node.anchor_entry_id)}`,

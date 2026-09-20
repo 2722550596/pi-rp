@@ -1,16 +1,25 @@
 /**
  * Branch visibility (plan/memory-web/00-共同上下文.md §6.6).
  *
- * The engine decides visibility in-memory (`module.ts:334-348`): an `auto` node
- * shows only while the raw entry that produced it is still on the active
- * branch. A standalone server cannot see "the current session", so it derives
- * the branch state from `raw_log.active` instead — conservatively.
+ * The engine decides visibility in-memory (`module.ts` recomputeAnchorVisibility):
+ * a node anchored at this session's leaf shows only while that leaf is still on
+ * the active branch — `manual` nodes included since v4. A standalone server
+ * cannot see "the current session", so it derives the branch state from
+ * `raw_log.active` instead — conservatively, and best-effort for `manual`.
  *
  * Step 1 (unconditional, the Web default): a node's own branch state.
- *   source !== "auto"                      -> not shadowed
- *   auto, anchor_entry_id/session missing  -> shadowed  (mirrors module.ts:340-342)
- *   auto, both anchors present             -> shadowed iff that (entry_id,
- *                                             session_id) row is gone or active = 0
+ *   anchors missing                        -> shadowed iff source = "auto"
+ *                                             (mirrors the engine: an auto
+ *                                             product IS its provenance; an
+ *                                             un-anchored manual write is
+ *                                             branch-independent)
+ *   anchors present, (entry, session) row
+ *   gone                                   -> shadowed iff source = "auto" —
+ *                                             a manual anchor entry may simply
+ *                                             sit outside the raw capture
+ *                                             policy, which is not evidence
+ *                                             of a rollback
+ *   row present                            -> shadowed iff active = 0
  *
  * Step 2 (only when the caller names a view session): nodes whose anchor
  * belongs to ANOTHER session do not participate at all — the engine `continue`s
@@ -32,23 +41,23 @@ export interface Visibility {
 
 /**
  * Step 1 over the whole tree in one pass: one `listNodes()` plus one indexed
- * lookup per `auto` node. Cheap for a page-sized tree, and the same map backs
+ * lookup per anchored node. Cheap for a page-sized tree, and the same map backs
  * both `/api/tree` and `/api/node`.
  */
 export function buildShadowedIndex(store: MemoryStore): Map<string, boolean> {
 	const raw = store.db.prepare("SELECT active FROM raw_log WHERE entry_id = ? AND session_id = ?");
 	const index = new Map<string, boolean>();
 	for (const node of store.listNodes()) {
-		if (node.source !== "auto") {
-			index.set(node.node_id, false);
-			continue;
-		}
 		if (!node.anchor_entry_id || !node.anchor_session_id) {
-			index.set(node.node_id, true);
+			index.set(node.node_id, node.source === "auto");
 			continue;
 		}
 		const row = raw.get(node.anchor_entry_id, node.anchor_session_id) as { active: number } | undefined;
-		index.set(node.node_id, !row || Number(row.active) === 0);
+		if (!row) {
+			index.set(node.node_id, node.source === "auto");
+			continue;
+		}
+		index.set(node.node_id, Number(row.active) === 0);
 	}
 	return index;
 }
@@ -64,7 +73,9 @@ export function createVisibility(store: MemoryStore, opts: { sessionId?: string 
 	const foreign = new Set<string>();
 	if (sessionId !== undefined) {
 		for (const node of store.listNodes()) {
-			if (node.source === "auto" && node.anchor_session_id !== sessionId) foreign.add(node.node_id);
+			// v4: anchored manual nodes participate like auto — their anchor
+			// session decides. Un-anchored nodes are branch-independent.
+			if (node.anchor_session_id !== null && node.anchor_session_id !== sessionId) foreign.add(node.node_id);
 		}
 	}
 	return {

@@ -482,7 +482,7 @@ export function stubChip() {
 
 // 冻结文案(契约 §6.6 + Main 广播 #2:MUST NOT 写成「已隐藏」;字符串与 tree.js 常量逐字一致)。
 const SHADOWED_TEXT = "已遮蔽（原分支已回滚）";
-const SHADOWED_TITLE = "该节点由自动写入产生，而它锚定的那条原文已不在当前分支上（原分支已回滚）。";
+const SHADOWED_TITLE = "该节点锚定的那条原文已不在当前分支上（原分支已回滚）。";
 
 /**
  * 已遮蔽 chip(01 §7.6 的 mw-chip--shadowed;冻结文案,勿改一字)。
