@@ -45,6 +45,8 @@ const { values } = parseArgs({
 		queries: { type: "string", default: new URL("./fixtures/recall-benchmark-queries.json", import.meta.url).pathname },
 		"descriptive-limit": { type: "string", default: "30" },
 		rerank: { type: "boolean", default: false },
+		/** Dump per-query fused top-8 candidates (for external judge studies). */
+		dump: { type: "string" },
 		out: { type: "string" },
 	},
 });
@@ -189,6 +191,36 @@ const band = (s: { min: number; med: number; max: number }): string => `${s.min.
 
 const associativeRows = await runGroup("associative", fixture.samples);
 const descriptiveRows = await runGroup("descriptive", descriptiveSamples);
+
+// Candidate dump for external judge studies (--dump): per query, the fused
+// top-8 with bodies — everything a judge needs to re-score the same shortlist.
+if (values.dump) {
+	const dump = [];
+	for (const [group, samples] of [
+		["associative", fixture.samples],
+		["descriptive", descriptiveSamples],
+		["daily", DAILY_PROBES.map((query) => ({ uri: "", query }))] as Array<[string, FixtureSample[]]>,
+		["cross", PRECISION_PROBES.map((query) => ({ uri: "", query }))],
+	]) {
+		for (const sample of samples) {
+			const got = await fusedScoresFor(sample.query);
+			if (!got) continue;
+			dump.push({
+				group,
+				query: sample.query,
+				targetUri: sample.uri || null,
+				candidates: got.items.slice(0, 8).map((it) => ({
+					node_id: it.node_id,
+					uri: it.uri,
+					body: (bodyById.get(it.node_id) ?? "").slice(0, 500),
+				})),
+			});
+		}
+	}
+	writeFileSync(values.dump, JSON.stringify(dump, null, 1));
+	console.error(`candidates dumped: ${values.dump} (${dump.length} queries)`);
+	process.exit(0);
+}
 
 // Precision: injected-item count per probe through the production gate.
 async function runPrecision(probes: string[]): Promise<{ legacy: number[]; fused: number[]; top1: number[] }> {

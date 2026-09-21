@@ -6,6 +6,7 @@
 
 - Disclosure recall channel: the 想起条件 is embedded on its own (`memory_embeddings` row at `seg_index = -1`, cached against a hash of the disclosure text itself) and fused with the body view in rank space via RRF (k=30, pool-max normalized, `VEC_ABS_FLOOR = 0.3` absolute guard) — associative queries whose wording shares nothing with the body now surface their target (elias-benchmark MRR 0.350 → 0.540, top-3 33% → 73%) while descriptive queries are unaffected. Databases without disclosure signals fall back to the legacy ordering bit-for-bit.
 - Injection breaker (opt-in, `memory.recall.breaker`): before injecting, the fused top-8 candidates are reranked with `BAAI/bge-reranker-v2-m3` and injection is skipped entirely when the best score is below `tau` (default 0.01) — cross-domain prompts (code, science) no longer fire memories through register similarity, which `MIN_SCORE` cannot gate (score bands of relevant and unrelated queries fully overlap). Reranker outages fail open; breaks leave a `recall_breaker` audit row.
+- Injection selector (opt-in, `memory.recall.select`, needs `TYPEAFE_API_KEY`): TypeSafe Jev judges each fused top-8 candidate — "does injecting this memory right now actually matter to this exchange" — and only candidates clearing `tau` (default 0.6) inject. Unlike the breaker's register check, Jev reads the arc: elias-benchmark kept 8/8 targets, recalled whole storylines together (all four warm_water nodes), and suppressed duplicate content domains and unrelated monologues. Implies the breaker; fails open without a key.
 
 ### Changed
 

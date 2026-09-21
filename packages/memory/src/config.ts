@@ -31,6 +31,19 @@ export interface MemorySettings {
 		 * provider call per prompt — declare `breaker: {}` to enable.
 		 */
 		breaker?: { tau?: number };
+		/**
+		 * Injection selector (§9.1, opt-in, needs TYPEAFE_API_KEY): replaces
+		 * the bare TOP_K cutoff with a per-candidate judgment — the fused
+		 * top-8 bodies are each asked "should she remember this right now"
+		 * via TypeSafe Jev, and only candidates scoring >= `tau` (default
+		 * 0.6) inject, still capped by `topK`. Benchmarked 2026-09-22 on
+		 * elias: target retention 8/8, correct suppression of duplicate
+		 * domains and register noise, whole-storyline recall (all four
+		 * warm_water nodes kept together). Implies the breaker (an unrelated
+		 * prompt fails every candidate). ~1 extra provider call per
+		 * candidate per prompt.
+		 */
+		select?: { tau?: number };
 	};
 	temp?: { threshold?: number };
 	embeddings?: { mode?: "api" | "off"; model?: string; rerankModel?: string; apiUrl?: string };

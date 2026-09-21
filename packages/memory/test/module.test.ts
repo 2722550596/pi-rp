@@ -164,6 +164,102 @@ describe("injection breaker", () => {
 	});
 });
 
+// ── Injection selector (§9.1 Jev) ───────────────────────────────────────────
+
+describe("injection selector", () => {
+	function mockTypeafe(scoreFor: (memory: string) => number): void {
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			if (String(input).endsWith("/v1/systemone")) {
+				const body = JSON.parse(String(init?.body)) as { state: { memory: string } };
+				const noul = scoreFor(body.state.memory);
+				return new Response(
+					JSON.stringify({
+						model: "jev-test",
+						answers: { q: { type: "noul", noul } },
+						usage: { input_tokens: 1, output_tokens: 1 },
+					}),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+			return realFetch(input, init);
+		}) as typeof fetch;
+	}
+	const restore = () => {
+		delete process.env.TYPEAFE_API_KEY;
+	};
+
+	beforeEach(() => {
+		process.env.TYPEAFE_API_KEY = "test-key";
+	});
+	afterEach(restore);
+
+	it("keeps only candidates the selector judges worth remembering", async () => {
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		// Passes MIN_SCORE (shared tokens with the query) but the selector —
+		// judged on her arc, not token overlap — should keep it out.
+		store.insertNode({ uri: "history://noise", content: "伊莱那天在酒馆角落坐了很久，什么也没说，很安静" });
+		mockTypeafe((memory) => (memory.includes("薇拉") ? 0.9 : 0.2));
+		const h = createHostMock();
+		const module = createMemoryModule(store, {
+			settings: { recall: { select: {} } },
+			embeddings: createFakeEmbeddingClient(),
+		});
+		module.registerSession(h.host);
+
+		const result = await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？");
+		expect(result?.message?.customType).toBe("rp-memories");
+		expect(result?.message?.content).toContain("history://tavern");
+		expect(result?.message?.content).not.toContain("history://noise");
+		const audit = store.listAudit(10).filter((a) => a.event === "recall_select");
+		expect(audit.length).toBe(1);
+	});
+
+	it("fails open when TypeSafe is unreachable", async () => {
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		mockTypeafe(() => {
+			throw new Error("connection refused");
+		});
+		const h = createHostMock();
+		const module = createMemoryModule(store, {
+			settings: { recall: { select: {} } },
+			embeddings: createFakeEmbeddingClient(),
+		});
+		module.registerSession(h.host);
+
+		const result = await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？");
+		expect(result?.message?.customType).toBe("rp-memories");
+		expect(result?.message?.content).toContain("history://tavern");
+	});
+
+	it("without TYPEAFE_API_KEY the selector stays dormant", async () => {
+		delete process.env.TYPEAFE_API_KEY;
+		let calls = 0;
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			if (String(input).includes("typesafe")) {
+				calls++;
+				return new Response("{}", { status: 200 });
+			}
+			return realFetch(input, init);
+		}) as typeof fetch;
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		const h = createHostMock();
+		const module = createMemoryModule(store, {
+			settings: { recall: { select: {} } },
+			embeddings: createFakeEmbeddingClient(),
+		});
+		module.registerSession(h.host);
+
+		const result = await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？");
+		expect(result?.message?.customType).toBe("rp-memories");
+		expect(calls).toBe(0);
+	});
+});
+
 // ── Injection (§9) ──────────────────────────────────────────────────────────
 
 describe("before_agent_start injection", () => {

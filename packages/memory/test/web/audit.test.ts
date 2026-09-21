@@ -16,7 +16,7 @@ import { openMemoryStore } from "../../src/index.ts";
 import type { MemoryStore } from "../../src/store.ts";
 import { type RunningServer, startServer } from "../../src/web/server.ts";
 
-/** 契约 §6.5 的事件名全集（v3 起 18 个：新增 `add_alias` / `set_entry_disclosure`；§9.1 起再加 `recall_breaker`）。 */
+/** 契约 §6.5 的事件名全集（v3 起 18 个：新增 `add_alias` / `set_entry_disclosure`；§9.1 起再加 `recall_breaker` / `recall_select`）。 */
 const AUDIT_EVENTS = [
 	"insert_node",
 	"promote_stub",
@@ -35,6 +35,7 @@ const AUDIT_EVENTS = [
 	"recall",
 	"inject",
 	"recall_breaker",
+	"recall_select",
 	"autoretain_task",
 	"autoretain_product",
 ] as const;
@@ -58,6 +59,7 @@ const AUDIT_EVENT_LOOKUP: Record<string, true> = {
 	recall: true,
 	inject: true,
 	recall_breaker: true,
+	recall_select: true,
 	autoretain_task: true,
 	autoretain_product: true,
 };

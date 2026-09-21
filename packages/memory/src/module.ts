@@ -152,6 +152,9 @@ export const RECALL_HIGH_CONFIDENCE = 0.55;
  * (15/15 blocked at any tau ≤ 0.05) while real same-domain anchors survive. */
 export const RECALL_BREAKER_TOP_N = 8;
 export const RECALL_BREAKER_TAU = 0.01;
+/** Injection selector (§9.1): Jev judgment depth and keep threshold. */
+export const RECALL_SELECT_TOP_N = 8;
+export const RECALL_SELECT_TAU = 0.6;
 /** Recent conversation messages forming the second recall query. */
 const PRIOR_CONTEXT_MESSAGES = 6;
 /** Raw rows forming one autoretain 纪要窗口 (§5: token 预算 guard). */
@@ -277,6 +280,11 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	// tau keeps its benchmarked default unless pinned.
 	const breakerEnabled = recallCfg.breaker !== undefined;
 	const breakerTau = recallCfg.breaker?.tau ?? RECALL_BREAKER_TAU;
+	// §9.1 injection selector — opt-in, needs a TypeSafe key; replaces the
+	// bare TOP_K cutoff with per-candidate "should she remember this now".
+	const selectEnabled = recallCfg.select !== undefined;
+	const selectTau = recallCfg.select?.tau ?? RECALL_SELECT_TAU;
+	const typeafeKey = process.env.TYPEAFE_API_KEY ?? "";
 	const blocklist = recallCfg.blocklist ?? DEFAULT_DOMAIN_BLOCKLIST;
 	const rawLogCustomTypes = settings.rawLog?.customTypes ?? "all-display-true";
 	// §9 vector channel: API mode only, key from env. `mode: "off"` (the
@@ -407,9 +415,75 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	}
 
 	/**
+	 * §9.1 injection selector: ask TypeSafe Jev per fused candidate "should
+	 * she remember this right now" and keep only the ones that clear tau.
+	 * Where the breaker asks one coarse question about the whole page, the
+	 * selector judges each candidate on its own arc — benchmarked 2026-09-22:
+	 * target retention 8/8, duplicate-domain and register noise suppressed,
+	 * whole storylines recalled together instead of cut by TOP_K. Fails open
+	 * on any Jev/credential problem — injection proceeds exactly as before.
+	 */
+	async function applyJevSelect(
+		result: { items: RecalledItem[]; mode: RecallMode },
+		intentQuery: string,
+		signal?: AbortSignal,
+	): Promise<{ items: RecalledItem[]; mode: RecallMode }> {
+		if (!selectEnabled || result.mode !== "vector" || result.items.length === 0 || !typeafeKey) return result;
+		const candidates = result.items.slice(0, RECALL_SELECT_TOP_N);
+		const bodies = candidates.map((it) => (store.getNode(it.node_id)?.content ?? "").slice(0, 500));
+		const instructions = {
+			utterance: "在 state 里",
+			memory: "也在 state 里",
+			question:
+				"角色在心里说出了这句话「`utterance`」。此刻把这段记忆「`memory`」注入她的上下文，对这个对话有真实意义吗？",
+		};
+		const criteria = {
+			true: "有真实意义：记忆与话头之间存在弧线关联（话题、人物、场景或情绪的延续），注入它会自然地改变或丰富她接下来的回应——这就是「此刻想起了什么」",
+			false: "没有意义：记忆与话头只是文体或情绪的表面相似，注入它对回应没有任何作用，说话人不会觉得这与此刻有关",
+		};
+		const scores = await Promise.all(
+			bodies.map(async (body) => {
+				try {
+					const res = await fetch("https://api.typesafe.ai/v1/systemone", {
+						method: "POST",
+						headers: { "Content-Type": "application/json", Authorization: `Bearer ${typeafeKey}` },
+						body: JSON.stringify({
+							state: { utterance: intentQuery, memory: body },
+							model: "jev-latest",
+							questions: { q: { type: "noul", instructions, criteria } },
+						}),
+						signal,
+					});
+					if (!res.ok) return null;
+					const json = (await res.json()) as { answers?: { q?: { noul?: number } } };
+					const n = json.answers?.q?.noul;
+					return typeof n === "number" ? n : null;
+				} catch {
+					return null;
+				}
+			}),
+		);
+		if (signal?.aborted) return result;
+		// Fail-open: any candidate the judge could not score stays eligible.
+		const kept = candidates.filter((_, i) => scores[i] === null || scores[i] >= selectTau).slice(0, topK);
+		if (kept.length === result.items.length) return result;
+		store.logAudit("recall_select", {
+			details: JSON.stringify({
+				query: intentQuery.slice(0, 100),
+				kept: kept.length,
+				of: result.items.length,
+			}),
+			turn: host?.getSessionInfo().turn,
+		});
+		return { items: kept, mode: result.mode };
+	}
+
+	/**
 	 * Hybrid recall over the tree pool (§9). Delegates to the shared scorer in
 	 * recall.ts — the same code path the retrieve tool uses — so injection and
-	 * explicit search can never drift apart again. Vector scoring runs when an
+	 * explicit search can never drift apart again. After scoring, the optional
+	 * §9.1 gates apply in order: the rerank breaker (whole-page skip), then
+	 * the Jev selector (per-candidate keep). Vector scoring runs when an
 	 * embedding client is configured and reachable; otherwise the mode falls
 	 * back to keyword and HIGH_CONFIDENCE stays out of reach by design.
 	 */
@@ -423,7 +497,10 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 			const nowDays = toEpochDays(store.getWorldTime() ?? new Date().toISOString().slice(0, 10)) ?? 0;
 			// awaken uris already live in the preset slot — never inject them twice
 			// (§9); TEMP is NOT blocklisted (dynamic zone stays recalleable).
-			const result = await search(
+			// With the selector on, search must surface the fused top-8 so the
+			// Jev judgment — not the raw score cutoff — decides what she gets.
+			const searchTopK = selectEnabled ? Math.max(topK, RECALL_SELECT_TOP_N) : topK;
+			let result = await search(
 				store,
 				embeddings,
 				{
@@ -431,14 +508,16 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 					domainBlocklist: blocklist,
 					excludeUris: getAwakenUriSet(),
 					isVisible,
-					topK,
+					topK: searchTopK,
 					minScore,
 					keywordMinScore,
 					nowDays,
 				},
 				ctrl.signal,
 			);
-			return await applyRecallBreaker(result, queries[0] ?? "", ctrl.signal);
+			result = await applyRecallBreaker(result, queries[0] ?? "", ctrl.signal);
+			result = await applyJevSelect(result, queries[0] ?? "", ctrl.signal);
+			return result;
 		} finally {
 			if (recallAbort === ctrl) recallAbort = undefined;
 		}
