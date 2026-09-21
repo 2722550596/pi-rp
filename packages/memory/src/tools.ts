@@ -536,11 +536,12 @@ async function executeMemorize(store: MemoryStore, params: Static<typeof memoriz
 
 const reviseModSchema = Type.Object({
 	uri: Type.String({ description: "要修改的记忆 URI" }),
+	content: Type.Optional(Type.String({ description: "[整条重写] 用全文替换整条正文（不能与替换/追加/行编辑混用）" })),
 	old_text: Type.Optional(Type.String({ description: "[替换] 要改掉的原文（须在内容中唯一）" })),
-	new_text: Type.Optional(Type.String({ description: "[替换] 改成什么" })),
+	new_text: Type.Optional(Type.String({ description: "[替换] 改成什么（须配 old_text）" })),
 	append: Type.Optional(Type.String({ description: "[追加] 追加到末尾的文字" })),
 	line: Type.Optional(Type.Number({ description: "[行编辑] 行号（从 1 开始）" })),
-	line_content: Type.Optional(Type.String({ description: "[行编辑] 该行新内容" })),
+	line_content: Type.Optional(Type.String({ description: "[行编辑] 该行新内容（须配 line）" })),
 	importance: Type.Optional(Type.Number({ description: "修改重要性" })),
 	when: Type.Optional(Type.String({ description: "改想起条件：URI 命中别名入口→改该入口；否则改节点自身" })),
 	time: Type.Optional(Type.String({ description: '修改世界时间；传 "" 清除' })),
@@ -558,10 +559,11 @@ const reviseParams = Type.Object({
 	uri: Type.Optional(Type.String({ description: "单条模式：要修改的记忆 URI" })),
 	version: Type.Optional(Type.Number({ description: "restore 时指定版本（活节点必传；已删节点缺省恢复最新版）" })),
 	old_text: Type.Optional(Type.String({ description: "[替换] 要改掉的原文" })),
-	new_text: Type.Optional(Type.String({ description: "[替换] 改成什么" })),
+	new_text: Type.Optional(Type.String({ description: "[替换] 改成什么（须配 old_text）" })),
+	content: Type.Optional(Type.String({ description: "[整条重写] 用全文替换整条正文（不能与替换/追加/行编辑混用）" })),
 	append: Type.Optional(Type.String({ description: "[追加] 追加到末尾的文字" })),
 	line: Type.Optional(Type.Number({ description: "[行编辑] 行号（从 1 开始）" })),
-	line_content: Type.Optional(Type.String({ description: "[行编辑] 该行新内容" })),
+	line_content: Type.Optional(Type.String({ description: "[行编辑] 该行新内容（须配 line）" })),
 	importance: Type.Optional(Type.Number({ description: "修改重要性" })),
 	when: Type.Optional(Type.String({ description: "改想起条件：URI 命中别名入口→改该入口；否则改节点自身" })),
 	time: Type.Optional(Type.String({ description: '修改世界时间；传 "" 清除' })),
@@ -589,8 +591,39 @@ export interface ReviseModOutcome {
  */
 export function computeRevisedContent(
 	content: string,
-	mod: { old_text?: string; new_text?: string; append?: string; line?: number; line_content?: string },
+	mod: {
+		content?: string;
+		old_text?: string;
+		new_text?: string;
+		append?: string;
+		line?: number;
+		line_content?: string;
+	},
 ): { ok: true; content: string } | { ok: false; error: string } {
+	// Full-body rewrite: explicit whole-content overwrite, mutually exclusive
+	// with the incremental edits (same semantics as the web editor's content
+	// field). Empty body is a delete, not a write — point at forget.
+	if (mod.content !== undefined) {
+		const incremental =
+			mod.old_text !== undefined ||
+			mod.new_text !== undefined ||
+			mod.append !== undefined ||
+			mod.line !== undefined ||
+			mod.line_content !== undefined;
+		if (incremental) return { ok: false, error: "content 整条重写不能与替换/追加/行编辑混用" };
+		if (mod.content === "") return { ok: false, error: "正文不能为空；要删整条记忆用 forget" };
+		return { ok: true, content: mod.content };
+	}
+	// Orphan edit fields are rejected here so the ONE body-edit rule set also
+	// guards the preview path — a preview can never show a change the write
+	// would refuse (T14). Errors carry the bare reason; the caller owns the
+	// `uri：` prefix.
+	if (mod.new_text !== undefined && mod.old_text === undefined) {
+		return { ok: false, error: "new_text 需要与 old_text 配对（替换模式）；只追加用 append；整条重写用 content" };
+	}
+	if (mod.line_content !== undefined && mod.line === undefined) {
+		return { ok: false, error: "line_content 需要与 line 配对（行编辑模式）" };
+	}
 	let next = content;
 	if (mod.old_text !== undefined) {
 		if (!next.includes(mod.old_text)) return { ok: false, error: "old_text 不在当前内容中" };
@@ -617,6 +650,7 @@ function applyReviseMod(
 	store: MemoryStore,
 	mod: {
 		uri: string;
+		content?: string;
 		old_text?: string;
 		new_text?: string;
 		append?: string;
@@ -637,7 +671,20 @@ function applyReviseMod(
 		ctx.leafId && ctx.sessionId ? { anchor_entry_id: ctx.leafId, anchor_session_id: ctx.sessionId } : undefined;
 	// One predicate for "a body edit happened", shared by the diff snapshot and
 	// the update below — splitting them yields diffs for edits that never land.
-	const touchedBody = mod.old_text !== undefined || mod.append !== undefined || mod.line !== undefined;
+	// Orphan fields (new_text without old_text, line_content without line) count
+	// as touched so they reach computeRevisedContent and fail THERE instead of
+	// silently no-oping while reporting success (2026-09-21 mochi incident:
+	// revise { uri, new_text } returned 已修订 with the body untouched).
+	const touchedBody =
+		mod.content !== undefined ||
+		mod.old_text !== undefined ||
+		mod.new_text !== undefined ||
+		mod.append !== undefined ||
+		mod.line !== undefined ||
+		mod.line_content !== undefined;
+	if (!touchedBody && mod.importance === undefined && mod.when === undefined && mod.time === undefined) {
+		return { ok: false, uri: mod.uri, text: `${mod.uri}：没有指定任何修改` };
+	}
 	const beforeContent = touchedBody ? node.content : undefined;
 	let content = node.content;
 	if (touchedBody) {
@@ -716,6 +763,7 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 		// history / restore: no batch, no edit fields.
 		if (params.batch) return text("history/restore 不支持 batch");
 		const editFields = [
+			params.content,
 			params.old_text,
 			params.new_text,
 			params.append,
@@ -799,6 +847,7 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 	const mods = params.batch ?? [
 		{
 			uri: params.uri ?? "",
+			content: params.content,
 			old_text: params.old_text,
 			new_text: params.new_text,
 			append: params.append,
@@ -1316,7 +1365,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "revise",
 			label: "revise",
 			description:
-				"修订记忆内容或元数据。action=history 查看修订史（不传 uri 时列出可恢复的已删记忆；已删记忆显示完整版本链）；action=restore 从修订史恢复（活节点需指定 version，已删节点缺省恢复最新版）；默认 edit：三种内容编辑三选一（替换 old_text→new_text 须唯一、追加 append、行编辑 line+line_content），也可只改 importance/when/time（改 when 时，URI 若是别名入口则改该入口专属条件，否则改节点自身条件），批量传 batch。旧内容自动入修订史。",
+				"修订记忆内容或元数据。action=history 查看修订史（不传 uri 时列出可恢复的已删记忆；已删记忆显示完整版本链）；action=restore 从修订史恢复（活节点需指定 version，已删节点缺省恢复最新版）；默认 edit：四种内容编辑四选一（整条重写 content、替换 old_text→new_text 须唯一、追加 append、行编辑 line+line_content），也可只改 importance/when/time（改 when 时，URI 若是别名入口则改该入口专属条件，否则改节点自身条件），批量传 batch。旧内容自动入修订史。",
 			parameters: reviseParams,
 			run: (p) => executeRevise(store, p as Static<typeof reviseParams>, ctx),
 		},

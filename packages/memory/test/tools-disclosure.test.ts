@@ -294,6 +294,21 @@ describe("T14 — computeRevisedContent is the single body-edit rule", () => {
 		const oob = computeRevisedContent("abc", { line: 9, line_content: "z" });
 		expect(oob.ok).toBe(false);
 		if (!oob.ok) expect(oob.error).toBe("行号越界（共 1 行）");
+		const orphanNew = computeRevisedContent("abc", { new_text: "y" });
+		expect(orphanNew.ok).toBe(false);
+		if (!orphanNew.ok)
+			expect(orphanNew.error).toBe("new_text 需要与 old_text 配对（替换模式）；只追加用 append；整条重写用 content");
+		const rewrite = computeRevisedContent("abc", { content: "xyz" });
+		expect(rewrite.ok && rewrite.content).toBe("xyz");
+		const mix = computeRevisedContent("abc", { content: "xyz", append: "d" });
+		expect(mix.ok).toBe(false);
+		if (!mix.ok) expect(mix.error).toBe("content 整条重写不能与替换/追加/行编辑混用");
+		const empty = computeRevisedContent("abc", { content: "" });
+		expect(empty.ok).toBe(false);
+		if (!empty.ok) expect(empty.error).toBe("正文不能为空；要删整条记忆用 forget");
+		const orphanLine = computeRevisedContent("abc", { line_content: "z" });
+		expect(orphanLine.ok).toBe(false);
+		if (!orphanLine.ok) expect(orphanLine.error).toBe("line_content 需要与 line 配对（行编辑模式）");
 		const good = computeRevisedContent("abc", { append: "d" });
 		expect(good.ok && good.content).toBe("abc\nd");
 	});

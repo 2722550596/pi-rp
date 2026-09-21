@@ -76,7 +76,9 @@ describe("memorize → recall → revise → forget chain", () => {
 		expect(forget).toBeTruthy();
 		// In-process TypeBox definition whose exact shape we control; TSchema's
 		// static type just doesn't expose object properties — named, shape-checked.
-		const params = forget!.parameters as { properties: { target: { anyOf: Array<{ type?: string; items?: { type: string } }> } } };
+		const params = forget!.parameters as {
+			properties: { target: { anyOf: Array<{ type?: string; items?: { type: string } }> } };
+		};
 		const target = params.properties.target;
 		expect(target.anyOf[0].type).toBe("array");
 		expect(target.anyOf[0].items?.type).toBe("string");
@@ -152,6 +154,65 @@ describe("revise variants", () => {
 		await run("memorize", { uri: "history://dup", content: "重复 重复" });
 		const r = await run("revise", { uri: "history://dup", old_text: "重复", new_text: "唯一" });
 		expect(r.text).toContain("不唯一");
+	});
+
+	// 2026-09-21 mochi 事故：revise { uri, new_text }（漏 old_text）静默 no-op 却报"已修订"，
+	// 库里内容纹丝不动，agent 被迫自写 memsafe 回读防御。孤立编辑字段必须响亮报错。
+	it("orphan new_text fails loudly instead of silently no-oping", async () => {
+		await run("memorize", { uri: "history://nt", content: "旧内容" });
+		const r = await run("revise", { uri: "history://nt", new_text: "昨夜整理完成" });
+		expect(r.text).not.toContain("已修订");
+		expect(r.text).toContain("old_text");
+		expect(store.resolveUri("history://nt")!.content).toBe("旧内容");
+	});
+
+	it("orphan line_content fails loudly instead of silently no-oping", async () => {
+		const r = await run("revise", { uri: "history://a", line_content: "孤儿" });
+		expect(r.text).not.toContain("已修订");
+		expect(r.text).toContain("line");
+		expect(store.resolveUri("history://a")!.content).toBe("第一行\n第二行\n第三行");
+	});
+
+	it("a mod with no edit fields at all fails loudly", async () => {
+		const r = await run("revise", { uri: "history://a" });
+		expect(r.text).not.toContain("已修订");
+		expect(store.resolveUri("history://a")!.content).toBe("第一行\n第二行\n第三行");
+	});
+
+	// 整条重写：与 web 编辑器 content 字段同语义，store 全量覆写能力接进工具层。
+	it("content rewrites the whole body, archives a revision, and renders a diff", async () => {
+		const r = await run("revise", { uri: "history://a", content: "全新正文" });
+		expect(r.text).toContain("已修订");
+		expect(store.resolveUri("history://a")!.content).toBe("全新正文");
+		expect(store.listRevisions(store.resolveUri("history://a")!.node_id)).toHaveLength(1);
+		const diffs = r.details.diffs as Array<{ uri: string }>;
+		expect(diffs).toHaveLength(1);
+		expect(diffs[0].uri).toBe("history://a");
+	});
+
+	it("content rejects mixing with incremental edits", async () => {
+		const r = await run("revise", { uri: "history://a", content: "新", old_text: "第一行", new_text: "改" });
+		expect(r.text).toContain("混用");
+		expect(store.resolveUri("history://a")!.content).toBe("第一行\n第二行\n第三行");
+	});
+
+	it("content rejects an empty body (delete is forget's job)", async () => {
+		const r = await run("revise", { uri: "history://a", content: "" });
+		expect(r.text).toContain("forget");
+		expect(store.resolveUri("history://a")!.content).toBe("第一行\n第二行\n第三行");
+	});
+
+	it("content rewrite can also set metadata in one call", async () => {
+		const r = await run("revise", { uri: "history://a", content: "新正文", importance: 3 });
+		expect(r.text).toContain("已修订");
+		expect(store.resolveUri("history://a")!.content).toBe("新正文");
+		expect(store.resolveUri("history://a")!.importance).toBe(3);
+	});
+
+	it("batch supports per-mod content rewrites", async () => {
+		const r = await run("revise", { batch: [{ uri: "history://a", content: "重写一" }] });
+		expect(r.text).toContain("已修订");
+		expect(store.resolveUri("history://a")!.content).toBe("重写一");
 	});
 });
 
