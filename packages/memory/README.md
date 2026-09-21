@@ -271,6 +271,8 @@ memorize(uri="history://scenes/tavern", content="伊莱在酒馆遇到薇拉,谈
   → retrace(first_raw_id=12, last_raw_id=18)              # 直接翻原文
 ```
 
+> **记忆审计方法论**：角色/作家如何系统地审视与重构自己的记忆（审计入口、死数据清洗、可发现性、节点分解、模式提取、信念对决），见 [`docs/skills/`](docs/skills/)——从 `memory-audit` 入口开始。
+
 ## 6. 三个 prompt slot
 
 static 注册进 `SUPPORTED_SLOTS` + `PromptPresetSlot`,全部 `async: true`(异步编译路径):
