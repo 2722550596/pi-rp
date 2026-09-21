@@ -13,7 +13,6 @@
 
 import * as crypto from "node:crypto";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
-import { renderPromptDisplay } from "../../core/prompt-display.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -26,6 +25,7 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import { renderPromptDisplay } from "../../core/prompt-display.ts";
 import type { JsonValue } from "../../state/state-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";

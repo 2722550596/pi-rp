@@ -138,10 +138,10 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { OrchestrationAck, ResolvedCommand } from "./extensions/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { convertToLlm } from "./messages.ts";
-import { renderPromptDisplay } from "./prompt-display.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { renderPromptDisplay } from "./prompt-display.ts";
 import {
 	compileMessages,
 	compileMessagesSync,

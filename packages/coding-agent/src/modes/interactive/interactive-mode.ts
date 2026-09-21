@@ -62,7 +62,6 @@ import {
 	type RuntimeReloadCore,
 } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
-import { renderPromptDisplay } from "../../core/prompt-display.ts";
 import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
 import {
 	type AutocompleteProviderFactory,
@@ -90,6 +89,7 @@ import {
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
+import { renderPromptDisplay } from "../../core/prompt-display.ts";
 import { applyDisplayRegexToString } from "../../core/prompt-preset/regex-engine.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
