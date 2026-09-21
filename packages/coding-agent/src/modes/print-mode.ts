@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import { renderPromptDisplay } from "../core/prompt-display.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
@@ -77,6 +78,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			mode: mode === "json" ? "json" : "print",
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
+				getPromptDisplay: (section) => renderPromptDisplay(session, section),
 				newSession: async (newSessionOptions) => runtimeHost.newSession(newSessionOptions),
 				fork: async (entryId, forkOptions) => {
 					const result = await runtimeHost.fork(entryId, forkOptions);

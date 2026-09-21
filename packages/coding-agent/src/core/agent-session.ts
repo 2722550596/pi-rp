@@ -138,6 +138,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { OrchestrationAck, ResolvedCommand } from "./extensions/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { convertToLlm } from "./messages.ts";
+import { renderPromptDisplay } from "./prompt-display.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -3807,6 +3808,7 @@ export class AgentSession {
 		runner.setUIContext(this._extensionUIContext, this._extensionMode);
 		runner.bindCommandContext({
 			waitForIdle: this._extensionCommandContextActions?.waitForIdle ?? (() => this.agent.waitForIdle()),
+			getPromptDisplay: (section) => renderPromptDisplay(this, section),
 			newSession: this._extensionCommandContextActions?.newSession ?? (async () => ({ cancelled: false })),
 			fork: this._extensionCommandContextActions?.fork ?? (async () => ({ cancelled: false })),
 			navigateTree: this._extensionCommandContextActions?.navigateTree ?? (async () => ({ cancelled: false })),

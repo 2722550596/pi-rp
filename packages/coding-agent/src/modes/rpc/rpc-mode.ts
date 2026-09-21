@@ -13,6 +13,7 @@
 
 import * as crypto from "node:crypto";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { renderPromptDisplay } from "../../core/prompt-display.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -483,6 +484,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			orchestrationRequest: requestOrchestration,
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
+				getPromptDisplay: (section) => renderPromptDisplay(session, section),
 				newSession: async (options) => runtimeHost.newSession(options),
 				fork: async (entryId, forkOptions) => {
 					const result = await runtimeHost.fork(entryId, forkOptions);
@@ -974,6 +976,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_messages": {
 				return success(id, "get_messages", { messages: session.messages });
+			}
+
+			case "get_prompt": {
+				// /prompt 渲染的 RPC 等价物:与 TUI /prompt 共享同一渲染实现,
+				// "all" 输出与默认 /prompt 视图逐字节一致。
+				if (command.section !== undefined && command.section !== "tools" && command.section !== "messages") {
+					return error(id, "get_prompt", "section must be 'tools' or 'messages'");
+				}
+				const text = await renderPromptDisplay(session, command.section ?? "all");
+				return success(id, "get_prompt", { text });
 			}
 
 			case "append_message": {

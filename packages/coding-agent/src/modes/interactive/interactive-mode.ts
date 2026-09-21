@@ -62,6 +62,7 @@ import {
 	type RuntimeReloadCore,
 } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import { renderPromptDisplay } from "../../core/prompt-display.ts";
 import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
 import {
 	type AutocompleteProviderFactory,
@@ -1789,6 +1790,7 @@ export class InteractiveMode {
 			},
 			commandContextActions: {
 				waitForIdle: () => this.session.waitForIdle(),
+				getPromptDisplay: (section) => renderPromptDisplay(this.session, section),
 				newSession: async (options) => {
 					this.clearStatusIndicator();
 					try {

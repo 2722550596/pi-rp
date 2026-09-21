@@ -415,6 +415,13 @@ export type OrchestrationAck = { status: "approved" | "blocked" } | { status: "e
 export interface ExtensionCommandContext extends ExtensionContext {
 	/** Get the current base system-prompt construction options. */
 	getSystemPromptOptions(): BuildSystemPromptOptions;
+	/**
+	 * Render the /prompt display view (single implementation shared with the
+	 * RPC get_prompt command). "all" = [system] + messages (byte-identical to
+	 * the TUI /prompt default view), "tools" = tool catalogue only,
+	 * "messages" = messages only. Empty session renders "".
+	 */
+	getPromptDisplay(section?: "all" | "tools" | "messages"): Promise<string>;
 
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
@@ -1973,6 +1980,7 @@ export interface CompleteSideRequestOptions {
  */
 export interface ExtensionCommandContextActions {
 	waitForIdle: () => Promise<void>;
+	getPromptDisplay: (section?: "all" | "tools" | "messages") => Promise<string>;
 	newSession: (options?: {
 		parentSession?: string;
 		setup?: (sessionManager: SessionManager) => Promise<void>;

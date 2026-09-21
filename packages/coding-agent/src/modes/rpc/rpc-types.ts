@@ -107,6 +107,7 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
+	| { id?: string; type: "get_prompt"; section?: "tools" | "messages" }
 	| {
 			id?: string;
 			// ⚠️ 只落盘、不触碰 agent.state.messages——调用方须随后
@@ -319,6 +320,13 @@ export type RpcResponse =
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_prompt";
+			success: true;
+			data: { text: string };
+	  }
 	| {
 			id?: string;
 			type: "response";

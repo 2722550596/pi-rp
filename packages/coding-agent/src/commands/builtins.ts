@@ -15,7 +15,7 @@ import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { getShareViewerUrl } from "../config.ts";
 import type { AgentSession } from "../core/agent-session.ts";
 import { computeCacheWaste } from "../core/cache-stats.ts";
-import { convertToLlm } from "../core/messages.ts";
+import { buildPromptToolsText, renderPromptDisplay } from "../core/prompt-display.ts";
 import type { CommandEntry } from "../core/slash-commands.ts";
 import { registerBuiltinCommand as registerBuiltin } from "../core/slash-commands.ts";
 import { isPrepareError, prepareSubagentConversation, runSubagent } from "../core/subagent/index.ts";
@@ -421,124 +421,23 @@ const promptCommand: CommandEntry = {
 	execute: async (ctx) => {
 		const sub = ctx.args[0];
 		if (sub === "tools") {
-			ctx.view.renderMessage(buildPromptToolsMessage(ctx.session), { markdown: true });
+			ctx.view.renderMessage(await buildPromptToolsText(ctx.session), { markdown: true });
 			return;
 		}
 
-		const parts: string[] = [];
-
-		// Show captured system prompt (extension-modified or empty)
-		const sysPrompt = ctx.session.lastCompiledSystemPrompt;
-		if (sysPrompt) {
-			parts.push(`[system]\n${sysPrompt}`);
-		}
-
-		const messages = await ctx.session.previewPrompt();
-
-		if (!sysPrompt && messages.length === 0) {
+		const text = await renderPromptDisplay(ctx.session);
+		if (!text) {
 			ctx.view.showStatus("No prompt is active.");
 			return;
 		}
 
-		// Thread the extension custom-type policies so the preview shows the same
-		// rendered view as the real payload (seam renderContent markers included).
-		const llmMessages = convertToLlm(messages, (ct) => ctx.session.extensionRunner.getCustomTypePolicy(ct));
-
-		// Merge adjacent messages with the same role for cleaner display
-		const merged: typeof llmMessages = [];
-		const extractText = (c: string | readonly { type: string; text?: string }[]): string => {
-			if (typeof c === "string") return c;
-			return c
-				.filter((b) => b.type === "text")
-				.map((b) => b.text ?? "")
-				.join("\n");
-		};
-		for (const msg of llmMessages) {
-			const last = merged[merged.length - 1];
-			if (last && last.role === msg.role) {
-				const t1 = extractText(last.content);
-				const t2 = extractText(msg.content);
-				last.content = t1 ? (t2 ? `${t1}\n\n${t2}` : t1) : t2;
-			} else {
-				merged.push(msg);
-			}
-		}
-		const displayMessages = merged.length > 0 ? merged : llmMessages;
-
-		for (const msg of displayMessages) {
-			const lines: string[] = [];
-			const role = msg.role;
-			const content = msg.content;
-
-			if (typeof content === "string") {
-				if (!content.trim()) continue;
-				lines.push(content);
-			} else if (Array.isArray(content)) {
-				for (const block of content) {
-					if (!block || typeof block !== "object") continue;
-					const type = "type" in block ? String(block.type) : "";
-					switch (type) {
-						case "text":
-							if ("text" in block && typeof block.text === "string") {
-								lines.push(`[text] ${block.text}`);
-							}
-							break;
-						case "thinking":
-							if ("thinking" in block) lines.push(`[thinking] ${String(block.thinking)}`);
-							break;
-						case "toolCall":
-							if ("name" in block) {
-								const name = String(block.name ?? "");
-								const args = "arguments" in block ? JSON.stringify(block.arguments) : "";
-								lines.push(`[toolCall: ${name}] ${args}`);
-							}
-							break;
-						case "image":
-							lines.push(`[image]`);
-							break;
-						default:
-							lines.push(`[${type}] ${JSON.stringify(block)}`);
-							break;
-					}
-				}
-			}
-
-			if (lines.length === 0) continue;
-			parts.push(`\n[${role}]\n${lines.join("\n")}`);
-		}
-
-		if (parts.length === 0) {
-			ctx.view.showStatus("No prompt is active.");
-			return;
-		}
-
-		ctx.view.renderMessage(parts.join("\n"), { markdown: true });
+		ctx.view.renderMessage(text, { markdown: true });
 		ctx.view.showStatus("Full prompt shown above.");
 	},
 	autocomplete: (prefix) => ["tools", "messages"].filter((s) => startsWith(prefix, s)),
 	usage: "/prompt [tools|messages]",
 	argHint: "<tools|messages>",
 };
-
-function buildPromptToolsMessage(session: AgentSession): string {
-	const tools = session.agent.state.tools;
-	if (!tools || tools.length === 0) {
-		return "";
-	}
-	const parts: string[] = [];
-	for (const tool of tools) {
-		parts.push(`## ${tool.name}`);
-		if (tool.description) {
-			parts.push(`\n${tool.description}`);
-		}
-		if (tool.parameters) {
-			parts.push(`\n\`\`\`json\n${JSON.stringify(tool.parameters, null, 2)}\n\`\`\``);
-		}
-		parts.push("");
-	}
-	parts.push(`---\nAvailable: ${tools.map((t) => t.name).join(", ")}`);
-	return parts.join("\n").trim();
-}
 
 const cloneCommand: CommandEntry = {
 	execute: async (ctx) => {
