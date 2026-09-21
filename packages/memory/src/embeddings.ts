@@ -14,6 +14,8 @@ import type { MemorySettings } from "./config.ts";
 
 export const DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-zh-v1.5";
 export const DEFAULT_EMBEDDING_API_URL = "https://api.siliconflow.cn/v1";
+/** Cross-encoder used by the injection breaker (docs §9.1, 2026-09-22 benchmark). */
+export const DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
 
 /**
  * Official query instruction for bge-*-zh-v1.5 retrieval (BAAI README):
@@ -40,6 +42,8 @@ const API_KEY_ENV = ["PI_MEMORY_EMBEDDING_API_KEY", "NOCTURNE_EMBEDDING_API_KEY"
 export interface EmbeddingsConfig {
 	mode: "api" | "off";
 	model: string;
+	/** Cross-encoder for the injection breaker (§9.1). */
+	rerankModel: string;
 	apiUrl: string;
 	apiKey: string;
 }
@@ -64,6 +68,7 @@ export function resolveEmbeddingsConfig(
 	return {
 		mode: mode === "api" ? "api" : "off",
 		model: settings?.model ?? DEFAULT_EMBEDDING_MODEL,
+		rerankModel: settings?.rerankModel ?? DEFAULT_RERANK_MODEL,
 		apiUrl: (settings?.apiUrl ?? DEFAULT_EMBEDDING_API_URL).replace(/\/$/, ""),
 		apiKey,
 	};
@@ -167,6 +172,43 @@ export class EmbeddingClient {
 			}
 		}
 		return vectors;
+	}
+
+	/**
+	 * Cross-encoder relevance scores for (query, documents) — the injection
+	 * breaker's evidence (§9.1). Returns null on any failure; the breaker
+	 * treats null as "reranker unavailable" and fails OPEN, so a rerank
+	 * outage must never change recall behavior. Does NOT trip the embedding
+	 * channel's sticky failure latch — separate dependency, separate
+	 * lifecycle: the next recall may legitimately retry.
+	 */
+	async rerank(query: string, documents: string[], signal?: AbortSignal): Promise<number[] | null> {
+		if (documents.length === 0) return [];
+		if (!this.enabled) return null;
+		if (signal?.aborted) return null;
+		try {
+			const res = await this.fetchImpl(`${this.config.apiUrl}/rerank`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${this.config.apiKey}`,
+				},
+				body: JSON.stringify({ model: this.config.rerankModel, query, documents }),
+				signal: signal
+					? AbortSignal.any([signal, AbortSignal.timeout(EMBED_TIMEOUT_MS)])
+					: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+			});
+			if (signal?.aborted) return null;
+			if (!res.ok) return null;
+			const json = (await res.json()) as { results?: Array<{ index: number; relevance_score: number }> };
+			if (!json?.results) return null;
+			const scores = new Array<number>(documents.length).fill(0);
+			for (const item of json.results) scores[item.index] = item.relevance_score;
+			return scores;
+		} catch {
+			if (signal?.aborted) return null;
+			return null;
+		}
 	}
 }
 

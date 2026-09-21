@@ -24,7 +24,7 @@ import { createHash } from "node:crypto";
 import { type AutoretainTask, DEFAULT_AUTORETAIN_TASKS, dueTasks, runAutoretainTask } from "./autoretain.ts";
 import type { MemorySettings } from "./config.ts";
 import { EmbeddingClient, resolveEmbeddingsConfig } from "./embeddings.ts";
-import { type RecalledItem, type RecallMode, search, toEpochDays } from "./recall.ts";
+import { breakerShouldSkip, type RecalledItem, type RecallMode, search, toEpochDays } from "./recall.ts";
 import { createMemorySlots, type MemorySlotDefinition } from "./slots.ts";
 import type { MemoryNode, MemoryStore, RawEntry } from "./store.ts";
 import { checkTempThreshold, countActiveTempNodes, DEFAULT_TEMP_THRESHOLD, RP_NOTIFY_TYPE } from "./temp-notify.ts";
@@ -147,6 +147,11 @@ export const RECALL_MIN_SCORE = 0.35;
 export const RECALL_KEYWORD_MIN_SCORE = 0.12;
 /** Anchor threshold: only the top item earns "高度相关" above this absolute score. */
 export const RECALL_HIGH_CONFIDENCE = 0.55;
+/** Injection breaker (§9.1): cross-encoder gate depth and skip threshold.
+ * Benchmarked 2026-09-22 on elias: cross-domain probes rerank to exactly 0
+ * (15/15 blocked at any tau ≤ 0.05) while real same-domain anchors survive. */
+export const RECALL_BREAKER_TOP_N = 8;
+export const RECALL_BREAKER_TAU = 0.01;
 /** Recent conversation messages forming the second recall query. */
 const PRIOR_CONTEXT_MESSAGES = 6;
 /** Raw rows forming one autoretain 纪要窗口 (§5: token 预算 guard). */
@@ -268,6 +273,10 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	const topK = recallCfg.topK ?? RECALL_TOP_K;
 	const minScore = recallCfg.minScore ?? RECALL_MIN_SCORE;
 	const keywordMinScore = recallCfg.keywordMinScore ?? RECALL_KEYWORD_MIN_SCORE;
+	// §9.1 injection breaker — opt-in (an extra provider call per prompt);
+	// tau keeps its benchmarked default unless pinned.
+	const breakerEnabled = recallCfg.breaker !== undefined;
+	const breakerTau = recallCfg.breaker?.tau ?? RECALL_BREAKER_TAU;
 	const blocklist = recallCfg.blocklist ?? DEFAULT_DOMAIN_BLOCKLIST;
 	const rawLogCustomTypes = settings.rawLog?.customTypes ?? "all-display-true";
 	// §9 vector channel: API mode only, key from env. `mode: "off"` (the
@@ -366,6 +375,38 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	}
 
 	/**
+	 * §9.1 injection breaker: rerank the fused top-8 candidates (500-char
+	 * bodies) and skip injection entirely when the best cross-encoder score
+	 * is below tau. The breaker never reorders or demotes — it answers "is
+	 * this query about the memory world at all" (bge's register similarity
+	 * hands unrelated explanatory questions 0.5+ cosine, which MIN_SCORE
+	 * cannot gate; the cross-encoder reads them at exactly 0). Fails open:
+	 * reranker unavailable → inject exactly as before. Vector mode only —
+	 * keyword hits carry real term overlap by construction.
+	 */
+	async function applyRecallBreaker(
+		result: { items: RecalledItem[]; mode: RecallMode },
+		intentQuery: string,
+		signal?: AbortSignal,
+	): Promise<{ items: RecalledItem[]; mode: RecallMode }> {
+		if (!breakerEnabled || result.mode !== "vector" || result.items.length === 0) return result;
+		const docs = result.items
+			.slice(0, RECALL_BREAKER_TOP_N)
+			.map((it) => (store.getNode(it.node_id)?.content ?? "").slice(0, 500));
+		const scores = await embeddings.rerank(intentQuery, docs, signal);
+		if (!breakerShouldSkip(scores, breakerTau)) return result;
+		store.logAudit("recall_breaker", {
+			details: JSON.stringify({
+				query: intentQuery.slice(0, 100),
+				max: Math.max(...(scores ?? [0])).toFixed(3),
+				candidates: result.items.length,
+			}),
+			turn: host?.getSessionInfo().turn,
+		});
+		return { items: [], mode: result.mode };
+	}
+
+	/**
 	 * Hybrid recall over the tree pool (§9). Delegates to the shared scorer in
 	 * recall.ts — the same code path the retrieve tool uses — so injection and
 	 * explicit search can never drift apart again. Vector scoring runs when an
@@ -382,7 +423,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 			const nowDays = toEpochDays(store.getWorldTime() ?? new Date().toISOString().slice(0, 10)) ?? 0;
 			// awaken uris already live in the preset slot — never inject them twice
 			// (§9); TEMP is NOT blocklisted (dynamic zone stays recalleable).
-			return await search(
+			const result = await search(
 				store,
 				embeddings,
 				{
@@ -397,6 +438,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 				},
 				ctrl.signal,
 			);
+			return await applyRecallBreaker(result, queries[0] ?? "", ctrl.signal);
 		} finally {
 			if (recallAbort === ctrl) recallAbort = undefined;
 		}

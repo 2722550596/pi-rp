@@ -338,6 +338,20 @@ export function buildPool(store: MemoryStore, options: SearchOptions): MemoryNod
 }
 
 /**
+ * Injection breaker (docs §9.1): cross-encoder gate over the fused top-8.
+ * Skips injection iff the BEST rerank score is below tau — the breaker asks
+ * "is this query about the memory world at all", it never reorders and never
+ * demotes individual targets (a reorder+floor was benchmarked to hurt
+ * associative recall: target cross-encoder medians are only ~0.06 there).
+ * Empty/missing scores fail OPEN — a reranker outage must not change recall
+ * behavior.
+ */
+export function breakerShouldSkip(scores: number[] | null, tau: number): boolean {
+	if (!scores || scores.length === 0) return false;
+	return Math.max(...scores) < tau;
+}
+
+/**
  * Entry point for callers that already hold a filtered candidate set plus the
  * glossary terms per candidate (node_id → space-joined keywords).
  */

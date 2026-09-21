@@ -23,11 +23,25 @@ function fakeVector(text: string): number[] {
 /**
  * An EmbeddingClient wired to the fake embedder (no fetch, no API key needed).
  * `onCall` fires once per HTTP request the client would have made — used to
- * assert cache hits.
+ * assert cache hits. `rerankImpl` answers /rerank requests (§9.1 injection
+ * breaker); returning null simulates a reranker outage (fail-open path).
  */
-export function createFakeEmbeddingClient(onCall?: () => void): EmbeddingClient {
-	const fetchImpl = async (_url: string, init: RequestInit): Promise<Response> => {
+export function createFakeEmbeddingClient(
+	onCall?: () => void,
+	rerankImpl?: (
+		query: string,
+		documents: string[],
+	) => { results: Array<{ index: number; relevance_score: number }> } | null,
+): EmbeddingClient {
+	const fetchImpl = async (url: string, init: RequestInit): Promise<Response> => {
 		onCall?.();
+		if (String(url).endsWith("/rerank")) {
+			if (!rerankImpl) return { ok: false, status: 501, json: async () => ({}) } as unknown as Response;
+			const rerankBody = JSON.parse(String(init.body)) as { query: string; documents: string[] };
+			const results = rerankImpl(rerankBody.query, rerankBody.documents);
+			if (results === null) return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
+			return { ok: true, json: async () => results } as unknown as Response;
+		}
 		const body = JSON.parse(String(init.body)) as { input: string[] };
 		return {
 			ok: true,

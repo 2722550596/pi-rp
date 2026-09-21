@@ -22,9 +22,18 @@ export interface MemorySettings {
 		/** Keyword-mode injection floor; default 0.12 (§5.9). */
 		keywordMinScore?: number;
 		blocklist?: string[];
+		/**
+		 * Injection breaker (§9.1, opt-in): before injecting, rerank the fused
+		 * top-8 candidates with the cross-encoder and skip injection entirely
+		 * when the best score is below `tau` (default 0.01). Benchmarked on
+		 * 2026-09-22: blocks 15/15 cross-domain probes, keeps real same-domain
+		 * hits, at most ~17% over-eager skips on associative prompts. An extra
+		 * provider call per prompt — declare `breaker: {}` to enable.
+		 */
+		breaker?: { tau?: number };
 	};
 	temp?: { threshold?: number };
-	embeddings?: { mode?: "api" | "off"; model?: string; apiUrl?: string };
+	embeddings?: { mode?: "api" | "off"; model?: string; rerankModel?: string; apiUrl?: string };
 	/** Revision retention (§12 decision 20): max versions kept per node; undefined = unlimited. */
 	revisions?: { maxVersionsPerNode?: number };
 }

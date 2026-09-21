@@ -99,6 +99,71 @@ function t(role: string, text: string, entryId: string, extra: Partial<MemoryTur
 	return { role, text, entryId, timestamp: `2026-09-10T00:00:0${entryId.slice(-1)}Z`, ...extra };
 }
 
+// ── Injection breaker (§9.1) ─────────────────────────────────────────────────
+
+describe("injection breaker", () => {
+	const BREAKER_ON = (embeddings: ReturnType<typeof createFakeEmbeddingClient>) => ({
+		settings: { recall: { breaker: {} } },
+		embeddings,
+	});
+
+	it("skips injection when every candidate reranks below tau", async () => {
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		const embeddings = createFakeEmbeddingClient(undefined, () => ({
+			results: [{ index: 0, relevance_score: 0.001 }],
+		}));
+		const h = createHostMock();
+		const module = createMemoryModule(store, BREAKER_ON(embeddings));
+		module.registerSession(h.host);
+
+		expect(await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？")).toBeUndefined();
+		// The skip leaves a trace.
+		const audit = store.listAudit(10).filter((a) => a.event === "recall_breaker");
+		expect(audit.length).toBe(1);
+	});
+
+	it("keeps injection when the cross-encoder finds relevance", async () => {
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		const embeddings = createFakeEmbeddingClient(undefined, (_query, documents) => ({
+			results: documents.map((_, i) => ({ index: i, relevance_score: i === 0 ? 0.9 : 0.01 })),
+		}));
+		const h = createHostMock();
+		const module = createMemoryModule(store, BREAKER_ON(embeddings));
+		module.registerSession(h.host);
+
+		const result = await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？");
+		expect(result?.message?.customType).toBe("rp-memories");
+		expect(result?.message?.content).toContain("history://tavern");
+	});
+
+	it("reranker outage fails open — injection proceeds unchanged", async () => {
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		const embeddings = createFakeEmbeddingClient(undefined, () => null);
+		const h = createHostMock();
+		const module = createMemoryModule(store, BREAKER_ON(embeddings));
+		module.registerSession(h.host);
+
+		const result = await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？");
+		expect(result?.message?.customType).toBe("rp-memories");
+	});
+
+	it("default config has no breaker — reranker never consulted", async () => {
+		let rerankCalls = 0;
+		const embeddings = createFakeEmbeddingClient(undefined, () => {
+			rerankCalls++;
+			return { results: [{ index: 0, relevance_score: 0.001 }] };
+		});
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		const h = createHostMock();
+		const module = createMemoryModule(store, { embeddings });
+		module.registerSession(h.host);
+
+		const result = await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？");
+		expect(result?.message?.customType).toBe("rp-memories");
+		expect(rerankCalls).toBe(0);
+	});
+});
+
 // ── Injection (§9) ──────────────────────────────────────────────────────────
 
 describe("before_agent_start injection", () => {

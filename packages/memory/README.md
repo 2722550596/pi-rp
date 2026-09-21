@@ -300,6 +300,7 @@ slots:
 - **候选集**:keyword 模式 = 节点 FTS `MATCH` 命中 ∩ kw>0(glossary 专名也算命中);vector 模式保留全 pool 语义空间但只为 FTS 命中节点算 kw。稳定同分次键:`score → kw → vec → bm25 → importance → updated_ts → uri`。
 - 注入只出 **树节点**(命中片段 ≤200 字 + 软锚),原文日志不进注入,只能 `retrace` 主动取。片段定位:向量模式取最佳余弦块的原文范围,keyword 模式以最早 token 命中为中心开窗,退化时为开头摘要。
 - 去重:每 prompt 从 `buildContextEntries()` 重建 `uri → md5(uri|content)` 表;同内容版本不重复注入,修订后自动失效重注;只在真正 fresh 注入时记一条 `inject` 审计。
+- **注入断路器(§9.1,opt-in)**:`memory.recall.breaker: {}` 声明启用——注入前用 `BAAI/bge-reranker-v2-m3` 对 fused top-8 的 500 字正文打 cross-encoder 分,`max < tau`(默认 0.01)→ 本 prompt 不注入任何记忆(跨域/技术类话题不再被语域相似度误触发;benchmark:跨域 15/15 全断、同域真实锚 0% 误伤、联想误断 ≤17%)。reranker 不可用时 fail-open;断路记 `recall_breaker` 审计;模型可用 `memory.embeddings.rerankModel` 覆盖。
 - 通道:`rp-memories` custom message,`context: include / llmRole: user / compaction: exclude / display: false`。`/` 与 `\` 开头 prompt 跳过。
 - **domain 黑名单**:默认 `["maintenance", "history_raw"]`(运维噪音);`TEMP` 不在黑名单——动态区草稿随时可被召回,这正是"保险"在生效。
 - 参数可配:`settings.memory.recall.{topK, minScore, keywordMinScore, blocklist}`。
