@@ -1404,7 +1404,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "associate",
 			label: "associate",
 			description:
-				"建立联想通路，两种模式二选一：new_uri=给已有记忆多开一个入口（别名映射，不是复制，共享内容）；related_uri=在两段记忆之间画联想边（可选 kind 标注类型，如 前后续/因果/同场景），显式 retrieve 时沿边一跳扩散找到它。when 分别落到该入口的专属想起条件（别名）或该联想边的想起条件（边）。",
+				"建立联想通路，两种模式二选一：new_uri=给已有记忆多开一个入口（别名映射，不是复制，共享内容）；related_uri=在两段记忆之间画联想边（可选 kind 标注类型，如 前后续/因果/同场景），显式 retrieve 时沿边一跳扩散找到它。when 分别落到该入口的专属想起条件（别名）或该联想边的想起条件（边）。\n何时建边：memorize 新记忆后发现它与已有记忆存在「想到 A 几乎必然连带 B」的弧线关联——同一人物线的前后手、伏笔与回收、因果、共同场景——就顺手 related_uri 建边；想起条件管话头唤起，联想边管结构关联，互补。宁缺毋滥：泛泛相关不值得建。",
 			parameters: associateParams,
 			run: (p) => executeAssociate(store, p as Static<typeof associateParams>, ctx),
 		},
@@ -1412,7 +1412,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "trigger",
 			label: "trigger",
 			description:
-				"给记忆增删触发词（glossary）。触发词作为专名进全文索引：正文没有该词的节点也能被触发词召回。查看全部触发词用 recall(uri='MEM://glossary')。",
+				"给记忆增删触发词（glossary）。触发词作为专名进全文索引：正文没有该词的节点也能被触发词召回。何时注册：记忆较长或多段、其中含独特专名（人名/绰号/独特物件/地点/组织名），日后对话一旦提到就该想起这条——把专名注册进来，避免它在长正文里被稀释；泛词、常见词无检索价值不收。查看全部触发词用 recall(uri='MEM://glossary')。",
 			parameters: triggerParams,
 			run: (p) => executeTrigger(store, p as Static<typeof triggerParams>, ctx),
 		},
@@ -1443,7 +1443,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "awaken",
 			label: "awaken",
 			description:
-				"管理「醒来记忆」——角色醒来自动载入的常驻/工作记忆清单。action=list 查看，set 完全替换，add 追加，remove 移除。节点被删/移走/被回滚隐藏时渲染与 list 自动对账。",
+				"管理「醒来记忆」——角色醒来自动载入的常驻/工作记忆清单。action=list 查看，set 完全替换，add 追加，remove 移除。维护原则：清单是「现在的工作集」——进行中的关系、目标、事件状态；事件落幕、目标了结后及时 remove，新的重要线索成型后 add。它是工作集不是重要记忆的堆场，长期事实归 core:// 树。节点被删/移走/被回滚隐藏时渲染与 list 自动对账。",
 			parameters: awakenParams,
 			run: (p) => executeAwaken(store, p as Static<typeof awakenParams>, ctx),
 		},

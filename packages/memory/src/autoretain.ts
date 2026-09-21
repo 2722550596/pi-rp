@@ -65,7 +65,7 @@ const REDACT_BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gu;
  * The side model MUST answer with exactly this object.
  */
 export const AUTORETAIN_JSON_CONTRACT = `输出必须是且仅是一个 JSON 对象，不要 markdown 代码围栏，格式：
-{"uri": "<本产物建议的记忆 URI（可省略，省略则自动分配）>", "content": "<记忆正文，纯文本>", "disclosure": "<想起条件，可省略>"}`;
+{"uri": "<本产物建议的记忆 URI（可省略，省略则自动分配）>", "content": "<记忆正文，纯文本>", "disclosure": "<想起条件，可省略。写法：预演「未来的什么话头该想起这份纪要」——上位类别/情境锚（如「食物过敏」「身份危机」）或一旦出现几乎必然相关的场景/感官线索（如「闻到小苍兰」「走进实验室」）；必须是未来的触发话头，不是内容的复述；泛泛的「聊到生活时」不合格>"}`;
 
 /** core default tasks (docs §5: 场景纪要 + 自我反思). */
 export const DEFAULT_AUTORETAIN_TASKS: AutoretainTask[] = [

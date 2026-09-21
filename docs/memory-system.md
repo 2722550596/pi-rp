@@ -137,7 +137,7 @@ memory.db
 - **向量通道(v5.4 落地;v5.5 隐私默认)**:`embeddings.ts` = 零依赖 fetch 客户端(默认 siliconflow `BAAI/bge-large-zh-v1.5`)。**未显式设置 `memory.embeddings.mode:"api"` 时恒为 `off`,即使环境有 key 也不出网**;只有明确 opt-in 才读 `PI_MEMORY_EMBEDDING_API_KEY` / `NOCTURNE_EMBEDDING_API_KEY` 外呼。超时 10s,外部 abort(会话 dispose/召回被取代)不触发 sticky failure latch,HTTP/响应错误仍 latch。向量缓存落在 `memory_embeddings`,命中即零调用。
 - **注入只出树节点**(命中片段 ≤200 字 + 软锚),原文日志不进注入——原文只能拿 id 主动取;场景记忆的"自然想起"由纪要节点承担(它就在树里,本来就会被召回)。片段由共享打分器定位(`recall.ts buildExcerpt`):向量模式取最佳余弦块的原文范围(`chunkText` 500/80 步进确定,减 `uri+disclosure` 前缀映射回 content 坐标),keyword 模式以 intent query 的最早 token 命中为中心开窗,块内词命中(双证据)优先;两者皆无时退化为开头摘要。`retrieve` 工具同一管线,展示同一片段。
 - **domain 黑名单**:autorecall 的域级排除机制照搬(默认 maintenance 类运维噪音;TEMP **不进**默认黑名单——动态区随时可召回,前面已定)。`/recall domain add|remove` 交互沿袭。
-- **RRF 不引入召回通道**:那是工具查询场景的融合方案,与加权召回并存于各自场景(沿 v4)。
+- **RRF 融合全场景生效(2026-09-22 升格)**:注入与 retrieve 查询共享 `rank()` 路径,向量分量 = 正文视图与 disclosure 视图的 RRF(k=30) 融合(§9.1);kw 通道仍为加权命中。(原 v4 决议「RRF 不引入召回通道」已被本项取代——实验证明 rank 空间融合严格优于分数空间。)
 - **注入通道**:`before_agent_start` → 混合召回 → `rp-memories` custom message(context:include / llmRole:user / compaction:exclude / display:false);去重每 prompt 从 `buildContextEntries()` 重建,审计只在真正 fresh 注入时记一条 `inject`。
 - **访问追踪(v5.5)**:`last_accessed_at` 只由角色主动 `recall`(精确 URI/展开子树)与 `retrieve` 命中节点更新;**自动注入、slot、MEM:// 系统视图、/memories 浏览不算"想起"**——防止后台机制清空 forgotten 语义。forgotten/diagnostic 的沉睡基准 = `last_accessed_at ?? created_at`。
 - **compaction 交互**:raw_log 独立于 compaction(它是库的镜像,不是 session 内容),原文照常落库;注入的 rp-memories 沿用 compaction:exclude。**autoretain 纪要窗口从 raw_log 取而非活跃上下文**——compaction 把上下文摘要掉之后,纪要照常生成,这正是原文日志存在的意义之一。
@@ -261,7 +261,7 @@ memory.db
 9. 回滚:auto 来源节点带 anchor 跟回滚(谓词隐藏,切回复活),manual 永不自动隐藏;钩子绑 `_moveLeafAndRestoreState`;memory_ops 取消。
 10. 节点版本:node_revisions 表(修订制 + custody 链)。**delete = 真删(v5.4 定案)**:节点行物理删除,不像 nocturne 那样留"拿掉入口但数据还在"的僵尸节点/孤儿池;但删除时把当前正文归档为最后一版,`node_revisions` 连同 `uri` 全部保留——**找回路径就是 node_revisions**(`listRevisionsByUri` / `listDeletedUris` / `restoreDeleted`,按原 node_id 重建以接回修订史)。无归档层,无机器 retention。
 11. edges / aliases / glossary 保留(schema 随新设计重写)。
-12. 召回:调参版整体迁移(0.55/0.3/0.15 等);注入只出树节点;黑名单默认 maintenance 类,TEMP 不进;RRF 只在工具查询场景。v5.5:keyword 注入档独立 `keywordMinScore`(默认 0.12)且要求真实命中;候选集走 FTS;稳定同分次键。
+12. 召回:调参版整体迁移(0.55/0.3/0.15 等);注入只出树节点;黑名单默认 maintenance 类,TEMP 不进;RRF 只在工具查询场景(→2026-09-22 升格为注入向量通道的融合方式,§9.1)。v5.5:keyword 注入档独立 `keywordMinScore`(默认 0.12)且要求真实命中;候选集走 FTS;稳定同分次键。
 13. slot:awaken / recent / index 三个,静态注册,async:true。
 14. 工具:一套统一、去后缀、归并(**12 个**:recall / retrieve / memorize / revise / forget / relocate / associate / trigger / consolidate / retrace / set_time / awaken);browse→recall、forget→delete 语义收敛、archive_history 废除、新增 raw(retrace)。
 15. 世界钟内建记忆包(配置 memory_kv + 工具 + 读取 API)。

@@ -9,3 +9,4 @@
 ### Changed
 
 - `memorize` / `revise` / `associate` / `consolidate` `when` guidance now teaches the write-time trigger protocol: anticipate the future cue (a superordinate anchor or a strongly-predictive scene), never restate the body, avoid over-general conditions.
+- Tool guidance for the unused-by-default structural tools: `associate` (build an edge when a new memory and an existing one share a "thinking of A always brings B" arc), `trigger` (register distinctive proper nouns of long memories so they survive body dilution), `awaken` (keep the wake list a working set, not an archive). Autoretain's JSON contract now carries the same disclosure protocol for its side-LLM products.

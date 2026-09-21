@@ -82,6 +82,32 @@ const descriptiveSamples: FixtureSample[] = disclosureNodes.slice(0, descriptive
 	query: (n.disclosure as string).trim(),
 }));
 
+/**
+ * Precision probes: cross-domain lines with no arc into any RP memory —
+ * code, science, tooling. Through the production injection gate (TOP_K=3,
+ * MIN_SCORE=0.35) they should inject nothing; mundane same-domain chatter
+ * (weather, coffee) legitimately surfaces diary memories and is NOT a
+ * precision failure. RRF normalization inflates relative scores, so this is
+ * where the VEC_ABS_FLOOR guard proves itself.
+ */
+const PRECISION_PROBES = [
+	"如何在 TypeScript 里声明一个泛型函数",
+	"量子比特的相干时间一般是多少",
+	"git rebase 和 merge 的区别",
+	"Python 的 GIL 是什么",
+	"Docker 容器端口映射怎么配",
+	"微积分的链式法则再讲一遍",
+	"HTTP 429 状态码什么意思",
+	"数据库索引为什么用 B 树不用二叉树",
+	"编译器的词法分析做什么",
+	"怎么配置 SSH 免密登录",
+	"线性代数的特征值有什么几何意义",
+	"npm peer dependency 冲突怎么解",
+	"TCP 三次握手为什么不是两次",
+	"正则表达式的贪婪匹配怎么关掉",
+	"CPU 缓存行一般多大",
+];
+
 const idByUri = new Map(pool.map((n) => [n.uri, n.node_id]));
 
 interface Row {
@@ -143,17 +169,43 @@ function summarize(rows: Row[], key: "legacyRank" | "fusedRank"): string {
 	return `MRR ${(mrr / n).toFixed(3)}  @1 ${pct(hits[1])}  @3 ${pct(hits[3])}  @5 ${pct(hits[5])}  @10 ${pct(hits[10])}  (n=${n})`;
 }
 
+// Precision: injected-item count per probe through the production gate.
+async function runPrecision(): Promise<{ legacy: number[]; fused: number[] }> {
+	const legacy: number[] = [];
+	const fused: number[] = [];
+	for (const probe of PRECISION_PROBES) {
+		const options = { queries: [probe], topK: 3, minScore: 0.35, nowDays };
+		const vecScores = await computeVectorScores(store, client, pool, options.queries);
+		if (!vecScores) continue;
+		const legacyScores = new Map<string, VectorHit>(
+			[...vecScores].map(([id, hit]) => [id, { score: hit.score, segIndex: hit.segIndex }]),
+		);
+		legacy.push(rank(pool, options, legacyScores, "vector").length);
+		fused.push(rank(pool, options, vecScores, "vector").length);
+	}
+	return { legacy, fused };
+}
+const precision = await runPrecision();
+const precisionLine = (counts: number[]): string => {
+	const rate = counts.filter((c) => c > 0).length;
+	const avg = counts.reduce((a, b) => a + b, 0) / Math.max(counts.length, 1);
+	return `inject-rate ${((rate / Math.max(counts.length, 1)) * 100).toFixed(0)}%  avg-injected ${avg.toFixed(2)}  (n=${counts.length})`;
+};
+
 console.log("=== associative (surface-disjoint queries) ===");
 console.log(`legacy : ${summarize(associativeRows, "legacyRank")}`);
 console.log(`fused  : ${summarize(associativeRows, "fusedRank")}`);
 console.log("=== descriptive (query = the node's own disclosure) ===");
 console.log(`legacy : ${summarize(descriptiveRows, "legacyRank")}`);
 console.log(`fused  : ${summarize(descriptiveRows, "fusedRank")}`);
+console.log("=== precision (unrelated daily probes, expect ~0 injected) ===");
+console.log(`legacy : ${precisionLine(precision.legacy)}`);
+console.log(`fused  : ${precisionLine(precision.fused)}`);
 
 if (values.out) {
 	writeFileSync(
 		values.out,
-		JSON.stringify({ associative: associativeRows, descriptive: descriptiveRows }, null, 2),
+		JSON.stringify({ associative: associativeRows, descriptive: descriptiveRows, precision }, null, 2),
 	);
 	console.error(`detail written: ${values.out}`);
 }
