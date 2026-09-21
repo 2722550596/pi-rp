@@ -1359,9 +1359,12 @@ export class MemoryStore {
 				);
 			this.reindexNode(node_id);
 			// Embeddings of the repainted body are stale — drop the mismatched
-			// rows; the next vector recall re-embeds from the projected content.
+			// body rows (seg_index >= 0; the disclosure channel row at -1 keys
+			// on its own text); the next vector recall re-embeds.
 			this.db
-				.prepare("DELETE FROM memory_embeddings WHERE node_id = ? AND (content_hash IS NULL OR content_hash != ?)")
+				.prepare(
+					"DELETE FROM memory_embeddings WHERE node_id = ? AND seg_index >= 0 AND (content_hash IS NULL OR content_hash != ?)",
+				)
 				.run(node_id, hashContent(source.content));
 			repainted++;
 		}
@@ -1546,7 +1549,9 @@ export class MemoryStore {
 	/** Replace one node's cached segment vectors. */
 	saveEmbeddings(nodeId: string, hash: string, model: string, vectors: Float32Array[]): void {
 		this.db.transaction(() => {
-			this.db.prepare("DELETE FROM memory_embeddings WHERE node_id = ?").run(nodeId);
+			// seg_index >= 0: body segments only — the disclosure channel's row
+			// (seg_index = -1, docs §9.1) has its own hash and survives here.
+			this.db.prepare("DELETE FROM memory_embeddings WHERE node_id = ? AND seg_index >= 0").run(nodeId);
 			const stmt = this.db.prepare(
 				"INSERT INTO memory_embeddings (node_id, seg_index, content_hash, vector, model) VALUES (?, ?, ?, ?, ?)",
 			);
@@ -1562,6 +1567,45 @@ export class MemoryStore {
 			.prepare("DELETE FROM memory_embeddings WHERE node_id NOT IN (SELECT node_id FROM nodes)")
 			.run();
 		return Number(result.changes);
+	}
+
+	/**
+	 * Disclosure-channel vectors (seg_index = -1, docs §9.1): one per node,
+	 * keyed on the hash of the disclosure text itself. Same invalidation
+	 * contract as body segments — text or model change silently misses.
+	 */
+	loadDisclosureEmbeddings(
+		wanted: Array<{ node_id: string; hash: string }>,
+		model: string,
+	): Map<string, Float32Array> {
+		const out = new Map<string, Float32Array>();
+		if (wanted.length === 0) return out;
+		const byId = new Map(wanted.map((w) => [w.node_id, w.hash]));
+		const rows = this.db
+			.prepare("SELECT node_id, content_hash, vector, model FROM memory_embeddings WHERE seg_index = -1")
+			.all() as Array<{ node_id: string; content_hash: string | null; vector: string | null; model: string | null }>;
+		for (const row of rows) {
+			const hash = byId.get(row.node_id);
+			if (!hash || hash !== row.content_hash || row.model !== model || !row.vector) continue;
+			try {
+				out.set(row.node_id, Float32Array.from(JSON.parse(row.vector) as number[]));
+			} catch {
+				// Corrupt cache row: skip it, the disclosure re-embeds this round.
+			}
+		}
+		return out;
+	}
+
+	/** Upsert one node's disclosure-channel vector without touching body segments. */
+	saveDisclosureEmbedding(nodeId: string, hash: string, model: string, vector: Float32Array): void {
+		this.db.transaction(() => {
+			this.db.prepare("DELETE FROM memory_embeddings WHERE node_id = ? AND seg_index = -1").run(nodeId);
+			this.db
+				.prepare(
+					"INSERT INTO memory_embeddings (node_id, seg_index, content_hash, vector, model) VALUES (?, -1, ?, ?, ?)",
+				)
+				.run(nodeId, hash, JSON.stringify([...vector]), model);
+		});
 	}
 
 	// ── kv / world clock ──────────────────────────────────────────────────────

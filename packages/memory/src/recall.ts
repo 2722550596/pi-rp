@@ -41,6 +41,19 @@ export const W_IMPORTANCE = 0.15;
 /** doc-coverage keyword normalization alignment gain. */
 export const DOC_COVERAGE_GAIN = 1.4;
 export const MAX_SUMMARY_LEN = 80;
+/**
+ * RRF constant for fusing the two vector views (docs §9.1). Same order of
+ * magnitude as T-Mem's k=30: rank differences inside the top few must move
+ * the fused score, differences past ~30 must wash out.
+ */
+export const RRF_K = 30;
+/**
+ * Absolute floor for the disclosure channel and for RRF participation: a
+ * node whose body AND disclosure cosine both sit below this gains nothing
+ * from the fusion. RRF is relative ordering — without this gate an unrelated
+ * pool's rank-1 node normalizes to vec'=1 and sails past `minScore`.
+ */
+export const VEC_ABS_FLOOR = 0.3;
 
 /** World-clock recency boost tiers (days delta → boost). */
 const RECENCY_TIERS: Array<{ max: number; boost: number }> = [
@@ -79,10 +92,15 @@ export interface RecalledItem {
  * what lets vector-mode excerpts point at the matching passage instead of the
  * document head — segment-level cosine already picks the winner, we just used
  * to throw the position away.
+ *
+ * `disc` is the disclosure-channel cosine (docs §9.1): the 想起条件 line
+ * embedded on its own, best across queries. Absent when the node has no
+ * disclosure — rank() then keeps the legacy body-only ordering bit-for-bit.
  */
 export interface VectorHit {
 	score: number;
 	segIndex: number;
+	disc?: number;
 }
 
 export interface SearchOptions {
@@ -333,6 +351,53 @@ export function buildGlossaryTerms(store: MemoryStore, nodes: MemoryNode[]): Map
 	return terms;
 }
 
+/**
+ * Fuse the two vector views in rank space (docs §9.1): body segments and the
+ * disclosure channel each form a ranklist over the pool; per node the RRF sum
+ * (1/(K+rank), summed over the lists it appears on) becomes the new `vec`
+ * component after pool-max normalization. Rationale (2026-09-22 elias
+ * benchmark, 30 associative queries): score-space fusion — max, gated max —
+ * barely moves associative recall because a short trigger line and a long
+ * body live on incomparable cosine scales; rank space is where the gain is
+ * (MRR 0.395 → 0.541, top-1 hit 20% → 40%).
+ *
+ * Absolute guard: a node whose best view sits under VEC_ABS_FLOOR gets 0 —
+ * normalization would otherwise hand an unrelated pool's rank-1 node a
+ * perfect vec score and let it past `minScore`. Returns null when the pool
+ * has no disclosure signal at all, in which case rank() keeps the legacy
+ * body-cosine ordering bit-for-bit.
+ */
+export function fuseVectorViews(vecScores: Map<string, VectorHit>): Map<string, number> | null {
+	const bodyIds: string[] = [];
+	const discIds: Array<{ id: string; disc: number }> = [];
+	for (const [id, hit] of vecScores) {
+		if (hit.score > 0) bodyIds.push(id);
+		if (hit.disc !== undefined && hit.disc >= VEC_ABS_FLOOR) discIds.push({ id, disc: hit.disc });
+	}
+	if (discIds.length === 0) return null;
+	bodyIds.sort((a, b) => (vecScores.get(b)?.score ?? 0) - (vecScores.get(a)?.score ?? 0));
+	discIds.sort((a, b) => b.disc - a.disc);
+	const bodyRank = new Map(bodyIds.map((id, i) => [id, i + 1]));
+	const discRank = new Map(discIds.map(({ id }, i) => [id, i + 1]));
+	const fused = new Map<string, number>();
+	let max = 0;
+	for (const [id, hit] of vecScores) {
+		if (Math.max(hit.score, hit.disc ?? 0) < VEC_ABS_FLOOR) {
+			fused.set(id, 0);
+			continue;
+		}
+		let s = 0;
+		const br = bodyRank.get(id);
+		if (br !== undefined) s += 1 / (RRF_K + br);
+		const dr = discRank.get(id);
+		if (dr !== undefined) s += 1 / (RRF_K + dr);
+		fused.set(id, s);
+		if (s > max) max = s;
+	}
+	if (max > 0) for (const [id, s] of fused) fused.set(id, s / max);
+	return fused;
+}
+
 /** Score + sort + threshold. Pure: no I/O, vectors supplied by the caller. */
 export function rank(
 	pool: MemoryNode[],
@@ -344,9 +409,12 @@ export function rank(
 ): RecalledItem[] {
 	const queryTokensList = options.queries.map(tokenizeForMatch);
 	const intentTokens = queryTokensList[0] ?? [];
+	// Disclosure-channel fusion (docs §9.1): rank-space RRF over body +
+	// disclosure views; null keeps the legacy body-cosine ordering.
+	const rrfVec = mode === "vector" && vecScores ? fuseVectorViews(vecScores) : null;
 	const scored: RecalledItem[] = pool.map((doc) => {
 		const vecHit = mode === "vector" ? vecScores?.get(doc.node_id) : undefined;
-		const vec = mode === "vector" ? (vecHit?.score ?? 0) : 0;
+		const vec = mode === "vector" ? (rrfVec ? (rrfVec.get(doc.node_id) ?? 0) : (vecHit?.score ?? 0)) : 0;
 		let kw = 0;
 		const extraTerms = glossaryTerms?.get(doc.node_id) ?? "";
 		for (const qTokens of queryTokensList) {
@@ -449,14 +517,41 @@ export async function computeVectorScores(
 	}
 	if (signal?.aborted) return null;
 
-	// One embed call for all queries; only the intent query carries the BGE
-	// instruction — context queries are declarative text, closer to the
-	// passage side.
+	// One embed call for all queries AND the disclosure-channel misses; only
+	// the intent query carries the BGE instruction — context queries are
+	// declarative text, closer to the passage side, and so is a 想起条件.
 	const queryInputs = queries.map((q, i) =>
 		i === 0 ? `${QUERY_INSTRUCTION}${q.slice(0, 500 - QUERY_INSTRUCTION.length)}` : q.slice(0, 500),
 	);
-	const queryVecs = await client.embed(queryInputs, signal);
-	if (!queryVecs || queryVecs.length !== queries.length) return null;
+	// Disclosure channel (docs §9.1): the 想起条件 line embedded on its own,
+	// cached per node keyed on the disclosure text hash — editing the body
+	// must not invalidate it, and editing the disclosure must not invalidate
+	// the body segments.
+	const discTextById = new Map<string, string>();
+	for (const doc of pool) {
+		if (doc.disclosure != null && doc.disclosure.trim().length > 0) {
+			discTextById.set(doc.node_id, doc.disclosure.trim());
+		}
+	}
+	const discWanted = [...discTextById].map(([node_id, text]) => ({ node_id, hash: embedHash(text) }));
+	const discVecs = store.loadDisclosureEmbeddings(discWanted, model);
+	const discMissing = discWanted.filter((w) => !discVecs.get(w.node_id));
+	const embedVecs = await client.embed(
+		[...queryInputs, ...discMissing.map((w) => discTextById.get(w.node_id) as string)],
+		signal,
+	);
+	if (!embedVecs || embedVecs.length !== queryInputs.length + discMissing.length) return null;
+	const queryVecs = embedVecs.slice(0, queries.length);
+	for (let i = 0; i < discMissing.length; i++) {
+		const vec = embedVecs[queries.length + i];
+		discVecs.set(discMissing[i].node_id, vec);
+		try {
+			store.saveDisclosureEmbedding(discMissing[i].node_id, discMissing[i].hash, model, vec);
+		} catch {
+			// Cache write failed (db closed mid-flight, disk full…): the channel
+			// still scores this round, it just is not persisted.
+		}
+	}
 
 	const scores = new Map<string, VectorHit>();
 	for (const doc of pool) {
@@ -479,7 +574,17 @@ export async function computeVectorScores(
 				}
 			}
 		}
-		scores.set(doc.node_id, { score: best, segIndex: bestSeg });
+		const dv = discVecs.get(doc.node_id);
+		let disc: number | undefined;
+		if (dv) {
+			let bestDisc = 0;
+			for (const qv of queryVecs) {
+				const c = cosine(qv, dv);
+				if (c > bestDisc) bestDisc = c;
+			}
+			disc = bestDisc;
+		}
+		scores.set(doc.node_id, { score: best, segIndex: bestSeg, disc });
 	}
 	return scores;
 }

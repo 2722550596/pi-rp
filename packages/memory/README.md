@@ -296,7 +296,7 @@ slots:
 ## 7. 召回与注入(引擎内建)
 
 - 每次 `before_agent_start`,对当前 prompt 做 **双 query**:当前 prompt(检索意图)+ `Prior context:` 最近 6 条消息(陈述文本)。
-- 打分:权重 vec 0.55 / keyword 0.3 / importance 0.15(v5.4 单列;数值越大越重要),keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max),世界钟 recency 加成(0.08/0.04/0.02);vector 模式 `MIN_SCORE 0.35`、keyword 模式独立 `keywordMinScore 0.12`、`TOP_K 3`、`HIGH_CONFIDENCE 0.55`(唯一"高度相关"绝对档,keyword 模式按设计打不出)。
+- 打分:权重 vec 0.55 / keyword 0.3 / importance 0.15(v5.4 单列;数值越大越重要),keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max),世界钟 recency 加成(0.08/0.04/0.02)。**向量分量 = 正文视图与 disclosure 视图的 RRF(k=30) 融合**(§9.1:想起条件单独嵌入、独立缓存于 `memory_embeddings` 的 `seg_index = -1` 行;两路 ranklist 在 rank 空间融合后 pool 内归一,两路余弦均 < 0.3 的节点融合为 0;库内无任何 disclosure 信号时逐位回退旧排序。2026-09-22 elias 库基准:联想 query MRR 0.350→0.540、@3 33%→73%,descriptive query 逐位不动;复跑 `node --experimental-strip-types scripts/benchmark-recall.ts --db <库路径>`);vector 模式 `MIN_SCORE 0.35`、keyword 模式独立 `keywordMinScore 0.12`、`TOP_K 3`、`HIGH_CONFIDENCE 0.55`(唯一"高度相关"绝对档,keyword 模式按设计打不出)。
 - **候选集**:keyword 模式 = 节点 FTS `MATCH` 命中 ∩ kw>0(glossary 专名也算命中);vector 模式保留全 pool 语义空间但只为 FTS 命中节点算 kw。稳定同分次键:`score → kw → vec → bm25 → importance → updated_ts → uri`。
 - 注入只出 **树节点**(命中片段 ≤200 字 + 软锚),原文日志不进注入,只能 `retrace` 主动取。片段定位:向量模式取最佳余弦块的原文范围,keyword 模式以最早 token 命中为中心开窗,退化时为开头摘要。
 - 去重:每 prompt 从 `buildContextEntries()` 重建 `uri → md5(uri|content)` 表;同内容版本不重复注入,修订后自动失效重注;只在真正 fresh 注入时记一条 `inject` 审计。

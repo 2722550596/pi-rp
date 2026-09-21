@@ -6,16 +6,20 @@ import {
 	EMBED_CHUNK_OVERLAP,
 	EMBED_INPUT_MAX,
 	EmbeddingClient,
+	embedHash,
 	QUERY_INSTRUCTION,
 	resolveEmbeddingsConfig,
 } from "../src/embeddings.ts";
 import {
 	buildExcerpt,
+	computeVectorScores,
 	formatRelativeWorldTime,
+	fuseVectorViews,
 	rank,
 	search,
 	segmentRangeInDoc,
 	summarize,
+	VEC_ABS_FLOOR,
 	type VectorHit,
 	W_IMPORTANCE,
 	W_KEYWORD,
@@ -358,5 +362,121 @@ describe("formatRelativeWorldTime", () => {
 		expect(formatRelativeWorldTime("2020-09-28", null)).toBe("");
 		expect(formatRelativeWorldTime("", "2020-09-28")).toBe("");
 		expect(formatRelativeWorldTime("invalid", "2020-09-28")).toBe("");
+	});
+});
+
+describe("disclosure channel RRF fusion (§9.1)", () => {
+	const hit = (score: number, disc?: number): VectorHit => ({ score, segIndex: 0, disc });
+
+	it("returns null with no disclosure signal anywhere — legacy ordering untouched", () => {
+		const vecScores = new Map([
+			["a", hit(0.8)],
+			["b", hit(0.5)],
+		]);
+		expect(fuseVectorViews(vecScores)).toBeNull();
+	});
+
+	it("fuses ranks: a disclosure hit rescues a weaker body", () => {
+		const vecScores = new Map([
+			["body-strong", hit(0.9, 0.2)], // body 1st; disc under floor → body only
+			["balanced", hit(0.7, 0.75)], // body 2nd, disc 2nd
+			["disc-king", hit(0.5, 0.9)], // body 3rd, disc 1st
+			["floor-case", hit(0.4, 0.31)], // body 4th, disc 3rd
+		]);
+		const fused = fuseVectorViews(vecScores);
+		expect(fused).not.toBeNull();
+		// rank1 disc + rank3 body beats rank1 body with no disc contribution.
+		expect(fused!.get("disc-king")!).toBeGreaterThan(fused!.get("body-strong")!);
+		// pool-max normalization hands the winner exactly 1.
+		expect(fused!.get("disc-king")).toBe(1);
+	});
+
+	it("absolute guard: below VEC_ABS_FLOOR on BOTH views fuses to 0", () => {
+		const vecScores = new Map([
+			["hot", hit(0.9, 0.9)],
+			["cold", hit(0.2, 0.1)],
+		]);
+		const fused = fuseVectorViews(vecScores)!;
+		expect(fused.get("cold")).toBe(0);
+		expect(fused.get("hot")).toBe(1);
+	});
+
+	it("channel floor: a disclosure under VEC_ABS_FLOOR stays out of the disc ranklist", () => {
+		const vecScores = new Map([
+			["a", hit(0.9, VEC_ABS_FLOOR - 0.01)], // body 1st, no disc contribution
+			["b", hit(0.6, VEC_ABS_FLOOR + 0.01)], // body 2nd, disc 1st
+		]);
+		const fused = fuseVectorViews(vecScores)!;
+		// b: 1/(K+2) + 1/(K+1) beats a: 1/(K+1).
+		expect(fused.get("b")!).toBeGreaterThan(fused.get("a")!);
+	});
+
+	it("rank() with no disclosures keeps the legacy body ordering", () => {
+		const a = store.insertNode({ uri: "history://a", content: "酒馆里伊莱遇到了薇拉" });
+		store.insertNode({ uri: "history://b", content: "森林深处的篝火" });
+		const pool = store.listNodes().filter((n) => !n.is_stub);
+		const vecScores = new Map<string, VectorHit>([
+			[a.node_id, { score: 0.9, segIndex: 0 }],
+			// b has no body vector at all — exactly the pre-fusion shape.
+		]);
+		const items = rank(pool, { ...base, queries: ["酒馆 薇拉"] }, vecScores, "vector");
+		expect(items[0]?.node_id).toBe(a.node_id);
+	});
+
+	it("computeVectorScores attaches disc cosines, caches them, and body edits leave them alone", async () => {
+		const client = createFakeEmbeddingClient();
+		const node = store.insertNode({
+			uri: "history://allergy",
+			content: "昨夜实验室的服务器又崩了",
+			disclosure: "当对话提到食物过敏或海鲜时",
+		});
+		const bare = store.insertNode({ uri: "history://bare", content: "另一条没有条件的记忆" });
+		const pool = store.listNodes().filter((n) => !n.is_stub);
+
+		const scores = await computeVectorScores(store, client, pool, ["海鲜过敏"]);
+		expect(scores).not.toBeNull();
+		expect(scores!.get(node.node_id)?.disc).toBeGreaterThan(0);
+		// No disclosure → no channel evidence (undefined, not 0).
+		expect(scores!.get(bare.node_id)?.disc).toBeUndefined();
+
+		// The cache row keys on the disclosure text itself, sits at seg_index=-1…
+		const discRow = db
+			.prepare("SELECT content_hash FROM memory_embeddings WHERE node_id = ? AND seg_index = -1")
+			.get(node.node_id) as { content_hash: string };
+		expect(discRow.content_hash).toBe(embedHash("当对话提到食物过敏或海鲜时"));
+
+		// …and survives a body re-embed (hash mismatch deletes body rows only).
+		store.updateNode(node.node_id, { content: "正文换成了完全不同的一句话" });
+		await computeVectorScores(store, client, pool, ["海鲜过敏"]);
+		const segs = db
+			.prepare("SELECT seg_index FROM memory_embeddings WHERE node_id = ? ORDER BY seg_index")
+			.all(node.node_id)
+			.map((r) => Number(r.seg_index));
+		expect(segs).toContain(-1);
+		expect(segs.filter((s) => s >= 0).length).toBeGreaterThan(0);
+
+		// Editing the disclosure through the real write path re-embeds it.
+		store.setEntryDisclosure(node.uri, "当对话提到乳制品不耐受时");
+		const again = await computeVectorScores(store, client, pool, ["乳制品"]);
+		expect(again!.get(node.node_id)?.disc).toBeGreaterThan(0);
+	});
+
+	it("associative recall end-to-end: query shares words only with the disclosure", async () => {
+		const client = createFakeEmbeddingClient();
+		store.insertNode({
+			uri: "history://allergy",
+			content: "昨夜实验室机房空调坏了",
+			disclosure: "当对话提到食物过敏或海鲜时",
+			importance: 5,
+		});
+		store.insertNode({ uri: "history://noise", content: "周末整理了书房的书架", importance: 5 });
+		const { items, mode } = await search(store, client, {
+			queries: ["朋友说他吃海鲜过敏了"],
+			topK: 3,
+			minScore: 0,
+			nowDays: NOW,
+		});
+		expect(mode).toBe("vector");
+		expect(items[0]?.uri).toBe("history://allergy");
 	});
 });

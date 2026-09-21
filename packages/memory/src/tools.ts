@@ -543,7 +543,12 @@ const reviseModSchema = Type.Object({
 	line: Type.Optional(Type.Number({ description: "[行编辑] 行号（从 1 开始）" })),
 	line_content: Type.Optional(Type.String({ description: "[行编辑] 该行新内容（须配 line）" })),
 	importance: Type.Optional(Type.Number({ description: "修改重要性" })),
-	when: Type.Optional(Type.String({ description: "改想起条件：URI 命中别名入口→改该入口；否则改节点自身" })),
+	when: Type.Optional(
+		Type.String({
+			description:
+				"改想起条件（写法同 memorize.when：预演未来的触发话头，不是内容复述）；URI 命中别名入口→改该入口；否则改节点自身",
+		}),
+	),
 	time: Type.Optional(Type.String({ description: '修改世界时间；传 "" 清除' })),
 });
 
@@ -565,7 +570,12 @@ const reviseParams = Type.Object({
 	line: Type.Optional(Type.Number({ description: "[行编辑] 行号（从 1 开始）" })),
 	line_content: Type.Optional(Type.String({ description: "[行编辑] 该行新内容（须配 line）" })),
 	importance: Type.Optional(Type.Number({ description: "修改重要性" })),
-	when: Type.Optional(Type.String({ description: "改想起条件：URI 命中别名入口→改该入口；否则改节点自身" })),
+	when: Type.Optional(
+		Type.String({
+			description:
+				"改想起条件（写法同 memorize.when：预演未来的触发话头，不是内容复述）；URI 命中别名入口→改该入口；否则改节点自身",
+		}),
+	),
 	time: Type.Optional(Type.String({ description: '修改世界时间；传 "" 清除' })),
 	batch: Type.Optional(Type.Array(reviseModSchema, { description: "批量模式：每条 {uri, ...修改}" })),
 });
@@ -1018,7 +1028,12 @@ const associateParams = Type.Object({
 	related_uri: Type.Optional(Type.String({ description: "边模式：建立联想关系的另一端 URI（与 new_uri 互斥）" })),
 	kind: Type.Optional(Type.String({ description: "边模式：联想类型，如 前后续/因果/同场景" })),
 	importance: Type.Optional(Type.Number({ description: "从这个入口想起的重要性" })),
-	when: Type.Optional(Type.String({ description: "别名模式→该入口专属想起条件；边模式→这条联想边自己的想起条件" })),
+	when: Type.Optional(
+		Type.String({
+			description:
+				"别名模式→该入口专属想起条件；边模式→这条联想边自己的想起条件（写法同 memorize.when：预演未来的触发话头）",
+		}),
+	),
 });
 
 async function executeAssociate(store: MemoryStore, params: Static<typeof associateParams>, _ctx: MemoryToolContext) {
@@ -1084,7 +1099,7 @@ const consolidateParams = Type.Object({
 	source_uris: Type.Array(Type.String(), { description: "相关源记忆 URI 列表（至少 2 条）" }),
 	content: Type.String({ description: "主题总结 / 合并后的完整内容" }),
 	importance: Type.Optional(Type.Number({ description: "主题重要性" })),
-	when: Type.Optional(Type.String({ description: "什么时候想到这主题" })),
+	when: Type.Optional(Type.String({ description: "什么时候想到这主题（预演未来的触发话头，不是内容复述）" })),
 });
 
 async function executeConsolidate(
@@ -1357,7 +1372,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "memorize",
 			label: "memorize",
 			description:
-				"记下一段新记忆。可选 parent_uri 挂到已有父节点（父链缺失自动补占位）；time 打世界时间（Events 类可传，Static 类缺省用当前世界时间）；when = 这条记忆（规范入口）自身的想起条件。若目标 URI 是占位节点（stub），会原地转正为真实记忆。来源/模型/回溯锚点由系统自动署名，无需手填。",
+				"记下一段新记忆。可选 parent_uri 挂到已有父节点（父链缺失自动补占位）；time 打世界时间（Events 类可传，Static 类缺省用当前世界时间）；若目标 URI 是占位节点（stub），会原地转正为真实记忆。来源/模型/回溯锚点由系统自动署名，无需手填。\nwhen（想起条件）写法：预演「未来的什么话头该想起它」，不是内容的复述（复述无检索价值）。两条路线：①上位锚——事实上移一到两级的类别或情境（如吃虾起疹 →「食物过敏」「海鲜上桌」）；②强联想线索——一旦出现几乎必然相关的场景/物件/感官（如「闻到小苍兰」「看到缺口陶盆」）。写一到三条，每条独立可用；「聊到生活时」这类泛泛条件不合格。",
 			parameters: memorizeParams,
 			run: (p) => executeMemorize(store, p as Static<typeof memorizeParams>, ctx),
 		},

@@ -173,6 +173,12 @@ memory.db
 | `relocate` | 旧地址转别名时**继承移动前的生效条件**;显式传 `when` 则覆盖 |
 | Web UI(`#/edit`) | 同上(按当前入口 uri 的结构层) |
 
+**独立通道实验(2026-09-22,elias 库,30 条联想 query)**:现状 disclosure 拼进 `embedDocText` 随正文分段嵌入,MRR 0.395 / @1 20%;disclosure **独立嵌入成一路** MRR 0.473 / @1 33%;两路 **RRF(k=30)融合 MRR 0.541 / @1 40% / @3 63% / @10 80%**;max 融合(0.421)与 disc 硬门槛融合(≈0.41)均无显著收益——余弦分数域不可通约,融合必须在 rank 空间做。RRF 的回退案例全部发生在「原本已 top3」的样本上(最多推到 top8,无一跌出 top10),提升案例含 65→14、52→23、34→6。结论:**disclosure 是独立检索通道,不是文档前缀**。
+
+**独立通道已落地(2026-09-22)**:`computeVectorScores` 为每节点附带 disclosure 视图余弦——想起条件原文单独嵌入,缓存于 `memory_embeddings` 的 `seg_index = -1` 专用行(`content_hash` 锚定 disclosure 文本本身;`saveEmbeddings` 与投影重刷的失效清理均带 `seg_index >= 0` 保护,正文改写不失效 disc 行、反之亦然)。`rank()` 在 vector 模式经 `fuseVectorViews` 做两路 RRF(k=30) 融合,pool 内 max 归一为 `vec` 分量;**绝对护栏**:两路余弦均低于 `VEC_ABS_FLOOR`(0.3) 的节点融合为 0,防止 RRF 相对排序把无关 pool 的榜首推过 `MIN_SCORE`;库内无任何 disclosure 信号时 `fuseVectorViews` 返回 null,排序逐位回退 legacy。生产路径基准(elias 库,同日):联想 query MRR 0.350→**0.540**、@3 33%→**73%**、@10 63%→**97%**;descriptive(query=想起条件原文)MRR 0.900 **逐位不动**。复跑:`node --experimental-strip-types scripts/benchmark-recall.ts --db <库路径>`。
+
+**写作协议(write-time trigger,2026-09-22 起写入工具文案)**:`when` 的质量直接决定联想召回——它是「写入时预演未来的什么话头该想起这条记忆」的触发器(认知科学的 episodic future thinking;参见 T-Mem, EMNLP 2026)。两条路线:①**上位锚**——事实上移一到两级的类别/情境(吃虾起疹 →「食物过敏」「海鲜上桌」);②**强联想线索**——一旦出现几乎必然相关的场景/物件/感官(「闻到小苍兰」「看到缺口陶盆」)。写一到三条、每条独立可用;**复述正文无检索价值**,「聊到生活时」这类泛泛条件不合格。文案落在 `tools.ts`(memorize description 与各写入工具的 `when` 参数)。
+
 **检索参与方式**:`node_fts` 有独立的 `disclosure` 列(bm25 权重对齐 nocturne),检索按**节点级** `nodes.disclosure` 匹配;UI 列表页标注「节点级」,进详情页后升级为**入口级**(详情页知道你是从哪个 uri 进来的)。
 
 **回退/降级**:别名条件为 NULL → 继承节点级;别名悬空(target 已删) → 返回 `null` 且不抛错。`edges.disclosure` 为空时的行为**分两个消费面**(二者刻意不同):

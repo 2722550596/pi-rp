@@ -757,3 +757,56 @@ describe("export snapshot asset classes (§19)", () => {
 		db2.close();
 	});
 });
+
+describe("disclosure embedding cache (§9.1)", () => {
+	it("saveEmbeddings keeps the disclosure row; saveDisclosureEmbedding replaces only it", () => {
+		const node = store.insertNode({ uri: "history://d", content: "正文", disclosure: "想起条件A" });
+		const v = Float32Array.from([1, 0, 0]);
+		store.saveEmbeddings(node.node_id, "bodyhash", "m", [v]);
+		store.saveDisclosureEmbedding(node.node_id, "dischash", "m", v);
+		// A body re-embed must not wipe the disclosure channel's row…
+		store.saveEmbeddings(node.node_id, "bodyhash2", "m", [v]);
+		const rows = db
+			.prepare("SELECT seg_index, content_hash FROM memory_embeddings WHERE node_id = ? ORDER BY seg_index")
+			.all(node.node_id) as Array<{ seg_index: number; content_hash: string }>;
+		expect(rows.map((r) => r.seg_index)).toEqual([-1, 0]);
+		expect(rows[0].content_hash).toBe("dischash");
+		// …and replacing the disclosure row leaves the body segment alone.
+		store.saveDisclosureEmbedding(node.node_id, "dischash2", "m", v);
+		const after = db
+			.prepare("SELECT seg_index, content_hash FROM memory_embeddings WHERE node_id = ? ORDER BY seg_index")
+			.all(node.node_id) as Array<{ seg_index: number; content_hash: string }>;
+		expect(after).toHaveLength(2);
+		expect(after[0].content_hash).toBe("dischash2");
+	});
+
+	it("loadDisclosureEmbeddings validates hash and model, same contract as body segments", () => {
+		const node = store.insertNode({ uri: "history://e", content: "x", disclosure: "条件" });
+		store.saveDisclosureEmbedding(node.node_id, "h1", "m", Float32Array.from([1, 2]));
+		const got = store.loadDisclosureEmbeddings([{ node_id: node.node_id, hash: "h1" }], "m");
+		expect(got.get(node.node_id)?.length).toBe(2);
+		expect(store.loadDisclosureEmbeddings([{ node_id: node.node_id, hash: "wrong" }], "m").size).toBe(0);
+		expect(store.loadDisclosureEmbeddings([{ node_id: node.node_id, hash: "h1" }], "other-model").size).toBe(0);
+	});
+
+	it("repaint projections drop stale body rows but keep the disclosure row", () => {
+		const node = store.insertNode({ uri: "history://proj", content: "base", disclosure: "想起条件不变" });
+		store.appendRaw([
+			{ role: "user", text: "触发", entry_id: "e0", session_id: "s1", wall_ts: "2026-09-10T00:00:00Z" },
+		]);
+		store.saveEmbeddings(node.node_id, "stale-body-hash", "m", [Float32Array.from([1, 0])]);
+		store.saveDisclosureEmbedding(node.node_id, "disc-hash", "m", Float32Array.from([0, 1]));
+		// Two post-snapshot revisions: X on-path (e0), Y off-path (e2).
+		store.updateNode(node.node_id, { content: "X版" }, { anchor_entry_id: "e0", anchor_session_id: "s1" });
+		store.updateNode(node.node_id, { content: "Y版" }, { anchor_entry_id: "e2", anchor_session_id: "s1" });
+		// Roll back onto the e0 branch → the projection repaints Y → X…
+		store.reconcileNodeProjections("s1", ["e0"]);
+		expect(nodeByUri("history://proj").content).toBe("X版");
+		// …and the repaint's stale-body cleanup deletes body rows only.
+		const segs = db
+			.prepare("SELECT seg_index, content_hash FROM memory_embeddings WHERE node_id = ? ORDER BY seg_index")
+			.all(node.node_id) as Array<{ seg_index: number; content_hash: string }>;
+		expect(segs.map((r) => r.seg_index)).toEqual([-1]);
+		expect(segs[0].content_hash).toBe("disc-hash");
+	});
+});
