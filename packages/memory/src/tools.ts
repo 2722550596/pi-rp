@@ -176,7 +176,8 @@ function stampWorldTs(store: MemoryStore, time: string | undefined): string | nu
 		const parsed = parseWorldTime(store, time);
 		if (parsed !== null) return parsed;
 	}
-	return store.getWorldTime();
+	// 真实时钟回退（nocturne enabled=false 语义）：世界钟未设时用墙钟打点。
+	return store.getWorldTime() ?? new Date().toISOString();
 }
 
 /** Audit a character-initiated recall/retrieve (§12 decision 23, §6.1). */
@@ -297,7 +298,8 @@ async function executeRecall(
 	if (node.is_stub) return text(`（占位节点，无正文）${uri}`);
 
 	const lines: string[] = [`# [${node.uri}]`];
-	const currWorldTime = store.getWorldTime();
+	// 真实时钟回退：钟未设时相对标注按墙钟算。
+		const currWorldTime = store.getWorldTime() ?? new Date().toISOString();
 	if (node.world_ts) {
 		const rel = formatRelativeWorldTime(node.world_ts, currWorldTime);
 		lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);

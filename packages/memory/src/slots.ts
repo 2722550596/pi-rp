@@ -61,7 +61,8 @@ export function createMemorySlots(store: MemoryStore, opts: MemorySlotsOptions =
 		async: true,
 		render: () => {
 			const uris = getAwakenUris(store);
-			const worldTime = store.getWorldTime();
+			// 真实时钟回退：钟未设时相对标注按墙钟算。
+			const worldTime = store.getWorldTime() ?? new Date().toISOString();
 			const fullUris = new Set(uris);
 			const blocks: string[] = [];
 			for (const uri of uris) {

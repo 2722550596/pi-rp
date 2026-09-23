@@ -355,7 +355,8 @@ export function buildWakeupView(
 	isVisible: VisibilityPredicate,
 	isShadowed: (nodeId: string) => boolean,
 ): ViewDTO {
-	const worldTime = store.getWorldTime();
+	// 真实时钟回退：与 renderWakeupView 保持一致（parity）。
+	const worldTime = store.getWorldTime() ?? new Date().toISOString();
 	// Both sets start from the RAW list (§2.6 ①/③): an alias in the list makes
 	// the `fullUris.has(child.uri)` test miss, and `render*` replays that miss.
 	const fullUris = new Set<string>(awakenUris);

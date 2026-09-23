@@ -85,7 +85,8 @@ export function renderWakeupView(
 	limit = 5,
 	isVisible: (n: MemoryNode) => boolean = () => true,
 ): string {
-	const worldTime = store.getWorldTime();
+	// 真实时钟回退：钟未设时相对标注按墙钟算。
+	const worldTime = store.getWorldTime() ?? new Date().toISOString();
 	const sections: string[] = [];
 	if (worldTime) {
 		sections.push(`> 当前世界时间: ${worldTime}`);
