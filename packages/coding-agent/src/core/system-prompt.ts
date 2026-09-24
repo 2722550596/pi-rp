@@ -5,6 +5,9 @@ import { compileMessagesSync, deriveSystemPrompt } from "./prompt-preset/compile
 import { defaultPreset } from "./prompt-preset/default-stack.ts";
 import type { PromptRuntime } from "./prompt-preset/types.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
+import { formatToolSearchCategorySection, type ToolSearchCategory } from "./tool-search-recovery.ts";
+
+export type { ToolSearchCategory };
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
@@ -15,6 +18,11 @@ export interface BuildSystemPromptOptions {
 	toolSnippets?: Record<string, string>;
 	/** Additional guideline bullets appended to the default system prompt guidelines. */
 	promptGuidelines?: string[];
+	/**
+	 * Folded-tool catalog entries for the R9 category section (tool search).
+	 * Empty/undefined renders nothing, keeping small tool sets zero-overhead.
+	 */
+	toolSearchCategories?: readonly ToolSearchCategory[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
 	/** Working directory. */
@@ -63,6 +71,12 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
 		if (customPromptHasRead && skills.length > 0) {
 			prompt += formatSkillsForPrompt(skills);
+		}
+
+		// R9: folded-tool category section so the model knows what tool_search can find.
+		const categorySection = formatToolSearchCategorySection(options.toolSearchCategories ?? []);
+		if (categorySection) {
+			prompt += `\n\n${categorySection}`;
 		}
 
 		prompt += `\nCurrent working directory: ${promptCwd}\n`;

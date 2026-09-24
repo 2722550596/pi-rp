@@ -376,8 +376,10 @@ describe("regression #5943: session_start transient UI", () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
-					pi.on("session_start", () => {
-						pi.sendUserMessage("user from start");
+					// Await the send: sampling activeRun/events before the detached
+					// prompt chain starts is a race this regression guards against.
+					pi.on("session_start", async () => {
+						await pi.sendUserMessage("user from start");
 					});
 				},
 			],

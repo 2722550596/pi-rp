@@ -6,7 +6,9 @@ export function wrapToolDefinition<TDetails = unknown>(
 	definition: ToolDefinition<any, TDetails>,
 	ctxFactory?: () => ExtensionContext,
 ): AgentTool<any, TDetails> {
-	return {
+	// `deferrable` is coding-agent registry-layer metadata (I4): forwarded on the
+	// runtime object even though `AgentTool` does not declare it as a type field.
+	const wrapped: AgentTool<any, TDetails> & { deferrable?: boolean } = {
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,
@@ -14,9 +16,11 @@ export function wrapToolDefinition<TDetails = unknown>(
 		constrainedSampling: definition.constrainedSampling,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
+		deferrable: definition.deferrable,
 		execute: (toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) =>
 			definition.execute(toolCallId, params, signal, onUpdate, ctx ?? (ctxFactory?.() as ExtensionContext)),
 	};
+	return wrapped;
 }
 
 /** Wrap multiple ToolDefinitions into AgentTools for the core runtime. */

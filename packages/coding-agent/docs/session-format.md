@@ -96,6 +96,7 @@ interface ToolResultMessage {
   toolName: string;
   content: (TextContent | ImageContent)[];
   details?: any;      // Tool-specific metadata
+  addedToolNames?: string[]; // Deferred tools made available by this result
   usage?: Usage;      // Nested LLM work performed by the tool
   isError: boolean;
   timestamp: number;

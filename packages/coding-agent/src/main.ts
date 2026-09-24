@@ -65,7 +65,7 @@ import {
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
-import { SettingsManager } from "./core/settings-manager.ts";
+import { SettingsManager, type ToolSearchSettings } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
@@ -552,6 +552,16 @@ function buildSessionOptions(
 	}
 	if (parsed.excludeTools) {
 		options.excludeTools = [...parsed.excludeTools];
+	}
+
+	// Tool search flags (M5 §6): session-scoped overlay; settings files are never written.
+	const toolSearchOverride: ToolSearchSettings = {};
+	if (parsed.noToolSearch) toolSearchOverride.enabled = false;
+	if (parsed.toolSearch) toolSearchOverride.mode = parsed.toolSearch;
+	if (parsed.toolSearchThreshold !== undefined) toolSearchOverride.thresholdPercent = parsed.toolSearchThreshold;
+	if (parsed.reserveTools) toolSearchOverride.reservedTools = [...parsed.reserveTools];
+	if (Object.keys(toolSearchOverride).length > 0) {
+		settingsManager.applyOverlay({ toolSearch: toolSearchOverride });
 	}
 
 	// Prompt preset + state schemas from CLI

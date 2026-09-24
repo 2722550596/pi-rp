@@ -106,7 +106,7 @@ function estimateMessages(messages: readonly Message[]): ContextUsageEstimate {
 	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
 }
 
-function estimateToolsTokens(tools: readonly Tool[] | undefined): number {
+export function estimateToolsTokens(tools: readonly Tool[] | undefined): number {
 	if (!tools || tools.length === 0) return 0;
 	return estimateTextTokens(safeJsonStringify(tools));
 }

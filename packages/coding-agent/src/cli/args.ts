@@ -6,7 +6,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
-import type { TuiMode } from "../core/settings-manager.ts";
+import type { ToolSearchMode, TuiMode } from "../core/settings-manager.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -33,6 +33,14 @@ export interface Args {
 	excludeTools?: string[];
 	noTools?: boolean;
 	noBuiltinTools?: boolean;
+	/** toolSearch.mode session override (--tool-search on|off|auto) */
+	toolSearch?: ToolSearchMode;
+	/** Session-scoped toolSearch.enabled=false (--no-tool-search) */
+	noToolSearch?: boolean;
+	/** toolSearch.thresholdPercent session override (--tool-search-threshold <percent>) */
+	toolSearchThreshold?: number;
+	/** Full replacement of this session's toolSearch.reservedTools (--reserve-tools <name,...>) */
+	reserveTools?: string[];
 	extensions?: string[];
 	noExtensions?: boolean;
 	print?: boolean;
@@ -137,6 +145,34 @@ export function parseArgs(args: string[]): Args {
 				.filter((name) => name.length > 0);
 		} else if ((arg === "--exclude-tools" || arg === "-xt") && i + 1 < args.length) {
 			result.excludeTools = args[++i]
+				.split(",")
+				.map((s) => s.trim())
+				.filter((name) => name.length > 0);
+		} else if (arg === "--tool-search" && i + 1 < args.length) {
+			const value = args[++i];
+			if (value === "on" || value === "off" || value === "auto") {
+				result.toolSearch = value;
+			} else {
+				result.diagnostics.push({
+					type: "error",
+					message: `Invalid --tool-search value "${value}". Valid values: on, off, auto`,
+				});
+			}
+		} else if (arg === "--no-tool-search") {
+			result.noToolSearch = true;
+		} else if (arg === "--tool-search-threshold" && i + 1 < args.length) {
+			const raw = args[++i];
+			const value = Number(raw);
+			if (raw.length > 0 && Number.isFinite(value) && value >= 0) {
+				result.toolSearchThreshold = value;
+			} else {
+				result.diagnostics.push({
+					type: "error",
+					message: `Invalid --tool-search-threshold value "${raw}". Expected a finite number >= 0`,
+				});
+			}
+		} else if (arg === "--reserve-tools" && i + 1 < args.length) {
+			result.reserveTools = args[++i]
 				.split(",")
 				.map((s) => s.trim())
 				.filter((name) => name.length > 0);
@@ -328,6 +364,10 @@ ${chalk.bold("Options:")}
                                  Applies to built-in, extension, and custom tools
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
                                  Applies to built-in, extension, and custom tools
+  --tool-search <mode>           Fold rarely-used tools behind a tool_search tool: on, off, or auto (default: auto)
+  --tool-search-threshold <n>    Auto-mode activation threshold, percent of the model context window (default: 10)
+  --reserve-tools <tools>        Comma-separated tool names kept always available; replaces configured reservedTools
+  --no-tool-search               Disable tool folding for this session
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)

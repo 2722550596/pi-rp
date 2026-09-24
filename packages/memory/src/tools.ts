@@ -299,7 +299,7 @@ async function executeRecall(
 
 	const lines: string[] = [`# [${node.uri}]`];
 	// 真实时钟回退：钟未设时相对标注按墙钟算。
-		const currWorldTime = store.getWorldTime() ?? new Date().toISOString();
+	const currWorldTime = store.getWorldTime() ?? new Date().toISOString();
 	if (node.world_ts) {
 		const rel = formatRelativeWorldTime(node.world_ts, currWorldTime);
 		lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);

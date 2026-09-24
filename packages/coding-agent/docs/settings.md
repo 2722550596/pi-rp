@@ -166,6 +166,28 @@ See [compaction.md](compaction.md) for trigger and summarization behavior.
 
 `summaryMaxTokens` decouples the summary's output budget from `reserveTokens`. Without it the cap is `floor(0.8 * reserveTokens)`, which ties the "when to compact" threshold to how much room the summary gets — a problem for reasoning models, where thinking and the summary share that budget and a small cap truncates the summary (surfacing as `Compaction failed: Summarization failed: generation hit the token cap`). The model's own output limit still applies as a hard ceiling, so a value above `model.maxTokens` is clamped rather than rejected. Set it on the ordinary `compaction` object or per model under `modelOverrides`; unlike `reserveTokens`/`keepRecentTokens` it has no built-in default (unset means "derive it").
 
+### Tool search
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `toolSearch.enabled` | boolean | `true` | Master switch for client-side tool folding |
+| `toolSearch.mode` | string | `"auto"` | `"on"` forces folding regardless of size, `"off"` disables it, `"auto"` uses `toolSearch.thresholdPercent` |
+| `toolSearch.thresholdPercent` | number | `10` | Auto mode folds when the estimated potential folding set (tools that would actually fold) reaches this percent of the current model's context window (comparison is `>=`) |
+| `toolSearch.reservedTools` | string[] | `[]` | Extra tool names kept always available; they are never folded and are excluded from the auto-mode threshold estimate |
+
+When folding is active, rarely-used tools are removed from the request and replaced by a synthetic `tool_search` tool the model can query to load them on demand. The auto-mode threshold estimates only the potential folding set — tools that would actually fold; built-in `read`/`bash`/`edit`/`write`/`grep`/`find`/`ls`, `tool_search` itself, tools listed in `tools.allow` or `toolSearch.reservedTools`, and tools whose author declares them non-deferrable are always available and never counted toward the threshold. An invalid model context window (`<= 0` or missing) keeps auto mode conservatively inactive. CLI flags `--tool-search on|off|auto`, `--tool-search-threshold <n>`, `--reserve-tools <name,...>` (replaces the configured list for this session), and `--no-tool-search` override these keys for one session without writing settings files.
+
+```json
+{
+  "toolSearch": {
+    "enabled": true,
+    "mode": "auto",
+    "thresholdPercent": 10,
+    "reservedTools": ["my_frequently_used_tool"]
+  }
+}
+```
+
 ### Branch Summary
 
 | Setting | Type | Default | Description |

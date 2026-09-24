@@ -5,6 +5,7 @@ import type {
 	SimpleStreamOptions,
 	TextContent,
 	ThinkingBudgets,
+	ToolResultMessage,
 	Transport,
 } from "@earendil-works/pi-ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
@@ -23,6 +24,7 @@ import type {
 	BeforeToolCallResult,
 	PrepareNextTurnContext,
 	QueueMode,
+	ResolveToolAvailability,
 	ShouldStopAfterTurnContext,
 	StreamFn,
 	ToolExecutionMode,
@@ -105,6 +107,8 @@ export interface AgentOptions {
 	onResponse?: SimpleStreamOptions["onResponse"];
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+	resolveToolAvailability?: ResolveToolAvailability;
+	onToolBatchCompleted?: (toolResults: ToolResultMessage[], context: AgentContext) => void | Promise<void>;
 	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext, signal?: AbortSignal) => boolean | Promise<boolean>;
 	prepareNextTurn?: (
 		signal?: AbortSignal,
@@ -190,6 +194,8 @@ export class Agent {
 		context: AfterToolCallContext,
 		signal?: AbortSignal,
 	) => Promise<AfterToolCallResult | undefined>;
+	public resolveToolAvailability?: ResolveToolAvailability;
+	public onToolBatchCompleted?: (toolResults: ToolResultMessage[], context: AgentContext) => void | Promise<void>;
 	public shouldStopAfterTurn?: (
 		context: ShouldStopAfterTurnContext,
 		signal?: AbortSignal,
@@ -225,6 +231,8 @@ export class Agent {
 		this.onResponse = runtimeOptions.onResponse;
 		this.beforeToolCall = runtimeOptions.beforeToolCall;
 		this.afterToolCall = runtimeOptions.afterToolCall;
+		this.resolveToolAvailability = runtimeOptions.resolveToolAvailability;
+		this.onToolBatchCompleted = runtimeOptions.onToolBatchCompleted;
 		this.shouldStopAfterTurn = runtimeOptions.shouldStopAfterTurn;
 		this.prepareNextTurn = runtimeOptions.prepareNextTurn;
 		this.prepareNextTurnWithContext = runtimeOptions.prepareNextTurnWithContext;
@@ -457,6 +465,8 @@ export class Agent {
 			toolExecution: this.toolExecution,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
+			resolveToolAvailability: this.resolveToolAvailability,
+			onToolBatchCompleted: this.onToolBatchCompleted,
 			shouldStopAfterTurn: shouldStopAfterTurn
 				? async (context) => await shouldStopAfterTurn(context, this.signal)
 				: undefined,

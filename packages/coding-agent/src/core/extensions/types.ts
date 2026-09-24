@@ -541,6 +541,9 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	executionMode?: ToolExecutionMode;
 
+	/** Whether this tool may be omitted until discovered. Defaults to false at this type boundary. */
+	deferrable?: boolean;
+
 	/** Execute the tool. */
 	execute(
 		toolCallId: string,

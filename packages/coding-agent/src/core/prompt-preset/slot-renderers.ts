@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { stringify } from "yaml";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../../config.ts";
 import { formatSkillsForPrompt } from "../skills.ts";
+import { formatToolSearchCategorySection } from "../tool-search-recovery.ts";
 import { expandMacros } from "./macro-engine.ts";
 import { applyResourcePolicy } from "./policy.ts";
 import type {
@@ -110,13 +111,18 @@ registerSlot(
 		name: "tools",
 		description: "Available tools with snippets.",
 		render: (ctx: SlotRenderContext): string => {
-			const { selectedTools, toolSnippets } = ctx.runtime.options;
+			const { selectedTools, toolSnippets, toolSearchCategories } = ctx.runtime.options;
 			const tools = applyResourcePolicy(selectedTools ?? ["read", "bash", "edit", "write"], ctx.preset.tools);
 			const onlyWithSnippets = ctx.item.options?.onlyWithSnippets !== false;
 			const visibleTools = onlyWithSnippets ? tools.filter((name) => !!toolSnippets?.[name]) : tools;
-			return visibleTools.length > 0
-				? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n")
-				: "(none)";
+			const rendered =
+				visibleTools.length > 0
+					? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n")
+					: "(none)";
+			// R9: folded-tool category section; empty catalog renders nothing
+			// (zero overhead for small tool sets and tool search off).
+			const categorySection = formatToolSearchCategorySection(toolSearchCategories ?? []);
+			return categorySection ? `${rendered}\n\n${categorySection}` : rendered;
 		},
 	},
 	true,

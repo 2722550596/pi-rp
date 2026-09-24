@@ -238,6 +238,19 @@ async function runLoop(
 					currentContext.messages.push(result);
 					newMessages.push(result);
 				}
+
+				// Batch seam: every call of the batch is finalized and its tool result message is
+				// in context.messages; this runs before the next assistant request so refreshed
+				// tool snapshots take effect on the next turn. Callback errors are recorded as
+				// diagnostics and must not interrupt the loop.
+				if (config.onToolBatchCompleted) {
+					try {
+						await config.onToolBatchCompleted(toolResults, currentContext);
+					} catch (error) {
+						const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+						console.warn(`[agent-loop] onToolBatchCompleted failed: ${detail}`);
+					}
+				}
 			}
 
 			await emit({ type: "turn_end", message, toolResults });
@@ -595,6 +608,33 @@ function prepareToolCallArguments(tool: AgentTool<any>, toolCall: AgentToolCall)
 	};
 }
 
+/**
+ * Builds the tool-result text for a tool name missing from the current tool snapshot.
+ * The injected `resolveToolAvailability` distinguishes folded-but-not-yet-loaded names
+ * (guided self-correction text) from genuinely unknown names (default not-found text).
+ * Resolver failures are diagnostics and fall back to the default text.
+ */
+async function resolveMissingToolResultText(
+	toolName: string,
+	context: AgentContext,
+	config: AgentLoopConfig,
+): Promise<string> {
+	const notFound = `Tool ${toolName} not found`;
+	if (!config.resolveToolAvailability) {
+		return notFound;
+	}
+	try {
+		const availability = await config.resolveToolAvailability(toolName, context);
+		if (availability?.kind === "deferred") {
+			return availability.guidance;
+		}
+	} catch (error) {
+		const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+		console.warn(`[agent-loop] resolveToolAvailability failed for tool "${toolName}": ${detail}`);
+	}
+	return notFound;
+}
+
 async function prepareToolCall(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
@@ -606,7 +646,7 @@ async function prepareToolCall(
 	if (!tool) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			result: createErrorToolResult(await resolveMissingToolResultText(toolCall.name, currentContext, config)),
 			isError: true,
 		};
 	}

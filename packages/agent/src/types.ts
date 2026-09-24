@@ -146,6 +146,25 @@ export interface AgentLoopTurnUpdate {
 
 export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 
+/** Availability verdict for a tool name that was not found in the current tool snapshot. */
+export type ToolAvailability = { kind: "available" } | { kind: "deferred"; guidance: string };
+
+/**
+ * Resolves availability for a tool name missing from the active tool snapshot.
+ *
+ * Return `undefined` for names the caller does not manage (genuinely unregistered tools);
+ * the loop then reports the default `Tool <name> not found` error result. A
+ * `{ kind: "deferred"; guidance }` verdict makes `guidance` the error tool-result text so
+ * the model can self-correct (e.g. load the tool via a discovery tool).
+ *
+ * Contract: should not throw. A throwing resolver is recorded as a loop diagnostic and
+ * treated like `undefined`.
+ */
+export type ResolveToolAvailability = (
+	toolName: string,
+	context: AgentContext,
+) => ToolAvailability | undefined | Promise<ToolAvailability | undefined>;
+
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
 
@@ -291,6 +310,27 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * The hook receives the agent abort signal and is responsible for honoring it.
 	 */
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+
+	/**
+	 * Resolves availability for a tool name that was not found in the current tool snapshot.
+	 *
+	 * Use this to guide the model toward on-demand tool discovery (e.g. a folded tool that
+	 * must be loaded via a discovery tool first). The returned `guidance` becomes the error
+	 * tool-result text; returning `undefined` keeps the default `Tool <name> not found` result.
+	 */
+	resolveToolAvailability?: ResolveToolAvailability;
+
+	/**
+	 * Called exactly once after each complete tool batch: every tool call of the assistant
+	 * message is finalized and all tool-result messages have been appended to
+	 * `context.messages`, before the next assistant request starts.
+	 *
+	 * Use this to apply batch-level state changes (e.g. tool discovery recorded in
+	 * `ToolResultMessage.addedToolNames`) so they take effect on the next turn.
+	 *
+	 * Contract: errors are recorded as loop diagnostics and never interrupt the loop.
+	 */
+	onToolBatchCompleted?: (toolResults: ToolResultMessage[], context: AgentContext) => void | Promise<void>;
 }
 
 /**

@@ -25,12 +25,28 @@ const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<Pick<CompactionModelOverride, 
 		keepRecentTokens: 20000,
 	};
 
+const DEFAULT_TOOL_SEARCH_SETTINGS: Required<ToolSearchSettings> = {
+	enabled: true,
+	mode: "auto",
+	thresholdPercent: 10,
+	reservedTools: [],
+};
+
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
 	summaryMaxTokens?: number; // default: undefined - derived from reserveTokens
 	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
+}
+
+export type ToolSearchMode = "on" | "off" | "auto";
+
+export interface ToolSearchSettings {
+	enabled?: boolean; // default: true
+	mode?: ToolSearchMode; // default: "auto" - "on" forces folding, "off" disables it, "auto" uses thresholdPercent
+	thresholdPercent?: number; // default: 10 - auto activates at >= this percent of the model context window
+	reservedTools?: string[]; // default: [] - extra tool names kept always-eager
 }
 
 export interface BranchSummarySettings {
@@ -116,6 +132,7 @@ export interface Settings {
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
 	compaction?: CompactionSettings;
+	toolSearch?: ToolSearchSettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
@@ -344,6 +361,8 @@ export class SettingsManager {
 	private modifiedProjectNestedFields = new Map<keyof Settings, Set<string>>(); // Track project nested field modifications
 	private globalSettingsLoadError: Error | null = null; // Track if global settings file had parse errors
 	private projectSettingsLoadError: Error | null = null; // Track if project settings file had parse errors
+	/** toolSearch keys whose invalid configured value was already reported (report once, not per read). */
+	private toolSearchInvalidReported = new Set<string>();
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
 
@@ -596,6 +615,20 @@ export class SettingsManager {
 	/** Apply additional overrides on top of current settings */
 	applyOverrides(overrides: Partial<Settings>): void {
 		this.settings = deepMergeSettings(this.settings, overrides);
+	}
+
+	/**
+	 * Merge session-scoped overrides into the in-memory overlay layer (overlay > project > global).
+	 * Unlike applyOverrides — which only patches the merged view and is lost on the next
+	 * save()/reload() scope rebuild — overlay values survive those rebuilds and are never
+	 * persisted to disk. Used by CLI flags that must hold for the whole session.
+	 */
+	applyOverlay(overrides: Partial<Settings>): void {
+		this.overlaySettings = deepMergeSettings(this.overlaySettings, overrides);
+		this.settings = deepMergeSettings(
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+			this.overlaySettings,
+		);
 	}
 
 	/** Mark a global field as modified during this session */
@@ -997,6 +1030,99 @@ export class SettingsManager {
 			keepRecentTokens: this.getCompactionKeepRecentTokens(model),
 			summaryMaxTokens: this.getCompactionSummaryMaxTokens(model),
 		};
+	}
+
+	getToolSearchEnabled(): boolean {
+		const value = this.settings.toolSearch?.enabled;
+		if (value === undefined) return DEFAULT_TOOL_SEARCH_SETTINGS.enabled;
+		if (typeof value !== "boolean") {
+			this.reportInvalidToolSearchSetting("enabled", value, String(DEFAULT_TOOL_SEARCH_SETTINGS.enabled));
+			return DEFAULT_TOOL_SEARCH_SETTINGS.enabled;
+		}
+		return value;
+	}
+
+	setToolSearchEnabled(enabled: boolean): void {
+		this.setToolSearchSetting("enabled", enabled);
+	}
+
+	getToolSearchMode(): ToolSearchMode {
+		const value = this.settings.toolSearch?.mode;
+		if (value === undefined) return DEFAULT_TOOL_SEARCH_SETTINGS.mode;
+		if (value !== "on" && value !== "off" && value !== "auto") {
+			this.reportInvalidToolSearchSetting("mode", value, `"${DEFAULT_TOOL_SEARCH_SETTINGS.mode}"`);
+			return DEFAULT_TOOL_SEARCH_SETTINGS.mode;
+		}
+		return value;
+	}
+
+	setToolSearchMode(mode: ToolSearchMode): void {
+		this.setToolSearchSetting("mode", mode);
+	}
+
+	getToolSearchThresholdPercent(): number {
+		const value = this.settings.toolSearch?.thresholdPercent;
+		if (value === undefined) return DEFAULT_TOOL_SEARCH_SETTINGS.thresholdPercent;
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+			this.reportInvalidToolSearchSetting(
+				"thresholdPercent",
+				value,
+				String(DEFAULT_TOOL_SEARCH_SETTINGS.thresholdPercent),
+			);
+			return DEFAULT_TOOL_SEARCH_SETTINGS.thresholdPercent;
+		}
+		return value;
+	}
+
+	setToolSearchThresholdPercent(thresholdPercent: number): void {
+		if (!Number.isFinite(thresholdPercent) || thresholdPercent < 0) {
+			this.recordError(
+				"global",
+				new Error(
+					`Rejected toolSearch.thresholdPercent ${String(thresholdPercent)}: expected a finite number >= 0.`,
+				),
+			);
+			return;
+		}
+		this.setToolSearchSetting("thresholdPercent", thresholdPercent);
+	}
+
+	getToolSearchReservedTools(): string[] {
+		const value = this.settings.toolSearch?.reservedTools;
+		if (value === undefined) return [];
+		if (!Array.isArray(value) || value.some((name) => typeof name !== "string")) {
+			this.reportInvalidToolSearchSetting("reservedTools", value, "[]");
+			return [];
+		}
+		return [...value];
+	}
+
+	setToolSearchReservedTools(reservedTools: readonly string[]): void {
+		if (!Array.isArray(reservedTools) || reservedTools.some((name) => typeof name !== "string")) {
+			this.recordError("global", new Error("Rejected toolSearch.reservedTools: expected an array of strings."));
+			return;
+		}
+		this.setToolSearchSetting("reservedTools", [...reservedTools]);
+	}
+
+	private setToolSearchSetting<K extends keyof ToolSearchSettings>(key: K, value: ToolSearchSettings[K]): void {
+		if (!this.globalSettings.toolSearch) {
+			this.globalSettings.toolSearch = {};
+		}
+		this.globalSettings.toolSearch[key] = value;
+		this.markModified("toolSearch", key);
+		this.save();
+	}
+
+	private reportInvalidToolSearchSetting(key: string, value: unknown, fallback: string): void {
+		if (this.toolSearchInvalidReported.has(key)) return;
+		this.toolSearchInvalidReported.add(key);
+		this.recordError(
+			"global",
+			new Error(
+				`Invalid toolSearch.${key} setting: ${JSON.stringify(value) ?? String(value)}. Falling back to ${fallback}.`,
+			),
+		);
 	}
 
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean } {

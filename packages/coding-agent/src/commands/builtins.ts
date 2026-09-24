@@ -13,7 +13,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { getShareViewerUrl } from "../config.ts";
-import type { AgentSession } from "../core/agent-session.ts";
 import { computeCacheWaste } from "../core/cache-stats.ts";
 import { buildPromptToolsText, renderPromptDisplay } from "../core/prompt-display.ts";
 import type { CommandEntry } from "../core/slash-commands.ts";

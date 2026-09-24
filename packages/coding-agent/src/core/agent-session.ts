@@ -178,6 +178,20 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { createSubagentProfilesToolDefinition, createSubagentToolDefinition } from "./subagent/extension.ts";
 import { spawnAgent } from "./subagent/spawn.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { ToolSearchManager } from "./tool-search/manager.ts";
+import { normalizeDeferrable, shouldActivateToolSearch } from "./tool-search-policy.ts";
+import {
+	buildToolSearchCategories,
+	collectRestoredToolNames,
+	computeToolCatalogDelta,
+	formatToolCatalogDeltaMessage,
+	mergeToolSearchCompactionDetails,
+	scanBranchForToolSearchDiscovery,
+	TOOL_SEARCH_TOOL_NAME,
+	type ToolSearchCategory,
+	type ToolSearchManagerContract,
+	toToolSearchEntries,
+} from "./tool-search-recovery.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createMemoryToolRenderers } from "./tools/memory-renderers.ts";
@@ -310,6 +324,11 @@ export interface AgentSessionConfig {
 	resourceLoader: ResourceLoader;
 	/** SDK custom tools registered outside extensions */
 	customTools?: ToolDefinition[];
+	/**
+	 * Tool-search state machine override (defaults to a fresh per-session
+	 * `ToolSearchManager`). Test seam; must stay per-session, never shared.
+	 */
+	toolSearchManager?: ToolSearchManagerContract;
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
 	/** Optional request gateway for per-provider concurrency control. */
@@ -417,6 +436,9 @@ interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
 }
+
+/** ToolResult variant of the session message union (carries addedToolNames). */
+type ToolResultAgentMessage = Extract<AgentMessage, { role: "toolResult" }>;
 
 function estimateMessagesTokens(messages: AgentMessage[]): number {
 	let tokens = 0;
@@ -587,6 +609,7 @@ export class AgentSession {
 		contextFiles: unknown;
 		customPrompt: string | undefined;
 		appendPrompt: string;
+		toolSearchCategories: string;
 		model: string;
 		thinkingLevel: ThinkingLevel;
 		value: string;
@@ -599,6 +622,22 @@ export class AgentSession {
 
 	// Baseline tool set before the active preset's tools policy was applied
 	private _toolPolicyBaseline?: string[];
+
+	// --- Tool search wiring (plan/tool-search: R4-R10, D1/D4-D8/D11-D13) ---
+	/** D8-normalized deferrable flags for the allow/deny-visible registry, rebuilt by _refreshToolRegistry. */
+	private _toolSearchDeferrable: ReadonlyMap<string, boolean> = new Map();
+	/** Set once the transcript restore has run for this runtime; gates syncToolSearchState(). */
+	private _toolSearchRestored = false;
+	/** D11: restore failed or was aborted — session continues with tool search deactivated. */
+	private _toolSearchActivationBlocked = false;
+	/** D5: false until the first post-restore sync has seeded the advertised baseline. */
+	private _toolSearchBaselineSeeded = false;
+	/** R9 category rows for the current searchable set, consumed by _rebuildSystemPrompt. */
+	private _toolSearchCategories: readonly ToolSearchCategory[] | undefined;
+	/** Observable diagnostics channel (D1/D11/D18); also surfaced via console.warn. */
+	private _toolSearchDiagnostics: string[] = [];
+	/** Per-session tool-search state machine (never module-level; M1 §2.2). */
+	private readonly _toolSearchManager: ToolSearchManagerContract;
 	/** Captured messages from the last agent run, for /prompt inspection. */
 	private _lastCompiledMessages: AgentMessage[] = [];
 	private _sealedContext = false;
@@ -661,6 +700,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._attachStateStore = config.attachStateStore ?? true;
+		this._toolSearchManager = config.toolSearchManager ?? new ToolSearchManager();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1340,9 +1380,358 @@ export class AgentSession {
 		}
 		this.agent.state.tools = tools;
 
-		// Rebuild base system prompt with new tool set
-		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
+		// Rebuild base system prompt with new tool set (plus the R9 folded-tool
+		// category section maintained by syncToolSearchState/discovery).
+		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames, this._toolSearchCategories);
 		this._applyDynamicSystemPrompt();
+	}
+
+	/** Observable tool-search diagnostics (restore failures, resolver errors, fallbacks). */
+	get toolSearchDiagnostics(): readonly string[] {
+		return this._toolSearchDiagnostics;
+	}
+
+	private _recordToolSearchDiagnostic(message: string): void {
+		this._toolSearchDiagnostics.push(message);
+		console.warn(`[tool_search] ${message}`);
+	}
+
+	/**
+	 * Unified tool-search orchestration (D4). Every trigger — registry
+	 * refresh, preset/policy change, model switch, MCP connect/disconnect
+	 * (via extension refreshTools), extension hot reload, resume restore —
+	 * routes through here. Internals: recompute on the manager, apply the
+	 * active set, then compare the searchable catalog against the manager's
+	 * advertised baseline and enqueue a steering delta (R10); the baseline is
+	 * updated immediately after enqueueing (D5, one-shot semantics).
+	 *
+	 * @param requestedActiveNames raw active-set request from the trigger
+	 *   (post allow/deny, pre-folding). Omitted on triggers that only change
+	 *   activation inputs (e.g. model switch, per-run settings re-reads) and
+	 *   therefore leave the current active set untouched.
+	 */
+	syncToolSearchState(requestedActiveNames?: string[]): void {
+		if (requestedActiveNames) {
+			// Trigger-provided active intent (registry refresh / preset policy /
+			// extension set) applies verbatim first; folding then applies as a
+			// delta on top — never rebuilt from the registry-wide set (D23).
+			this.setActiveToolsByName(requestedActiveNames);
+		}
+		const manager = this._toolSearchManager;
+		if (!manager || !this._toolSearchRestored) return;
+
+		const result = this._recomputeToolSearch();
+
+		// Refresh the R9 category rows before the prompt rebuild below.
+		this._toolSearchCategories = buildToolSearchCategories(manager.getSearchableTools());
+		this._applyToolSearchActiveSet(result.activated);
+		this._queueToolCatalogDelta(manager, result.activated);
+	}
+
+	/** Build the manager input (catalog view + activation judgment) and recompute. */
+	private _recomputeToolSearch(): { activated: boolean; changed: boolean } {
+		const manager = this._toolSearchManager;
+		const entries = toToolSearchEntries(this._toolDefinitions.values(), this._toolSearchDeferrable);
+		const settings = this._getToolSearchSettings();
+		// R5: `tools.allow` whitelist names are user-mandated eager tools. They
+		// merge into reservedTools (single eager path), and the activation
+		// estimate only sees the potential folding set — entries minus the
+		// allow names (Main's ruling: shouldActivateToolSearch subtracts
+		// reservedTools internally; native 7 already normalize to non-deferrable).
+		const reservedTools = [...settings.reservedTools, ...(this._allowedToolNames ?? [])];
+		const allowNames = new Set(this._allowedToolNames ?? []);
+		const activationTools = entries.filter((entry) => !allowNames.has(entry.name));
+		const active = this._toolSearchActivationBlocked
+			? false
+			: shouldActivateToolSearch(
+					{
+						enabled: settings.enabled,
+						mode: settings.mode,
+						thresholdPercent: settings.thresholdPercent,
+						contextWindow: settings.contextWindow,
+						reservedTools,
+						tools: activationTools,
+					},
+					(message) => this._recordToolSearchDiagnostic(message),
+				);
+		return manager.recompute({ tools: entries, active, reservedTools });
+	}
+
+	/** Effective tool-search activation inputs (M5 §3): settings getters + live model context window. */
+	private _getToolSearchSettings(): {
+		enabled: boolean;
+		mode: "on" | "off" | "auto";
+		thresholdPercent: number;
+		reservedTools: string[];
+		contextWindow: number;
+	} {
+		const contextWindow = this.model?.contextWindow;
+		return {
+			enabled: this.settingsManager.getToolSearchEnabled(),
+			mode: this.settingsManager.getToolSearchMode(),
+			thresholdPercent: this.settingsManager.getToolSearchThresholdPercent(),
+			reservedTools: this.settingsManager.getToolSearchReservedTools(),
+			contextWindow: typeof contextWindow === "number" ? contextWindow : 0,
+		};
+	}
+
+	/**
+	 * Apply folding as a delta on the CURRENT active set (R7 per D23): remove
+	 * only deferrable ∧ undiscovered names, re-add discovered ∧ available ∧
+	 * deferrable names that are missing, and append the synthetic tool_search
+	 * definition while undiscovered foldable tools exist. The active set is
+	 * never rebuilt from the registry-wide catalog — extension `setActiveTools`
+	 * subsets and CLI/`--tools` selections must survive every sync. This is
+	 * also the synthetic tool_search definition's only registration point (D13).
+	 */
+	private _applyToolSearchActiveSet(activated: boolean): void {
+		const manager = this._toolSearchManager;
+		const current = this.agent.state.tools.map((tool) => tool.name);
+		let finalNames = current;
+		const searchableCount = manager.getSearchableTools().length;
+		if (activated) {
+			finalNames = current.filter((name) => !manager.isFoldedAndUndiscovered(name));
+			for (const name of manager.discoveredSnapshot()) {
+				if (
+					name !== TOOL_SEARCH_TOOL_NAME &&
+					!finalNames.includes(name) &&
+					(this._toolSearchDeferrable.get(name) ?? false) &&
+					this._toolRegistry.has(name)
+				) {
+					finalNames.push(name);
+				}
+			}
+			if (searchableCount > 0 && !finalNames.includes(TOOL_SEARCH_TOOL_NAME)) {
+				finalNames.push(TOOL_SEARCH_TOOL_NAME);
+			}
+		} else {
+			finalNames = current.filter((name) => name !== TOOL_SEARCH_TOOL_NAME);
+		}
+
+		if (activated && searchableCount > 0) {
+			if (!this._toolRegistry.has(TOOL_SEARCH_TOOL_NAME)) {
+				const definition = manager.getToolSearchDefinition();
+				// The synthetic tool is a builtin-equivalent: it never passes
+				// through the extension wrapper (M1 §8) — M3 writes its
+				// addedToolNames manually into the execute result.
+				this._toolDefinitions.set(TOOL_SEARCH_TOOL_NAME, {
+					definition,
+					sourceInfo: createSyntheticSourceInfo(`<builtin:${TOOL_SEARCH_TOOL_NAME}>`, { source: "builtin" }),
+				});
+				this._toolRegistry.set(TOOL_SEARCH_TOOL_NAME, definition as AgentTool);
+			}
+		} else {
+			this._toolRegistry.delete(TOOL_SEARCH_TOOL_NAME);
+			this._toolDefinitions.delete(TOOL_SEARCH_TOOL_NAME);
+		}
+
+		// Skip the prompt rebuild when the effective set is unchanged — syncs
+		// run on every trigger and continuation (D14 re-reads), mostly as no-ops.
+		const currentCategories = this._baseSystemPromptOptions.toolSearchCategories ?? [];
+		const nextCategories = this._toolSearchCategories ?? [];
+		const categoriesUnchanged =
+			currentCategories.length === nextCategories.length &&
+			currentCategories.every(
+				(category, i) =>
+					category.name === nextCategories[i].name && category.description === nextCategories[i].description,
+			);
+		if (
+			finalNames.length === current.length &&
+			finalNames.every((name, i) => current[i] === name) &&
+			categoriesUnchanged
+		) {
+			return;
+		}
+		this.setActiveToolsByName(finalNames);
+	}
+
+	/**
+	 * R10/D5 catalog delta notification: diff the current searchable catalog
+	 * against the manager's advertised baseline, enqueue a steering message
+	 * when non-empty, then update the baseline immediately (one-shot).
+	 *
+	 * The first sync after restore seeds the baseline from the post-restore
+	 * searchable catalog (D5 / M4 §3.2 step 3) instead of enqueueing a delta —
+	 * the model already knows the restored catalog, and only a fresh recompute
+	 * knows the true searchable set (activation, reserved/allow eager). When
+	 * tool search is not activated there is no searchable catalog to advertise,
+	 * so the baseline is reset silently (R10 notifications live only during
+	 * activation).
+	 */
+	private _queueToolCatalogDelta(manager: ToolSearchManagerContract, activated: boolean): void {
+		const current = manager.getSearchableTools().map((entry) => entry.name);
+		if (!this._toolSearchBaselineSeeded) {
+			this._toolSearchBaselineSeeded = true;
+			manager.markCatalogAdvertised(current);
+			return;
+		}
+		if (!activated) {
+			manager.markCatalogAdvertised(current);
+			return;
+		}
+		const delta = computeToolCatalogDelta(current, manager.lastAdvertisedCatalog(), (name) =>
+			manager.hasDiscovered(name),
+		);
+		const message = formatToolCatalogDeltaMessage(delta);
+		if (message.length > 0) {
+			// Preferred steering channel (R10): model-visible, takes effect next
+			// turn; when idle the queued steer is delivered with the next run.
+			void this._queueSteer(message).catch((error: unknown) => {
+				this._recordToolSearchDiagnostic(
+					`Failed to queue tool catalog delta notification: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+		}
+		manager.markCatalogAdvertised(current);
+	}
+
+	/**
+	 * D1 batch seam (AgentSession's唯一实现): scan the batch's
+	 * `addedToolNames`, register discoveries on the manager (idempotent), and
+	 * refresh the active set + category section only when something actually
+	 * changed. Safe on loop terminate (state update only, never re-entrant
+	 * into the loop). Runs after the batch's results are in the context and
+	 * before the next request, so new schemas ride the next turn (R3).
+	 */
+	async onToolBatchCompleted(toolResults: ToolResultAgentMessage[], _context?: AgentContext): Promise<void> {
+		const manager = this._toolSearchManager;
+		if (!manager || !this._toolSearchRestored) return;
+		const addedNames = toolResults.flatMap((result) => result.addedToolNames ?? []);
+		if (addedNames.length === 0) return;
+		try {
+			const { changed } = manager.discover(addedNames);
+			if (changed) {
+				// Discovery recomputed the manager's in-memory state (M1 §3.2):
+				// refresh categories and re-run the active-set delta so the new
+				// schemas ride the next turn (R3) — no second discover pass (D3).
+				this._recomputeToolSearch();
+				this._toolSearchCategories = buildToolSearchCategories(manager.getSearchableTools());
+				this._applyToolSearchActiveSet(true);
+			}
+		} catch (error) {
+			this._recordToolSearchDiagnostic(
+				`tool_search batch discovery failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	/**
+	 * Availability resolver for the agent loop (doc 20 §2): folded-and-
+	 * undiscovered names yield the R8 guidance text; everything else (truly
+	 * unknown, eager, discovered, denied) returns undefined and keeps the
+	 * legacy `Tool X not found` path. Resolver exceptions are never masked as
+	 * "available": they log a session diagnostic and fall back to not-found
+	 * (D18).
+	 */
+	resolveToolSearchGuidance(toolName: string): string | undefined {
+		const manager = this._toolSearchManager;
+		if (!manager || !this._toolSearchRestored) return undefined;
+		try {
+			if (!manager.isFoldedAndUndiscovered(toolName)) return undefined;
+			return manager.getGuidance(toolName);
+		} catch (error) {
+			this._recordToolSearchDiagnostic(
+				`tool_search availability resolver failed for '${toolName}': ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Transcript restore (R6/D7): scan the full branch plus the latest
+	 * compaction checkpoint and bulk-restore discovered names via the
+	 * manager's only recovery entry point, then run the first sync. Order is
+	 * frozen: restore first, recompute (inside sync) after (M4 §3.2).
+	 *
+	 * D11 gate: this runs inside `_buildRuntime`, before the runtime-ready
+	 * barrier lifts — user messages/steers arriving during the window are
+	 * queued by the existing `_ensureRuntimeReady` awaiters and released in
+	 * order afterward; no tool execution can start mid-restore. Failures keep
+	 * already-restored names (restore is a bulk setter), deactivate tool
+	 * search for this session, and record a diagnostic. An aborted signal
+	 * (checked between phases) cancels the remaining restore with the same
+	 * deactivate-and-continue semantics.
+	 */
+	async _restoreToolSearchState(signal?: AbortSignal): Promise<void> {
+		const manager = this._toolSearchManager;
+		if (!manager) return;
+		try {
+			if (signal?.aborted) {
+				this._toolSearchActivationBlocked = true;
+				this._recordToolSearchDiagnostic(
+					"Tool search restore aborted; continuing this session with tool search deactivated.",
+				);
+			} else {
+				// D22: start from clean derived state, then replay the full
+				// recovery algorithm against the current branch.
+				manager.reset();
+				const scan = scanBranchForToolSearchDiscovery(this.sessionManager.getBranch());
+				const restoredNames = collectRestoredToolNames(scan);
+				if (restoredNames.length > 0) manager.restore(restoredNames);
+				// D5 baseline seeding happens in the first syncToolSearchState()
+				// below (see _queueToolCatalogDelta): only after a recompute is
+				// the true searchable catalog (activation, reserved/allow eager)
+				// known.
+			}
+		} catch (error) {
+			this._toolSearchActivationBlocked = true;
+			this._recordToolSearchDiagnostic(
+				`Tool search restore failed; continuing this session with tool search deactivated: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		} finally {
+			this._toolSearchRestored = true;
+			this._toolSearchBaselineSeeded = false;
+			this.syncToolSearchState();
+		}
+	}
+
+	/**
+	 * D22 (M4 §3.5): replay the recovery algorithm after the active path
+	 * changed (branch, reroll, rewind, tree navigation, compaction via
+	 * _syncAgentStateFromSession). Discovered names from cut-off sibling
+	 * branches must not leak into the new branch — reset + full branch scan +
+	 * restore rebuilds the set from the transcript. The advertised baseline is
+	 * intentionally NOT reseeded here: the next sync computes the delta against
+	 * it so the model learns what became searchable on the new branch. A
+	 * failure mid-replay keeps whatever was re-restored (union semantics) and
+	 * only logs — the session keeps running.
+	 */
+	private _replayToolSearchRestore(): void {
+		const manager = this._toolSearchManager;
+		if (!manager || !this._toolSearchRestored) return;
+		try {
+			manager.reset();
+			const scan = scanBranchForToolSearchDiscovery(this.sessionManager.getBranch());
+			const restoredNames = collectRestoredToolNames(scan);
+			if (restoredNames.length > 0) manager.restore(restoredNames);
+		} catch (error) {
+			this._recordToolSearchDiagnostic(
+				`Tool search re-recovery after branch switch failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		// reset() cleared the advertised baseline (D22); re-seed it from the
+		// post-replay searchable catalog so same-branch replays (compaction
+		// appends, message edits) stay silent instead of announcing the whole
+		// catalog as a false "Tools added" delta — which would enqueue a
+		// steering message and spawn an extra provider round. After a real
+		// branch switch the model still learns the current catalog through the
+		// R9 category section and the tool_search guidance.
+		this._toolSearchBaselineSeeded = false;
+		this.syncToolSearchState();
+	}
+
+	/**
+	 * D6: single tool-search compaction details builder used by both
+	 * compaction call sites. Merges the manager's checkpoint snapshot (which
+	 * unions manager-discovered with the branch's addedToolNames scan — same
+	 * source as restore) into the compaction result's existing details.
+	 */
+	private _buildToolSearchCompactionDetails(existingDetails: unknown): unknown {
+		const manager = this._toolSearchManager;
+		if (!manager || !this._toolSearchRestored) return existingDetails;
+		const branchScan = scanBranchForToolSearchDiscovery(this.sessionManager.getBranch());
+		const snapshot = manager.buildCompactionDetailsSnapshot(branchScan.discoveredNames);
+		return mergeToolSearchCompactionDetails(existingDetails, snapshot);
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1521,7 +1910,7 @@ export class AgentSession {
 		}
 	}
 
-	private _rebuildSystemPrompt(toolNames: string[]): string {
+	private _rebuildSystemPrompt(toolNames: string[], toolSearchCategories?: readonly ToolSearchCategory[]): string {
 		this._ensureActivePresetRestored();
 
 		if (!this._firstLoadRestored) {
@@ -1561,6 +1950,7 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			toolSearchCategories,
 		};
 
 		if (loaderSystemPrompt) {
@@ -1592,6 +1982,9 @@ export class AgentSession {
 			.join("\n");
 		const guidelinesKey = promptGuidelines.join("\n");
 		const appendPromptKey = appendSystemPrompt ?? "";
+		const toolSearchCategoriesKey = (toolSearchCategories ?? [])
+			.map((category) => `${category.name}:${category.description}`)
+			.join("\n");
 		const cache = this._staticPromptCache;
 		if (
 			cache &&
@@ -1603,6 +1996,7 @@ export class AgentSession {
 			cache.contextFiles === loadedContextFiles &&
 			cache.customPrompt === loaderSystemPrompt &&
 			cache.appendPrompt === appendPromptKey &&
+			cache.toolSearchCategories === toolSearchCategoriesKey &&
 			cache.model === model?.id &&
 			cache.thinkingLevel === thinkingLevel
 		) {
@@ -1631,6 +2025,7 @@ export class AgentSession {
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendPrompt: appendPromptKey,
+			toolSearchCategories: toolSearchCategoriesKey,
 			model: model?.id ?? "",
 			thinkingLevel,
 			value,
@@ -1868,11 +2263,11 @@ export class AgentSession {
 		// from pi-mcp-adapter) are also subject to the preset's policy.
 		this._toolPolicyBaseline ??= this.getActiveToolNames();
 		const filtered = applyResourcePolicy([...this._toolRegistry.keys()], policy);
-		this.setActiveToolsByName(filtered);
+		this.syncToolSearchState(filtered);
 	}
 	private _restoreToolPolicy(): void {
 		if (this._toolPolicyBaseline) {
-			this.setActiveToolsByName(this._toolPolicyBaseline);
+			this.syncToolSearchState(this._toolPolicyBaseline);
 			this._toolPolicyBaseline = undefined;
 		}
 	}
@@ -1991,8 +2386,15 @@ export class AgentSession {
 		this._isAgentRunActive = true;
 		await this.withReloadDeferred(async () => {
 			try {
+				// D14/M5 §3.10: re-read effective tool-search settings before the
+				// request so in-process settings changes apply without restart.
+				this.syncToolSearchState();
 				await this.agent.prompt(messages);
 				while (await this._handlePostAgentRun()) {
+					// D14/M5 §3.10: re-read effective tool-search settings before
+					// each continuation so in-process settings changes apply
+					// without restart.
+					this.syncToolSearchState();
 					await this.agent.continue();
 				}
 			} finally {
@@ -2573,6 +2975,9 @@ export class AgentSession {
 	private _syncAgentStateFromSession(): void {
 		const sessionContext = this.sessionManager.buildSessionContext();
 		this.agent.state.messages = sessionContext.messages;
+		// D22: the active path changed (branch/reroll/rewind/compaction) —
+		// replay recovery so discovered reflects the new branch, not siblings.
+		this._replayToolSearchRestore();
 	}
 
 	/**
@@ -2585,6 +2990,9 @@ export class AgentSession {
 		try {
 			await this.agent.continue();
 			while (await this._handlePostAgentRun()) {
+				// D14/M5 §3.10: re-read effective tool-search settings before each
+				// continuation so in-process settings changes apply without restart.
+				this.syncToolSearchState();
 				await this.agent.continue();
 			}
 		} finally {
@@ -2968,6 +3376,10 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel, persistSettings);
 
+		// Activation depends on the live model's context window (R5): recompute
+		// with the new model before the next request.
+		this.syncToolSearchState();
+
 		await this._emitModelSelect(model, previousModel, "set");
 	}
 
@@ -3274,7 +3686,14 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				this._buildToolSearchCompactionDetails(details),
+				fromExtension,
+				usage,
+			);
 			const newEntries = this.sessionManager.getEntries();
 			this._syncAgentStateFromSession();
 			const estimatedTokensAfter = estimateMessagesTokens(this.agent.state.messages);
@@ -3632,7 +4051,14 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				this._buildToolSearchCompactionDetails(details),
+				fromExtension,
+				usage,
+			);
 			const newEntries = this.sessionManager.getEntries();
 			this._syncAgentStateFromSession();
 			const estimatedTokensAfter = estimateMessagesTokens(this.agent.state.messages);
@@ -3877,13 +4303,19 @@ export class AgentSession {
 					});
 				},
 				sendUserMessage: (content, options) => {
-					this.sendUserMessage(content, options).catch((err) => {
+					const sending = this.sendUserMessage(content, options);
+					// Report failures on the extension error channel while still
+					// returning the promise: handlers that await it only continue
+					// after the run actually started (deterministic 5943-style
+					// observability); fire-and-forget callers are unaffected.
+					void sending.catch((err) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
 							event: "send_user_message",
 							error: err instanceof Error ? err.message : String(err),
 						});
 					});
+					return sending;
 				},
 				startLiveMessage: (message) => this.startLiveMessage(message),
 				appendEntry: (typeOrCustomType: string, data?: unknown) => {
@@ -4115,6 +4547,17 @@ export class AgentSession {
 			});
 		}
 		this._toolDefinitions = definitionRegistry;
+
+		// D8: normalize `deferrable` exactly once per registry rebuild, after
+		// the same-name override merge has settled and before wrapping. The
+		// boolean result is what ToolSearchManager consumes (it never reads
+		// sourceInfo).
+		const deferrableByName = new Map<string, boolean>();
+		for (const [name, entry] of definitionRegistry) {
+			deferrableByName.set(name, normalizeDeferrable(entry.definition, entry.sourceInfo));
+		}
+		this._toolSearchDeferrable = deferrableByName;
+
 		this._toolPromptSnippets = new Map(
 			Array.from(definitionRegistry.values())
 				.map(({ definition }) => {
@@ -4171,7 +4614,9 @@ export class AgentSession {
 			}
 		}
 
-		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
+		// Folding filter + synthetic tool_search registration happen inside the
+		// unified sync (R7 order); pre-restore this applies the names verbatim.
+		this.syncToolSearchState([...new Set(nextActiveToolNames)]);
 	}
 
 	private async _buildRuntime(options: {
@@ -4266,6 +4711,12 @@ export class AgentSession {
 		// Apply the restored/active preset's tools policy after re-registering tools,
 		// so extension tools added by includeAllExtensionTools are also filtered.
 		this._syncActiveToolPolicy();
+
+		// R6/D7/D11: recover discovered tools from the transcript (resume or
+		// reload) before the runtime-ready barrier lifts, then run the first
+		// unified sync. Restore happens before any recompute (frozen order,
+		// M4 §3.2).
+		await this._restoreToolSearchState();
 	}
 
 	/**

@@ -46,3 +46,5 @@ plans/
 **/.pi/memory.db-wal
 .pi/hf-sessions-backup/
 collect.sh
+
+**/.pi/

@@ -540,4 +540,44 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual(["Do the task"]);
 		});
 	});
+
+	describe("--tool-search flags", () => {
+		test("parses --tool-search on|off|auto", () => {
+			expect(parseArgs(["--tool-search", "on"]).toolSearch).toBe("on");
+			expect(parseArgs(["--tool-search", "off"]).toolSearch).toBe("off");
+			expect(parseArgs(["--tool-search", "auto"]).toolSearch).toBe("auto");
+		});
+
+		test("rejects invalid --tool-search values with a diagnostic", () => {
+			const result = parseArgs(["--tool-search", "bogus"]);
+			expect(result.toolSearch).toBeUndefined();
+			expect(result.diagnostics).toHaveLength(1);
+			expect(result.diagnostics[0].type).toBe("error");
+			expect(result.diagnostics[0].message).toContain("--tool-search");
+		});
+
+		test("parses --no-tool-search", () => {
+			expect(parseArgs(["--no-tool-search"]).noToolSearch).toBe(true);
+		});
+
+		test("parses --tool-search-threshold including zero", () => {
+			expect(parseArgs(["--tool-search-threshold", "15"]).toolSearchThreshold).toBe(15);
+			expect(parseArgs(["--tool-search-threshold", "0"]).toolSearchThreshold).toBe(0);
+		});
+
+		test("rejects invalid --tool-search-threshold values with a diagnostic", () => {
+			for (const raw of ["abc", "-5", "", "1e999"]) {
+				const result = parseArgs(["--tool-search-threshold", raw]);
+				expect(result.toolSearchThreshold).toBeUndefined();
+				expect(result.diagnostics).toHaveLength(1);
+				expect(result.diagnostics[0].type).toBe("error");
+				expect(result.diagnostics[0].message).toContain("--tool-search-threshold");
+			}
+		});
+
+		test("parses --reserve-tools with --tools-style trimming and filtering", () => {
+			const result = parseArgs(["--reserve-tools", "alpha, beta ,,gamma"]);
+			expect(result.reserveTools).toEqual(["alpha", "beta", "gamma"]);
+		});
+	});
 });

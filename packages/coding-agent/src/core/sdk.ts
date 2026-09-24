@@ -424,6 +424,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		},
 		sessionId: sessionManager.getSessionId(),
+		resolveToolAvailability: async (toolName) => {
+			const guidance = sessionRef.current?.resolveToolSearchGuidance(toolName);
+			if (guidance === undefined) return undefined;
+			return { kind: "deferred", guidance };
+		},
+		onToolBatchCompleted: async (toolResults, context) => {
+			// D1 seam: exactly once per finalized tool batch, before the next
+			// request. Idempotent; harmless when the loop terminates afterwards.
+			await sessionRef.current?.onToolBatchCompleted(toolResults, context);
+		},
 		transformContext: async (messages) => {
 			let result: AgentMessage[] = messages;
 			// When a user preset is active, use preset-compiled messages directly.
