@@ -46,6 +46,10 @@
         {
           "title": "Compaction",
           "path": "compaction.md"
+        },
+        {
+          "title": "Tool Search",
+          "path": "tool-search.md"
         }
       ]
     },

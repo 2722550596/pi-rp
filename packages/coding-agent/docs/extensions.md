@@ -1355,6 +1355,8 @@ Use `pi.setActiveTools()` to enable or disable tools (including dynamically adde
 
 Use `promptSnippet` to opt a custom tool into a one-line entry in `Available tools`, and `promptGuidelines` to append tool-specific bullets to the default `Guidelines` section when the tool is active.
 
+**Tool search:** extension tools are foldable by default — when tool search is active they are removed from the function list and the model loads them on demand via the `tool_search` tool (see [Tool Search](tool-search.md)). Set `deferrable: false` on the definition to keep a tool always available. Search matches your tool's name, description, prompt snippet, and parameter descriptions, so write them the way a model would search for the capability.
+
 **Important:** `promptGuidelines` bullets are appended flat to the `Guidelines` section with no tool name prefix. Each guideline must name the tool it refers to — avoid "Use this tool when..." because the LLM cannot tell which tool "this" means. Write "Use my_tool when..." instead.
 
 See [dynamic-tools.ts](../examples/extensions/dynamic-tools.ts) for a full example.
