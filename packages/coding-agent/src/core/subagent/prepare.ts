@@ -139,7 +139,11 @@ export async function prepareSubagentConversation(options: PrepareSubagentOption
 	}
 	const preset = foundPreset?.preset ?? defaultPreset;
 
-	// Resolve model: explicit model object > modelRef > preset.model > first available.
+	// Resolve model: explicit model object > modelRef > preset.model > parent
+	// session's active model > first available. Inheriting the parent's model
+	// matters: subagent presets usually declare no model, and the registry's
+	// first entry may be a provider the user never configured (e.g. Bedrock),
+	// which fails instantly and surfaces as a silently empty subagent result.
 	const availableModels = [...modelRuntime.getModels()];
 	let model: Model<any> | undefined;
 	if (options.model) {
@@ -155,6 +159,9 @@ export async function prepareSubagentConversation(options: PrepareSubagentOption
 		}
 	} else if (preset.model) {
 		model = findExactModelReferenceMatch(preset.model, availableModels);
+	}
+	if (!model && options.session?.model) {
+		model = options.session.model;
 	}
 	if (!model) {
 		model = availableModels[0];

@@ -476,15 +476,25 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionManager.appendModelChange(model.provider, model.id);
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
-		if (!options.preset) {
-			// New sessions record the actually-effective default preset:
-			// settings default → first auto-activatable preset on disk → built-in default.
-			const defaultPresetId =
-				settingsManager.getDefaultPreset() ??
-				chooseDefaultPreset(loadPromptPresets(cwd, agentDir))?.preset.id ??
-				"default";
-			sessionManager.appendPresetChange(defaultPresetId);
-		}
+		// Record the actually-effective initial preset (explicit option wins,
+		// else settings default → first auto-activatable preset on disk →
+		// built-in default) BEFORE the AgentSession is constructed. The
+		// constructor's async _buildRuntime restores the preset from these
+		// entries and resolves the memory DB path from it; if the entries are
+		// empty it falls back to settings' defaultPreset instead. A preset
+		// with a different memory.dbPath then triggers
+		// _maybeReloadForMemoryDbPathChange → void requestReload() during
+		// setActivePreset, and that fire-and-forget reload invalidates the
+		// extension runner while the first run is already in flight — subagent
+		// sessions saw stale-ctx tool results or empty completed results.
+		// Recording the final preset here makes the restore and the later
+		// setActivePreset agree, so no spurious reload happens.
+		const initialPresetId =
+			options.preset ??
+			settingsManager.getDefaultPreset() ??
+			chooseDefaultPreset(loadPromptPresets(cwd, agentDir))?.preset.id ??
+			"default";
+		sessionManager.appendPresetChange(initialPresetId);
 	}
 
 	const session = new AgentSession({
@@ -515,7 +525,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// 续档去重：preset/schema/strict 的最新条目与本次 CLI 参数一致时，只应用内存态、
 	// 不追加 change 条目——进程重启（--continue 续档、web 壳断线重连后重新 spawn）
 	// 不再给会话文件留下重复的 preset_change/schema_change/strict_change 尾巴。
-	const resumedEntries = hasExistingSession ? sessionManager.getEntries() : [];
+	// 新会话同样适用：构造前的初始 preset/schema 记录（见上方 else 分支）就是
+	// "已生效"的记录，setActivePreset/loadSchema 不必再写一条同值尾巴。
+	const resumedEntries = sessionManager.getEntries();
 	const presetAlreadyActive =
 		options.preset !== undefined &&
 		latestEntryOfType<PresetChangeEntry>(resumedEntries, "preset_change")?.presetId === options.preset;
