@@ -4,7 +4,7 @@ import type { JsonValue } from "../../state/state-manager.ts";
 import type { AgentSession } from "../agent-session.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { DEFAULT_SUBAGENT_TOOLS, isPrepareError, pick, prepareSubagentConversation } from "./prepare.ts";
-import { runSubagent, type SubagentResultStatus } from "./run.ts";
+import { runSubagent, subagentActivityForwarder, type SubagentResultStatus } from "./run.ts";
 
 // =========================================================================
 // Types
@@ -41,6 +41,14 @@ export interface SpawnAgentOptions {
 	thinkingLevel?: ThinkingLevel;
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	/**
+	 * Bind the spawned agent's activity events (transient agent_activity on
+	 * the parent session's event stream) to this turn id instead of the
+	 * subagent's own turn tracking. Callers that self-report a root activity
+	 * for the whole command run should pass their turn id so downstream
+	 * projectors can fail-close root and child activities together.
+	 */
+	activityTurnId?: string;
 	/** Callback after the subagent session is created, before the run starts (tests/hooks). */
 	onSessionCreated?: (session: AgentSession) => void;
 }
@@ -119,6 +127,9 @@ export async function spawnAgent(session: AgentSession, options: SpawnAgentOptio
 			requestGateway: session.requestGateway,
 			strict: true,
 			seedState,
+			// Subagent tool activity surfaces on the parent session's event
+			// stream as transient agent_activity events (engine-native channel).
+			activitySink: subagentActivityForwarder(session, options.profileId, options.activityTurnId),
 			onSessionCreated: (sub) => {
 				options.onSessionCreated?.(sub);
 				subscribeStateOps(sub, ops);

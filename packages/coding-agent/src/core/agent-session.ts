@@ -298,7 +298,39 @@ export type AgentSessionEvent =
 	| { type: "custom_message_update"; message: CustomMessage }
 	| { type: "leaf_changed"; newLeafId: string | null; oldLeafId: string | null }
 	| { type: "entry_edited"; entryId: string }
-	| { type: "preset_activated"; presetId: string };
+	| { type: "preset_activated"; presetId: string }
+	| AgentActivityEvent;
+
+/**
+ * Transient activity telemetry (e.g. in-process subagent tool calls, extension
+ * command self-reports). Events only — never persisted to the session tree,
+ * never added to agent state, never sent to the LLM. Consumers are live
+ * subscribers: TUI, RPC/JSON stdout (toJsonEvent passes them through
+ * verbatim), and extensions.
+ */
+export interface AgentActivityEvent {
+	type: "agent_activity";
+	/** What produced the activity. */
+	origin: "subagent" | "command";
+	/**
+	 * Engine-known identity of the acting agent: the subagent profile id for
+	 * origin="subagent", the command name for origin="command". Application
+	 * layers map this onto their own semantics (e.g. AIRP source/agentId).
+	 */
+	agentId: string;
+	/** Stable correlation id binding all activity of one turn / command run. */
+	turnId: string;
+	toolCallId: string;
+	toolName: string;
+	phase: "start" | "end";
+	/** Tool call arguments; only present on phase="start". */
+	args?: unknown;
+	/** Tool result details; only present on phase="end". */
+	details?: unknown;
+	isError?: boolean;
+	errorKind?: "tool_error" | "timeout" | "cancelled" | "agent_stopped";
+	timestamp: number;
+}
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -2812,6 +2844,21 @@ export class AgentSession {
 	}
 
 	/**
+	 * Emit transient activity telemetry (AgentActivityEvent). Events only:
+	 * nothing is persisted to the session tree, nothing enters agent state or
+	 * the LLM context — live subscribers (TUI, RPC/JSON stdout, extensions)
+	 * are the only consumers. This is the engine-native replacement for the
+	 * former "relay subagent activity via hidden custom messages" hack.
+	 *
+	 * @param event Activity payload; `type` and `timestamp` are filled in.
+	 */
+	emitActivity(
+		event: Omit<AgentActivityEvent, "type" | "timestamp">,
+	): void {
+		this._emit({ type: "agent_activity", timestamp: Date.now(), ...event });
+	}
+
+	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
 	 * Handles four cases:
@@ -4301,6 +4348,9 @@ export class AgentSession {
 							error: err instanceof Error ? err.message : String(err),
 						});
 					});
+				},
+				emitActivity: (event) => {
+					this.emitActivity(event);
 				},
 				sendUserMessage: (content, options) => {
 					const sending = this.sendUserMessage(content, options);

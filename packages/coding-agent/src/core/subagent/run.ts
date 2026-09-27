@@ -34,6 +34,40 @@ export interface SubagentActivityEvent {
 
 export type SubagentActivitySink = (event: SubagentActivityEvent) => void;
 
+/**
+ * Build an activity sink that forwards subagent tool activity onto the parent
+ * session's event stream as transient AgentActivityEvents (events only —
+ * never persisted, never sent to the LLM). This is the engine-native channel
+ * that replaces the former hidden-custom-message relay.
+ *
+ * `turnIdOverride` lets a caller (e.g. spawnAgent-driven commands that
+ * self-report a root activity) bind the child's activity to the caller's own
+ * turn id, so a projector can fail-close root and child activities together.
+ */
+export function subagentActivityForwarder(
+	session: AgentSession,
+	agentId: string,
+	turnIdOverride?: string,
+): SubagentActivitySink {
+	return (event) => {
+		try {
+			session.emitActivity({
+				origin: "subagent",
+				agentId,
+				turnId: turnIdOverride ?? event.turnId,
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				phase: event.type === "tool_start" ? "start" : "end",
+				...(event.args !== undefined ? { args: event.args } : {}),
+				...(event.details !== undefined ? { details: event.details } : {}),
+				...(event.isError !== undefined ? { isError: event.isError } : {}),
+			});
+		} catch {
+			// The parent may have been disposed while the child was unwinding.
+		}
+	};
+}
+
 export interface RunSubagentOptions {
 	/** Maximum time in milliseconds before aborting */
 	timeoutMs?: number;

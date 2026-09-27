@@ -378,6 +378,7 @@ export class ExtensionRunner {
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
 		this.runtime.sendMessage = actions.sendMessage;
+		this.runtime.emitActivity = actions.emitActivity;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.startLiveMessage = actions.startLiveMessage;
 		this.runtime.appendEntry = actions.appendEntry;

@@ -54,6 +54,7 @@ import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
+import type { AgentActivityEvent } from "../agent-session.ts";
 import type { CustomMessage, CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
@@ -1495,6 +1496,15 @@ export interface ExtensionAPI {
 	): void;
 
 	/**
+	 * Emit transient activity telemetry. Events only: nothing is persisted to
+	 * the session tree, nothing enters agent state or the LLM context — live
+	 * subscribers (TUI, RPC/JSON stdout, extensions) are the only consumers.
+	 * Use for command/agent self-reporting (e.g. activity rails); do NOT use
+	 * for anything that must survive session replay.
+	 */
+	emitActivity(event: Omit<AgentActivityEvent, "type" | "timestamp">): void;
+
+	/**
 	 * Send a user message to the agent. Always triggers a turn.
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
 	 * Set expandPromptTemplates to dispatch extension commands and expand skill commands and prompt templates.
@@ -1794,6 +1804,8 @@ export type SendMessageHandler = <T = unknown>(
 	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 ) => void;
 
+export type EmitActivityHandler = (event: Omit<AgentActivityEvent, "type" | "timestamp">) => void;
+
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
 	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
@@ -1901,6 +1913,7 @@ export interface ExtensionRuntimeState {
  */
 export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
+	emitActivity: EmitActivityHandler;
 	sendUserMessage: SendUserMessageHandler;
 	startLiveMessage: StartLiveMessageHandler;
 	appendEntry: AppendEntryHandler;

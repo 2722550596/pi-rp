@@ -5,6 +5,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, it } from "vitest";
 import { applyResourcePolicy } from "../../src/core/prompt-preset/policy.ts";
+import type { ExtensionContext } from "../../src/core/extensions/types.ts";
 import {
 	createSubagentProfilesToolDefinition,
 	createSubagentToolDefinition,
@@ -685,6 +686,79 @@ describe("Subagent", () => {
 				assert.equal(runResult.status, "completed", `run error: ${runResult.error ?? "none"}`);
 				assert.equal(subSessionCwd, harness.tempDir, "subagent session must run in the preparation cwd");
 			}
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("Phase 9: subagent tool forwards activity as transient events, not custom messages", async () => {
+		const harness = await createHarness();
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "test-activity.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "test-activity",
+					delegatable: true,
+					items: [
+						{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a test peer." },
+						{ kind: "block", id: "prompt", enabled: true, role: "user", content: "Delegate." },
+					],
+				}),
+			);
+			harness.session.reloadPresets();
+
+			const activities: Array<Record<string, unknown>> = [];
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "agent_activity") activities.push(event as unknown as Record<string, unknown>);
+			});
+
+			const subagentTool = createSubagentToolDefinition(harness.session);
+			harness.setResponses([
+				fauxAssistantMessage([fauxToolCall("read", { path: "notes.md" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage("finished"),
+			]);
+
+			// The subagent tool ignores ctx entirely (declared _ctx); an empty
+			// object satisfies the runtime path, the cast is purely for TS.
+			const ctx = {} as unknown as ExtensionContext;
+			const result = await subagentTool.execute(
+				"1",
+				{ profileId: "test-activity", task: "task" },
+				undefined,
+				undefined,
+				ctx,
+			);
+			const text = result.content[0];
+			assert.ok(typeof text === "object" && "text" in text && !text.text.includes("[failed]"), text);
+
+			unsubscribe();
+
+			// Activity surfaces as agent_activity events (start + end), bound to
+			// the subagent profile id and a stable turn id.
+			const starts = activities.filter((e) => e.phase === "start");
+			const ends = activities.filter((e) => e.phase === "end");
+			assert.equal(starts.length, 1, `expected 1 start event, got ${JSON.stringify(activities)}`);
+			assert.equal(ends.length, 1, "expected 1 end event");
+			for (const event of activities) {
+				assert.equal(event.origin, "subagent");
+				assert.equal(event.agentId, "test-activity");
+				assert.equal(event.toolName, "read");
+				assert.equal(event.turnId, starts[0].turnId, "turnId must be stable within the subagent turn");
+				assert.equal(typeof event.timestamp, "number");
+			}
+			assert.equal(starts[0].toolCallId, ends[0].toolCallId, "start/end must share the toolCallId");
+
+			// Transient: nothing may land in the session tree — the former
+			// airp_agent_activity custom-message relay is gone.
+			const entryTypes = harness.session.sessionManager.getEntries().map((entry) => entry.type);
+			assert.equal(
+				entryTypes.includes("custom_message"),
+				false,
+				`session must not contain custom_message entries, got ${JSON.stringify(entryTypes)}`,
+			);
 		} finally {
 			harness.cleanup();
 		}
