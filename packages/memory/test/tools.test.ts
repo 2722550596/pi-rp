@@ -18,8 +18,12 @@ afterEach(() => {
 	db.close();
 });
 
-function run(name: string, args: Record<string, unknown>): Promise<{ text: string; details: Record<string, unknown> }> {
-	const tool = createMemoryTools(store).find((t) => t.name === name);
+function run(
+	name: string,
+	args: Record<string, unknown>,
+	ctx: { modelId?: string; leafId?: string | null; sessionId?: string; turn?: number } = {},
+): Promise<{ text: string; details: Record<string, unknown> }> {
+	const tool = createMemoryTools(store, ctx).find((t) => t.name === name);
 	if (!tool) throw new Error(`tool ${name} missing`);
 	return tool.execute("call-1", args).then((r) => ({
 		text: r.content.map((c) => c.text).join(""),
@@ -266,6 +270,64 @@ describe("retrace", () => {
 		expect(r.text).toContain("第一句");
 		expect(r.text).toContain("第二句");
 	});
+
+	it("uri mode scopes to the anchor session: foreign interleaved rows excluded, off-branch rows kept", async () => {
+		// raw_id 全库交错：甲1(1) 乙1(2) 甲2(3) 甲3(4)。
+		store.appendRaw([
+			{ role: "user", text: "甲一", entry_id: "a1", session_id: "sess-a", wall_ts: "t1" },
+			{ role: "assistant", text: "乙一", entry_id: "b1", session_id: "sess-b", wall_ts: "t2" },
+			{ role: "user", text: "甲二", entry_id: "a2", session_id: "sess-a", wall_ts: "t3" },
+			{ role: "assistant", text: "甲三", entry_id: "a3", session_id: "sess-a", wall_ts: "t4" },
+		]);
+		// sess-a 切回只含 a1 的分支：a2/a3 离枝（active=0）但行保留。
+		store.syncRawBranch("sess-a", [
+			{ role: "user", text: "甲一", entry_id: "a1", session_id: "sess-a", wall_ts: "t1" },
+		]);
+		store.put({
+			uri: "history://sum",
+			content: "纪要",
+			first_raw_id: 1,
+			last_raw_id: 4,
+			anchor_session_id: "sess-a",
+		});
+
+		// 任何 session 的模型 recall 到这条纪要都能回溯：窗口按锚 session
+		// 圈定——"当时发生"的原文（含后来离枝的行）都在，他 session 的
+		// 交错行不混入（docs §4 consumption path）。
+		const r = await run("retrace", { uri: "history://sum" });
+		expect(r.text).toContain("甲一");
+		expect(r.text).toContain("甲二");
+		expect(r.text).toContain("甲三");
+		expect(r.text).not.toContain("乙一");
+	});
+
+	it("range mode defaults to the caller session; session_id overrides; bare calls degrade to library-wide", async () => {
+		store.appendRaw([
+			{ role: "user", text: "甲一", entry_id: "a1", session_id: "sess-a", wall_ts: "t1" },
+			{ role: "assistant", text: "乙一", entry_id: "b1", session_id: "sess-b", wall_ts: "t2" },
+			{ role: "user", text: "甲二", entry_id: "a2", session_id: "sess-a", wall_ts: "t3" },
+		]);
+
+		// 会话内调用：缺省圈定当前会话——交错的他 session 行不串戏。
+		const mine = await run("retrace", { first_raw_id: 1, last_raw_id: 3 }, { sessionId: "sess-a" });
+		expect(mine.text).toContain("甲一");
+		expect(mine.text).toContain("甲二");
+		expect(mine.text).not.toContain("乙一");
+
+		// 显式 session_id 覆盖：改看指定会话（如某纪要的锚会话）。
+		const other = await run(
+			"retrace",
+			{ first_raw_id: 1, last_raw_id: 3, session_id: "sess-b" },
+			{ sessionId: "sess-a" },
+		);
+		expect(other.text).toContain("乙一");
+		expect(other.text).not.toContain("甲一");
+
+		// 纯库调用无会话上下文：退化为全库区间（web/审计场景的 store 层语义）。
+		const bare = await run("retrace", { first_raw_id: 1, last_raw_id: 3 });
+		expect(bare.text).toContain("乙一");
+		expect(bare.details.count).toBe(3);
+	});
 });
 
 describe("set_time", () => {
@@ -410,6 +472,38 @@ describe("recall rich formatting", () => {
 		expect(r.text).toContain("伊莱在酒馆遇到薇拉");
 		expect(r.text).toContain("更深层的记忆:");
 		expect(r.text).toContain("- history://scenes/tavern/fight (当提到打斗)");
+		// memorize 产物无原文区间——溯源行不渲染（docs §4 consumption path）。
+		expect(r.text).not.toContain("原文区间");
+	});
+
+	it("renders the raw window line for nodes with provenance at depth 0", async () => {
+		store.insertNode({
+			uri: "history://scenes/inn",
+			content: "客栈夜话纪要",
+			disclosure: "当提起客栈夜话",
+			source: "auto",
+			first_raw_id: 12,
+			last_raw_id: 18,
+			anchor_session_id: "session-1",
+		});
+
+		const r = await run("recall", { uri: "history://scenes/inn", depth: 0 });
+		expect(r.text).toContain(
+			"> (原文区间: #12-#18，会话 session-1；retrace(uri=…) 回取原文，扩看前后传区间（跨会话加 session_id）)",
+		);
+	});
+
+	it("renders the raw window line without a session hint when anchor is absent", async () => {
+		store.insertNode({
+			uri: "history://scenes/orphan",
+			content: "无锚纪要",
+			first_raw_id: 5,
+			last_raw_id: 6,
+		});
+
+		const r = await run("recall", { uri: "history://scenes/orphan", depth: 0 });
+		expect(r.text).toContain("> (原文区间: #5-#6，可用 retrace(uri=…) 回取原文)");
+		expect(r.text).not.toContain("会话");
 	});
 
 	it("renders subtree with indentation and disclosure at depth > 0", async () => {
@@ -431,6 +525,27 @@ describe("recall rich formatting", () => {
 		expect(r.text).toContain("(想起条件: 当闲聊日常)");
 		expect(r.text).toContain("平时的习惯");
 	});
+
+	it("renders the raw window line on subtree children", async () => {
+		await run("memorize", {
+			uri: "core://mind",
+			content: "心智",
+			when: "当内省",
+		});
+		store.insertNode({
+			uri: "core://mind/scene",
+			content: "场景纪要",
+			parent_uri: "core://mind",
+			source: "auto",
+			first_raw_id: 3,
+			last_raw_id: 7,
+			anchor_session_id: "session-1",
+		});
+
+		const r = await run("recall", { uri: "core://mind", depth: 1 });
+		expect(r.text).toContain("■ core://mind/scene");
+		expect(r.text).toContain("(原文区间: #3-#7)");
+	});
 });
 
 describe("retrieve formatting", () => {
@@ -447,6 +562,22 @@ describe("retrieve formatting", () => {
 		expect(r.text).toContain("重要性：8");
 		expect(r.text).toContain("想起条件：当提起酒馆饮酒");
 		expect(r.text).toContain("薇拉在酒馆喝麦酒");
+	});
+
+	it("renders raw window provenance line for nodes with first/last_raw_id", async () => {
+		store.insertNode({
+			uri: "history://inn",
+			content: "客栈里众人围炉夜话",
+			importance: 8,
+			when: "当提起客栈",
+			source: "auto",
+			first_raw_id: 4,
+			last_raw_id: 9,
+			anchor_session_id: "session-1",
+		});
+		const r = await run("retrieve", { query: "客栈 围炉" });
+		expect(r.text).toContain("- history://inn");
+		expect(r.text).toContain("原文区间：#4-#9");
 	});
 
 	it("renders not-found message when query has no hits", async () => {

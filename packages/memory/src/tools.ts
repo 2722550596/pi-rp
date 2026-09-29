@@ -141,6 +141,9 @@ function renderChildSubtree(
 	if (disc) {
 		out.push(`${pad}(想起条件: ${disc})`);
 	}
+	if (node.first_raw_id !== null && node.last_raw_id !== null) {
+		out.push(`${pad}(原文区间: #${node.first_raw_id}-#${node.last_raw_id})`);
+	}
 	for (const line of node.content.split("\n")) {
 		out.push(`${pad}${line}`);
 	}
@@ -308,6 +311,16 @@ async function executeRecall(
 	if (nodeDisc) {
 		lines.push(`> (想起条件: ${nodeDisc})`);
 	}
+	// 溯源链落点（docs §4 consumption path）：autoretain 纪要带原文区间——
+	// 模型由此知道 retrace(uri) 可回取原文窗口；锚会话亮出来，扩看前后文时
+	// 传区间 + session_id 才不会被多会话交错行污染。无区间的节点不渲染。
+	if (node.first_raw_id !== null && node.last_raw_id !== null) {
+		lines.push(
+			node.anchor_session_id
+				? `> (原文区间: #${node.first_raw_id}-#${node.last_raw_id}，会话 ${node.anchor_session_id}；retrace(uri=…) 回取原文，扩看前后传区间（跨会话加 session_id）)`
+				: `> (原文区间: #${node.first_raw_id}-#${node.last_raw_id}，可用 retrace(uri=…) 回取原文)`,
+		);
+	}
 	const nodeKeywords = store.listGlossary(node.node_id).map((g) => g.keyword);
 	if (nodeKeywords.length > 0) {
 		lines.push(`> (标签: ${nodeKeywords.join(", ")})`);
@@ -466,6 +479,9 @@ async function executeRetrieve(store: MemoryStore, params: Static<typeof retriev
 		const disc = store.effectiveDisclosure(node.uri);
 		if (disc) {
 			lines.push(`  想起条件：${disc}`);
+		}
+		if (node.first_raw_id !== null && node.last_raw_id !== null) {
+			lines.push(`  原文区间：#${node.first_raw_id}-#${node.last_raw_id}`);
 		}
 		const rawContent = (node.content || "").replace(/\s+/g, " ").trim();
 		// Hit-anchored excerpt from the shared scorer — the passage that
@@ -1219,22 +1235,38 @@ async function executeConsolidate(
 
 const retraceParams = Type.Object({
 	raw_id: Type.Optional(Type.Number({ description: "单条模式：原文日志 ID" })),
-	first_raw_id: Type.Optional(Type.Number({ description: "区间模式：起始 raw_id（含）" })),
-	last_raw_id: Type.Optional(Type.Number({ description: "区间模式：结束 raw_id（含）" })),
+	first_raw_id: Type.Optional(
+		Type.Number({ description: "区间模式：起始 raw_id（含）。缺省圈定当前会话；看别的会话传 session_id" }),
+	),
+	last_raw_id: Type.Optional(
+		Type.Number({ description: "区间模式：结束 raw_id（含）。缺省圈定当前会话；看别的会话传 session_id" }),
+	),
+	session_id: Type.Optional(
+		Type.String({
+			description:
+				"圈定会话：区间模式缺省当前会话，传此参数改看指定会话（如某纪要的锚会话，见 recall 卡片的原文区间行）；单条模式仅显式过滤",
+		}),
+	),
 	uri: Type.Optional(Type.String({ description: "纪要模式：带原文区间引用的记忆 URI" })),
 	query: Type.Optional(Type.String({ description: "全文模式：在活动原文中按关键词搜索" })),
 	limit: Type.Optional(Type.Number({ description: "全文模式：最多返回条数，默认 20" })),
 });
 
-async function executeRetrace(store: MemoryStore, params: Static<typeof retraceParams>, _ctx: MemoryToolContext) {
+async function executeRetrace(store: MemoryStore, params: Static<typeof retraceParams>, ctx: MemoryToolContext) {
 	if (params.raw_id !== undefined) {
-		const rows = store.listRaw(params.raw_id);
+		const rows = store.listRaw(params.raw_id, undefined, { sessionId: params.session_id });
 		if (rows.length === 0) return text(`原文不存在：raw_id=${params.raw_id}`);
 		const r = rows[0];
 		return withDetails(`[${r.raw_id}] ${r.role}: ${r.text}`, { raw_id: r.raw_id });
 	}
 	if (params.first_raw_id !== undefined && params.last_raw_id !== undefined) {
-		const rows = store.listRaw(params.first_raw_id, params.last_raw_id);
+		// 缺省圈定当前会话：全库区间对模型是跨会话串戏噪声，工具面没有合法
+		// 用例（审计/人工排查走 web UI 的 store 层，不经此工具）。显式
+		// session_id 覆盖（如某纪要的锚会话，见 recall 卡片的原文区间行）；
+		// 纯库调用无会话上下文时退化为全库（web/测试场景）。
+		const rows = store.listRaw(params.first_raw_id, params.last_raw_id, {
+			sessionId: params.session_id ?? ctx.sessionId,
+		});
 		if (rows.length === 0) return text("区间内无原文");
 		return withDetails(rows.map((r) => `[${r.raw_id}] ${r.role}: ${r.text}`).join("\n"), { count: rows.length });
 	}
