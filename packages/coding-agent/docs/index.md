@@ -55,6 +55,7 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 - [Skills](skills.md) - Agent Skills for reusable on-demand capabilities.
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
 - [Prompt presets](prompt-presets.md) - JSON-based modular prompt stacks with slots, macros, and regex rules.
+- [Opening presets](opening-presets.md) - seed cold-open messages and initial state into a session from JSON.
 - [State schemas](state-schemas.md) - schema validation and custom validators for conversation state.
 - [Themes](themes.md) - built-in and custom terminal themes.
 - [Pi packages](packages.md) - bundle and share extensions, skills, prompts, and themes.
