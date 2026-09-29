@@ -80,7 +80,7 @@ export const DEFAULT_AUTORETAIN_TASKS: AutoretainTask[] = [
 		name: "self-reflection",
 		everyNTurns: DEFAULT_AUTORETAIN_EVERY_N_TURNS,
 		promptTemplate: `回顾以下对话窗口，以第一人称写一段简短的自我反思：我的行为模式、性格变化、或值得注意的倾向。写入 ${"{domain}"} 域。\n\n{window}\n\n${AUTORETAIN_JSON_CONTRACT}`,
-		landing: { domain: "meta", strategy: "append" },
+		landing: { domain: "TEMP", strategy: "append" },
 		modelRole: "smol",
 	},
 ];

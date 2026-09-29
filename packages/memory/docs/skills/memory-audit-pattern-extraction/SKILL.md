@@ -8,7 +8,7 @@ disable-model-invocation: false
 
 当你发现好几条记忆在描述类似的经历或教训，或者你意识到自己又犯了以前犯过的错时，**不要急着"总结教训"**。"下次一定记得"是没有任何意义的废话。你需要进行的是一场对认知系统的病理学调查：
 
-**1. 列出病历。** 收集所有相关的失败/重复记录，写出它们的 URI。检索手段：`retrieve(query=...)` 按关键词混合检索，`MEM://diagnostic/<domain>` 看系统报出的病灶，`MEM://index/<domain>` 扫结构。另外留意 `meta` 域——autoretain 的自我反思产物（`source: auto`）是"反思小作文"的高发区，它们也是病历的一部分。
+**1. 列出病历。** 收集所有相关的失败/重复记录，写出它们的 URI。检索手段：`retrieve(query=...)` 按关键词混合检索，`MEM://diagnostic/<domain>` 看系统报出的病灶，`MEM://index/<domain>` 扫结构。另外留意 `TEMP://` 域——autoretain 的自我反思产物（`source: auto`）落在这里，是"反思小作文"的高发区，它们也是病历的一部分。
 
 **2. 寻找"失效的解药" (The Search for the Failed Cure)。** 
 在得出任何新结论前，你必须先问自己一个问题：**在这个记忆网络里，是不是早就存在一条试图解决这个问题的"解药"记忆？**

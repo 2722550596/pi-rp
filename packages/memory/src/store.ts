@@ -1910,7 +1910,7 @@ export class MemoryStore {
 				this._insertNode({ uri: "history://", content: "Scene summary domain", source: "manual" });
 			}
 			if (!this.resolveUri("meta://")) {
-				this._insertNode({ uri: "meta://", content: "Self-reflection domain", source: "manual" });
+				this._insertNode({ uri: "meta://", content: "Meta domain (consolidated themes)", source: "manual" });
 			}
 		});
 		this.logAudit("seed", { details: "seed" });

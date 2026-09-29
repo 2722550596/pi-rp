@@ -5,7 +5,12 @@
  *   - MEM:// views (timeline / forgotten / recent / diagnostic)
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type AutoretainTask, dueTasks, runAutoretainTask } from "../src/autoretain.ts";
+import {
+	type AutoretainTask,
+	DEFAULT_AUTORETAIN_TASKS,
+	dueTasks,
+	runAutoretainTask,
+} from "../src/autoretain.ts";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
 import {
 	renderDiagnosticView,
@@ -94,6 +99,27 @@ describe("autoretain", () => {
 		);
 		expect(outcome.ok).toBe(false);
 		expect(outcome.error).toContain("JSON");
+	});
+
+	it("default self-reflection task lands in the TEMP dynamic buffer, not meta", async () => {
+		store.appendRaw([
+			rawRow("e1", "user", "我又拖延了", "2026-09-10T00:00:00Z"),
+			rawRow("e2", "assistant", "谈到了应对方式", "2026-09-10T00:00:01Z"),
+		]);
+		const task = DEFAULT_AUTORETAIN_TASKS.find((t) => t.name === "self-reflection")!;
+		const outcome = await runAutoretainTask(
+			store,
+			task,
+			store.listUnprocessedActiveRaw("session-1", task.name, 80),
+			autoretainHost('{"content": "我又在压力下选择拖延，需要留意这个模式。"}'),
+		);
+		expect(outcome.ok).toBe(true);
+		// 模型 mock 未返回 uri → 宿主 landingUri fallback 按 landing.domain 拼接。
+		expect(outcome.uri).toMatch(/^TEMP:\/\/self-reflection-/);
+		const node = store.resolveUri(outcome.uri!);
+		expect(node).not.toBeNull();
+		expect(node!.domain).toBe("TEMP");
+		expect(node!.source).toBe("auto");
 	});
 
 	it("fires due tasks on the shared turn counter", () => {

@@ -354,7 +354,7 @@ slots:
 | 任务 | 落点 | 内容 |
 |---|---|---|
 | `scene-summary` | `history` 域,append | 场景纪要(发生了什么、关键事实、未尽事项) |
-| `self-reflection` | `meta` 域,append | 第一人称行为模式 / 性格变化反思 |
+| `self-reflection` | `TEMP` 域,append | 第一人称行为模式 / 性格变化反思——进动态缓冲区,随 TEMP 整理流程归位或清理,不堆积在 meta 树 |
 
 - **触发**:turn_end 计数(多任务共用计数器,各自按 everyNTurns 触发);**autoretain 默认关闭**——需要显式配置 `memory.autoretain`(cadence 或任务列表)才启用,避免裸会话每 N 回合静默消耗 side-request 模型配额(与 embeddings 隐私默认 off 同一姿态)。到期任务经宿主 `completeSideRequest(prompt, {modelRole, maxTokens, signal, label})` 跑廉模型 + strict JSON 契约(`{"uri":…,"content":…,"disclosure":…}`),桥到引擎侧请求原语(`memory.autoretain.models.{smol,default}` 解析引用,未配回落 session model;会话 dispose 中止在飞请求)。
 - **提示词预算与脱敏(v5.5)**:窗口按 `maxInputChars`(默认 12000)从尾部按字符边界截断;`redact`(默认 true)把 Bearer token 与 `api_key|apikey|token|secret|password|authorization` 赋值替换为 `[REDACTED]`——不改 raw_log 原文。
