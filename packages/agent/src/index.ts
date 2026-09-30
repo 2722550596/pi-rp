@@ -44,6 +44,7 @@ export * from "./agent.ts";
 // Loop functions
 export * from "./agent-loop.ts";
 export * from "./harness/agent-harness.ts";
+export * from "./harness/capabilities.ts";
 export {
 	type BranchPreparation,
 	type BranchSummaryDetails,
@@ -73,12 +74,25 @@ export {
 	serializeConversation,
 	shouldCompact,
 } from "./harness/compaction/compaction.ts";
+export type {
+	HarnessStores,
+	StateLocks,
+	StatePaths,
+	StateStores,
+	StorageBackend,
+} from "./harness/env/storage-backend.ts";
 export * from "./harness/messages.ts";
 export * from "./harness/prompt-templates.ts";
 // Harness
 export * from "./harness/result.ts";
 export * from "./harness/session/index.ts";
 export * from "./harness/skills.ts";
+export type {
+	SqliteDatabase,
+	SqliteDatabaseFactory,
+	SqliteRunResult,
+	SqliteStatement,
+} from "./harness/sqlite.ts";
 export * from "./harness/system-prompt.ts";
 export type {
 	AiSpan,

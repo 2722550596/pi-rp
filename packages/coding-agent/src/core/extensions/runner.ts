@@ -12,7 +12,7 @@ import type { CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
-import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
+import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
@@ -807,6 +807,10 @@ export class ExtensionRunner {
 			get hasUI() {
 				runner.assertActive();
 				return runner.hasUI();
+			},
+			get capabilities() {
+				runner.assertActive();
+				return runner.runtime.capabilities;
 			},
 			get cwd() {
 				runner.assertActive();

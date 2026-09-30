@@ -1,8 +1,10 @@
 import { join } from "node:path";
+import type { HarnessStores, StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
-import { getFileRevision, normalizePath } from "../utils/paths.ts";
+import { normalizePath } from "../utils/paths.ts";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "./auth-storage.ts";
 
 type StoredModels = Record<string, ModelsStoreEntry>;
@@ -45,17 +47,24 @@ export class InMemoryCodingAgentModelsStore implements ModelsStore {
 /** Locked JSON-backed storage for dynamically refreshed provider catalogs. */
 export class FileModelsStore implements ModelsStore {
 	private readonly storage: AuthStorageBackend;
+	private readonly fileStorage: StorageBackend | undefined;
 	private readonly path: string;
 	private readonly readState: ModelsFileReadState;
 
-	constructor(path: string = join(getAgentDir(), "models-store.json")) {
+	constructor(path: string = join(getAgentDir(), "models-store.json"), stores?: HarnessStores) {
 		this.path = normalizePath(path);
-		this.storage = new FileAuthStorageBackend(this.path);
+		this.storage = new FileAuthStorageBackend(this.path, stores?.storage, stores?.locks);
+		// Node default keeps the former getFileRevision short-circuit behavior byte-identical.
+		this.fileStorage = stores?.storage ?? NodeStorageBackend.shared;
 		this.readState =
 			sharedModelsFileReadState?.path === this.path ? sharedModelsFileReadState.readState : { data: {} };
 		if (!sharedModelsFileReadState) {
 			sharedModelsFileReadState = { path: this.path, readState: this.readState };
 		}
+	}
+
+	private revisionOf(): string | undefined {
+		return this.fileStorage?.fileRevisionSync?.(this.path);
 	}
 
 	private parse(content: string | undefined): StoredModels {
@@ -73,7 +82,7 @@ export class FileModelsStore implements ModelsStore {
 	): Promise<StoredModels> {
 		return this.storage.withLockAsync(async (content) => {
 			const data = this.parse(content);
-			this.updateReadState(readState, data, getFileRevision(this.path));
+			this.updateReadState(readState, data, this.revisionOf());
 			return { result: data };
 		}, options);
 	}
@@ -83,7 +92,7 @@ export class FileModelsStore implements ModelsStore {
 		options?: ModelsStoreOperationOptions,
 	): Promise<StoredModels> {
 		options?.signal?.throwIfAborted();
-		const revision = getFileRevision(this.path);
+		const revision = this.revisionOf();
 		if (revision !== undefined && revision === readState.revision) return readState.data;
 		if (!readState.reload) {
 			const controller = new AbortController();

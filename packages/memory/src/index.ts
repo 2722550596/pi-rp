@@ -1,3 +1,4 @@
+import type { MemoryDriverOptions } from "./driver.ts";
 import { openDatabase } from "./driver.ts";
 import { createSchema } from "./schema.ts";
 import { MemoryStore } from "./store.ts";
@@ -20,7 +21,14 @@ export {
 } from "./autoretain.ts";
 export { type MemorySettings, type PresetMemoryDeclaration, resolveMemoryDbPath } from "./config.ts";
 export { generateDiffString } from "./diff.ts";
-export { type MemoryDatabase, type MemoryStatement, openDatabase } from "./driver.ts";
+export {
+	type MemoryDatabase,
+	type MemoryDriverOptions,
+	type MemoryStatement,
+	openDatabase,
+	openDatabaseReadonly,
+	ReadonlyOpenError,
+} from "./driver.ts";
 export {
 	chunkText,
 	cosine,
@@ -36,6 +44,7 @@ export {
 	resolveEmbeddingsConfig,
 } from "./embeddings.ts";
 export {
+	renderAuditView,
 	renderDiagnosticView,
 	renderForgottenView,
 	renderGlossaryView,
@@ -105,6 +114,7 @@ export {
 export {
 	type ExportSnapshot,
 	type MemoryAuditDetails,
+	type MemoryAuditRecord,
 	type MemoryNode,
 	MemoryStore,
 	type NodeInput,
@@ -114,15 +124,60 @@ export {
 	type VisibilityPredicate,
 } from "./store.ts";
 export {
+	type ActiveTempRow,
 	buildTempNotifyContent,
 	checkTempThreshold,
 	countActiveTempNodes,
 	DEFAULT_TEMP_THRESHOLD,
+	listActiveTempRows,
 	RP_NOTIFY_TYPE,
+	TEMP_TIDY_GUIDE_LINES,
 	type TempNotifyMessage,
 	type TempSettings,
 } from "./temp-notify.ts";
-export { tokenizeForMatch, tokenizeForSearch } from "./tokenize.ts";
+export {
+	type BriefingExtraction,
+	buildTidyFailureContent,
+	DEFAULT_TIDY_MAX_TURNS,
+	DEFAULT_TIDY_TIMEOUT_MS,
+	extractBriefing,
+	type ParsedAutoTidy,
+	parseAutoTidySettings,
+	readTidyLock,
+	refreshTidyLock,
+	releaseTidyLock,
+	renderTempList,
+	runTidy,
+	type SideStreamHandle,
+	TIDY_BRIEFING_MAX_CHARS,
+	TIDY_HEARTBEAT_MS,
+	TIDY_LAST_FINISH_KEY,
+	TIDY_LOCK_KEY,
+	TIDY_LOCK_STALE_MS,
+	TIDY_MODEL_ID,
+	TIDY_RETRY_COOLDOWN_MS,
+	TIDY_TEMP_LIST_MAX_ENTRIES,
+	type TidyFailureReason,
+	type TidyHost,
+	type TidyLockHandle,
+	type TidyLockValue,
+	type TidyOutcome,
+	type TidyRunnerOptions,
+	truncateBriefing,
+	tryAcquireTidyLock,
+} from "./temp-tidy.ts";
+export {
+	DEFAULT_TIDY_SYSTEM_PROMPT,
+	DEFAULT_TIDY_TASK_TEMPLATE,
+	renderTidyTaskPrompt,
+} from "./tidy-prompts.ts";
+export {
+	createMemoryTokenizer,
+	type MemoryTokenizer,
+	type MemoryTokenizerSpace,
+	tokenizeForMatch,
+	tokenizeForSearch,
+} from "./tokenize.ts";
 export {
 	AWAKEN_URIS_KEY,
 	computeRevisedContent,
@@ -134,8 +189,8 @@ export {
 	setAwakenUris,
 } from "./tools.ts";
 
-export async function openMemoryStore(path: string): Promise<MemoryStore> {
-	const db = await openDatabase(path);
+export async function openMemoryStore(path: string, options?: MemoryDriverOptions): Promise<MemoryStore> {
+	const db = await openDatabase(path, options);
 	createSchema(db);
 	return new MemoryStore(db);
 }

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { SUPPORTED_SLOTS } from "../src/core/prompt-preset/slot-renderers.ts";
+import { SUPPORTED_SLOTS } from "../src/core/prompt-preset/slot-registry.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../src/core/slash-commands.ts";
 
 /**

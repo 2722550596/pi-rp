@@ -1,18 +1,16 @@
-import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import { constants } from "fs";
-import { access as fsAccess, readdir as fsReaddir, readFile as fsReadFile, stat as fsStat } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { processImage } from "../../utils/image-process.ts";
-import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
+import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "../../utils/node-globals.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { defaultReadOperations } from "./node-tool-defaults.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -75,8 +73,12 @@ export interface ReadDirectoryEntry {
  * Override these to delegate file reading to remote systems (for example SSH).
  */
 export interface ReadOperations {
-	/** Read file contents as a Buffer */
-	readFile: (absolutePath: string) => Promise<Buffer>;
+	/**
+	 * Read file contents as bytes. The historical Node contract returned a
+	 * Buffer; consumers only decode UTF-8, so Uint8Array is the portable floor
+	 * (Buffer extends Uint8Array, Node default implementations pass through).
+	 */
+	readFile: (absolutePath: string) => Promise<Uint8Array>;
 	/** Check if file is readable (throw if not) */
 	access: (absolutePath: string) => Promise<void>;
 	/** Detect image MIME type, return null or undefined for non-images */
@@ -95,22 +97,26 @@ export interface ReadOperations {
 	listDirectory?: (absolutePath: string) => Promise<ReadDirectoryEntry[]>;
 }
 
-const defaultReadOperations: ReadOperations = {
-	readFile: (path) => fsReadFile(path),
-	access: (path) => fsAccess(path, constants.R_OK),
-	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
-	stat: fsStat,
-	listDirectory: async (absolutePath) => {
-		const entries = await fsReaddir(absolutePath, { withFileTypes: true });
-		return entries.map((entry) => ({ name: entry.name, isDirectory: entry.isDirectory() }));
-	},
-};
-
 export interface ReadToolOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
 	/** Custom operations for file reading. Default: local filesystem */
 	operations?: ReadOperations;
+	/**
+	 * Message template shown when the first line alone exceeds the byte limit.
+	 * Supports {line}, {size} and {path} tokens. Default suggests the bash
+	 * fallback (shell profiles); inject a bash-free template when bash is not
+	 * available (e.g. browser profile) so the model is never pointed at a
+	 * disabled tool.
+	 */
+	oversizedLineHint?: string;
+}
+
+/** Default first-line-exceeds-limit template (unchanged Node wording). */
+const DEFAULT_OVERSIZED_LINE_HINT = `[Line {line} is {size}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '{line}p' {path} | head -c ${DEFAULT_MAX_BYTES}]`;
+
+function formatOversizedLineHint(template: string, line: number, size: string, rawPath: string): string {
+	return template.replaceAll("{line}", String(line)).replaceAll("{size}", size).replaceAll("{path}", rawPath);
 }
 
 type ReadRenderArgs = { path?: string | string[]; file_path?: string | string[]; offset?: number; limit?: number };
@@ -296,6 +302,7 @@ async function readFileBlock(
 	limit: number | undefined,
 	nonVisionImageNote: string | undefined,
 	autoResizeImages: boolean,
+	hintTemplate: string,
 ): Promise<{ content: (TextContent | ImageContent)[]; truncation?: TruncationResult }> {
 	// Check if file exists and is readable.
 	await ops.access(absolutePath);
@@ -322,7 +329,7 @@ async function readFileBlock(
 
 	// Read text content.
 	const buffer = await ops.readFile(absolutePath);
-	const textContent = buffer.toString("utf-8");
+	const textContent = new TextDecoder("utf-8", { ignoreBOM: true }).decode(buffer);
 	const allLines = textContent.split("\n");
 	const totalFileLines = allLines.length;
 	// Apply offset if specified. Convert from 1-indexed input to 0-indexed array access.
@@ -346,9 +353,10 @@ async function readFileBlock(
 	const truncation = truncateHead(selectedContent);
 	let outputText: string;
 	if (truncation.firstLineExceedsLimit) {
-		// First line alone exceeds the byte limit. Point the model at a bash fallback.
-		const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
-		outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${rawPath} | head -c ${DEFAULT_MAX_BYTES}]`;
+		// First line alone exceeds the byte limit. Default points the model at a
+		// bash fallback; profiles without bash inject a bash-free template.
+		const firstLineSize = formatSize(new TextEncoder().encode(allLines[startLine]).length);
+		outputText = formatOversizedLineHint(hintTemplate, startLineDisplay, firstLineSize, rawPath);
 	} else if (truncation.truncated) {
 		// Truncation occurred. Build an actionable continuation notice.
 		const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
@@ -426,6 +434,7 @@ export function createReadToolDefinition(
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const ops = options?.operations ?? defaultReadOperations;
+	const hintTemplate = options?.oversizedLineHint ?? DEFAULT_OVERSIZED_LINE_HINT;
 	return {
 		name: "read",
 		label: "read",
@@ -505,6 +514,7 @@ export function createReadToolDefinition(
 											limit,
 											nonVisionImageNote,
 											autoResizeImages,
+											hintTemplate,
 										);
 										if (!multi && block.truncation) {
 											singleFileTruncation = block.truncation;

@@ -111,6 +111,25 @@ describe("memorize → recall → revise → forget chain", () => {
 	});
 });
 
+describe("MEM://audit view", () => {
+	it("lets an agent read one full tidy audit through recall without auditing the read itself", async () => {
+		store.logAudit("insert_node", { details: "unrelated-audit-marker" });
+		const briefing = `TEMP 整理全文：${"很长的处置说明".repeat(80)}`;
+		store.logAudit("temp_tidy_complete", {
+			model: "temp-tidy",
+			details: JSON.stringify({ briefing, beforeCount: 3 }),
+		});
+		const auditCountBefore = store.listAudit(100).length;
+
+		const recalled = await run("recall", { uri: "MEM://audit/temp_tidy_complete/1" });
+
+		expect(recalled.text).toContain("temp_tidy_complete");
+		expect(recalled.text).toContain(briefing);
+		expect(recalled.text).not.toContain("unrelated-audit-marker");
+		expect(store.listAudit(100)).toHaveLength(auditCountBefore);
+	});
+});
+
 describe("revise variants", () => {
 	beforeEach(async () => {
 		await run("memorize", { uri: "history://a", content: "第一行\n第二行\n第三行" });

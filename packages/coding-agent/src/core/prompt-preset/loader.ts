@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getProjectConfigDir } from "../../config.ts";
 import { validateRegexConfig } from "./regex-engine.ts";
-import { SUPPORTED_SLOTS } from "./slot-renderers.ts";
+import { SUPPORTED_SLOTS } from "./slot-registry.ts";
 import type {
 	LoadedPromptPreset,
 	PromptPreset,
@@ -237,6 +237,18 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 			if (typeof c.turnPrefixPrompt === "string") compaction.turnPrefixPrompt = c.turnPrefixPrompt;
 			if (typeof c.branchSummaryPrompt === "string") compaction.branchSummaryPrompt = c.branchSummaryPrompt;
 			if (Object.keys(compaction).length > 0) overrides.compaction = compaction;
+		}
+		// TEMP 自动整理覆写（docs/design/temp-autotidy/02 §3.C）。与 compaction 同为
+		// 字段级静默解析（无 diagnostic），但刻意收紧：空白串也丢弃落内置默认——
+		// compaction 有用户在场可察觉，tidy 是无人在环的后台 agent，空 systemPrompt
+		// = 无规则的工具持有者，事故不可见。
+		if (isPlainObject(ho.tempTidy)) {
+			const t = ho.tempTidy as Record<string, unknown>;
+			const tempTidy: NonNullable<typeof overrides.tempTidy> = {};
+			if (typeof t.systemPrompt === "string" && t.systemPrompt.trim().length > 0)
+				tempTidy.systemPrompt = t.systemPrompt;
+			if (typeof t.taskPrompt === "string" && t.taskPrompt.trim().length > 0) tempTidy.taskPrompt = t.taskPrompt;
+			if (Object.keys(tempTidy).length > 0) overrides.tempTidy = tempTidy;
 		}
 		if (Object.keys(overrides).length > 0) {
 			preset.hiddenOverrides = overrides as PromptPresetHiddenOverrides;

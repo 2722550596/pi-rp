@@ -12,6 +12,7 @@ import type {
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	Capabilities,
 	ThinkingLevel,
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
@@ -48,13 +49,13 @@ import type {
 } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import type { AgentActivityEvent } from "../agent-session.ts";
 import type { BashResult } from "../bash-executor.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
-import type { AgentActivityEvent } from "../agent-session.ts";
 import type { CustomMessage, CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
@@ -320,6 +321,12 @@ export interface ExtensionContext {
 	mode: ExtensionMode;
 	/** Whether dialog-capable UI is available (true in TUI and RPC modes) */
 	hasUI: boolean;
+	/**
+	 * Negotiated harness capabilities (the assembly point's full Capabilities object, read-only — never a projection).
+	 * Undefined in runtimes assembled without capability negotiation (legacy node paths); tools that need a capability
+	 * should treat undefined as "not negotiated" and branch accordingly.
+	 */
+	readonly capabilities?: Capabilities;
 	/** Current working directory */
 	cwd: string;
 	/** Session manager (read-only) */
@@ -512,6 +519,12 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 }
 
 /**
+ * Capability keys a tool may declare via {@link ToolDefinition.requires}. Only the frozen Capabilities field set
+ * (packages/agent harness capabilities) is referenceable — no second capability source may be introduced.
+ */
+export type ToolCapabilityRequirement = "shell" | "diskExtensions" | "concurrentFsAccess";
+
+/**
  * Tool definition for registerTool().
  */
 export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = unknown, TState = any> {
@@ -544,6 +557,14 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 	/** Whether this tool may be omitted until discovered. Defaults to false at this type boundary. */
 	deferrable?: boolean;
+
+	/**
+	 * Capabilities this tool needs to function. Checked at the extension registration boundary against the runtime's
+	 * negotiated capabilities: any unmet capability refuses registration (the tool never enters the model-visible
+	 * surface) and records a diagnostic — negotiated absence, not a runtime error. Unset means the tool is
+	 * self-declared available in every profile; there is no runtime fallback for undeclared dependencies.
+	 */
+	requires?: ToolCapabilityRequirement[];
 
 	/** Execute the tool. */
 	execute(
@@ -1867,11 +1888,41 @@ export type UpdateStateResult = { ok: true; path: string; newValue?: unknown } |
 export type UpdateStateHandler = (path: string, op: "add" | "remove" | "replace", value?: unknown) => UpdateStateResult;
 
 /**
+ * Implementation backing the extension `pi.exec` command channel.
+ *
+ * The assembly point selects it from the negotiated shell capability (pure constructors in `exec-impl.ts`): the node
+ * assembly injects `execCommand`, shell-less profiles the structured refusal, hosted a shell bridge. The contract is
+ * the node `execCommand` shape: resolve-oriented, never rejects.
+ */
+export type ExecImpl = (command: string, args: string[], cwd: string, options?: ExecOptions) => Promise<ExecResult>;
+
+/** Construction options for the extension runtime (profile-independent assembly core). */
+export interface ExtensionRuntimeOptions {
+	/** Implementation backing `pi.exec`. Omitting it selects the structured shell refusal. */
+	exec?: ExecImpl;
+	/** Negotiated capabilities carried from the assembly point; drives registerTool `requires` gating and ctx.capabilities. */
+	capabilities?: Capabilities;
+}
+
+/**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
+	/** Implementation backing `pi.exec`; assembly-selected per the negotiated shell capability. */
+	execImpl: ExecImpl;
+	/**
+	 * Negotiated capabilities from the assembly point (registration-boundary gating + ctx.capabilities). Undefined in
+	 * runtimes created without negotiation (legacy node paths): requires-gating is skipped and ctx.capabilities is
+	 * undefined.
+	 */
+	readonly capabilities?: Capabilities;
+	/**
+	 * Registration-time capability-gating diagnostics ("tool ... registration skipped"), drained into
+	 * LoadExtensionsResult.errors at the tail of every load pass.
+	 */
+	pendingRegistrationWarnings: Array<{ path: string; error: string }>;
 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
 	/** Native pi-ai provider registrations queued during extension loading, processed when runner binds. */

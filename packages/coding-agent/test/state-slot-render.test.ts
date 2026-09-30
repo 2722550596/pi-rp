@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getSlot } from "../src/core/prompt-preset/slot-renderers.ts";
+// Built-in slot definitions (including "state") register themselves when slot-renderers loads — production reaches
+// them through the compiler's import chain; this test needs the same explicit load.
+import "../src/core/prompt-preset/slot-renderers.ts";
+import { getSlot } from "../src/core/prompt-preset/slot-registry.ts";
 import type { PromptPresetSlotItem, SlotRenderContext } from "../src/core/prompt-preset/types.ts";
 
 function renderState(state: Record<string, unknown>, options?: PromptPresetSlotItem["options"]): string {

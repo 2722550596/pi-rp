@@ -13,18 +13,31 @@
  * 2. Copy photon_rs_bg.wasm next to the executable in build:binary
  */
 
-import type { PathOrFileDescriptor } from "fs";
-import { createRequire } from "module";
-import * as path from "path";
-import { fileURLToPath } from "url";
+import { createRequire, dirname, fileURLToPath, join } from "./node-globals.ts";
 
+// require() targets the node fs module. Browser builds alias `node:module`/`node:fs`
+// to shims: createRequire() then yields a structured-throw function, so the fs
+// acquisition below fails inside patchPhotonWasmRead (no-op patch) and the wasm
+// glue import fails in loadPhoton — loadPhoton resolves to null (image processing
+// gracefully unavailable), never a module-eval crash.
 const require = createRequire(import.meta.url);
-const fs = require("fs") as typeof import("fs");
+
+/** Node fs face used by the wasm-path patch (node only; see module comment). */
+interface PatchFs {
+	readFileSync: (...args: unknown[]) => unknown;
+	existsSync: (path: string) => boolean;
+}
+
+let patchFs: PatchFs | undefined;
+function nodeFs(): PatchFs {
+	patchFs ??= require("fs") as PatchFs;
+	return patchFs;
+}
 
 // Re-export types from the main package
 export type { PhotonImage as PhotonImageType } from "@silvia-odwyer/photon-node";
 
-type ReadFileSync = typeof fs.readFileSync;
+type ReadFileSync = (file: string | URL | number, options?: string | number | undefined) => unknown;
 
 const WASM_FILENAME = "photon_rs_bg.wasm";
 
@@ -32,7 +45,7 @@ const WASM_FILENAME = "photon_rs_bg.wasm";
 let photonModule: typeof import("@silvia-odwyer/photon-node") | null = null;
 let loadPromise: Promise<typeof import("@silvia-odwyer/photon-node") | null> | null = null;
 
-function pathOrNull(file: PathOrFileDescriptor): string | null {
+function pathOrNull(file: string | URL | number): string | null {
 	if (typeof file === "string") {
 		return file;
 	}
@@ -43,15 +56,19 @@ function pathOrNull(file: PathOrFileDescriptor): string | null {
 }
 
 function getFallbackWasmPaths(): string[] {
-	const execDir = path.dirname(process.execPath);
-	return [
-		path.join(execDir, WASM_FILENAME),
-		path.join(execDir, "photon", WASM_FILENAME),
-		path.join(process.cwd(), WASM_FILENAME),
-	];
+	const execDir = dirname(process.execPath);
+	return [join(execDir, WASM_FILENAME), join(execDir, "photon", WASM_FILENAME), join(process.cwd(), WASM_FILENAME)];
 }
 
 function patchPhotonWasmRead(): () => void {
+	let fs: PatchFs;
+	try {
+		fs = nodeFs();
+	} catch {
+		// Browser profile (shimmed node:module): no fs to patch; the wasm glue
+		// import in loadPhoton fails and resolves to null instead.
+		return () => {};
+	}
 	const originalReadFileSync: ReadFileSync = fs.readFileSync.bind(fs);
 	const fallbackPaths = getFallbackWasmPaths();
 	const mutableFs = fs as { readFileSync: ReadFileSync };

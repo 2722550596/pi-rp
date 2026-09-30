@@ -28,7 +28,7 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "^0.84.2",
-		"@node-rs/jieba": "2.0.2",
+		"@earendil-works/pi-agent-core": "^0.84.2",
 		"diff": "8.0.4"
 	},
 	"keywords": [
@@ -46,6 +46,7 @@
 		"node": ">=22.19.0"
 	},
 	"devDependencies": {
+		"@sqlite.org/sqlite-wasm": "3.53.4-build1",
 		"@types/node": "22.19.19",
 		"@vitest/coverage-v8": "4.1.9",
 		"typescript": "5.9.3",

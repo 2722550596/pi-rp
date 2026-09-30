@@ -5,7 +5,8 @@
 //
 // ⭐ 读路径 MUST NOT 写库（§9.1 纪律 1）：本文件**零 POST**，也不存在任何
 //    `last_accessed_at` 写回 / 「最近浏览」计数 —— 搜索历史只允许放 localStorage，绝不进 DB。
-// ⭐ 关键词高亮：中文没有空格，客户端**不能**用 `split(/\s+/)` 复现服务端的 jieba 分词
+// ⭐ 关键词高亮：中文没有空格，客户端**不能**用 `split(/\s+/)` 复现服务端的
+//    Intl.Segmenter 分词（2026-09-30 拍板，原 jieba 已移除）
 //    → 只做「连续 CJK 段 + 拉丁/数字词」的字面高亮，不假装自己会分词（§6.3）。
 //    splitQuery / highlight / hitExcerpt 的本体在 `../ui.js`（本页只消费）。
 

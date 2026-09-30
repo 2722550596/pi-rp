@@ -1,5 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import type { StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStateLocks, NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import chalk from "chalk";
 import { getProjectConfigDir } from "../config.ts";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
@@ -9,15 +11,16 @@ export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
-import {
-	clearExtensionCache,
-	createExtensionRuntime,
-	loadExtensionFromFactory,
-	loadExtensionsCached,
-} from "./extensions/loader.ts";
+import { loadExtensionsFromFactories } from "./extensions/api.ts";
+import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import { findGitPaths } from "./footer-data-provider.ts";
-import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import {
+	DefaultPackageManager,
+	type PackageManager,
+	type PathMetadata,
+	type ResolvedResource,
+} from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -167,6 +170,16 @@ export interface DefaultResourceLoaderOptions {
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
 	extensionFactories?: InlineExtension[];
+	/**
+	 * Package-manager implementation for the disk channel (npm/git extension sources). Inject a null implementation
+	 * on shell-less profiles; defaults to DefaultPackageManager (node behavior unchanged).
+	 */
+	packageManager?: PackageManager;
+	/**
+	 * Storage seam for resource scans (11-B step 8: skills). When omitted the node defaults apply; browser assembly
+	 * injects the OPFS storage. Non-skill scanners (themes/prompts) are not yet seam-routed.
+	 */
+	storage?: StorageBackend;
 	noExtensions?: boolean;
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;
@@ -197,9 +210,11 @@ export interface DefaultResourceLoaderOptions {
 export class DefaultResourceLoader implements ResourceLoader {
 	private cwd: string;
 	private agentDir: string;
+	/** Storage seam for resource scans (11-B step 8: skills); node default keeps node:fs behavior byte-identical. */
+	private readonly storage: StorageBackend;
 	private settingsManager: SettingsManager;
 	private eventBus: EventBus;
-	private packageManager: DefaultPackageManager;
+	private packageManager: PackageManager;
 	private additionalExtensionPaths: string[];
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
@@ -255,13 +270,34 @@ export class DefaultResourceLoader implements ResourceLoader {
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
-		this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
+		this.storage = options.storage ?? NodeStorageBackend.shared;
+		// stores 字面量惰性构造：NodeStateLocks.shared 是 getter（browser stub 构造即抛），
+		// 在 settingsManager 已注入的装配（browser/hosted）下不得求值；node 语义不变。
+		this.settingsManager =
+			options.settingsManager ??
+			SettingsManager.create(
+				this.cwd,
+				this.agentDir,
+				options.storage
+					? {
+							stores: {
+								storage: this.storage,
+								locks: NodeStateLocks.shared,
+								paths: { agentDir: () => this.agentDir },
+							},
+						}
+					: undefined,
+			);
 		this.eventBus = options.eventBus ?? createEventBus();
-		this.packageManager = new DefaultPackageManager({
-			cwd: this.cwd,
-			agentDir: this.agentDir,
-			settingsManager: this.settingsManager,
-		});
+		// Injectable for shell-less profiles (browser/hosted assemblies pass a null implementation); the node default
+		// is unchanged (12-C §9 seam 4).
+		this.packageManager =
+			options.packageManager ??
+			new DefaultPackageManager({
+				cwd: this.cwd,
+				agentDir: this.agentDir,
+				settingsManager: this.settingsManager,
+			});
 		this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
 		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
@@ -685,6 +721,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 				agentDir: this.agentDir,
 				skillPaths,
 				includeDefaults: false,
+				storage: this.storage,
 			});
 		}
 		const resolvedSkills = this.skillsOverride ? this.skillsOverride(skillsResult) : skillsResult;
@@ -953,24 +990,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		extensions: Extension[];
 		errors: Array<{ path: string; error: string }>;
 	}> {
-		const extensions: Extension[] = [];
-		const errors: Array<{ path: string; error: string }> = [];
-
-		for (const [index, input] of this.extensionFactories.entries()) {
-			const isNamed = typeof input !== "function";
-			const factory = isNamed ? input.factory : input;
-			const extensionPath = `<inline:${isNamed ? input.name : index + 1}>`;
-			try {
-				const extension = await loadExtensionFromFactory(factory, this.cwd, this.eventBus, runtime, extensionPath);
-				extension.hidden = isNamed && input.hidden;
-				extensions.push(extension);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : "failed to load extension";
-				errors.push({ path: extensionPath, error: message });
-			}
-		}
-
-		return { extensions, errors };
+		// Shared bundled-channel core: same loading path as browser/hosted assembly (I5 structural guarantee).
+		return loadExtensionsFromFactories(this.extensionFactories, this.cwd, this.eventBus, runtime);
 	}
 
 	private dedupePrompts(prompts: PromptTemplate[]): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] } {

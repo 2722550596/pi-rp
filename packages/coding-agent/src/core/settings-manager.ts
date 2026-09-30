@@ -1,11 +1,10 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { HarnessStores, StateLocks, StorageBackend, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { NodeStateLocks, NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import type { Model, Transport } from "@earendil-works/pi-ai";
 import type { MemorySettings } from "@earendil-works/pi-memory";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import lockfile from "proper-lockfile";
 import { ENV_SETTINGS_FILE, getAgentDir, getProjectConfigDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
@@ -237,6 +236,11 @@ export interface SettingsManagerCreateOptions {
 	projectTrusted?: boolean;
 	/** 进程级覆盖层（只读；消费方拥有该文件）。优先级最高：overlay > project > global。 */
 	overlay?: Settings;
+	/**
+	 * Storage seams for settings files (11-B). When omitted the node defaults apply (node:fs + proper-lockfile);
+	 * browser assembly injects the OPFS stores.
+	 */
+	stores?: HarnessStores;
 }
 
 export interface SettingsStorage {
@@ -252,48 +256,37 @@ export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
 	private overlaySettingsPath: string | undefined;
+	private readonly storage: StorageBackend;
+	private readonly locks: StateLocks;
 
-	constructor(cwd: string, agentDir: string, overlayPath?: string) {
+	constructor(
+		cwd: string,
+		agentDir: string,
+		overlayPath?: string,
+		storage: StorageBackend = NodeStorageBackend.shared,
+		locks: StateLocks = NodeStateLocks.shared,
+	) {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
 		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
 		this.projectSettingsPath = getProjectConfigDir(resolvedCwd, "settings.json");
 		// 进程级覆盖层：--settings-file 语义与 --config-dir/--session-dir 同构（相对 cwd 拼接）。
 		this.overlaySettingsPath = overlayPath ? join(resolvedCwd, overlayPath) : undefined;
+		this.storage = storage;
+		this.locks = locks;
 	}
 
-	private acquireLockSyncWithRetry(path: string): () => void {
-		const maxAttempts = 10;
-		const delayMs = 20;
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			try {
-				return lockfile.lockSync(path, { realpath: false });
-			} catch (error) {
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				if (code !== "ELOCKED" || attempt === maxAttempts) {
-					throw error;
-				}
-				lastError = error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
-			}
-		}
-
-		throw (lastError as Error) ?? new Error("Failed to acquire settings lock");
+	private acquireLockSync(path: string): () => void {
+		// Retry discipline (10×20ms busy wait, non-ELOCKED rethrow) lives inside the node StateLocks implementation,
+		// identical to the three former per-file wrappers.
+		return this.locks.lockSync(path);
 	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		// overlay 是消费方拥有的只读覆盖层：不建锁、不写（引擎侧无写入路径；写请求静默丢弃）。
 		if (scope === "overlay") {
 			const path = this.overlaySettingsPath;
-			const current = path && existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+			const current = path && this.storage.existsSync(path) ? this.storage.readTextFileSync(path) : undefined;
 			fn(current);
 			return;
 		}
@@ -304,21 +297,21 @@ export class FileSettingsStorage implements SettingsStorage {
 		let release: (() => void) | undefined;
 		try {
 			// Only create directory and lock if file exists or we need to write
-			const fileExists = existsSync(path);
+			const fileExists = this.storage.existsSync(path);
 			if (fileExists) {
-				release = this.acquireLockSyncWithRetry(path);
+				release = this.acquireLockSync(path);
 			}
-			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
+			const current = fileExists ? this.storage.readTextFileSync(path) : undefined;
 			const next = fn(current);
 			if (next !== undefined) {
 				// Only create directory when we actually need to write
-				if (!existsSync(dir)) {
-					mkdirSync(dir, { recursive: true });
+				if (!this.storage.existsSync(dir)) {
+					this.storage.mkdirSync(dir, { recursive: true });
 				}
 				if (!release) {
-					release = this.acquireLockSyncWithRetry(path);
+					release = this.acquireLockSync(path);
 				}
-				writeFileSync(path, next, "utf-8");
+				this.storage.writeTextFileSync(path, next);
 			}
 		} finally {
 			if (release) {
@@ -398,7 +391,13 @@ export class SettingsManager {
 	): SettingsManager {
 		// --settings-file（PI_SETTINGS_FILE env）：进程级只读覆盖层，与 --config-dir/--session-dir 同构。
 		const overlayPath = process.env[ENV_SETTINGS_FILE];
-		const storage = new FileSettingsStorage(cwd, agentDir, overlayPath);
+		const storage = new FileSettingsStorage(
+			cwd,
+			agentDir,
+			overlayPath,
+			options.stores?.storage,
+			options.stores?.locks,
+		);
 		return SettingsManager.fromStorage(storage, options);
 	}
 

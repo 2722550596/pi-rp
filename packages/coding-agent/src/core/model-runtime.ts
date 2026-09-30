@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import type { HarnessStores } from "@earendil-works/pi-agent-core";
 import {
 	type Api,
 	type ApiStreamOptions,
@@ -75,6 +76,11 @@ export interface CreateModelRuntimeOptions {
 	/** Credential storage. Defaults to the file at authPath. */
 	credentials?: CredentialStore;
 	authPath?: string;
+	/**
+	 * Storage seams for the credential and models-store files (11-B). When omitted the node defaults apply; browser
+	 * assembly injects the OPFS stores or passes explicit `credentials`.
+	 */
+	stores?: HarnessStores;
 	modelsPath?: string | null;
 	modelsStore?: ModelsStore;
 	modelsStorePath?: string;
@@ -178,14 +184,19 @@ export class ModelRuntime implements Models {
 	}
 
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
-		const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
+		const credentials = new RuntimeCredentials(
+			options.credentials ?? DefaultAuthStorage.create(options.authPath, options.stores),
+		);
 		const modelsPath =
 			options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
 		const config = await ModelConfig.load(modelsPath);
 		const modelsStore =
 			options.modelsStore ??
 			(modelsPath
-				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
+				? new FileModelsStore(
+						options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"),
+						options.stores,
+					)
 				: new InMemoryCodingAgentModelsStore());
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
 		const providers = builtinProviderCatalog

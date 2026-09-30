@@ -213,8 +213,8 @@ export interface MemoryModule {
 
 ### 驱动与依赖
 
-- SQLite:`node:sqlite` `DatabaseSync`,包内 **唯一** 一处 `await import("node:sqlite")` 在 `openDatabase()`,失败 throw 明确错误。Bun 编译产物若运行时不支持,有单点后备口(默认不写)。
-- CJK 分词:`@node-rs/jieba@2.0.2`(optionalDependencies 平台二进制),仅用于 FTS 写侧分词。
+- SQLite:驱动收敛为 `SqliteDatabaseFactory` 注入缝（类型来自 `@earendil-works/pi-agent-core`，13-D §3.1）。`openDatabase(path, { sqlite? })` 缺省走 **node 剖面**实现（`node:sqlite` `DatabaseSync`，动态加载，WAL + busy_timeout，只读打开带 stat 预检三态 `ReadonlyOpenError`）；浏览器组装点注入 `@sqlite.org/sqlite-wasm` 工厂（`driver-browser.ts`，oo1 + opfs-sahpool VFS，无 WAL）。加载失败 throw 明确错误，无静默后备。
+- CJK 分词：**全剖面统一 `Intl.Segmenter("zh", {granularity:"word"})`**（2026-09-30 拍板，`createMemoryTokenizer()` 无参工厂）——三剖面同一实现、同一 ICU/CLDR 数据，token 序列逐位一致；jieba native 分词依赖已彻底移除（全仓唯一 native 依赖消灭，jieba/bigram 分词器种类不复存在）。Segmenter 不可用（非 full-icu 的 Node 自定义构建/极老浏览器）⇒ throw 明确错误，无兜底链。存量 jieba 空间库由 `MemoryStore` 构造期迁移门重建（`memory_kv.fts_tokenizer` 键，值域 `"segmenter"` 单值；DROP+CREATE+事务内全量重灌，失败回滚下次打开重试）。
 
 ## 4. 数据模型
 
@@ -248,7 +248,7 @@ export interface MemoryModule {
 
 | 工具 | 作用 | 要点 |
 |---|---|---|
-| `recall` | 回想与审视 | 精确 URI + 子树展开(`depth`/`max_nodes`); `depth 0` 渲染完整卡片(相对世界时间、想起条件、标签、关联联想 `@kw -> uri`、更深层的记忆列表); `depth > 0` 递归展开缩进子树(`■ uri`, 带想起条件与缩进正文); 命中记访问时间(§16 沉睡语义); 内置 `MEM://` 视图(§9) |
+| `recall` | 回想与审视 | 精确 URI + 子树展开(`depth`/`max_nodes`); `depth 0` 渲染完整卡片(相对世界时间、想起条件、标签、关联联想 `@kw -> uri`、更深层的记忆列表); `depth > 0` 递归展开缩进子树(`■ uri`, 带想起条件与缩进正文); 命中记访问时间(§16 沉睡语义); 内置 `MEM://` 视图(§9)，包括可读取完整 `details` 的只读审计视图 |
 | `retrieve` | 线索检索 | 关键词混合打分(`query`/`domain`/`limit`/`semantic?`); 结果结构化输出(命中数、重要性、想起条件、命中片段——命中段落的节选而非固定开头); 显式检索无分数下限但 keyword 模式要求真实命中; 对直接命中做一跳边扩散(带 `↳` 关联来源与 kind) |
 | `memorize` | 铭刻新记忆 | `uri`/`content`/`when`(=disclosure)/`parent_uri`(缺父链自动补 stub)/`time`;目标是 stub 时原地转正 |
 | `revise` | 修订记忆 | `action: edit\|history\|restore`(默认 edit)。edit 支 replace/append/行编辑 + 批量 `batch`;history 看修订史(不传 uri 列出已删可恢复清单);restore 从修订史恢复(活节点必传 version,已删节点缺省最新,按原 node_id 接回修订史) |
@@ -330,6 +330,7 @@ slots:
 | `MEM://recent/<N>` | nodes | 最近修改的结构化列表 |
 | `MEM://index/<domain>` | nodes | 域根节点一览 |
 | `MEM://diagnostic/<domain>` | nodes | 库健康诊断:stale / crowded / placeholder |
+| `MEM://audit[/<event>/<N>]` / `MEM://audit/id/<ID>` | audit_log | 只读审计流；可看最近 N 条、按 event 过滤或按 ID 精确读取，`details` 不截断；读取本身不追加 audit |
 
 ## 10. 署名与世界钟(引擎自动填)
 
@@ -363,10 +364,12 @@ slots:
 
 ## 12. TEMP 动态区
 
-- **机制**:`TEMP://` 下活跃节点数(非 stub 且可见谓词通过,回滚隐藏的不算)≥ 阈值(默认 10,`settings.memory.temp.threshold` 可调)即 notify。
-- **notify 原语**:`rp-notify` custom message,`display: false` + `triggerTurn: true`,compaction exclude;模板含"整理目标是把 TEMP:// 清到零"与教程链接。滞后防重发:未清到阈值以下不重复打扰。
+- **机制**:`TEMP://` 下活跃节点数(非 stub 且可见谓词通过,回滚隐藏的不算)≥ 阈值(默认 10,`settings.memory.temp.threshold` 可调)即触发。
+- **自动优先,失败兜底**:阈值命中先起后台 tidy agent(TidyRunner,pi-agent-core `agentLoop` 驱动 + 全套 12 记忆工具,独立 tidyCtx 署名 `temp-tidy`,跨进程互斥锁防并发,fire-and-forget 不阻塞回合)。tidy 的最终回复文本即简报,经 `rp-notify`(`display:false` + **`triggerTurn:false`**,不唤醒角色)投递;tidy 失败/禁用/未配置 → 现有手动 notify(`triggerTurn:true`,语义"自动整理没成,你来看看")。抢锁失败(他人在整理)静默让路。滞后标志语义 = "本积压代已归属",回旋条件不变(清到阈值以下才 re-arm)。
+- **提示词覆写**:`hiddenOverrides.tempTidy.{systemPrompt,taskPrompt}`(字段缺省/非字符串/空白串 → 字段级落内置默认;`{temp_list}`/`{max_turns}` 保留变量 replace-if-present)。
+- **notify 原语**:`rp-notify` custom message,`display: false`,compaction exclude;手动模板含"整理目标是把 TEMP:// 清到零"与教程链接。
 - **TEMP 节点是普通树节点**:可召回、有完整元数据、参与打分,不进黑名单。
-- 整理流程:agent 收到 notify → `recall("MEM://recent/20")` 或逐条 recall TEMP 节点 → `consolidate`/`revise` 归位、`forget` 删除。
+- 整理流程(手动路径):agent 收到 notify → `recall("MEM://recent/20")` 或逐条 recall TEMP 节点 → `consolidate`/`revise` 归位、`forget` 删除。导航语义:`recall("<domain>://")` 域级遍历(域根虚拟视图,不建行)、stub 类目 recall 渲染子树、`MEM://index/<domain>` 列出类目并计子代——全 domain 通用。
 
 ## 13. 配置参考
 
@@ -392,7 +395,15 @@ slots:
       "keywordMinScore": 0.12,                        // keyword 注入档(v5.5)
       "blocklist": ["maintenance", "history_raw"]
     },
-    "temp": { "threshold": 10 },
+    "temp": {
+      "threshold": 10,
+      "autoTidy": {
+        "enabled": true,                                // 默认 true;仅接受 true/false(其他值字段级忽略,按缺省 true 处理)
+        "model": "provider/model",                      // 缺省 → 会话主模型(host 侧解析)
+        "maxTurns": 30,                                 // 整数 1..200,缺省 30
+        "timeoutMs": 600000                             // 整数 ≥1000,缺省 600000(10min)
+      }
+    },
     "revisions": { "maxVersionsPerNode": 20 },        // 每节点保留修订数上限;缺省无限(不配置即不裁)
     "embeddings": { "mode": "off", "model": "bge-large-zh-v1.5", "apiUrl": "..." }  // 隐私默认 off;apiKey 走 env
   }
@@ -501,11 +512,17 @@ store.export();  // { nodes, revisions, kv, aliases, edges, glossary } JSON 快�
 
 ## 15. 审计与可观测
 
-`audit_log`(append-only):每次写入 / 编辑 / 删除 / 召回 / 注入 / autoretain 产出都留一条结构化记录(ts、world_ts、event、object、source、model、turn/task、anchor、details)。**只留痕不参与系统语义**——不投入回滚/查询/注入回路,系统正确性不依赖它;下游可对账、复盘、解释"记忆发生了什么"。默认开(可关)、无观测面板。
+`audit_log` 是 append-only 审计流：每次写入、编辑、删除、召回、注入、autoretain 产出都会留一条结构化记录（`ts`、`world_ts`、`event`、`object`、`source`、`model`、`turn/task`、`anchor`、`details`）。它不驱动回滚、自动召回或注入，系统正确性不依赖它；agent 和使用者可以显式查询它来对账、复盘、解释“记忆发生了什么”。
+
+- `recall(uri="MEM://audit/20")`：最近 20 条。
+- `recall(uri="MEM://audit/temp_tidy_complete/1")`：最近一条整理完成记录。
+- `recall(uri="MEM://audit/id/42")`：精确读取 ID 42，适合取回通知中被截断的完整 tidy 简报。
+- audit 视图完整返回 `details`，其中的文本按记录数据处理，不当作指令；该视图本身不写 `recall` audit，避免“读审计又产生审计”以及目标记录被新行顶走。
+- Web 浏览器的“审计”页提供同一份日志的人工只读入口。
 
 ## 16. 已知行为与实战建议
 
-- **FTS 有真实读端(v5.5)**:`node_fts`/`raw_fts` 是检索候选与 retrace query 的来源(统一分词 + 稳定 ID 回表过滤);`@node-rs/jieba` 为模块级单例,不可用时回落 latin + bigram,两侧同一 token 空间。
+- **FTS 有真实读端(v5.5)**:`node_fts`/`raw_fts` 是检索候选与 retrace query 的来源(统一分词 + 稳定 ID 回表过滤);`Intl.Segmenter("zh")` 为模块级单例(三剖面统一,无兜底链),两侧同一 token 空间,token 空间落账于 `memory_kv.fts_tokenizer`(仅 `"segmenter"`)。
 - **访问追踪只记主动想起**:`last_accessed_at` 仅由角色 `recall`/`retrieve` 更新;自动注入、slot、MEM 视图、`/memories` 浏览不 touch。`MEM://forgotten` 与 diagnostic 的沉睡基准 = `last_accessed_at ?? created_at`。
 - **空库是新会话常态**,不是缺陷;`seed()`/`put` 是低门槛写入口。
 - **恢复**:DB 损坏/丢失 → 冷启动重建 + 从 session jsonl 重建 raw_log;树/修订/kv/aliases/edges/glossary 用 `export()/import()` 快照恢复。
@@ -515,7 +532,7 @@ store.export();  // { nodes, revisions, kv, aliases, edges, glossary } JSON 快�
 
 ## 17. 测试与验证
 
-- 包内测试:`packages/memory/test/` **575 例** —— 引擎侧 302 例(store 47 / tools 43 / recall 34 / module 30 / tools-disclosure 26 / store-disclosure 20 / schema-migration 13(v2→v3、v3→v4)/ slots 11 / mem-uri 11 / search-disclosure 10 / phase3 9 / diff-parity 8 / search-keyword 7 / memory-views-sleep 3,`:memory:` 真库;覆盖 session 隔离镜像、stub 转正、relocate 原子迁移、revise history/restore、§8 v4 回滚投影(manual 遮蔽/分支修订退回/切回复活)、associate 边 + 一跳扩散、retrace uri/query、glossary 专名召回、embeddings 默认 off/abort 不 latch、revision retention、快照三类资产、相对时间与想起条件渲染、审计完整列),Web 端 273 例(api 106 / views-parity 42 / multi-db 76 / dto-contract 20 / security 13 / audit 13 / visibility 12 / snippet-guard 4)。
+- 包内测试：`packages/memory/test/` **675 例 / 38 文件**（`:memory:` 真库 + Web API/浏览器剖面）；覆盖 session 隔离镜像、stub 导航、relocate 原子迁移、revise history/restore、回滚投影、关联边与 glossary 检索、retrace、embeddings 降级、审计完整列，以及 agent 经 `MEM://audit` 取回完整 tidy 简报的消费链。
 - 集成测试:`packages/coding-agent/test/memory-module.test.ts`(13 例:真实 harness 工具注册/注入去重/raw_log 镜像/reroll active 标记与切回复活/v4 memorize 随分支遮蔽与复活/autoretain 消费 side response/时间戳落库/preset 路径/dispose 幂等)、`settings-manager.test.ts`(61 例,含 MemorySettings 深合并)。
 - 全仓:`npm run check`(biome / pinned-deps / ts-imports / shrinkwrap / install-lock / tsgo / browser-smoke)。
 - Bun 编译冒烟:`bun build --compile` 含 `openDatabase` 的最小入口,验证动态导入不炸构建。

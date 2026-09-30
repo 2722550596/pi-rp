@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { compileMessages, compileMessagesSync, presetHasAsyncSlots } from "../src/core/prompt-preset/compiler.ts";
-import { registerSlot } from "../src/core/prompt-preset/slot-renderers.ts";
+import { registerSlot } from "../src/core/prompt-preset/slot-registry.ts";
 import type { PromptPreset, PromptRuntime } from "../src/core/prompt-preset/types.ts";
 
 function userMessage(text: string): AgentMessage {

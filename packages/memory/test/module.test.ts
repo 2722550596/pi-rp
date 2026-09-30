@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EventStream, type AssistantMessage, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
 import {
 	buildMemoriesBlock,
@@ -10,6 +11,7 @@ import {
 	rebuildInjectedFromEntries,
 	shouldCaptureCustomType,
 } from "../src/module.ts";
+import { DEFAULT_TIDY_SYSTEM_PROMPT } from "../src/tidy-prompts.ts";
 import { createSchema } from "../src/schema.ts";
 import type { MemoryNode } from "../src/store.ts";
 import { MemoryStore } from "../src/store.ts";
@@ -44,6 +46,16 @@ function createHostMock(
 	snapshot: Partial<MemoryBranchSnapshot> = {},
 	turnMessages: MemoryTurnMessage[] = [],
 	activeBranch: MemoryTurnMessage[] = turnMessages,
+	tidy: {
+		streamFn?: (
+			model: unknown,
+			context: { systemPrompt: string; messages: unknown[] },
+			options?: { signal?: AbortSignal },
+		) => unknown;
+		rejectSide?: unknown;
+		promptOverrides?: { systemPrompt?: string; taskPrompt?: string };
+		sent?: Array<{ message: { customType: string; content: string; display: false; details?: unknown }; options?: { triggerTurn?: boolean } }>;
+	} = {},
 ) {
 	const tools = new Map<string, RegisteredTool>();
 	const slots: string[] = [];
@@ -64,7 +76,9 @@ function createHostMock(
 			list.push(handler as (event: unknown) => unknown);
 			hooks.set(event, list);
 		},
-		sendCustomMessage: () => {},
+		sendCustomMessage: (message, options) => {
+			tidy.sent?.push({ message, options });
+		},
 		getSessionInfo: () => ({ modelId: "test-model", leafId: "leaf-1", sessionId: "session-1", turn: 0 }),
 		getBranchSnapshot: () => ({
 			entryIds: snapshot.entryIds ?? [],
@@ -74,6 +88,14 @@ function createHostMock(
 		getActiveBranchMessages: () => activeBranch,
 		completeSideRequest: async (prompt) => prompt,
 	};
+	if (tidy.streamFn || tidy.rejectSide !== undefined) {
+		host.sideStreamFn = async (options) => {
+			if (tidy.rejectSide !== undefined) throw tidy.rejectSide;
+			if (!tidy.streamFn) throw new Error("no scripted stream");
+			return { streamFn: tidy.streamFn as never, model: { id: "mock-model" } as never };
+		};
+		host.getTempTidyPromptOverrides = () => tidy.promptOverrides;
+	}
 	return { host, tools, slots, customTypes, hooks };
 }
 
@@ -798,5 +820,59 @@ describe("shouldCaptureCustomType", () => {
 	it("list mode captures listed types regardless of display", async () => {
 		expect(shouldCaptureCustomType("rp-a", false, ["rp-a"])).toBe(true);
 		expect(shouldCaptureCustomType("rp-b", true, ["rp-a"])).toBe(false);
+	});
+});
+
+// ── autoTidy wiring (契约 §2.8；矩阵详见 temp-tidy.test.ts 触发接线组) ───────
+
+describe("autoTidy trigger wiring", () => {
+	it("threshold hit runs the tidy via the host side-stream and delivers the briefing triggerTurn:false", async () => {
+		store.put({ uri: "TEMP://draft-1", content: "草稿一" });
+		store.put({ uri: "TEMP://draft-2", content: "草稿二" });
+		const sent: Array<{ message: { customType: string; content: string; display: false; details?: unknown }; options?: { triggerTurn?: boolean } }> = [];
+		const captured: Array<{ systemPrompt: string; messages: Array<{ role: string; content: unknown }> }> = [];
+		const h = createHostMock({}, [], [], {
+			streamFn: (_model, context) => {
+				captured.push(context as { systemPrompt: string; messages: Array<{ role: string; content: unknown }> });
+				const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
+					(e) => e.type === "done" || e.type === "error",
+					(e) => {
+						if (e.type === "done") return e.message;
+						if (e.type === "error") return e.error;
+						throw new Error("Unexpected event type");
+					},
+				);
+				const final: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "TEMP 整理：2 条草稿 → 删除 2、未处理 0；TEMP 余 0。" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock-model",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: final });
+					stream.push({ type: "done", reason: "stop", message: final });
+				});
+				return stream;
+			},
+			sent,
+		});
+		const module = createMemoryModule(store, { settings: { temp: { threshold: 2 }, embeddings: { mode: "off" } } });
+		module.registerSession(h.host);
+		await module.onTurnEnd();
+		await vi.waitFor(() => expect(sent).toHaveLength(1), { timeout: 2000, interval: 10 });
+		expect(sent[0]?.message.customType).toBe("rp-notify");
+		// 脚本简报不执行任何工具 → 两条草稿仍在；afterCount 交付前按全库口径重数。
+		expect(sent[0]?.message.details).toMatchObject({ kind: "temp-tidy-report", afterCount: 2 });
+		expect(sent[0]?.options).toEqual({ triggerTurn: false });
+		// 内置默认 system prompt 原样生效（E5 覆写整体性：无引擎强制附录）。
+		expect(captured[0]?.systemPrompt).toBe(DEFAULT_TIDY_SYSTEM_PROMPT);
+		// 本积压代已归属：次轮静默。
+		await module.onTurnEnd();
+		expect(sent).toHaveLength(1);
+		module.dispose();
 	});
 });

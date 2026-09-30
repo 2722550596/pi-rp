@@ -12,7 +12,7 @@ import {
 	getAllMacros,
 	registerMacro,
 } from "../src/core/prompt-preset/macro-engine.ts";
-import { getAllSlots, getSlot, registerSlot } from "../src/core/prompt-preset/slot-renderers.ts";
+import { getAllSlots, getSlot, registerSlot } from "../src/core/prompt-preset/slot-registry.ts";
 import type { PromptPreset, PromptRuntime, SlotDefinition } from "../src/core/prompt-preset/types.ts";
 
 function userMessage(text: string): AgentMessage {

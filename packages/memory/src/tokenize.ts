@@ -1,24 +1,28 @@
-import { createRequire } from "node:module";
-
 /**
  * Two token spaces, deliberately (docs/memory-system.md §3/§15.2).
  *
- * - tokenizeForSearch() — the FTS space: one real jieba instance is built once
- *   (module-level singleton) and used by BOTH the FTS write side (reindexNode /
- *   _reindexRawFts) and the FTS query side (searchNodeFts), so indexed rows and
- *   MATCH queries never live in two token spaces. Falls back to the bigram
- *   mixer when the native dependency is unavailable.
+ * - tokenizeForSearch() — the FTS space: Intl.Segmenter("zh", word)
+ *   segmentation (2026-09-30 拍板: ONE tokenizer for all profiles — node,
+ *   browser and hosted share this implementation and the same ICU/CLDR data,
+ *   so token sequences are bit-identical everywhere; the former native jieba
+ *   dependency is gone). One segmenter is built once (module-level singleton)
+ *   and used by BOTH the FTS write side (reindexNode / _reindexRawFts) and the
+ *   FTS query side (searchNodeFts), so indexed rows and MATCH queries never
+ *   live in two token spaces. The database records its token space in
+ *   `memory_kv.fts_tokenizer` (value "segmenter"); MemoryStore's constructor
+ *   migration gate DROPs and fully re-backfills the FTS tables of databases
+ *   whose key predates this (or is missing).
  * - tokenizeForMatch() — the scoring space: latin words + CJK bigrams, used by
  *   keywordScore() to measure query/doc overlap for candidates the FTS filter
  *   already selected.
  *
- * The split is intentional: candidate SELECTION is an FTS MATCH (jieba space),
- * candidate SCORING is a cheap bigram overlap (no jieba call per doc per
- * query). Keep it that way — do not "unify" scoring onto jieba without also
- * measuring the per-recall cost.
+ * The split is intentional: candidate SELECTION is an FTS MATCH (segmenter
+ * space), candidate SCORING is a cheap bigram overlap (no segmentation per doc
+ * per query). Keep it that way — do not "unify" scoring onto the segmenter
+ * without also measuring the per-recall cost.
  */
 
-/** Query-side tokenizer: CJK bigrams + latin words (fallback space). */
+/** Query-side tokenizer: CJK bigrams + latin words (scoring space). */
 export function tokenizeForMatch(text: string): string[] {
 	const tokens = new Set<string>();
 	const latin = text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
@@ -29,36 +33,60 @@ export function tokenizeForMatch(text: string): string[] {
 	return [...tokens];
 }
 
-type JiebaInstance = { cutForSearch(sentence: string): string[] };
-
-type JiebaModule = {
-	Jieba: { withDict(dict: Uint8Array): JiebaInstance };
-};
-
-let jiebaInstance: JiebaInstance | null | undefined;
-
-function loadJieba(): JiebaInstance | null {
-	if (jiebaInstance !== undefined) return jiebaInstance;
-	try {
-		const req = createRequire(import.meta.url);
-		const mod = req("@node-rs/jieba") as JiebaModule;
-		const { dict } = req("@node-rs/jieba/dict") as { dict: Uint8Array };
-		jiebaInstance = mod.Jieba.withDict(dict);
-	} catch {
-		jiebaInstance = null;
-	}
-	return jiebaInstance;
-}
+/** The only `memory_kv.fts_tokenizer` value, past and future (拍板: single value). */
+export type MemoryTokenizerSpace = "segmenter";
 
 /**
- * FTS tokenizer (write side AND query side): jieba cutForSearch,
- * space-joined. Falls back to the bigram mixer when the native dependency is
- * unavailable, so indexing still works — and both FTS sides always call this
- * same function. Not used by keyword scoring (see the header).
+ * The FTS tokenizer as an injectable object. The interface exists purely so
+ * tests can stub segmentation — there is exactly one implementation for every
+ * runtime profile, hence a zero-argument factory (no profile names, no kind
+ * unions).
+ */
+export interface MemoryTokenizer {
+	readonly space: "segmenter";
+	/** FTS space (write side AND query side share one instance). */
+	tokenizeForSearch(text: string): string;
+}
+
+function createSegmenter(): Intl.Segmenter {
+	try {
+		return new Intl.Segmenter("zh", { granularity: "word" });
+	} catch (error) {
+		// No silent fallback (I6 非静默): a runtime without ICU word segmentation
+		// must fail loudly instead of quietly degrading the token space. Node
+		// official builds ship full-icu by default (this package requires
+		// >= 22.19); Chrome 87+ / Safari 14.1+ / Firefox 125+ have it built in.
+		throw new Error(
+			`Intl.Segmenter("zh") is unavailable in this runtime (${String(error)}). ` +
+				"The memory tokenizer requires ICU word segmentation: use a Node build with full-icu " +
+				"(official builds, node >= 13) or a browser from Chrome 87+ / Safari 14.1+ / Firefox 125+.",
+		);
+	}
+}
+
+export function createMemoryTokenizer(): MemoryTokenizer {
+	const segmenter = createSegmenter();
+	return {
+		space: "segmenter",
+		tokenizeForSearch(text: string): string {
+			if (text.length === 0) return "";
+			const tokens: string[] = [];
+			for (const { segment, isWordLike } of segmenter.segment(text)) {
+				if (isWordLike) tokens.push(segment);
+			}
+			return tokens.join(" ");
+		},
+	};
+}
+
+let sharedTokenizer: MemoryTokenizer | undefined;
+
+/**
+ * FTS tokenizer (write side AND query side): segmenter word tokens,
+ * space-joined. Both FTS sides always call this same function. Not used by
+ * keyword scoring (see the header).
  */
 export function tokenizeForSearch(text: string): string {
-	if (text.length === 0) return "";
-	const jieba = loadJieba();
-	if (jieba) return jieba.cutForSearch(text).join(" ");
-	return tokenizeForMatch(text).join(" ");
+	if (sharedTokenizer === undefined) sharedTokenizer = createMemoryTokenizer();
+	return sharedTokenizer.tokenizeForSearch(text);
 }

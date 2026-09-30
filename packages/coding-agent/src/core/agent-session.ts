@@ -19,8 +19,6 @@ export type {
 	CompileSystemPromptResult,
 } from "./prompt-preset/compiler.ts";
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
 import type {
 	Agent,
 	AgentContext,
@@ -29,7 +27,10 @@ import type {
 	AgentState,
 	AgentTool,
 	AgentToolResult,
+	HarnessStores,
 	PrepareNextTurnContext,
+	SqliteDatabaseFactory,
+	StorageBackend,
 	StreamFn,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
@@ -81,6 +82,7 @@ import { type CustomValidator, SchemaValidator } from "../state/schema-validator
 import { type JsonValue, StateManager } from "../state/state-manager.ts";
 import { StateStore } from "../state/state-store.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
+import { basename, dirname, resolve } from "../utils/node-globals.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
@@ -100,7 +102,7 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
-import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { DEFAULT_THINKING_LEVEL, SHELL_DEFAULT_ACTIVE_TOOL_NAMES } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -141,6 +143,7 @@ import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { nodeHarnessStores } from "./node-stores.ts";
 import { renderPromptDisplay } from "./prompt-display.ts";
 import {
 	compileMessages,
@@ -161,7 +164,8 @@ import { chooseDefaultPreset, isDisabledPromptPresetId, loadPromptPresets } from
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
-import { isChatHistoryPosition, registerSlot } from "./prompt-preset/slot-renderers.ts";
+import { registerSlot } from "./prompt-preset/slot-registry.ts";
+import { isChatHistoryPosition } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { RequestGateway } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -192,9 +196,10 @@ import {
 	type ToolSearchManagerContract,
 	toToolSearchEntries,
 } from "./tool-search-recovery.ts";
-import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
+import type { BashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createMemoryToolRenderers } from "./tools/memory-renderers.ts";
+import { createLocalBashOperations } from "./tools/node-tool-defaults.ts";
 import { createGetStateToolDefinition, createStateUpdateToolDefinition } from "./tools/state-update.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
@@ -232,18 +237,24 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
  */
 const memoryStoreSingletons = new Map<string, Promise<MemoryStore>>();
 
-function getMemoryStoreSingleton(dbPath: string): Promise<MemoryStore> {
+function getMemoryStoreSingleton(
+	dbPath: string,
+	storage: StorageBackend,
+	sqliteFactory: SqliteDatabaseFactory | undefined,
+): Promise<MemoryStore> {
 	let store = memoryStoreSingletons.get(dbPath);
 	if (!store) {
 		// node:sqlite does not create parent directories — the default path
 		// lives under <cwd>/.pi/, which may not exist on a fresh project.
+		// Routing runs through the storage seam (11-B): node default keeps
+		// node:fs parity, browser profile uses the injected OPFS backend.
 		if (dbPath !== ":memory:") {
 			const parent = dirname(dbPath);
-			if (!existsSync(parent)) {
-				mkdirSync(parent, { recursive: true });
+			if (!storage.existsSync(parent)) {
+				storage.mkdirSync(parent, { recursive: true });
 			}
 		}
-		store = openMemoryStore(dbPath);
+		store = openMemoryStore(dbPath, sqliteFactory ? { sqlite: sqliteFactory } : undefined);
 		memoryStoreSingletons.set(dbPath, store);
 		// A failed open must not poison the key: drop it so a later attempt
 		// (e.g. after fixing permissions) can retry.
@@ -350,6 +361,22 @@ export interface AgentSessionConfig {
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
 	cwd: string;
+	/**
+	 * Resolved agent-state root (the `getAgentDir()` seam, 11-B step 4). Assemblers pass it explicitly; when omitted
+	 * the session falls back to the live `getAgentDir()` resolution (node default, byte-identical).
+	 */
+	agentDir?: string;
+	/**
+	 * Storage seams for pi state (11-B). When omitted, the node defaults apply: node:fs storage backend +
+	 * proper-lockfile + live `getAgentDir()` path resolution. Browser assembly injects the OPFS stores.
+	 */
+	stores?: HarnessStores;
+	/**
+	 * SQLite factory for the memory store (13-D). Omitted ⇒ the memory driver's
+	 * runtime default applies (node:sqlite on node; browser assembly injects the
+	 * sqlite-wasm factory). Threaded to `openMemoryStore(dbPath, { sqlite })`.
+	 */
+	sqliteFactory?: SqliteDatabaseFactory;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	/** Resource loader for extensions, skills, prompts, themes, context files, and system prompt */
@@ -563,6 +590,30 @@ export class AgentSession {
 		this._sideRequestAbortControllers.delete(ctrl);
 	}
 
+	/**
+	 * Resolve a settings-style model reference string against the available
+	 * model catalogue; a blank/undefined ref falls back to the session's
+	 * current model. A non-blank reference that matches nothing is a hard
+	 * error — silently degrading to the main model would burn it on a side
+	 * task the author configured to run on another (cheaper) model.
+	 *
+	 * Shared by the memory host's side-request paths (completeSideRequest /
+	 * sideStreamFn); both labels are caller-supplied so error messages stay
+	 * attributable to the originating primitive.
+	 */
+	private _resolveModelReference(ref: string | undefined, notFoundLabel: string, noModelLabel: string): Model<Api> {
+		let model: Model<Api> | undefined;
+		if (ref && ref.trim().length > 0) {
+			const available = [...this._modelRuntime.getModels()];
+			model = findExactModelReferenceMatch(ref, available);
+			if (!model) throw new Error(`${notFoundLabel} model "${ref}" not found.`);
+		} else {
+			model = this.model;
+		}
+		if (!model) throw new Error(`${noModelLabel}: no model available`);
+		return model;
+	}
+
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
@@ -586,6 +637,12 @@ export class AgentSession {
 	private _loadedCustomValidators: CustomValidator[] = [];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
+	/** Resolved agent-state root (getAgentDir seam); preset/schema loading and derived state paths key off it. */
+	private _agentDir: string;
+	/** Storage seams for pi state; node defaults keep pre-injection behavior byte-identical. */
+	private _stores: HarnessStores;
+	/** Memory sqlite factory seam (13-D); undefined ⇒ memory driver's runtime default. */
+	private _sqliteFactory: SqliteDatabaseFactory | undefined;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
@@ -723,6 +780,9 @@ export class AgentSession {
 		this._stateManager = new StateManager();
 		this._schemaValidator = new SchemaValidator();
 		this._cwd = config.cwd;
+		this._agentDir = config.agentDir ?? getAgentDir();
+		this._stores = config.stores ?? nodeHarnessStores();
+		this._sqliteFactory = config.sqliteFactory;
 		this._modelRuntime = config.modelRuntime;
 		this._requestGateway = config.requestGateway;
 		this._extensionRunnerRef = config.extensionRunnerRef;
@@ -2074,7 +2134,7 @@ export class AgentSession {
 	 */
 	private _ensureActivePresetRestored(): void {
 		if (this._loadedPresets.length > 0) return;
-		this._loadedPresets = loadPromptPresets(this._cwd, getAgentDir());
+		this._loadedPresets = loadPromptPresets(this._cwd, this._agentDir);
 		const entries = this.sessionManager.getEntries();
 		let storedPresetId: string | undefined;
 		for (let i = entries.length - 1; i >= 0; i--) {
@@ -2120,7 +2180,7 @@ export class AgentSession {
 	/** Load presets from disk and re-resolve active preset. */
 	reloadPresets(preferredId?: string): void {
 		const preferred = preferredId && !isDisabledPromptPresetId(preferredId) ? preferredId : undefined;
-		this._loadedPresets = loadPromptPresets(this._cwd, getAgentDir());
+		this._loadedPresets = loadPromptPresets(this._cwd, this._agentDir);
 
 		// Re-resolve active preset against the newly loaded list
 		const activeId = this._activePreset.id;
@@ -2696,7 +2756,7 @@ export class AgentSession {
 		if (!skill) return text; // Unknown skill, pass through
 
 		try {
-			const content = readFileSync(skill.filePath, "utf-8");
+			const content = this._stores.storage.readTextFileSync(skill.filePath);
 			const body = stripFrontmatter(content).trim();
 			const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
 			return args ? `${skillBlock}\n\n${args}` : skillBlock;
@@ -2852,9 +2912,7 @@ export class AgentSession {
 	 *
 	 * @param event Activity payload; `type` and `timestamp` are filled in.
 	 */
-	emitActivity(
-		event: Omit<AgentActivityEvent, "type" | "timestamp">,
-	): void {
+	emitActivity(event: Omit<AgentActivityEvent, "type" | "timestamp">): void {
 		this._emit({ type: "agent_activity", timestamp: Date.now(), ...event });
 	}
 
@@ -4696,9 +4754,9 @@ export class AgentSession {
 		// Load schema definitions and custom validators. Async jiti.import so
 		// dependency modules (typebox) come from Node's ESM cache instead of
 		// being re-transformed per file (sync jiti() cost ~300ms per schema).
-		const schemaResult = await loadSchemaDefs(this._cwd, getAgentDir());
+		const schemaResult = await loadSchemaDefs(this._cwd, this._agentDir);
 		this._loadedSchemaDefs = schemaResult.schemas;
-		this._loadedCustomValidators = await loadCustomValidators(this._cwd, getAgentDir());
+		this._loadedCustomValidators = await loadCustomValidators(this._cwd, this._agentDir);
 		this._schemaValidator.setCustomValidators(this._loadedCustomValidators);
 		// Re-apply loaded schemas and strict mode from session entries so
 		// /reload picks up file changes (clears stale, replays schema_change
@@ -4746,9 +4804,12 @@ export class AgentSession {
 		this._ensureActivePresetRestored();
 		await this._setupMemoryModule();
 
+		// Shared constant with sdk.ts (消双写): the shell-profile default face.
+		// AgentSession never sees capabilities — shell-free profiles pass their
+		// (bash-complement) list explicitly via options.activeToolNames.
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write", "state_update", "get_state", "subagent_profiles", "subagent"];
+			: SHELL_DEFAULT_ACTIVE_TOOL_NAMES;
 		if (this._memoryModule) {
 			defaultActiveToolNames.push(...MEMORY_TOOL_NAMES);
 		}
@@ -4795,7 +4856,7 @@ export class AgentSession {
 			// before building a fresh one — reloads re-apply current settings.
 			this._memoryModule?.dispose();
 			this._memoryModule = undefined;
-			const store = await getMemoryStoreSingleton(dbPath);
+			const store = await getMemoryStoreSingleton(dbPath, this._stores.storage, this._sqliteFactory);
 			const module = createMemoryModule(store, { settings: settings.memory });
 			const host = this._createMemoryModuleHost(store);
 			module.registerSession(host);
@@ -5000,15 +5061,7 @@ export class AgentSession {
 				// role falls back to the current session model.
 				const models = session.settingsManager.getSettings().memory?.autoretain?.models;
 				const ref = options.modelRole === "default" ? models?.default : models?.smol;
-				let model: Model<any> | undefined;
-				if (ref && ref.trim().length > 0) {
-					const available = [...session._modelRuntime.getModels()];
-					model = findExactModelReferenceMatch(ref, available);
-					if (!model) throw new Error(`Autoretain model "${ref}" not found.`);
-				} else {
-					model = session.model;
-				}
-				if (!model) throw new Error("completeSideRequest: no model available");
+				const model = session._resolveModelReference(ref, "Autoretain", "completeSideRequest");
 				// Single user-message context; timestamp required by the
 				// Message type (wall clock of this side request).
 				const message = await runner.createContext().completeSideRequest({
@@ -5030,8 +5083,79 @@ export class AgentSession {
 				});
 				return contentText(message.content, "");
 			},
-			sendCustomMessage(message) {
-				runner.getExtensionRuntime().sendMessage(message, { triggerTurn: true });
+			/**
+			 * LLM 流原语 for the TEMP auto-tidy agent (docs/design/temp-autotidy/02
+			 * §3.A): same side channel as completeSideRequest (requestGateway,
+			 * priority 0 — lowest, yields to main loop/compaction under provider
+			 * concurrency pressure) but returns the streaming closure unpinned
+			 * from any single call, so pi-agent-core's agentLoop can drive a
+			 * multi-round tool loop over it. The resolved Model rides the return
+			 * value: AgentLoopConfig.model is required, and a placeholder stub
+			 * would lie about every event snapshot.
+			 */
+			async sideStreamFn(options: { modelRef?: string; signal?: AbortSignal }) {
+				// Config-face resolution: a modelRef that matches nothing throws
+				// here (rejected promise) so the caller's failure fallback kicks
+				// in — never a silent degrade onto the session model.
+				const model = session._resolveModelReference(options.modelRef, "Tidy", "sideStreamFn");
+				const gateway = session.requestGateway;
+				if (!gateway) {
+					// Unreachable via the sdk path (a gateway is always created
+					// there); fail fast rather than bypassing concurrency
+					// governance with a direct modelRuntime stream.
+					throw new Error("sideStreamFn: no request gateway available");
+				}
+				return {
+					model,
+					streamFn: (_mm, cc, oo) => {
+						// Per-invocation registration: one controller per LLM round,
+						// unregistered when that round's stream settles — mirrors
+						// completeSideRequest's per-request try/finally so no dead
+						// controllers linger in the dispose-abort set. The caller's
+						// signal (TidyRunner deadline) is forwarded into every round.
+						const roundCtrl = session.registerSideRequest(options.signal);
+						// Pin the model resolved above: agentLoop re-passes
+						// config.model, but the gateway identity promises the model
+						// resolved at sideStreamFn() time — never let a drifted
+						// first argument move the request onto another model.
+						const inner = gateway.streamSimple(
+							model,
+							cc,
+							oo,
+							{ sessionId: "?", priority: 0, label: "temp-tidy" },
+							roundCtrl.signal,
+						);
+						// gateway.streamSimple returns a real AssistantMessageEventStream
+						// (lazyStream), so it hands through without re-wrapping. The
+						// StreamFn contract terminates the stream with a final
+						// AssistantMessage on done/error/aborted — result() settling is
+						// the stream's terminal barrier, so unregister there.
+						void inner.result().then(
+							() => session.unregisterSideRequest(roundCtrl),
+							() => session.unregisterSideRequest(roundCtrl),
+						);
+						return inner;
+					},
+				};
+			},
+			/**
+			 * TEMP tidy prompt overrides, read live from the active preset (pull
+			 * model — docs/design/temp-autotidy/02 §3.D): setActivePreset swaps
+			 * _activePreset without a runtime rebuild when the memory dbPath is
+			 * unchanged, so any push-style capture would serve stale prompts.
+			 * undefined = no override; the module falls back to its built-ins.
+			 */
+			getTempTidyPromptOverrides() {
+				return session._activePreset.hiddenOverrides?.tempTidy;
+			},
+			sendCustomMessage(message, options) {
+				// Default completion MUST happen at the host layer: the sole
+				// existing caller (module.ts manual threshold notify) invokes
+				// single-param with "wake the role" semantics — passing undefined
+				// through would leave triggerTurn falsy in the engine and silently
+				// degrade the notification to disk-only when idle
+				// (docs/design/temp-autotidy/02 §3.B).
+				runner.getExtensionRuntime().sendMessage(message, options ?? { triggerTurn: true });
 			},
 		};
 	}
@@ -5707,6 +5831,8 @@ export class AgentSession {
 			outputPath,
 			themeName,
 			toolRenderer,
+			agentDir: this._agentDir,
+			storage: this._stores.storage,
 			preset:
 				this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default"
 					? this._activePreset
@@ -5726,8 +5852,8 @@ export class AgentSession {
 			process.cwd(),
 		);
 		const dir = dirname(filePath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
+		if (!this._stores.storage.existsSync(dir)) {
+			this._stores.storage.mkdirSync(dir, { recursive: true });
 		}
 
 		const header: SessionHeader = {
@@ -5749,7 +5875,7 @@ export class AgentSession {
 			prevId = entry.id;
 		}
 
-		writeFileSync(filePath, `${lines.join("\n")}\n`);
+		this._stores.storage.writeTextFileSync(filePath, `${lines.join("\n")}\n`);
 		return filePath;
 	}
 

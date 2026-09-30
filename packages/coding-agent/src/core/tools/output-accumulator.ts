@@ -1,24 +1,22 @@
-import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createTempOutputSpillFile, type OutputSpillFile } from "./node-tool-defaults.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
 	maxLines?: number;
 	maxBytes?: number;
 	tempFilePrefix?: string;
+	/**
+	 * Spill-file factory (full-output persistence past the byte/line limits).
+	 * Default: node temp-dir file (node-tool-defaults); browser profile injects
+	 * a no-op/in-memory face — bash is negotiated off there, so it is unreachable.
+	 */
+	createSpillFile?: (prefix: string) => OutputSpillFile;
 }
 
 export interface OutputSnapshot {
 	content: string;
 	truncation: TruncationResult;
 	fullOutputPath?: string;
-}
-
-function defaultTempFilePath(prefix: string): string {
-	const id = randomBytes(8).toString("hex");
-	return join(tmpdir(), `${prefix}-${id}.log`);
 }
 
 function byteLength(text: string): number {
@@ -52,13 +50,15 @@ export class OutputAccumulator {
 	private finished = false;
 
 	private tempFilePath: string | undefined;
-	private tempFileStream: WriteStream | undefined;
+	private tempSpillFile: OutputSpillFile | undefined;
+	private readonly createSpillFile: (prefix: string) => OutputSpillFile;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 		this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 		this.maxRollingBytes = Math.max(this.maxBytes * 2, 1);
 		this.tempFilePrefix = options.tempFilePrefix ?? "pi-output";
+		this.createSpillFile = options.createSpillFile ?? createTempOutputSpillFile;
 	}
 
 	append(data: Buffer): void {
@@ -69,9 +69,9 @@ export class OutputAccumulator {
 		this.totalRawBytes += data.length;
 		this.appendDecodedText(this.decoder.decode(data, { stream: true }));
 
-		if (this.tempFileStream || this.shouldUseTempFile()) {
+		if (this.tempSpillFile || this.shouldUseTempFile()) {
 			this.ensureTempFile();
-			this.tempFileStream?.write(data);
+			this.tempSpillFile?.write(data);
 		} else if (data.length > 0) {
 			this.rawChunks.push(data);
 		}
@@ -119,26 +119,13 @@ export class OutputAccumulator {
 	}
 
 	async closeTempFile(): Promise<void> {
-		if (!this.tempFileStream) {
+		if (!this.tempSpillFile) {
 			return;
 		}
 
-		const stream = this.tempFileStream;
-		this.tempFileStream = undefined;
-
-		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
-				stream.off("finish", onFinish);
-				reject(error);
-			};
-			const onFinish = () => {
-				stream.off("error", onError);
-				resolve();
-			};
-			stream.once("error", onError);
-			stream.once("finish", onFinish);
-			stream.end();
-		});
+		const spillFile = this.tempSpillFile;
+		this.tempSpillFile = undefined;
+		await spillFile.end();
 	}
 
 	getLastLineBytes(): number {
@@ -212,10 +199,11 @@ export class OutputAccumulator {
 		if (this.tempFilePath) {
 			return;
 		}
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix);
-		this.tempFileStream = createWriteStream(this.tempFilePath);
+		const spillFile = this.createSpillFile(this.tempFilePrefix);
+		this.tempFilePath = spillFile.path;
+		this.tempSpillFile = spillFile;
 		for (const chunk of this.rawChunks) {
-			this.tempFileStream.write(chunk);
+			spillFile.write(chunk);
 		}
 		this.rawChunks = [];
 	}

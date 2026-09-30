@@ -1,6 +1,8 @@
-import { accessSync, constants } from "node:fs";
-import { access } from "node:fs/promises";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
+import { fileExistsSync, pathExistsAsync } from "./node-tool-defaults.ts";
+
+/** `access(path, F_OK)` parity; node default moved to node-tool-defaults (15-F §5.5). */
+export const pathExists = pathExistsAsync;
 
 const NARROW_NO_BREAK_SPACE = "\u202F";
 
@@ -19,24 +21,6 @@ function tryCurlyQuoteVariant(filePath: string): string {
 	return filePath.replace(/'/g, "\u2019");
 }
 
-function fileExists(filePath: string): boolean {
-	try {
-		accessSync(filePath, constants.F_OK);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-export async function pathExists(filePath: string): Promise<boolean> {
-	try {
-		await access(filePath, constants.F_OK);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 export function expandPath(filePath: string): string {
 	return normalizePath(filePath, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
 }
@@ -52,31 +36,31 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 export function resolveReadPath(filePath: string, cwd: string): string {
 	const resolved = resolveToCwd(filePath, cwd);
 
-	if (fileExists(resolved)) {
+	if (fileExistsSync(resolved)) {
 		return resolved;
 	}
 
 	// Try macOS AM/PM variant (narrow no-break space before AM/PM)
 	const amPmVariant = tryMacOSScreenshotPath(resolved);
-	if (amPmVariant !== resolved && fileExists(amPmVariant)) {
+	if (amPmVariant !== resolved && fileExistsSync(amPmVariant)) {
 		return amPmVariant;
 	}
 
 	// Try NFD variant (macOS stores filenames in NFD form)
 	const nfdVariant = tryNFDVariant(resolved);
-	if (nfdVariant !== resolved && fileExists(nfdVariant)) {
+	if (nfdVariant !== resolved && fileExistsSync(nfdVariant)) {
 		return nfdVariant;
 	}
 
 	// Try curly quote variant (macOS uses U+2019 in screenshot names)
 	const curlyVariant = tryCurlyQuoteVariant(resolved);
-	if (curlyVariant !== resolved && fileExists(curlyVariant)) {
+	if (curlyVariant !== resolved && fileExistsSync(curlyVariant)) {
 		return curlyVariant;
 	}
 
 	// Try combined NFD + curly quote (for French macOS screenshots like "Capture d'écran")
 	const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
-	if (nfdCurlyVariant !== resolved && fileExists(nfdCurlyVariant)) {
+	if (nfdCurlyVariant !== resolved && fileExistsSync(nfdCurlyVariant)) {
 		return nfdCurlyVariant;
 	}
 

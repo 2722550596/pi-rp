@@ -1,9 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import type { StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import ignore from "ignore";
 import { basename, dirname, join, relative, resolve, sep } from "path";
 import { getAgentDir, getProjectConfigDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
@@ -44,15 +45,15 @@ function prefixIgnorePattern(line: string, prefix: string): string | null {
 	return negated ? `!${prefixed}` : prefixed;
 }
 
-function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string): void {
+function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string, storage: StorageBackend): void {
 	const relativeDir = relative(rootDir, dir);
 	const prefix = relativeDir ? `${toPosixPath(relativeDir)}/` : "";
 
 	for (const filename of IGNORE_FILE_NAMES) {
 		const ignorePath = join(dir, filename);
-		if (!existsSync(ignorePath)) continue;
+		if (!storage.existsSync(ignorePath)) continue;
 		try {
-			const content = readFileSync(ignorePath, "utf-8");
+			const content = storage.readTextFileSync(ignorePath);
 			const patterns = content
 				.split(/\r?\n/)
 				.map((line) => prefixIgnorePattern(line, prefix))
@@ -131,6 +132,11 @@ export interface LoadSkillsFromDirOptions {
 	dir: string;
 	/** Source identifier for these skills */
 	source: string;
+	/**
+	 * Storage seam for the scan (11-B step 8). When omitted the node defaults apply; browser assembly injects the
+	 * OPFS storage so user-imported skills are discovered from the workspace subtree.
+	 */
+	storage?: StorageBackend;
 }
 
 function createSkillSourceInfo(filePath: string, baseDir: string, source: string): SourceInfo {
@@ -166,8 +172,8 @@ function createSkillSourceInfo(filePath: string, baseDir: string, source: string
  * - recurse into subdirectories to find SKILL.md
  */
 export function loadSkillsFromDir(options: LoadSkillsFromDirOptions): LoadSkillsResult {
-	const { dir, source } = options;
-	return loadSkillsFromDirInternal(dir, source, true);
+	const { dir, source, storage } = options;
+	return loadSkillsFromDirInternal(dir, source, true, undefined, undefined, storage);
 }
 
 function loadSkillsFromDirInternal(
@@ -176,20 +182,21 @@ function loadSkillsFromDirInternal(
 	includeRootFiles: boolean,
 	ignoreMatcher?: IgnoreMatcher,
 	rootDir?: string,
+	storage: StorageBackend = NodeStorageBackend.shared,
 ): LoadSkillsResult {
 	const skills: Skill[] = [];
 	const diagnostics: ResourceDiagnostic[] = [];
 
-	if (!existsSync(dir)) {
+	if (!storage.existsSync(dir)) {
 		return { skills, diagnostics };
 	}
 
 	const root = rootDir ?? dir;
 	const ig = ignoreMatcher ?? ignore();
-	addIgnoreRules(ig, dir, root);
+	addIgnoreRules(ig, dir, root, storage);
 
 	try {
-		const entries = readdirSync(dir, { withFileTypes: true });
+		const entries = storage.readdirSync(dir);
 
 		for (const entry of entries) {
 			if (entry.name !== "SKILL.md") {
@@ -198,10 +205,10 @@ function loadSkillsFromDirInternal(
 
 			const fullPath = join(dir, entry.name);
 
-			let isFile = entry.isFile();
-			if (entry.isSymbolicLink()) {
+			let isFile = entry.isFile;
+			if (entry.isSymbolicLink === true) {
 				try {
-					isFile = statSync(fullPath).isFile();
+					isFile = storage.statSync(fullPath).isFile;
 				} catch {
 					continue;
 				}
@@ -212,7 +219,7 @@ function loadSkillsFromDirInternal(
 				continue;
 			}
 
-			const result = loadSkillFromFile(fullPath, source);
+			const result = loadSkillFromFile(fullPath, source, storage);
 			if (result.skill) {
 				skills.push(result.skill);
 			}
@@ -233,13 +240,13 @@ function loadSkillsFromDirInternal(
 			const fullPath = join(dir, entry.name);
 
 			// For symlinks, check if they point to a directory and follow them
-			let isDirectory = entry.isDirectory();
-			let isFile = entry.isFile();
-			if (entry.isSymbolicLink()) {
+			let isDirectory = entry.isDirectory;
+			let isFile = entry.isFile;
+			if (entry.isSymbolicLink === true) {
 				try {
-					const stats = statSync(fullPath);
-					isDirectory = stats.isDirectory();
-					isFile = stats.isFile();
+					const stats = storage.statSync(fullPath);
+					isDirectory = stats.isDirectory;
+					isFile = stats.isFile;
 				} catch {
 					// Broken symlink, skip it
 					continue;
@@ -253,7 +260,7 @@ function loadSkillsFromDirInternal(
 			}
 
 			if (isDirectory) {
-				const subResult = loadSkillsFromDirInternal(fullPath, source, false, ig, root);
+				const subResult = loadSkillsFromDirInternal(fullPath, source, false, ig, root, storage);
 				skills.push(...subResult.skills);
 				diagnostics.push(...subResult.diagnostics);
 				continue;
@@ -263,7 +270,7 @@ function loadSkillsFromDirInternal(
 				continue;
 			}
 
-			const result = loadSkillFromFile(fullPath, source);
+			const result = loadSkillFromFile(fullPath, source, storage);
 			if (result.skill) {
 				skills.push(result.skill);
 			}
@@ -277,11 +284,12 @@ function loadSkillsFromDirInternal(
 function loadSkillFromFile(
 	filePath: string,
 	source: string,
+	storage: StorageBackend = NodeStorageBackend.shared,
 ): { skill: Skill | null; diagnostics: ResourceDiagnostic[] } {
 	const diagnostics: ResourceDiagnostic[] = [];
 
 	try {
-		const rawContent = readFileSync(filePath, "utf-8");
+		const rawContent = storage.readTextFileSync(filePath);
 		const { frontmatter } = parseFrontmatter<SkillFrontmatter>(rawContent);
 		const skillDir = dirname(filePath);
 		const parentDirName = basename(skillDir);
@@ -378,6 +386,11 @@ export interface LoadSkillsOptions {
 	skillPaths: string[];
 	/** Include default skills directories. */
 	includeDefaults: boolean;
+	/**
+	 * Storage seam for the scan (11-B step 8). When omitted the node defaults apply; browser assembly injects the
+	 * OPFS storage so `/state/agent/skills` and workspace `.pi/skills` are discovered from the OPFS namespace.
+	 */
+	storage?: StorageBackend;
 }
 
 /**
@@ -385,7 +398,7 @@ export interface LoadSkillsOptions {
  * Returns skills and any validation diagnostics.
  */
 export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
-	const { agentDir, skillPaths, includeDefaults } = options;
+	const { agentDir, skillPaths, includeDefaults, storage = NodeStorageBackend.shared } = options;
 
 	// Resolve agentDir - if not provided, use default from config
 	const resolvedCwd = resolvePath(options.cwd);
@@ -400,7 +413,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 		allDiagnostics.push(...result.diagnostics);
 		for (const skill of result.skills) {
 			// Resolve symlinks to detect duplicate files
-			const realPath = canonicalizePath(skill.filePath);
+			const realPath = storage.canonicalizeSync(skill.filePath);
 
 			// Skip silently if we've already loaded this exact file (via symlink)
 			if (realPathSet.has(realPath)) {
@@ -428,8 +441,19 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	}
 
 	if (includeDefaults) {
-		addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true));
-		addSkills(loadSkillsFromDirInternal(getProjectConfigDir(resolvedCwd, "skills"), "project", true));
+		addSkills(
+			loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true, undefined, undefined, storage),
+		);
+		addSkills(
+			loadSkillsFromDirInternal(
+				getProjectConfigDir(resolvedCwd, "skills"),
+				"project",
+				true,
+				undefined,
+				undefined,
+				storage,
+			),
+		);
 	}
 
 	const userSkillsDir = join(resolvedAgentDir, "skills");
@@ -454,18 +478,18 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	for (const rawPath of skillPaths) {
 		const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
-		if (!existsSync(resolvedPath)) {
+		if (!storage.existsSync(resolvedPath)) {
 			allDiagnostics.push({ type: "warning", message: "skill path does not exist", path: resolvedPath });
 			continue;
 		}
 
 		try {
-			const stats = statSync(resolvedPath);
+			const stats = storage.statSync(resolvedPath);
 			const source = getSource(resolvedPath);
-			if (stats.isDirectory()) {
-				addSkills(loadSkillsFromDirInternal(resolvedPath, source, true));
-			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
-				const result = loadSkillFromFile(resolvedPath, source);
+			if (stats.isDirectory) {
+				addSkills(loadSkillsFromDirInternal(resolvedPath, source, true, undefined, undefined, storage));
+			} else if (stats.isFile && resolvedPath.endsWith(".md")) {
+				const result = loadSkillFromFile(resolvedPath, source, storage);
 				if (result.skill) {
 					addSkills({ skills: [result.skill], diagnostics: result.diagnostics });
 				} else {

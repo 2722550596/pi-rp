@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import lockfile from "proper-lockfile";
+import type { HarnessStores, StateLocks, StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import { getProjectConfigDirName } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { nodeHarnessStores } from "./node-stores.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -94,14 +95,14 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 	return trustOptions;
 }
 
-function readTrustFile(path: string): TrustFile {
-	if (!existsSync(path)) {
+function readTrustFile(path: string, storage: StorageBackend): TrustFile {
+	if (!storage.existsSync(path)) {
 		return {};
 	}
 
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf-8"));
+		parsed = JSON.parse(storage.readTextFileSync(path));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to read trust store ${path}: ${message}`);
@@ -121,7 +122,7 @@ function readTrustFile(path: string): TrustFile {
 	return data;
 }
 
-function writeTrustFile(path: string, data: TrustFile): void {
+function writeTrustFile(path: string, data: TrustFile, storage: StorageBackend): void {
 	const sorted: TrustFile = {};
 	for (const key of Object.keys(data).sort()) {
 		const value = data[key];
@@ -129,44 +130,20 @@ function writeTrustFile(path: string, data: TrustFile): void {
 			sorted[key] = value;
 		}
 	}
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8");
+	storage.mkdirSync(dirname(path), { recursive: true });
+	storage.writeTextFileSync(path, `${JSON.stringify(sorted, null, 2)}\n`);
 }
 
-function acquireTrustLockSync(path: string): () => void {
+function acquireTrustLockSync(path: string, locks: StateLocks, storage: StorageBackend): () => void {
 	const trustDir = dirname(path);
-	mkdirSync(trustDir, { recursive: true });
-	const maxAttempts = 10;
-	const delayMs = 20;
-	let lastError: unknown;
-
-	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-		try {
-			return lockfile.lockSync(trustDir, { realpath: false, lockfilePath: `${path}.lock` });
-		} catch (error) {
-			const code =
-				typeof error === "object" && error !== null && "code" in error
-					? String((error as { code?: unknown }).code)
-					: undefined;
-			if (code !== "ELOCKED" || attempt === maxAttempts) {
-				throw error;
-			}
-			lastError = error;
-			const start = Date.now();
-			while (Date.now() - start < delayMs) {
-				// Sleep synchronously to avoid changing trust store callers to async.
-			}
-		}
-	}
-
-	if (lastError instanceof Error) {
-		throw lastError;
-	}
-	throw new Error("Failed to acquire trust store lock");
+	storage.mkdirSync(trustDir, { recursive: true });
+	// lockfilePath (`${path}.lock`) and the 10×20ms retry discipline live in the StateLocks implementation; the node
+	// one preserves the former proper-lockfile call exactly.
+	return locks.lockSync(trustDir, { lockfilePath: `${path}.lock` });
 }
 
-function withTrustFileLock<T>(path: string, fn: () => T): T {
-	const release = acquireTrustLockSync(path);
+function withTrustFileLock<T>(path: string, stores: HarnessStores, fn: () => T): T {
+	const release = acquireTrustLockSync(path, stores.locks, stores.storage);
 	try {
 		return fn();
 	} finally {
@@ -181,19 +158,24 @@ function withTrustFileLock<T>(path: string, fn: () => T): T {
  * exist. The user/global ~/.agents/skills directory is always treated as a
  * trusted user resource and is ignored here, even when cwd is $HOME.
  */
-export function hasTrustRequiringProjectResources(cwd: string): boolean {
+export function hasTrustRequiringProjectResources(
+	cwd: string,
+	storage: StorageBackend = NodeStorageBackend.shared,
+): boolean {
+	// HOME resolution is a node-entry concern (the browser profile is trusted-by-default per the frozen decision, so
+	// this probe is never assembled there); the workspace/config existence probes below run through the storage seam.
 	const homeDir = canonicalizePath(resolvePath(process.env.HOME || homedir()));
 	const userAgentsSkillsDir = join(homeDir, ".agents", "skills");
 	let currentDir = canonicalizePath(resolvePath(cwd));
 
 	const configDir = join(currentDir, getProjectConfigDirName());
-	if (TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.some((entry) => existsSync(join(configDir, entry)))) {
+	if (TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.some((entry) => storage.existsSync(join(configDir, entry)))) {
 		return true;
 	}
 
 	while (true) {
 		const agentsSkillsDir = join(currentDir, ".agents", "skills");
-		if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
+		if (agentsSkillsDir !== userAgentsSkillsDir && storage.existsSync(agentsSkillsDir)) {
 			return true;
 		}
 
@@ -207,9 +189,11 @@ export function hasTrustRequiringProjectResources(cwd: string): boolean {
 
 export class ProjectTrustStore {
 	private trustPath: string;
+	private stores: HarnessStores;
 
-	constructor(agentDir: string) {
+	constructor(agentDir: string, stores: HarnessStores = nodeHarnessStores()) {
 		this.trustPath = join(resolvePath(agentDir), "trust.json");
+		this.stores = stores;
 	}
 
 	get(cwd: string): ProjectTrustDecision {
@@ -217,8 +201,8 @@ export class ProjectTrustStore {
 	}
 
 	getEntry(cwd: string): ProjectTrustStoreEntry | null {
-		return withTrustFileLock(this.trustPath, () => {
-			const data = readTrustFile(this.trustPath);
+		return withTrustFileLock(this.trustPath, this.stores, () => {
+			const data = readTrustFile(this.trustPath, this.stores.storage);
 			return findNearestTrustEntry(data, cwd);
 		});
 	}
@@ -228,8 +212,8 @@ export class ProjectTrustStore {
 	}
 
 	setMany(decisions: ProjectTrustUpdate[]): void {
-		withTrustFileLock(this.trustPath, () => {
-			const data = readTrustFile(this.trustPath);
+		withTrustFileLock(this.trustPath, this.stores, () => {
+			const data = readTrustFile(this.trustPath, this.stores.storage);
 			for (const { path, decision } of decisions) {
 				const key = normalizeCwd(path);
 				if (decision === null) {
@@ -238,7 +222,7 @@ export class ProjectTrustStore {
 					data[key] = decision;
 				}
 			}
-			writeTrustFile(this.trustPath, data);
+			writeTrustFile(this.trustPath, data, this.stores.storage);
 		});
 	}
 }

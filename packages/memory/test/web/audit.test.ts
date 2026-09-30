@@ -38,6 +38,10 @@ const AUDIT_EVENTS = [
 	"recall_select",
 	"autoretain_task",
 	"autoretain_product",
+	"temp_tidy_trigger",
+	"temp_tidy_complete",
+	"temp_tidy_failed",
+	"temp_tidy_crash",
 ] as const;
 
 /** 静态字面量表 → `Record`（见 `ts-set-map` 规则）。用于判断某 event 名是否已登记。 */
@@ -62,6 +66,10 @@ const AUDIT_EVENT_LOOKUP: Record<string, true> = {
 	recall_select: true,
 	autoretain_task: true,
 	autoretain_product: true,
+	temp_tidy_trigger: true,
+	temp_tidy_complete: true,
+	temp_tidy_failed: true,
+	temp_tidy_crash: true,
 };
 
 const SRC_DIR = fileURLToPath(new URL("../../src", import.meta.url));
@@ -238,10 +246,10 @@ describe("审计事件名 ∈ 事件名全集", () => {
 		}
 	});
 
-	it("契约 §6.5 的 16 个事件名 与 src/ 里 logAudit 调用点集合 双向相等", () => {
+	it("契约 §6.5 的事件名全集 与 src/ 里 logAudit 调用点集合 双向相等", () => {
 		// ⭐ 双向相等：少一个（漏登记）与多一个（幽灵事件名）都要 fail。
 		const found = new Set<string>();
-		for (const rel of ["store.ts", "tools.ts", "module.ts", "autoretain.ts", "temp-notify.ts", "slots.ts"]) {
+		for (const rel of ["store.ts", "tools.ts", "module.ts", "autoretain.ts", "temp-notify.ts", "slots.ts", "temp-tidy.ts"]) {
 			let text: string;
 			try {
 				text = readFileSync(join(SRC_DIR, rel), "utf8");

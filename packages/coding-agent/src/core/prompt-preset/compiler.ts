@@ -7,7 +7,8 @@ export type {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { expandMacros } from "./macro-engine.ts";
 import { applyRegexRulesToMessages, applyRegexRulesToString } from "./regex-engine.ts";
-import { getSlot, isChatHistoryPosition, renderSlotAsync, renderSlotSync } from "./slot-renderers.ts";
+import { getSlot } from "./slot-registry.ts";
+import { isChatHistoryPosition, renderSlotAsync, renderSlotSync } from "./slot-renderers.ts";
 import type {
 	CompileMessageSource,
 	CompileMessagesResult,

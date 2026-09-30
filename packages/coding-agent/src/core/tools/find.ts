@@ -1,13 +1,12 @@
-import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
-import { spawn } from "child_process";
-import path from "path";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import path from "../../utils/node-globals.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { collectFdMatches, defaultFindOperations } from "./node-tool-defaults.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -58,12 +57,6 @@ export interface FindOperations {
 	/** Find files matching glob pattern. Returns relative or absolute paths. */
 	glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number }) => Promise<string[]> | string[];
 }
-
-const defaultFindOperations: FindOperations = {
-	exists: pathExists,
-	// This is a placeholder. Actual fd execution happens in execute() when no custom glob is provided.
-	glob: () => [],
-};
 
 export interface FindToolOptions {
 	/** Custom operations for find. Default: local filesystem plus fd */
@@ -145,16 +138,13 @@ export function createFindToolDefinition(
 				}
 
 				let settled = false;
-				let stopChild: (() => void) | undefined;
 				const settle = (fn: () => void) => {
 					if (settled) return;
 					settled = true;
 					signal?.removeEventListener("abort", onAbort);
-					stopChild = undefined;
 					fn();
 				};
 				const onAbort = () => {
-					stopChild?.();
 					settle(() => reject(new Error("Operation aborted")));
 				};
 				signal?.addEventListener("abort", onAbort, { once: true });
@@ -266,91 +256,63 @@ export function createFindToolDefinition(
 						}
 						args.push("--", effectivePattern, searchPath);
 
-						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-						const rl = createInterface({ input: child.stdout });
-						let stderr = "";
-						const lines: string[] = [];
-
-						stopChild = () => {
-							if (!child.killed) {
-								child.kill();
-							}
-						};
-
-						const cleanup = () => {
-							rl.close();
-						};
-
-						child.stderr?.on("data", (chunk) => {
-							stderr += chunk.toString();
-						});
-
-						rl.on("line", (line) => {
-							lines.push(line);
-						});
-
-						child.on("error", (error) => {
-							cleanup();
-							settle(() => reject(new Error(`Failed to run fd: ${error.message}`)));
-						});
-
-						child.on("close", (code) => {
-							cleanup();
-							if (signal?.aborted) {
+						// Spawn + line-streaming live in node-tool-defaults; this side keeps
+						// message ownership and rendering (fd and custom-glob paths both settle
+						// through the same formatting).
+						const collected = await collectFdMatches({ fdPath, args, signal });
+						if (!collected.ok) {
+							if (collected.kind === "aborted") {
 								settle(() => reject(new Error("Operation aborted")));
-								return;
+							} else if (collected.kind === "spawn-error") {
+								settle(() => reject(new Error(`Failed to run fd: ${collected.error.message}`)));
+							} else {
+								settle(() => reject(new Error(collected.message)));
 							}
-							const output = lines.join("\n");
-							if (code !== 0) {
-								const errorMsg = stderr.trim() || `fd exited with code ${code}`;
-								if (!output) {
-									settle(() => reject(new Error(errorMsg)));
-									return;
-								}
-							}
-							if (!output) {
-								settle(() =>
-									resolve({
-										content: [{ type: "text", text: "No files found matching pattern" }],
-										details: undefined,
-									}),
-								);
-								return;
-							}
-
-							const relativized: string[] = [];
-							for (const rawLine of lines) {
-								const line = rawLine.replace(/\r$/, "").trim();
-								if (!line) continue;
-								relativized.push(relativizeFindResultPath(line, searchPath));
-							}
-
-							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = relativized.join("\n");
-							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
-							let resultOutput = truncation.content;
-							const details: FindToolDetails = {};
-							const notices: string[] = [];
-							if (resultLimitReached) {
-								notices.push(
-									`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-								);
-								details.resultLimitReached = effectiveLimit;
-							}
-							if (truncation.truncated) {
-								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
-								details.truncation = truncation;
-							}
-							if (notices.length > 0) {
-								resultOutput += `\n\n[${notices.join(". ")}]`;
-							}
+							return;
+						}
+						const output = collected.output.lines.join("\n");
+						if (!output) {
 							settle(() =>
 								resolve({
-									content: [{ type: "text", text: resultOutput }],
-									details: Object.keys(details).length > 0 ? details : undefined,
+									content: [{ type: "text", text: "No files found matching pattern" }],
+									details: undefined,
 								}),
 							);
-						});
+							return;
+						}
+
+						const relativized: string[] = [];
+						for (const rawLine of collected.output.lines) {
+							const line = rawLine.replace(/\r$/, "").trim();
+							if (!line) continue;
+							relativized.push(relativizeFindResultPath(line, searchPath));
+						}
+
+						const resultLimitReached = relativized.length >= effectiveLimit;
+						const rawOutput = relativized.join("\n");
+						const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+						let resultOutput = truncation.content;
+						const details: FindToolDetails = {};
+						const notices: string[] = [];
+						if (resultLimitReached) {
+							notices.push(
+								`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+							);
+							details.resultLimitReached = effectiveLimit;
+						}
+						if (truncation.truncated) {
+							notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+							details.truncation = truncation;
+						}
+						if (notices.length > 0) {
+							resultOutput += `\n\n[${notices.join(". ")}]`;
+						}
+						settle(() =>
+							resolve({
+								content: [{ type: "text", text: resultOutput }],
+								details: Object.keys(details).length > 0 ? details : undefined,
+							}),
+						);
 					} catch (e) {
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));

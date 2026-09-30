@@ -1,7 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
-import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
@@ -21,6 +19,7 @@ import {
 	stripBom,
 } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { defaultEditOperations } from "./node-tool-defaults.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -83,19 +82,15 @@ export interface EditToolDetails {
  * Override these to delegate file editing to remote systems (for example SSH).
  */
 export interface EditOperations {
-	/** Read file contents as a Buffer */
-	readFile: (absolutePath: string) => Promise<Buffer>;
+	/**
+	 * Read file contents as bytes (Uint8Array floor; see ReadOperations.readFile).
+	 */
+	readFile: (absolutePath: string) => Promise<Uint8Array>;
 	/** Write content to a file */
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
 	/** Check if file is readable and writable (throw if not) */
 	access: (absolutePath: string) => Promise<void>;
 }
-
-const defaultEditOperations: EditOperations = {
-	readFile: (path) => fsReadFile(path),
-	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
-	access: (path) => fsAccess(path, constants.R_OK | constants.W_OK),
-};
 
 export interface EditToolOptions {
 	/** Custom operations for file editing. Default: local filesystem */
@@ -339,7 +334,7 @@ export function createEditToolDefinition(
 
 				// Read the file.
 				const buffer = await ops.readFile(absolutePath);
-				const rawContent = buffer.toString("utf-8");
+				const rawContent = new TextDecoder("utf-8", { ignoreBOM: true }).decode(buffer);
 				throwIfAborted();
 
 				// Strip BOM before matching. The model will not include an invisible BOM in oldText.

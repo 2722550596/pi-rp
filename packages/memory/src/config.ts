@@ -7,6 +7,19 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { AutoretainTask } from "./autoretain.ts";
 
+/** settings.memory.temp.autoTidy (契约 §2.1). 解析容错见 temp-tidy.ts parseAutoTidySettings —
+ * 字段级忽略 + 缺省，绝不 throw：整理是旁路功能，不因配置错误阻塞主会话. */
+export interface AutoTidySettings {
+	/** 缺省 true（D5）。非 boolean 忽略落 true（字段级忽略纪律，§12-01-7）。 */
+	enabled?: boolean;
+	/** "provider/model" 原样透传 host；缺省 → 会话主模型（D5，解析在 host 侧）. */
+	model?: string;
+	/** agentLoop 轮数上限（shouldStopAfterTurn seam）；合法 1..200，缺省 30（01 §2.4）. */
+	maxTurns?: number;
+	/** 总超时 ms；合法 ≥1000，缺省 600000（01 §2.4）. */
+	timeoutMs?: number;
+}
+
 /** settings.memory.* shape (coding-agent Settings.memory, §15.3). */
 export interface MemorySettings {
 	dbPath?: string;
@@ -45,7 +58,7 @@ export interface MemorySettings {
 		 */
 		select?: { tau?: number };
 	};
-	temp?: { threshold?: number };
+	temp?: { threshold?: number; autoTidy?: AutoTidySettings };
 	embeddings?: { mode?: "api" | "off"; model?: string; rerankModel?: string; apiUrl?: string };
 	/** Revision retention (§12 decision 20): max versions kept per node; undefined = unlimited. */
 	revisions?: { maxVersionsPerNode?: number };

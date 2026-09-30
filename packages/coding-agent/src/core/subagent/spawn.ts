@@ -4,7 +4,7 @@ import type { JsonValue } from "../../state/state-manager.ts";
 import type { AgentSession } from "../agent-session.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { DEFAULT_SUBAGENT_TOOLS, isPrepareError, pick, prepareSubagentConversation } from "./prepare.ts";
-import { runSubagent, subagentActivityForwarder, type SubagentResultStatus } from "./run.ts";
+import { runSubagent, type SubagentResultStatus, subagentActivityForwarder } from "./run.ts";
 
 // =========================================================================
 // Types

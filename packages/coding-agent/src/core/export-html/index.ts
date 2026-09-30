@@ -1,5 +1,6 @@
-import type { AgentMessage, AgentState } from "@earendil-works/pi-agent-core";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import type { AgentMessage, AgentState, StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStateLocks, NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
+import { readFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getAgentDir, getExportTemplateDir } from "../../config.ts";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.ts";
@@ -39,6 +40,16 @@ interface RenderedToolHtml {
 export interface ExportOptions {
 	outputPath?: string;
 	themeName?: string;
+	/**
+	 * Resolved agent-state root for preset/settings lookups (11-B step 4 seam); defaults to live `getAgentDir()`.
+	 */
+	agentDir?: string;
+	/**
+	 * Storage seam for the session read and the output write (11-B). When omitted the node defaults apply. Template
+	 * assets are package resources (dist assets, not state) and are deliberately NOT routed through this seam — the
+	 * browser profile ships them via bundling, not via the OPFS namespace (contract §6.1 has no template slot).
+	 */
+	storage?: StorageBackend;
 	/** Optional tool renderer for custom tools */
 	toolRenderer?: ToolHtmlRenderer;
 	/** Active prompt preset. When provided, its display-effect regex rules are applied
@@ -145,15 +156,34 @@ interface SessionData {
 }
 
 /**
+ * Template asset injection for browser builds (F's A2 收口): the five template files co-located with this module
+ * (`template.html`, `template.css`, `template.js`, `vendor/marked.min.js`, `vendor/highlight.min.js`) are package
+ * assets, not state — the browser profile bundles them (esbuild `?raw`/virtual module) and calls
+ * {@link setExportTemplateLoader} at assembly instead of aliasing this module. Node default: read from
+ * `getExportTemplateDir()`, byte-identical to the former direct readFileSync block.
+ */
+export type ExportTemplateLoader = (filename: string) => string;
+
+let exportTemplateLoader: ExportTemplateLoader | undefined;
+
+export function setExportTemplateLoader(loader: ExportTemplateLoader | undefined): void {
+	exportTemplateLoader = loader;
+}
+
+function readTemplateAsset(filename: string): string {
+	if (exportTemplateLoader) return exportTemplateLoader(filename);
+	return readFileSync(join(getExportTemplateDir(), filename), "utf-8");
+}
+
+/**
  * Core HTML generation logic shared by both export functions.
  */
 function generateHtml(sessionData: SessionData, themeName?: string): string {
-	const templateDir = getExportTemplateDir();
-	const template = readFileSync(join(templateDir, "template.html"), "utf-8");
-	const templateCss = readFileSync(join(templateDir, "template.css"), "utf-8");
-	const templateJs = readFileSync(join(templateDir, "template.js"), "utf-8");
-	const markedJs = readFileSync(join(templateDir, "vendor", "marked.min.js"), "utf-8");
-	const hljsJs = readFileSync(join(templateDir, "vendor", "highlight.min.js"), "utf-8");
+	const template = readTemplateAsset("template.html");
+	const templateCss = readTemplateAsset("template.css");
+	const templateJs = readTemplateAsset("template.js");
+	const markedJs = readTemplateAsset("vendor/marked.min.js");
+	const hljsJs = readTemplateAsset("vendor/highlight.min.js");
 
 	const themeVars = generateThemeVars(themeName);
 	const colors = getResolvedThemeColors(themeName);
@@ -280,11 +310,11 @@ function filterEntriesForDisplay(entries: SessionEntry[], preset: PromptPreset):
  * restore logic (`_rebuildSystemPrompt`): the last `preset_change` entry in the
  * session, then the settings default.
  */
-function resolveSessionPreset(sm: SessionManager): PromptPreset | undefined {
+function resolveSessionPreset(sm: SessionManager, agentDir: string, storage: StorageBackend): PromptPreset | undefined {
 	const header = sm.getHeader();
 	if (!header) return undefined;
 
-	const presets = loadPromptPresets(header.cwd, getAgentDir());
+	const presets = loadPromptPresets(header.cwd, agentDir);
 	if (presets.length === 0) return undefined;
 
 	const entries = sm.getEntries();
@@ -297,8 +327,9 @@ function resolveSessionPreset(sm: SessionManager): PromptPreset | undefined {
 		}
 	}
 
-	const settingsPresetId = SettingsManager.create(header.cwd, getAgentDir(), {
+	const settingsPresetId = SettingsManager.create(header.cwd, agentDir, {
 		projectTrusted: false,
+		stores: { storage, locks: NodeStateLocks.shared, paths: { agentDir: () => agentDir } },
 	}).getDefaultPreset();
 	const restoreId = storedPresetId ?? settingsPresetId;
 	if (!restoreId || isDisabledPromptPresetId(restoreId)) return undefined;
@@ -317,12 +348,14 @@ export async function exportSessionToHtml(
 	options?: ExportOptions | string,
 ): Promise<string> {
 	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
+	const storage = opts.storage ?? NodeStorageBackend.shared;
+	const _agentDir = opts.agentDir ?? getAgentDir();
 
 	const sessionFile = sm.getSessionFile();
 	if (!sessionFile) {
 		throw new Error("Cannot export in-memory session to HTML");
 	}
-	if (!existsSync(sessionFile)) {
+	if (!storage.existsSync(sessionFile)) {
 		throw new Error("Nothing to export yet - start a conversation first");
 	}
 
@@ -355,7 +388,7 @@ export async function exportSessionToHtml(
 		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
 	}
 
-	writeFileSync(outputPath, html, "utf8");
+	storage.writeTextFileSync(outputPath, html);
 	return outputPath;
 }
 
@@ -365,15 +398,16 @@ export async function exportSessionToHtml(
  */
 export async function exportFromFile(inputPath: string, options?: ExportOptions | string): Promise<string> {
 	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
+	const storage = opts.storage ?? NodeStorageBackend.shared;
 	const resolvedInputPath = resolvePath(inputPath);
 
-	if (!existsSync(resolvedInputPath)) {
+	if (!storage.existsSync(resolvedInputPath)) {
 		throw new Error(`File not found: ${resolvedInputPath}`);
 	}
 
-	const sm = SessionManager.open(resolvedInputPath);
+	const sm = SessionManager.open(resolvedInputPath, undefined, undefined, storage);
 
-	const preset = resolveSessionPreset(sm);
+	const preset = resolveSessionPreset(sm, opts.agentDir ?? getAgentDir(), storage);
 	const entries = preset ? filterEntriesForDisplay(sm.getEntries(), preset) : sm.getEntries();
 
 	const sessionData: SessionData = {
@@ -392,6 +426,6 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		outputPath = `${APP_NAME}-session-${inputBasename}.html`;
 	}
 
-	writeFileSync(outputPath, html, "utf8");
+	storage.writeTextFileSync(outputPath, html);
 	return outputPath;
 }

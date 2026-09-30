@@ -1,5 +1,5 @@
-import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve } from "../../utils/node-globals.ts";
+import { fsRealpath } from "./node-tool-defaults.ts";
 
 const fileMutationQueues = new Map<string, Promise<void>>();
 let registrationQueue = Promise.resolve();
@@ -16,7 +16,7 @@ function isMissingPathError(error: unknown): boolean {
 async function getMutationQueueKey(filePath: string): Promise<string> {
 	const resolvedPath = resolve(filePath);
 	try {
-		return await realpath(resolvedPath);
+		return await fsRealpath(resolvedPath);
 	} catch (error) {
 		if (isMissingPathError(error)) {
 			return resolvedPath;

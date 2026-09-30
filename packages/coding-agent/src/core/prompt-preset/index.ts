@@ -10,7 +10,7 @@ export {
 	getMacro,
 	registerMacro,
 } from "./macro-engine.ts";
-export { getAllSlots, getSlot, registerSlot, SUPPORTED_SLOTS } from "./slot-renderers.ts";
+export { getAllSlots, getSlot, registerSlot, SUPPORTED_SLOTS } from "./slot-registry.ts";
 export type {
 	LoadedPromptPreset,
 	MacroDefinition,

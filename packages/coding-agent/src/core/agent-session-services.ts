@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { HarnessStores, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -37,6 +37,11 @@ export interface AgentSessionRuntimeDiagnostic {
 export interface CreateAgentSessionServicesOptions {
 	cwd: string;
 	agentDir?: string;
+	/**
+	 * Storage seams for pi state (11-B). Propagated to the session created from these services; when omitted the node
+	 * defaults apply. Browser/hosted assembly injects the OPFS or host stores.
+	 */
+	stores?: HarnessStores;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
 	modelRuntimeSignal?: AbortSignal;
@@ -65,6 +70,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	preset?: string;
 	schemas?: string[];
 	strict?: boolean;
+	/** Overrides the services' storage seams when provided (tests, in-memory assemblies). */
+	stores?: HarnessStores;
 }
 
 /**
@@ -76,6 +83,8 @@ export interface CreateAgentSessionFromServicesOptions {
 export interface AgentSessionServices {
 	cwd: string;
 	agentDir: string;
+	/** Storage seams for pi state (11-B); undefined ⇒ the session applies the node defaults. */
+	stores?: HarnessStores;
 	modelRuntime: ModelRuntime;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
@@ -147,11 +156,12 @@ export async function createAgentSessionServices(
 			modelsPath: join(agentDir, "models.json"),
 			signal: options.modelRuntimeSignal,
 		}));
-	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir, { stores: options.stores });
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
 		agentDir,
+		storage: options.stores?.storage,
 		settingsManager,
 	});
 	await resourceLoader.reload(options.resourceLoaderReloadOptions);
@@ -188,6 +198,7 @@ export async function createAgentSessionServices(
 	return {
 		cwd,
 		agentDir,
+		stores: options.stores,
 		modelRuntime,
 		settingsManager,
 		resourceLoader,
@@ -208,6 +219,7 @@ export async function createAgentSessionFromServices(
 	return createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
+		stores: options.stores ?? options.services.stores,
 		modelRuntime: options.services.modelRuntime,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,

@@ -199,6 +199,17 @@ export interface PromptPresetHiddenOverrides {
 		turnPrefixPrompt?: string;
 		branchSummaryPrompt?: string;
 	};
+	/**
+	 * TEMP 自动整理（autoTidy）提示词覆写。字段语义见
+	 * docs/design/temp-autotidy/02（机制）/03（默认文案）。
+	 * 恰好两面：tidy 一次运行 = 一个 systemPrompt + 一条任务 user 消息。
+	 */
+	tempTidy?: {
+		/** tidy agent 持久规则（人格、简报风格禁令、任意内容判断框架）。 */
+		systemPrompt?: string;
+		/** 一次性任务模板（使命表述 + {temp_list} 保留变量）。 */
+		taskPrompt?: string;
+	};
 }
 // =========================================================================
 // Regex Rules

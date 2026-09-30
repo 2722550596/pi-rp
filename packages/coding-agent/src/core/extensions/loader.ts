@@ -8,11 +8,9 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
-import type { Provider } from "@earendil-works/pi-ai";
 import * as _bundledPiAiCompat from "@earendil-works/pi-ai/compat";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
 import * as _bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
-import type { KeyId } from "@earendil-works/pi-tui";
 import * as _bundledPiTui from "@earendil-works/pi-tui";
 import { createJiti } from "jiti/static";
 // Static imports of packages that extensions may use.
@@ -27,29 +25,30 @@ import { getAgentDir, getProjectConfigDir, isBunBinary } from "../../config.ts";
 import * as _bundledPiCodingAgent from "../../index.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
-import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
-import { type CustomTypePolicy, DEFAULT_CUSTOM_TYPE_POLICY } from "../messages.ts";
-import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
-import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-renderers.ts";
-import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
+import {
+	createExtensionAPI,
+	createExtension as createExtensionCore,
+	createExtensionRuntime as createExtensionRuntimeCore,
+	loadExtensionFromFactory as loadExtensionFromFactoryCore,
+} from "./api.ts";
 import type {
-	EntryRenderer,
 	Extension,
-	ExtensionAPI,
 	ExtensionFactory,
 	ExtensionRuntime,
+	ExtensionRuntimeOptions,
 	LoadExtensionsResult,
-	MarkdownTransformer,
-	MessageContentTransformer,
-	MessageRenderer,
-	ProviderConfig,
-	RegisteredCommand,
-	ToolDefinition,
 } from "./types.ts";
 
-/** Modules available to extensions via virtualModules (for compiled Bun binary) */
+/**
+ * Modules available to extensions via virtualModules (for compiled Bun binary).
+ *
+ * Compatibility key manifest: the set of module specifiers extensions may import and the engine resolves. On
+ * node/bun these keys are resolved through this table (jiti alias / virtualModules); on browser/hosted the SAME key
+ * set is the peer contract the host bundler must dedupe against the engine's own copies. This table is NOT the
+ * browser loading mechanism — the bundled channel is ESM default-export factories via extensionFactories (12-C §4.2).
+ */
 export const VIRTUAL_MODULES: Record<string, unknown> = {
 	typebox: _bundledTypebox,
 	"typebox/compile": _bundledTypeboxCompile,
@@ -105,6 +104,9 @@ export function getAliases(): Record<string, string> {
 
 	const piCodingAgentEntry = packageIndex;
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
+	// Subpath must be aliased explicitly: a bare `@earendil-works/pi-agent-core` key prefix-matches the specifier and
+	// produces the bogus `dist/index.js/node` target (same pattern as the pi-ai subpaths below).
+	const piAgentCoreNodeEntry = resolveWorkspaceOrImport("agent/src/node.ts", "@earendil-works/pi-agent-core/node");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
 	// Extensions resolve the pi-ai root to the compat entrypoint (a strict
 	// superset of the core entrypoint): existing extensions using the old
@@ -119,6 +121,7 @@ export function getAliases(): Record<string, string> {
 	_aliases = {
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
+		"@earendil-works/pi-agent-core/node": piAgentCoreNodeEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
 		"@earendil-works/pi-ai/compat": piAiCompatEntry,
@@ -141,8 +144,6 @@ export function getAliases(): Record<string, string> {
 
 	return _aliases;
 }
-
-type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
 let extensionCacheCwd: string | undefined;
 let extensionCacheGeneration = 0;
@@ -169,325 +170,11 @@ function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
 }
 
 /**
- * Create a runtime with throwing stubs for action methods.
- * Runner.bindCore() replaces these with real implementations.
+ * Node wrapper around the assembly core's createExtensionRuntime: injects the node `pi.exec` default (direct
+ * `execCommand`) so node behavior is unchanged, while accepting explicit overrides for tooling.
  */
-export function createExtensionRuntime(): ExtensionRuntime {
-	const notInitialized = () => {
-		throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
-	};
-	const state: { staleMessage?: string } = {};
-	const eventBusUnsubscribers = new Set<() => void>();
-	const customTypePolicies = new Map<string, CustomTypePolicy>();
-	const assertActive = () => {
-		if (state.staleMessage) {
-			throw new Error(state.staleMessage);
-		}
-	};
-
-	const runtime: ExtensionRuntime = {
-		sendMessage: notInitialized,
-		emitActivity: notInitialized,
-		sendUserMessage: notInitialized,
-		startLiveMessage: notInitialized,
-		appendEntry: notInitialized,
-		setSessionName: notInitialized,
-		getSessionName: notInitialized,
-		setLabel: notInitialized,
-		getActiveTools: notInitialized,
-		getAllTools: notInitialized,
-		setActiveTools: notInitialized,
-		// registerTool() is valid during extension load; refresh is only needed post-bind.
-		refreshTools: () => {},
-		getCommands: notInitialized,
-		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
-		getThinkingLevel: notInitialized,
-		setThinkingLevel: notInitialized,
-		getState: notInitialized,
-		subscribeState: notInitialized,
-		updateState: notInitialized,
-		registerSlot: (definition) => registerCustomSlot(definition, false),
-		registerMacro: (definition) => registerCustomMacro(definition, false),
-		registerCustomType: (customType, policy) => {
-			if (!customTypePolicies.has(customType)) {
-				customTypePolicies.set(customType, policy);
-			}
-		},
-		getCustomTypePolicy: (customType) => customTypePolicies.get(customType) ?? DEFAULT_CUSTOM_TYPE_POLICY,
-		flagValues: new Map(),
-		pendingProviderRegistrations: [],
-		pendingNativeProviderRegistrations: [],
-		assertActive,
-		invalidate: (message) => {
-			if (state.staleMessage) return;
-			state.staleMessage =
-				message ??
-				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
-			for (const unsubscribe of eventBusUnsubscribers) unsubscribe();
-			eventBusUnsubscribers.clear();
-		},
-		trackEventBusSubscription: (unsubscribe) => {
-			let active = true;
-			const trackedUnsubscribe = () => {
-				if (!active) return;
-				active = false;
-				eventBusUnsubscribers.delete(trackedUnsubscribe);
-				unsubscribe();
-			};
-			eventBusUnsubscribers.add(trackedUnsubscribe);
-			return trackedUnsubscribe;
-		},
-		// Pre-bind: queue registrations so bindCore() can flush them once the
-		// model registry is available. bindCore() replaces both with direct calls.
-		registerProvider: (name, config, extensionPath = "<unknown>") => {
-			runtime.pendingProviderRegistrations.push({ name, config, extensionPath });
-		},
-		registerNativeProvider: (provider, extensionPath = "<unknown>") => {
-			runtime.pendingNativeProviderRegistrations.push({ provider, extensionPath });
-		},
-		unregisterProvider: (name) => {
-			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
-			runtime.pendingNativeProviderRegistrations = runtime.pendingNativeProviderRegistrations.filter(
-				(r) => r.provider.id !== name,
-			);
-		},
-	};
-
-	return runtime;
-}
-
-/**
- * Create the ExtensionAPI for an extension.
- * Registration methods write to the extension object.
- * Action methods delegate to the shared runtime.
- */
-function createExtensionAPI(
-	extension: Extension,
-	runtime: ExtensionRuntime,
-	cwd: string,
-	eventBus: EventBus,
-): ExtensionAPI {
-	const api = {
-		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): void {
-			runtime.assertActive();
-			const list = extension.handlers.get(event) ?? [];
-			list.push(handler);
-			extension.handlers.set(event, list);
-		},
-
-		registerTool(tool: ToolDefinition): void {
-			runtime.assertActive();
-			extension.tools.set(tool.name, {
-				definition: tool,
-				sourceInfo: extension.sourceInfo,
-			});
-			runtime.refreshTools();
-		},
-
-		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
-			runtime.assertActive();
-			extension.commands.set(name, {
-				name,
-				sourceInfo: extension.sourceInfo,
-				...options,
-			});
-		},
-
-		registerShortcut(
-			shortcut: KeyId,
-			options: {
-				description?: string;
-				handler: (ctx: import("./types.ts").ExtensionContext) => Promise<void> | void;
-			},
-		): void {
-			runtime.assertActive();
-			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
-		},
-
-		registerFlag(
-			name: string,
-			options: { description?: string; type: "boolean" | "string"; default?: boolean | string },
-		): void {
-			runtime.assertActive();
-			extension.flags.set(name, { name, extensionPath: extension.path, ...options });
-			if (options.default !== undefined && !runtime.flagValues.has(name)) {
-				runtime.flagValues.set(name, options.default);
-			}
-		},
-
-		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
-			runtime.assertActive();
-			extension.messageRenderers.set(customType, renderer as MessageRenderer);
-		},
-
-		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
-			runtime.assertActive();
-			extension.entryRenderers ??= new Map();
-			extension.entryRenderers.set(customType, renderer as EntryRenderer);
-		},
-
-		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
-			runtime.assertActive();
-			extension.markdownTransformer = transformer;
-		},
-
-		registerMessageContentTransformer(transformer: MessageContentTransformer): void {
-			runtime.assertActive();
-			extension.messageContentTransformer = transformer;
-		},
-
-		// Flag access - checks extension registered it, reads from runtime
-		getFlag(name: string): boolean | string | undefined {
-			runtime.assertActive();
-			if (!extension.flags.has(name)) return undefined;
-			return runtime.flagValues.get(name);
-		},
-
-		// Action methods - delegate to shared runtime
-		sendMessage(message, options): void {
-			runtime.assertActive();
-			runtime.sendMessage(message, options);
-		},
-
-		emitActivity(event): void {
-			runtime.assertActive();
-			runtime.emitActivity(event);
-		},
-
-		sendUserMessage(content, options): void {
-			runtime.assertActive();
-			runtime.sendUserMessage(content, options);
-		},
-
-		startLiveMessage(message) {
-			runtime.assertActive();
-			return runtime.startLiveMessage(message);
-		},
-
-		appendEntry(customType: string, data?: unknown): void {
-			runtime.assertActive();
-			runtime.appendEntry(customType, data);
-		},
-
-		setSessionName(name: string): void {
-			runtime.assertActive();
-			runtime.setSessionName(name);
-		},
-
-		getSessionName(): string | undefined {
-			runtime.assertActive();
-			return runtime.getSessionName();
-		},
-
-		setLabel(entryId: string, label: string | undefined): void {
-			runtime.assertActive();
-			runtime.setLabel(entryId, label);
-		},
-
-		exec(command: string, args: string[], options?: ExecOptions) {
-			runtime.assertActive();
-			return execCommand(command, args, options?.cwd ?? cwd, options);
-		},
-
-		getActiveTools(): string[] {
-			runtime.assertActive();
-			return runtime.getActiveTools();
-		},
-
-		getAllTools() {
-			runtime.assertActive();
-			return runtime.getAllTools();
-		},
-
-		setActiveTools(toolNames: string[]): void {
-			runtime.assertActive();
-			runtime.setActiveTools(toolNames);
-		},
-
-		getCommands() {
-			runtime.assertActive();
-			return runtime.getCommands();
-		},
-
-		setModel(model) {
-			runtime.assertActive();
-			return runtime.setModel(model);
-		},
-
-		getThinkingLevel() {
-			runtime.assertActive();
-			return runtime.getThinkingLevel();
-		},
-
-		setThinkingLevel(level) {
-			runtime.assertActive();
-			runtime.setThinkingLevel(level);
-		},
-
-		registerSlot(definition) {
-			runtime.assertActive();
-			runtime.registerSlot(definition);
-		},
-
-		registerMacro(definition) {
-			runtime.assertActive();
-			runtime.registerMacro(definition);
-		},
-
-		registerCustomType(customType, policy) {
-			runtime.assertActive();
-			runtime.registerCustomType(customType, { ...DEFAULT_CUSTOM_TYPE_POLICY, ...policy });
-		},
-
-		getCustomTypePolicy(customType) {
-			runtime.assertActive();
-			return runtime.getCustomTypePolicy(customType);
-		},
-
-		getState() {
-			runtime.assertActive();
-			return runtime.getState();
-		},
-
-		onStateChange(handler: (state: Record<string, unknown>) => void) {
-			runtime.assertActive();
-			return runtime.subscribeState(handler);
-		},
-
-		updateState(path, op, value) {
-			runtime.assertActive();
-			return runtime.updateState(path, op, value);
-		},
-
-		registerProvider(providerOrName: Provider | string, config?: ProviderConfig) {
-			runtime.assertActive();
-			if (typeof providerOrName === "string") {
-				if (!config) throw new Error("Provider config is required when registering by name");
-				runtime.registerProvider(providerOrName, config, extension.path);
-				return;
-			}
-			runtime.registerNativeProvider(providerOrName, extension.path);
-		},
-
-		unregisterProvider(name: string) {
-			runtime.assertActive();
-			runtime.unregisterProvider(name, extension.path);
-		},
-
-		events: {
-			emit(channel, data) {
-				runtime.assertActive();
-				eventBus.emit(channel, data);
-			},
-			on(channel, handler) {
-				runtime.assertActive();
-				return runtime.trackEventBusSubscription(eventBus.on(channel, handler));
-			},
-		},
-	} as ExtensionAPI;
-
-	return api;
+export function createExtensionRuntime(options?: ExtensionRuntimeOptions): ExtensionRuntime {
+	return createExtensionRuntimeCore({ ...options, exec: options?.exec ?? execCommand });
 }
 
 function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cacheToken is ExtensionCacheToken {
@@ -526,29 +213,8 @@ async function loadExtensionModule(extensionPath: string, cacheToken?: Extension
 }
 
 /**
- * Create an Extension object with empty collections.
+ * Load a single extension through the node disk channel (jiti module resolution + assembly core).
  */
-function createExtension(extensionPath: string, resolvedPath: string): Extension {
-	const source =
-		extensionPath.startsWith("<") && extensionPath.endsWith(">")
-			? extensionPath.slice(1, -1).split(":")[0] || "temporary"
-			: "local";
-	const baseDir = extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath);
-
-	return {
-		path: extensionPath,
-		resolvedPath,
-		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
-		handlers: new Map(),
-		tools: new Map(),
-		messageRenderers: new Map(),
-		entryRenderers: new Map(),
-		commands: new Map(),
-		flags: new Map(),
-		shortcuts: new Map(),
-	};
-}
-
 async function loadExtension(
 	extensionPath: string,
 	cwd: string,
@@ -565,7 +231,11 @@ async function loadExtension(
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
 
-		const extension = createExtension(extensionPath, resolvedPath);
+		const extension = createExtensionCore(
+			extensionPath,
+			resolvedPath,
+			extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath),
+		);
 		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
 		await factory(api);
 		time(`${extensionPath} factory`, "extensions");
@@ -579,6 +249,7 @@ async function loadExtension(
 
 /**
  * Create an Extension from an inline factory function.
+ * Node wrapper around the assembly core: applies resolvePath to cwd (the core takes cwd as already canonical).
  */
 export async function loadExtensionFromFactory(
 	factory: ExtensionFactory,
@@ -587,12 +258,7 @@ export async function loadExtensionFromFactory(
 	runtime: ExtensionRuntime,
 	extensionPath = "<inline>",
 ): Promise<Extension> {
-	const extension = createExtension(extensionPath, extensionPath);
-	const resolvedCwd = resolvePath(cwd);
-	const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus);
-	await factory(api);
-	time(`${extensionPath} factory`, "extensions");
-	return extension;
+	return loadExtensionFromFactoryCore(factory, resolvePath(cwd), eventBus, runtime, extensionPath);
 }
 
 /**
@@ -630,6 +296,8 @@ async function loadExtensionsInternal(
 			extensions.push(extension);
 		}
 	}
+
+	errors.push(...resolvedRuntime.pendingRegistrationWarnings.splice(0));
 
 	return {
 		extensions,

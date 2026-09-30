@@ -1,0 +1,33 @@
+/**
+ * @earendil-works/pi-browser —— pi harness 浏览器/hosted 剖面分发入口（契约 §9 / 15-F §3.3）。
+ *
+ * 下游唯一入口：一个包、一个工厂（createPiHarness）、一组类型重出口（§7.1 可见面白名单）。
+ * 不可见面：coding-agent 主 barrel、磁盘布局（getAgentDir）、auth-storage、jiti 磁盘通道、
+ * modes/interactive、rpc stdio。
+ *
+ * Wave 1：类型面 + 工厂签名骨架；装配主体 Wave 3（assemble.ts，15-F §4）。
+ */
+
+// —— 上游重出口（15-F §3.3；InMemorySessionRepo/streamProxy 已在上游 browser-smoke 守护内，浏览器可打包）——
+export type { ExecutionEnv, FileSystem, Shell } from "@earendil-works/pi-agent-core";
+export { InMemorySessionRepo, streamProxy } from "@earendil-works/pi-agent-core";
+// —— 组装入口工厂（Impl-A：HarnessEnv 的两个合法构造点；negotiate 不转出——构造只发生在工厂内）——
+export { createBrowserHarnessEnv, createHostedHarnessEnv } from "@earendil-works/pi-agent-core/web";
+export type { AssistantMessage, Model, StreamFunction, ThinkingLevel } from "@earendil-works/pi-ai";
+export type { ByteTransportFactory } from "@earendil-works/pi-client";
+export type { SessionRepo } from "../../agent/src/harness/session/types.ts";
+// —— 入口工厂与选项面 ——
+export {
+	type CreatePiHarnessOptions,
+	createPiHarness,
+	type PiHarness,
+	type PiHarnessLlmOptions,
+	type PiHarnessStorageOptions,
+	type PiHarnessToolsOptions,
+} from "./assemble.ts";
+// —— 能力契约转出（Impl-A 定稿形状，negotiate 为唯一构造点）——
+export type { BrowserHarnessEnv, Capabilities, HarnessEnv, NodeHarnessEnv } from "./capabilities.ts";
+// —— coding-agent 纯核类型转出（12-C 已落地：类型权威 = extensions/types.ts；api.ts 为运行时核）——
+export type { ExtensionFactory, LoadExtensionsResult, Skill, ToolDefinition, ToolName } from "./reexports.ts";
+// —— 状态装配面（Impl-B 定稿类型，经 pi-agent-core storage-backend 转出）——
+export type { HarnessStores, StateLocks, StatePaths, StateStores, StorageBackend } from "./state-stores.ts";

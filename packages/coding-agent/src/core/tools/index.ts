@@ -7,7 +7,6 @@ export {
 	type BashToolOptions,
 	createBashTool,
 	createBashToolDefinition,
-	createLocalBashOperations,
 } from "./bash.ts";
 export {
 	createEditTool,
@@ -42,6 +41,12 @@ export {
 	type LsToolInput,
 	type LsToolOptions,
 } from "./ls.ts";
+export { createLocalBashOperations } from "./node-tool-defaults.ts";
+export {
+	createOpfsOperations,
+	type OpfsWorkspace,
+} from "./opfs/operations.ts";
+export type { OpfsDirectoryHandle, OpfsEntry, OpfsFileHandle } from "./opfs/types.ts";
 export {
 	createReadTool,
 	createReadToolDefinition,

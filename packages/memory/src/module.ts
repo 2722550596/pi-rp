@@ -28,6 +28,17 @@ import { breakerShouldSkip, type RecalledItem, type RecallMode, search, toEpochD
 import { createMemorySlots, type MemorySlotDefinition } from "./slots.ts";
 import type { MemoryNode, MemoryStore, RawEntry } from "./store.ts";
 import { checkTempThreshold, countActiveTempNodes, DEFAULT_TEMP_THRESHOLD, RP_NOTIFY_TYPE } from "./temp-notify.ts";
+import {
+	parseAutoTidySettings,
+	runTidy,
+	type SideStreamHandle,
+	TIDY_LAST_FINISH_KEY,
+	TIDY_MODEL_ID,
+	TIDY_RETRY_COOLDOWN_MS,
+	type TidyHost,
+	tryAcquireTidyLock,
+} from "./temp-tidy.ts";
+import { DEFAULT_TIDY_SYSTEM_PROMPT, DEFAULT_TIDY_TASK_TEMPLATE } from "./tidy-prompts.ts";
 import { createMemoryTools } from "./tools.ts";
 
 // ── Host interface (structural mirror of the coding-agent ExtensionAPI) ─────
@@ -103,8 +114,28 @@ export interface MemoryModuleHost {
 	/**
 	 * System→role directed message (§7 notify primitive): display:false +
 	 * triggerTurn custom message, compaction-excluded by the type policy.
+	 * options 透传（契约 §2.4）：tidy 简报传 { triggerTurn: false }（D9 纯告知），
+	 * 缺省行为（undefined）由 host 侧补全为 triggerTurn: true。
 	 */
-	sendCustomMessage(message: { customType: string; content: string; display: false; details?: unknown }): void;
+	sendCustomMessage(
+		message: { customType: string; content: string; display: false; details?: unknown },
+		options?: { triggerTurn?: boolean },
+	): void;
+	/**
+	 * LLM 流原语（temp-tidy，契约 §2.3 修订 v2）：走 side 通道（requestGateway，
+	 * priority 0，label "temp-tidy"）。modelRef = settings.memory.temp.autoTidy.model
+	 * 原样字符串；undefined → 会话主模型（D5）。解析失败 throw。
+	 * 返回 host 解析后的 { streamFn, model } —— J7：无占位模型，model 直接填
+	 * AgentLoopConfig.model。headless 消费方（测试）可不实现；module 在缺失时按
+	 * D1「未配置」走现有 rp-notify 手动通知兜底。
+	 */
+	sideStreamFn?(options: { modelRef?: string; signal?: AbortSignal }): Promise<SideStreamHandle>;
+	/**
+	 * hiddenOverrides.tempTidy 覆写（契约 §2.2）：pull 模型 getter，host 活读
+	 * _activePreset（setActivePreset 同 dbPath 切换不触发 runtime rebuild，push 会送旧值）。
+	 * 字段级类型/空白校验在 host（02 loader），消费侧防御性再兜一层。
+	 */
+	getTempTidyPromptOverrides?(): { systemPrompt?: string; taskPrompt?: string } | undefined;
 	/**
 	 * One-shot side LLM request outside the main loop (§5 autoretain engine).
 	 * The engine implementation is completeSideRequest — gateway attribution +
@@ -292,6 +323,9 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	// keyword scoring (recall.ts).
 	const embeddings = opts.embeddings ?? new EmbeddingClient(resolveEmbeddingsConfig(settings.embeddings));
 	const tempThreshold = settings.temp?.threshold ?? DEFAULT_TEMP_THRESHOLD;
+	// §7-TEMP autoTidy (契约 §2.1): parsed once per module build — field-level
+	// tolerance, never throws (temp-tidy.ts parseAutoTidySettings).
+	const autoTidy = parseAutoTidySettings(settings.temp?.autoTidy);
 	// §5 task registry: core defaults, downstream may register/override.
 	// memory.autoretain.everyNTurns (§9) seeds the cadence of the CORE DEFAULT
 	// tasks only (matched by name) — user-registered tasks always keep the
@@ -313,7 +347,9 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		: [];
 	// §5: multiple tasks share ONE turn counter.
 	let autoretainTurnCounter = 0;
-	// §7 hysteresis: do not re-notify until the zone was cleaned below threshold.
+	// §7 hysteresis: re-purposed by autoTidy (01 §3.1) — no longer "已发通知" but
+	// "本积压代已归属" (manual notify sent OR a tidy took this generation).
+	// Re-arm stays exclusively count < threshold (branch below, untouched).
 	let tempNotified = false;
 
 	// auto nodes hidden by rollback — recomputed on every prompt / leaf change.
@@ -323,6 +359,9 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	let recallAbort: AbortController | undefined;
 	// Autoretain side requests ride one controller, aborted at dispose().
 	const autoretainAbort = new AbortController();
+	// TidyRunner rides its own controller, aborted at dispose() — an aborted
+	// run folds into "aborted-dispose": no fallback notify, no last-finish.
+	const tidyAbort = new AbortController();
 	let disposed = false;
 
 	// Current host binding — refreshed by registerSession on every reload.
@@ -643,8 +682,67 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		if (tempNotified) return;
 		const notify = checkTempThreshold(store, { threshold: tempThreshold, isVisible: isVisibleLocal });
 		if (notify) {
+			// autoTidy branch tree (docs/design/temp-autotidy/01 §3.1 T1-T5).
+			// T1 — disabled, or the host lacks the side-stream primitive (headless
+			// consumers / older engine builds): D1 "未配置" fallback = the legacy
+			// manual notify, byte-identical to the pre-autoTidy behavior (E9).
+			const tidyHost = host;
+			if (!autoTidy.enabled || !tidyHost || typeof tidyHost.sideStreamFn !== "function") {
+				tempNotified = true;
+				tidyHost?.sendCustomMessage(notify);
+				return;
+			}
+			// T2 — cooldown: a tidy just finished (possibly without cleaning to
+			// zero, D3) — silent return with the generation marked owned, or every
+			// armed session re-runs a tidy every turn (multi-session token burn).
+			const lastFinish = store.getKv(TIDY_LAST_FINISH_KEY);
+			const lastFinishMs = lastFinish === null ? Number.NaN : Date.parse(lastFinish);
+			if (!Number.isNaN(lastFinishMs) && Date.now() - lastFinishMs < TIDY_RETRY_COOLDOWN_MS) {
+				tempNotified = true;
+				return;
+			}
+			// T3 — prompt assembly: fresh pull every trigger (a preset switch
+			// without runtime rebuild must not serve stale overrides); blank /
+			// non-string fields fall back field-level to the built-in defaults.
+			const overrides = tidyHost.getTempTidyPromptOverrides?.() ?? {};
+			const systemPrompt =
+				typeof overrides.systemPrompt === "string" && overrides.systemPrompt.trim() !== ""
+					? overrides.systemPrompt
+					: DEFAULT_TIDY_SYSTEM_PROMPT;
+			const taskTemplate =
+				typeof overrides.taskPrompt === "string" && overrides.taskPrompt.trim() !== ""
+					? overrides.taskPrompt
+					: DEFAULT_TIDY_TASK_TEMPLATE;
+			// T4 — cross-process lock: losing = someone else is tidying; silently
+			// yield and STAY ARMED (tempNotified untouched) so a failed/stale
+			// holder self-heals via the next turn's retry (契约 §2.7: no notify).
+			if (!tryAcquireTidyLock(store, tidyHost.getSessionInfo().sessionId)) return;
+			// T5 — this session owns the backlog generation (成败都有下文：简报或兜
+			// 底通知); fire-and-forget — onTurnEnd must never await a tidy (E2).
 			tempNotified = true;
-			host?.sendCustomMessage(notify);
+			store.logAudit("temp_tidy_trigger", {
+				model: TIDY_MODEL_ID,
+				details: JSON.stringify({
+					count: notify.details.count,
+					threshold: tempThreshold,
+					sessionId: tidyHost.getSessionInfo().sessionId,
+					temp_list_in_task: taskTemplate.includes("{temp_list}"),
+				}),
+			});
+			void runTidy({
+				store,
+				host: tidyHost as TidyHost,
+				systemPrompt,
+				taskTemplate,
+				modelRef: autoTidy.modelRef,
+				maxTurns: autoTidy.maxTurns,
+				timeoutMs: autoTidy.timeoutMs,
+				parentSignal: tidyAbort.signal,
+				threshold: tempThreshold,
+			}).catch((error: unknown) => {
+				// runTidy never rejects by contract — last-line crash audit (§5).
+				store.logAudit("temp_tidy_crash", { details: JSON.stringify({ error: String(error) }) });
+			});
 		}
 	}
 
@@ -780,6 +878,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 			recallAbort?.abort();
 			recallAbort = undefined;
 			autoretainAbort.abort();
+			tidyAbort.abort(); // in-flight runTidy folds into "aborted-dispose": no notify, no last-finish
 		},
 	};
 }

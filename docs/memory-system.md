@@ -112,6 +112,7 @@ memory.db
 ## 7. 动态区(TEMP://)
 
 - **机制引擎内建,命名是唯一约定**:约定名 `TEMP://`(可配)。机制 = 阈值计数 + 达标 notify + 整理流程。
+- **自动整理(autoTidy,2026-09-30)**:阈值命中优先起后台 **TidyRunner**(pi-agent-core `agentLoop` 驱动,全套 12 记忆工具,独立 tidyCtx 署名 `temp-tidy`,无会话锚 → 产物分支无关全会话可见),跨进程互斥锁防并发,fire-and-forget 不阻塞回合;tidy 最终回复文本即简报,经 `rp-notify`(`display:false` + `triggerTurn:false`,不唤醒角色)投递;失败/禁用降级为手动 notify(`triggerTurn:true`)。提示词经 preset `hiddenOverrides.tempTidy.{systemPrompt,taskPrompt}` 覆写(使命可换,不限于清零)。配置 `memory.temp.autoTidy.{enabled,model,maxTurns,timeoutMs}`,默认开。同批修复 TEMP 导航缺陷(域根 `recall(uri="TEMP://")` 域级遍历、stub 类目渲染子树、`MEM://index/<domain>` 计子代——全 domain 通用语义);`{temp_list}` 直出底册与修复双轨并存。
 - **notify 与 autoretain 反思任务共用同一条原语**:core 的"系统→角色定向消息"(display:false、triggerTurn、不入历史快照),notify 与反思任务各写各的模板。
 - **计数口径**:TEMP:// 下活跃节点数 ≥ 阈值(默认 10,可调)即触发。不设独立计数器表,一次 COUNT 查询;节点增删由工具自然影响计数,"活跃"复用可见性谓词(回滚隐藏的不算)。
 - **整理 = 要求清到零**(不是修剪);一旦允许"先处理一部分",缓冲区变垃圾场(MEMORY.md 历史教训)。
@@ -198,7 +199,7 @@ memory.db
 
 | 旧名 | 推荐新名 | 说明 |
 | --- | --- | --- |
-| `browse_memory` | **`recall`** | 回想与审视：支持精确 URI 寻址、子树多层展开（`depth`/`max_nodes`）及内置系统视图（`MEM://*`）;精确命中记访问时间(§9 access tracking)|
+| `browse_memory` | **`recall`** | 回想与审视：支持精确 URI 寻址、子树多层展开（`depth`/`max_nodes`）及内置系统视图（`MEM://*`）；精确命中记访问时间(§9 access tracking)。审计流经只读 `MEM://audit[/<event>/<N>]` 或 `MEM://audit/id/<ID>` 显式读取，`details` 完整返回，读取本身不追加 audit |
 | `search_memory` | **`retrieve`** | 线索检索：混合检索（BM25 词法 + 向量语义），保留 `semantic` 参数;显式检索无分数下限,但 keyword 模式仍要求真实命中(kw>0,禁止纯 importance/recency 噪声);**对直接命中做一跳边扩散**(`associate` 建的边,标注 via_edge/kind/from_uri,不占 direct limit,总截 limit)|
 | `remember_memory` / `remember_child_memory` | **`memorize`** | 铭刻新记忆：单工具兼具根节点/子节点记入；提供可选 `parent_uri`（自动补齐占位父链,stub 空正文不进 FTS）与世界时间打标;**目标是 stub 时原地转正**不报"已存在"|
 | `edit_memory` / `batch_edit_memories` | **`revise`** | 修订记忆：`action` 三态——`edit`(默认,单条 Patch/追加/行编辑 + 批量)、`history`(看修订史;不传 uri 列出可恢复的已删记忆;活节点现行正文标 current)、`restore`(从修订史恢复;活节点必传 version,已删节点走 restoreDeleted 可省,按原 node_id 重建接回修订史);stub 有正文编辑时转正并补 custody chain(editor_source manual)|
@@ -239,7 +240,7 @@ memory.db
 - **便捷写库/引导(v5.1)**:空库是新会话的**常态**(如同新 jsonl 无消息),不属缺陷。包提供低成本写入口:`seed()`(导入初始树/Boot 节点)、`remember/put` 双向(单节点写入无需预置 parent)。参考实现引导即可,不搞自动化"空库自检"。
 - **恢复与迁移(v5.1;v5.5 扩展快照)**:DB 文件损坏/丢失 = 冷启动重建 + 从 session jsonl 重建 raw_log 镜像(真源在 jsonl,§4 对账已说明);记忆库本体提供 `export()/import()` 的 **JSON 快照 = nodes + revisions + kv + aliases + edges + glossary**(v5.5 三类资产齐备;import 时引用不存在节点的 alias/edge/glossary 立即抛错并整体回滚;重建每个活节点 FTS)供迁移/备份/审计。不做与 session 无关的二次冗余。
   > ⚠️ **已作废(2026-09-16)**:上一条的「冷启动重建」不再是唯一路径——schema **就地 v2→v3 迁移**已落地(见 §0 决策 3 的作废标记与 `plan/memory-web/23-迁移.md`);`export()/import()` 快照仍是**跨库搬运**与备份审计的通道,二者分工不变。
-- **审计留痕(v5.1;v5.5 补全列)**:不埋 token/耗时这类成本 metric——那不是记忆系统的职责。取 pi 每次 LLM 请求都带 usage 的**透明姿态**:记忆系统每次对外动作(写入/编辑/删除/召回/注入/autoretain 任务产出)都出一条 **append-only 结构化审计记录**(时间 + world_ts、事件类型、对象(node_id + 人可读 URI)、来源与模型、所在回合/任务、anchor、details)。v5.5 补全 `node_id`/`source`/`model`/`turn`/`task`/`anchor`/`details` 列——工具 recall/retrieve 各记一条 `recall` audit(query/URI、命中 node ids、scores/mode),注入只在 fresh 时记 `inject`,autoretain 成功/失败都记 `autoretain_task`。**只留痕,不参与系统语义**——不投入回滚/查询/注入回路,系统正确性不依赖它;下游可用它对账、复盘、解释"记忆发生了什么"。默认开、可关、不设观测面板。
+- **审计留痕(v5.1;v5.5 补全列;2026-09-30 补 agent 读端)**:不埋 token/耗时这类成本 metric——那不是记忆系统的职责。记忆系统每次对外动作(写入/编辑/删除/召回/注入/autoretain 任务产出)都出一条 **append-only 结构化审计记录**(时间 + world_ts、事件类型、对象(node_id + 人可读 URI)、来源与模型、所在回合/任务、anchor、details)。工具 recall/retrieve 各记一条 `recall` audit，注入只在 fresh 时记 `inject`，autoretain 成功/失败都记 `autoretain_task`。审计不参与回滚、自动召回或注入；显式观测面是 agent 的只读 `recall("MEM://audit…")` 与 Web 审计页。按 ID 查询可取完整 details；读取 audit 本身不落 audit，避免自增污染。
 
 ## 13. Phase 计划(存储先行,autoretain 殿后)
 
@@ -276,7 +277,7 @@ memory.db
 20. **裁剪点只在 node_revisions(v5.1;v5.5 落地)**:修订版内容可重建,`memory.revisions.maxVersionsPerNode`(默认无限,正整数)每次归档后剪最旧超额版本,删除前归档也应用同一策略,保证至少保留一版可恢复正文。两表分工从此清晰。
 21. **写库接口与空库语义(v5.1)**:空库 = 新会话常态;包提供 seed()/put 低门槛写入口,不做自动化空库自检。
 22. **恢复与迁移(v5.1)**:损坏/丢失 → 冷启动重建 + jsonl 重建 raw_log;`export()/import()` JSON 快照供迁移/备份/审计。⚠️ **已作废(2026-09-16)** 的部分:同产品旧库(schema v2)不再需要冷启动重建——**就地迁移**(见决策 3 与 34)。
-23. **审计留痕(v5.1;v5.5 补全)**:不是 usage/token 计量;而是每次写入/编辑/删除/召回/注入/autoretain 产出 append-only 结构化审计流(事件 + 对象(node_id + URI) + 来源/模型 + 时间/world_ts + 回合/任务 + anchor + details),供下游透明审计;除对外暴露外不参与系统语义。
+23. **审计留痕(v5.1;v5.5 补全;2026-09-30 agent 读端)**:每次写入/编辑/删除/召回/注入/autoretain 产出 append-only 结构化审计流(事件 + 对象(node_id + URI) + 来源/模型 + 时间/world_ts + 回合/任务 + anchor + details)，供透明审计；不参与回滚、自动召回或注入。对外显式读取走只读 `MEM://audit[/<event>/<N>]` / `MEM://audit/id/<ID>` 与 Web 审计页，读取行为不再产生 audit 行。
 24. **重要性单列(v5.3,2026-09-11;v5.4 反转极性)**:`priority` 与 `importance` 合并为**一列 `importance`**,口径 **10=最重要 / 5=普通 / 0=边角料(数值越大越重要)**。工具参数名、schema 列名、召回权重(`W_IMPORTANCE` 0.15)、星级与诊断阈值全链路同名同向;§9 权重表里的"priority 0.15"即此列。落地见 `memory-system-audit.md` #10。
 25. **删除语义(v5.4)**:见决策 10 —— 真删指的是不留僵尸入口,不是不留数据;node_revisions 是唯一找回路径,`forget` 因此不再级联删修订。
 26. **向量通道(v5.4;v5.5 隐私默认)**:embeddings 落地为 API 模式 + 本地缓存,失败静默降级;keyword-only 时权重不重标定(§9),软锚只由语义挣得。**未显式 `mode:"api"` 恒为 off、不联网**;显式 api 才读 env key 外呼,10s 超时,外部 abort 不 latch,响应错误仍 latch。

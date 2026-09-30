@@ -1,23 +1,8 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
-import { randomUUID } from "crypto";
-import {
-	appendFileSync,
-	closeSync,
-	createReadStream,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readSync,
-	statSync,
-	writeFileSync,
-} from "fs";
-import { readdir, stat } from "fs/promises";
-import { join, resolve } from "path";
-import { createInterface } from "readline";
-import { StringDecoder } from "string_decoder";
 import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
+import { join, randomUUID, resolve } from "../utils/node-globals.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import {
 	type BashExecutionMessage,
@@ -510,16 +495,18 @@ function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgen
 	return join(resolvedAgentDir, "sessions", safePath);
 }
 
-export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
+export function getDefaultSessionDir(
+	cwd: string,
+	agentDir: string = getDefaultAgentDir(),
+	storage: StorageBackend = NodeStorageBackend.shared,
+): string {
 	const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
-	if (!existsSync(sessionDir)) {
-		mkdirSync(sessionDir, { recursive: true });
+	if (!storage.existsSync(sessionDir)) {
+		storage.mkdirSync(sessionDir, { recursive: true });
 	}
 	return sessionDir;
 }
 
-const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
-const SESSION_HEADER_READ_BUFFER_SIZE = 4096;
 /** Bound synchronous header discovery while allowing large cwd and custom metadata fields. */
 const MAX_SESSION_HEADER_SCAN_BYTES = 1024 * 1024;
 
@@ -541,38 +528,17 @@ function parseSessionEntryLine(line: string): FileEntry | null {
 }
 
 /** Exported for testing */
-export function loadEntriesFromFile(filePath: string): FileEntry[] {
+export function loadEntriesFromFile(
+	filePath: string,
+	storage: StorageBackend = NodeStorageBackend.shared,
+): FileEntry[] {
 	const resolvedFilePath = normalizePath(filePath);
-	if (!existsSync(resolvedFilePath)) return [];
+	if (!storage.existsSync(resolvedFilePath)) return [];
 
 	const entries: FileEntry[] = [];
-	const fd = openSync(resolvedFilePath, "r");
-	try {
-		const decoder = new StringDecoder("utf8");
-		const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
-		let pending = "";
-
-		while (true) {
-			const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
-			if (bytesRead === 0) break;
-
-			pending += decoder.write(buffer.subarray(0, bytesRead));
-			let lineStart = 0;
-			let newlineIndex = pending.indexOf("\n", lineStart);
-			while (newlineIndex !== -1) {
-				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
-				if (entry) entries.push(entry);
-				lineStart = newlineIndex + 1;
-				newlineIndex = pending.indexOf("\n", lineStart);
-			}
-			pending = pending.slice(lineStart);
-		}
-
-		pending += decoder.end();
-		const finalEntry = parseSessionEntryLine(pending);
-		if (finalEntry) entries.push(finalEntry);
-	} finally {
-		closeSync(fd);
+	for (const line of storage.readTextLinesSync(resolvedFilePath)) {
+		const entry = parseSessionEntryLine(line);
+		if (entry) entries.push(entry);
 	}
 
 	// Validate session header
@@ -598,53 +564,37 @@ function parseSessionHeaderCandidate(line: string): SessionHeader | null | undef
 	return entry;
 }
 
-function readSessionHeader(filePath: string): SessionHeader | null {
-	const fd = openSync(filePath, "r");
-	try {
-		const decoder = new StringDecoder("utf8");
-		const buffer = Buffer.allocUnsafe(SESSION_HEADER_READ_BUFFER_SIZE);
-		const lineChunks: string[] = [];
-		let scannedBytes = 0;
+function readSessionHeader(
+	filePath: string,
+	storage: StorageBackend = NodeStorageBackend.shared,
+): SessionHeader | null {
+	// Fast path: virtually every session starts with its header on line 1, and readTextLinesSync(maxLines) reads
+	// exactly as far as needed on the node profile and serves from the hydrated mirror on OPFS.
+	const firstLine = storage.readTextLinesSync(filePath, 1)[0] ?? "";
+	const quick = parseSessionHeaderCandidate(firstLine);
+	if (quick !== undefined) return quick;
 
-		while (scannedBytes < MAX_SESSION_HEADER_SCAN_BYTES) {
-			const readLength = Math.min(buffer.length, MAX_SESSION_HEADER_SCAN_BYTES - scannedBytes);
-			const bytesRead = readSync(fd, buffer, 0, readLength, null);
-			if (bytesRead === 0) {
-				lineChunks.push(decoder.end());
-				return parseSessionHeaderCandidate(lineChunks.join("")) ?? null;
-			}
-			scannedBytes += bytesRead;
-
-			const chunk = decoder.write(buffer.subarray(0, bytesRead));
-			let lineStart = 0;
-			let newlineIndex = chunk.indexOf("\n", lineStart);
-			while (newlineIndex !== -1) {
-				lineChunks.push(chunk.slice(lineStart, newlineIndex));
-				const header = parseSessionHeaderCandidate(lineChunks.join(""));
-				if (header !== undefined) return header;
-				lineChunks.length = 0;
-				lineStart = newlineIndex + 1;
-				newlineIndex = chunk.indexOf("\n", lineStart);
-			}
-			lineChunks.push(chunk.slice(lineStart));
-		}
-
-		// Probe for EOF so a final header without a newline is allowed when it ends
-		// exactly at the scan limit. Any additional byte exceeds the bounded scan.
-		const probe = Buffer.allocUnsafe(1);
-		if (readSync(fd, probe, 0, probe.length, null) === 0) {
-			lineChunks.push(decoder.end());
-			return parseSessionHeaderCandidate(lineChunks.join("")) ?? null;
-		}
-		throw new SessionHeaderScanLimitError(filePath);
-	} finally {
-		closeSync(fd);
+	// Inconclusive lead (blank/malformed first lines): full-line scan applying the original per-line decisions. The
+	// 1MB bound is a discovery heuristic, so byte accounting here is approximate (per line + newline); the decisions
+	// (header / null / scan-limit error) match the former chunked scan.
+	const lines = storage.readTextLinesSync(filePath);
+	let scannedBytes = 0;
+	for (const line of lines) {
+		scannedBytes += line.length + 1;
+		const header = parseSessionHeaderCandidate(line);
+		if (header !== undefined) return header;
+		if (scannedBytes >= MAX_SESSION_HEADER_SCAN_BYTES) break;
 	}
+	if (scannedBytes < MAX_SESSION_HEADER_SCAN_BYTES) return null;
+	throw new SessionHeaderScanLimitError(filePath);
 }
 
-function readSessionHeaderForDiscovery(filePath: string): SessionHeader | null {
+function readSessionHeaderForDiscovery(
+	filePath: string,
+	storage: StorageBackend = NodeStorageBackend.shared,
+): SessionHeader | null {
 	try {
-		return readSessionHeader(filePath);
+		return readSessionHeader(filePath, storage);
 	} catch {
 		// Discovery is best-effort: unreadable or oversized files are not sessions,
 		// and one corrupt file must not prevent other sessions from being found.
@@ -662,20 +612,26 @@ function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolea
 }
 
 /** Exported for testing */
-export function findMostRecentSession(sessionDir: string, cwd?: string): string | null {
+export function findMostRecentSession(
+	sessionDir: string,
+	cwd?: string,
+	storage: StorageBackend = NodeStorageBackend.shared,
+): string | null {
 	const resolvedSessionDir = normalizePath(sessionDir);
 	const resolvedCwd = cwd ? resolvePath(cwd) : undefined;
 	try {
-		const files = readdirSync(resolvedSessionDir)
+		const files = storage
+			.readdirSync(resolvedSessionDir)
+			.map((entry) => entry.name)
 			.filter((f) => f.endsWith(".jsonl"))
 			.map((f) => join(resolvedSessionDir, f))
-			.map((path) => ({ path, header: readSessionHeaderForDiscovery(path) }))
+			.map((path) => ({ path, header: readSessionHeaderForDiscovery(path, storage) }))
 			.filter(
 				(file): file is { path: string; header: SessionHeader } =>
 					file.header !== null &&
 					(!resolvedCwd || sessionCwdMatches(getSessionHeaderCwd(file.header), resolvedCwd)),
 			)
-			.map(({ path }) => ({ path, mtime: statSync(path).mtime }))
+			.map(({ path }) => ({ path, mtime: new Date(storage.statSync(path).mtimeMs) }))
 			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
 		return files[0]?.path || null;
@@ -714,9 +670,9 @@ function getMessageActivityTime(entry: SessionMessageEntry): number | undefined 
 	return Number.isNaN(t) ? undefined : t;
 }
 
-async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
+async function buildSessionInfo(filePath: string, storage: StorageBackend): Promise<SessionInfo | null> {
 	try {
-		const stats = await stat(filePath);
+		const stats = storage.statSync(filePath);
 		let header: SessionHeader | null = null;
 		let messageCount = 0;
 		let firstMessage = "";
@@ -724,12 +680,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let name: string | undefined;
 		let lastActivityTime: number | undefined;
 
-		const rl = createInterface({
-			input: createReadStream(filePath, { encoding: "utf8" }),
-			crlfDelay: Infinity,
-		});
-
-		for await (const line of rl) {
+		for (const line of storage.readTextLinesSync(filePath)) {
 			const entry = parseSessionEntryLine(line);
 			if (!entry) continue;
 
@@ -775,7 +726,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 				? new Date(lastActivityTime)
 				: !Number.isNaN(headerTime)
 					? new Date(headerTime)
-					: stats.mtime;
+					: new Date(stats.mtimeMs);
 
 		return {
 			path: filePath,
@@ -801,6 +752,7 @@ const MAX_CONCURRENT_SESSION_INFO_LOADS = 10;
 async function buildSessionInfosWithConcurrency(
 	files: string[],
 	onLoaded: () => void,
+	storage: StorageBackend,
 ): Promise<(SessionInfo | null)[]> {
 	const results: (SessionInfo | null)[] = new Array(files.length).fill(null);
 	const inFlight = new Set<Promise<void>>();
@@ -812,7 +764,7 @@ async function buildSessionInfosWithConcurrency(
 		if (!file) return;
 
 		let task: Promise<void>;
-		task = buildSessionInfo(file)
+		task = buildSessionInfo(file, storage)
 			.then((info) => {
 				results[index] = info;
 			})
@@ -843,22 +795,27 @@ async function listSessionsFromDir(
 	onProgress?: SessionListProgress,
 	progressOffset = 0,
 	progressTotal?: number,
+	storage: StorageBackend = NodeStorageBackend.shared,
 ): Promise<SessionInfo[]> {
 	const sessions: SessionInfo[] = [];
-	if (!existsSync(dir)) {
+	if (!storage.existsSync(dir)) {
 		return sessions;
 	}
 
 	try {
-		const dirEntries = await readdir(dir);
+		const dirEntries = storage.readdirSync(dir).map((entry) => entry.name);
 		const files = dirEntries.filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f));
 		const total = progressTotal ?? files.length;
 
 		let loaded = 0;
-		const results = await buildSessionInfosWithConcurrency(files, () => {
-			loaded++;
-			onProgress?.(progressOffset + loaded, total);
-		});
+		const results = await buildSessionInfosWithConcurrency(
+			files,
+			() => {
+				loaded++;
+				onProgress?.(progressOffset + loaded, total);
+			},
+			storage,
+		);
 		for (const info of results) {
 			if (info) {
 				sessions.push(info);
@@ -894,6 +851,8 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	/** Storage seam for session persistence (11-B); the node default keeps node:fs behavior byte-identical. */
+	private readonly storage: StorageBackend;
 
 	private constructor(
 		cwd: string,
@@ -902,12 +861,14 @@ export class SessionManager {
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
 		preloadedFileEntries?: FileEntry[],
+		storage: StorageBackend = NodeStorageBackend.shared,
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
-		if (persist && this.sessionDir && !existsSync(this.sessionDir)) {
-			mkdirSync(this.sessionDir, { recursive: true });
+		this.storage = storage;
+		if (persist && this.sessionDir && !this.storage.existsSync(this.sessionDir)) {
+			this.storage.mkdirSync(this.sessionDir, { recursive: true });
 		}
 
 		if (sessionFile) {
@@ -924,14 +885,14 @@ export class SessionManager {
 
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
 		this.sessionFile = resolvePath(sessionFile);
-		if (existsSync(this.sessionFile)) {
-			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
+		if (this.storage.existsSync(this.sessionFile)) {
+			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile, this.storage);
 
 			// If file was empty, initialize it with a valid session header. If it was
 			// non-empty but did not parse as a pi session, fail without modifying it.
 			if (this.fileEntries.length === 0) {
 				const explicitPath = this.sessionFile;
-				if (statSync(explicitPath).size > 0) {
+				if (this.storage.statSync(explicitPath).size > 0) {
 					throw new Error(`Session file is not a valid ${APP_NAME} session: ${explicitPath}`);
 				}
 				this.newSession();
@@ -1008,14 +969,8 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
-		const fd = openSync(this.sessionFile, "w");
-		try {
-			for (const entry of this.fileEntries) {
-				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-			}
-		} finally {
-			closeSync(fd);
-		}
+		const whole = this.fileEntries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
+		this.storage.writeTextFileSync(this.sessionFile, whole, { flag: "w" });
 	}
 
 	isPersisted(): boolean {
@@ -1048,7 +1003,7 @@ export class SessionManager {
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
 		if (!hasAssistant) {
 			if (this.flushed) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+				this.storage.appendTextFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
 			} else {
 				// Mark as not flushed so when assistant arrives, all entries get written
 				this.flushed = false;
@@ -1057,17 +1012,11 @@ export class SessionManager {
 		}
 
 		if (!this.flushed) {
-			const fd = openSync(this.sessionFile, "wx");
-			try {
-				for (const e of this.fileEntries) {
-					writeFileSync(fd, `${JSON.stringify(e)}\n`);
-				}
-			} finally {
-				closeSync(fd);
-			}
+			const whole = this.fileEntries.map((e) => `${JSON.stringify(e)}\n`).join("");
+			this.storage.writeTextFileSync(this.sessionFile, whole, { flag: "wx" });
 			this.flushed = true;
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			this.storage.appendTextFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
 		}
 	}
 
@@ -1623,9 +1572,14 @@ export class SessionManager {
 	 * @param cwd Working directory (stored in session header)
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
 	 */
-	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		return new SessionManager(cwd, dir, undefined, true, options);
+	static create(
+		cwd: string,
+		sessionDir?: string,
+		options?: NewSessionOptions,
+		storage: StorageBackend = NodeStorageBackend.shared,
+	): SessionManager {
+		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd, undefined, storage);
+		return new SessionManager(cwd, dir, undefined, true, options, undefined, storage);
 	}
 
 	/**
@@ -1634,18 +1588,23 @@ export class SessionManager {
 	 * @param sessionDir Optional session directory for /new or /branch. If omitted, derives from file's parent.
 	 * @param cwdOverride Optional cwd override instead of the session header cwd.
 	 */
-	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
+	static open(
+		path: string,
+		sessionDir?: string,
+		cwdOverride?: string,
+		storage: StorageBackend = NodeStorageBackend.shared,
+	): SessionManager {
 		const resolvedPath = resolvePath(path);
 		let header: SessionHeader | null = null;
 		let preloadedFileEntries: FileEntry[] | undefined;
-		if (cwdOverride === undefined && existsSync(resolvedPath)) {
+		if (cwdOverride === undefined && storage.existsSync(resolvedPath)) {
 			try {
-				header = readSessionHeader(resolvedPath);
+				header = readSessionHeader(resolvedPath, storage);
 			} catch (error) {
 				if (!(error instanceof SessionHeaderScanLimitError)) throw error;
 				// The bounded scan is only a discovery optimization. A full load remains
 				// authoritative for legacy files with very large headers or prefixes.
-				preloadedFileEntries = loadEntriesFromFile(resolvedPath);
+				preloadedFileEntries = loadEntriesFromFile(resolvedPath, storage);
 				const firstEntry = preloadedFileEntries[0];
 				header = firstEntry?.type === "session" ? firstEntry : null;
 			}
@@ -1653,7 +1612,7 @@ export class SessionManager {
 		const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);
+		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries, storage);
 	}
 
 	/**
@@ -1661,14 +1620,18 @@ export class SessionManager {
 	 * @param cwd Working directory
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
 	 */
-	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+	static continueRecent(
+		cwd: string,
+		sessionDir?: string,
+		storage: StorageBackend = NodeStorageBackend.shared,
+	): SessionManager {
+		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd, undefined, storage);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
+		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined, storage);
 		if (mostRecent) {
-			return new SessionManager(cwd, dir, mostRecent, true);
+			return new SessionManager(cwd, dir, mostRecent, true, undefined, undefined, storage);
 		}
-		return new SessionManager(cwd, dir, undefined, true);
+		return new SessionManager(cwd, dir, undefined, true, undefined, undefined, storage);
 	}
 
 	/** Create an in-memory session (no file persistence) */
@@ -1688,10 +1651,11 @@ export class SessionManager {
 		targetCwd: string,
 		sessionDir?: string,
 		options?: NewSessionOptions,
+		storage: StorageBackend = NodeStorageBackend.shared,
 	): SessionManager {
 		const resolvedSourcePath = resolvePath(sourcePath);
 		const resolvedTargetCwd = resolvePath(targetCwd);
-		const sourceEntries = loadEntriesFromFile(resolvedSourcePath);
+		const sourceEntries = loadEntriesFromFile(resolvedSourcePath, storage);
 		if (sourceEntries.length === 0) {
 			throw new Error(`Cannot fork: source session file is empty or invalid: ${resolvedSourcePath}`);
 		}
@@ -1701,9 +1665,9 @@ export class SessionManager {
 			throw new Error(`Cannot fork: source session has no header: ${resolvedSourcePath}`);
 		}
 
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(resolvedTargetCwd);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
+		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(resolvedTargetCwd, undefined, storage);
+		if (!storage.existsSync(dir)) {
+			storage.mkdirSync(dir, { recursive: true });
 		}
 
 		// Create new session file with new ID but forked content
@@ -1724,16 +1688,16 @@ export class SessionManager {
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
 		};
-		writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
+		storage.writeTextFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
 
 		// Copy all non-header entries from source
 		for (const entry of sourceEntries) {
 			if (entry.type !== "session") {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+				storage.appendTextFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
 			}
 		}
 
-		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);
+		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true, undefined, undefined, storage);
 	}
 
 	/**
@@ -1742,11 +1706,16 @@ export class SessionManager {
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
-	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+	static async list(
+		cwd: string,
+		sessionDir?: string,
+		onProgress?: SessionListProgress,
+		storage: StorageBackend = NodeStorageBackend.shared,
+	): Promise<SessionInfo[]> {
+		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd, undefined, storage);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const resolvedCwd = resolvePath(cwd);
-		const sessions = (await listSessionsFromDir(dir, onProgress)).filter(
+		const sessions = (await listSessionsFromDir(dir, onProgress, 0, undefined, storage)).filter(
 			(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
 		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
@@ -1758,16 +1727,21 @@ export class SessionManager {
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
 	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]>;
-	static async listAll(sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAll(
+		sessionDir?: string,
+		onProgress?: SessionListProgress,
+		storage?: StorageBackend,
+	): Promise<SessionInfo[]>;
 	static async listAll(
 		sessionDirOrOnProgress?: string | SessionListProgress,
 		onProgress?: SessionListProgress,
+		storage: StorageBackend = NodeStorageBackend.shared,
 	): Promise<SessionInfo[]> {
 		const customSessionDir =
 			typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
 		const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
 		if (customSessionDir) {
-			const sessions = await listSessionsFromDir(customSessionDir, progress);
+			const sessions = await listSessionsFromDir(customSessionDir, progress, 0, undefined, storage);
 			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 			return sessions;
 		}
@@ -1775,12 +1749,12 @@ export class SessionManager {
 		const sessionsDir = getSessionsDir();
 
 		try {
-			if (!existsSync(sessionsDir)) {
+			if (!storage.existsSync(sessionsDir)) {
 				return [];
 			}
-			const entries = await readdir(sessionsDir, { withFileTypes: true });
+			const entries = storage.readdirSync(sessionsDir);
 			const dirs = entries
-				.filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+				.filter((entry) => entry.isDirectory || entry.isSymbolicLink === true)
 				.map((entry) => join(sessionsDir, entry.name));
 
 			// Count total files first for accurate progress
@@ -1788,7 +1762,10 @@ export class SessionManager {
 			const dirFiles: string[][] = [];
 			for (const dir of dirs) {
 				try {
-					const files = (await readdir(dir)).filter((f) => f.endsWith(".jsonl"));
+					const files = storage
+						.readdirSync(dir)
+						.map((entry) => entry.name)
+						.filter((f) => f.endsWith(".jsonl"));
 					dirFiles.push(files.map((f) => join(dir, f)));
 					totalFiles += files.length;
 				} catch {
@@ -1801,10 +1778,14 @@ export class SessionManager {
 			const sessions: SessionInfo[] = [];
 			const allFiles = dirFiles.flat();
 
-			const results = await buildSessionInfosWithConcurrency(allFiles, () => {
-				loaded++;
-				progress?.(loaded, totalFiles);
-			});
+			const results = await buildSessionInfosWithConcurrency(
+				allFiles,
+				() => {
+					loaded++;
+					progress?.(loaded, totalFiles);
+				},
+				storage,
+			);
 
 			for (const info of results) {
 				if (info) {

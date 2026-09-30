@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "../src/core/extensions/types.ts";
 import { getMacro } from "../src/core/prompt-preset/macro-engine.ts";
-import { getSlot } from "../src/core/prompt-preset/slot-renderers.ts";
+import { getSlot } from "../src/core/prompt-preset/slot-registry.ts";
 import type {
 	MacroDefinition,
 	MacroRenderContext,

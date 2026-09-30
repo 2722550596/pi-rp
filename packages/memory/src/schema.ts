@@ -19,6 +19,21 @@ export const SCHEMA_VERSION_KEY = "schema_version";
 export const NODE_FTS_DDL =
 	"CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(node_id UNINDEXED, text, disclosure, tokenize='unicode61')";
 
+/** The one physical copy of the `raw_fts` DDL (same single-point discipline as `NODE_FTS_DDL`). */
+export const RAW_FTS_DDL =
+	"CREATE VIRTUAL TABLE IF NOT EXISTS raw_fts USING fts5(raw_id UNINDEXED, text, tokenize='unicode61')";
+
+/**
+ * `memory_kv` key recording which FTS token space the indexes were built in.
+ * Value domain: "segmenter" ONLY (2026-09-30 拍板 — jieba/bigram are deleted,
+ * no reserved placeholders). Written on fresh-database creation and by
+ * MemoryStore's migration gate AFTER a successful tokenizer-space rebuild;
+ * a database whose key is missing or different is a pre-Segmenter (jieba-era)
+ * index and gets rebuilt on open.
+ */
+export const FTS_TOKENIZER_KEY = "fts_tokenizer";
+export const FTS_TOKENIZER_VALUE = "segmenter";
+
 /**
  * `memory_kv` marker set by `migrateSchema` and cleared once the FTS content has
  * been rebuilt (by `MemoryStore`'s constructor heal). A crash between the two
@@ -116,11 +131,12 @@ const STATEMENTS: string[] = [
 	`CREATE INDEX IF NOT EXISTS idx_raw_log_session_active ON raw_log(session_id, active, raw_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_raw_log_entry_id ON raw_log(entry_id)`,
 	// FTS mirrors (docs §3): both tables are read through MATCH queries.
-	// `text` holds the unified tokenizer output (jieba space-joined, or the
-	// latin+CJK bigram fallback); the stable id column is UNINDEXED and used
+	// `text` holds the unified tokenizer output (Intl.Segmenter("zh") word
+	// tokens, space-joined — the "segmenter" token space recorded in
+	// `fts_tokenizer`); the stable id column is UNINDEXED and used
 	// to join back to the live table for active/visibility filtering.
 	NODE_FTS_DDL,
-	`CREATE VIRTUAL TABLE IF NOT EXISTS raw_fts USING fts5(raw_id UNINDEXED, text, tokenize='unicode61')`,
+	RAW_FTS_DDL,
 	`CREATE TABLE IF NOT EXISTS memory_embeddings (
 		node_id TEXT NOT NULL,
 		seg_index INTEGER NOT NULL,
@@ -224,10 +240,21 @@ export function createSchema(db: MemoryDatabase): SchemaOpenResult {
 	}
 	for (const sql of STATEMENTS) db.exec(sql);
 	if (stored === null) {
+		const now = new Date().toISOString();
 		db.prepare("INSERT OR REPLACE INTO memory_kv (key, value, updated_at) VALUES (?, ?, ?)").run(
 			SCHEMA_VERSION_KEY,
 			SCHEMA_VERSION,
-			new Date().toISOString(),
+			now,
+		);
+		// Fresh databases start in the (only) token space. Existing databases do
+		// NOT get the key here — a pre-Segmenter index must stay keyless until
+		// MemoryStore's migration gate has actually rebuilt the FTS content,
+		// otherwise the gate would never fire and new code would silently query
+		// an old jieba-space index (契约 §10 前置纪律).
+		db.prepare("INSERT OR REPLACE INTO memory_kv (key, value, updated_at) VALUES (?, ?, ?)").run(
+			FTS_TOKENIZER_KEY,
+			FTS_TOKENIZER_VALUE,
+			now,
 		);
 	}
 	return { migratedFrom: needsMigration ? stored : null, ftsRebuildPending: needsMigration && ftsRebuilt, backup };

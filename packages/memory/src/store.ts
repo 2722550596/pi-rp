@@ -1,6 +1,14 @@
 import type { MemoryDatabase, MemoryStatement } from "./driver.ts";
 import { buildGlossaryTerms, buildPool, rank, toEpochDays } from "./recall.ts";
-import { FTS_REBUILD_KEY, SCHEMA_VERSION, SCHEMA_VERSION_KEY } from "./schema.ts";
+import {
+	FTS_REBUILD_KEY,
+	FTS_TOKENIZER_KEY,
+	FTS_TOKENIZER_VALUE,
+	NODE_FTS_DDL,
+	RAW_FTS_DDL,
+	SCHEMA_VERSION,
+	SCHEMA_VERSION_KEY,
+} from "./schema.ts";
 import { tokenizeForSearch } from "./tokenize.ts";
 
 export type NodeSource = "auto" | "manual" | "import";
@@ -114,6 +122,22 @@ export interface MemoryAuditDetails {
 	task?: string;
 	anchor?: string;
 	details?: string;
+}
+
+/** One append-only audit row as exposed by the store and read-only system view. */
+export interface MemoryAuditRecord {
+	id: number;
+	ts: string;
+	world_ts: string | null;
+	event: string;
+	object: string | null;
+	node_id: string | null;
+	source: string | null;
+	model: string | null;
+	turn: number | null;
+	task: string | null;
+	anchor: string | null;
+	details: string | null;
 }
 
 export interface ExportSnapshot {
@@ -241,6 +265,10 @@ export class MemoryStore {
 			  WHERE a.target_node_id = ?`,
 		);
 		this.childrenStmt = db.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY created_at");
+		// Tokenizer-space gate FIRST (13-D §4 step 5): a pre-Segmenter (jieba-era)
+		// database — key missing or different — is rebuilt in one transaction
+		// before any read path runs. After it, the ordinary pending-rebuild heal.
+		this._migrateFtsTokenizerSpace();
 		// Heals "structure migrated to v3, FTS content not yet rebuilt" — every
 		// entry point constructs a store, so no caller has to remember this.
 		this._healPendingFtsRebuild();
@@ -1918,8 +1946,8 @@ export class MemoryStore {
 
 	// ── Audit ─────────────────────────────────────────────────────────────────
 
-	logAudit(event: string, details: MemoryAuditDetails = {}): void {
-		this.db
+	logAudit(event: string, details: MemoryAuditDetails = {}): number | undefined {
+		const result = this.db
 			.prepare(
 				"INSERT INTO audit_log (ts, world_ts, event, node_id, object, source, model, turn, task, anchor, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			)
@@ -1936,39 +1964,22 @@ export class MemoryStore {
 				details.anchor ?? null,
 				details.details ?? null,
 			);
+		return result.lastInsertRowid;
 	}
 
-	listAudit(limit = 50): Array<{
-		id: number;
-		ts: string;
-		event: string;
-		object: string | null;
-		node_id: string | null;
-		source: string | null;
-		model: string | null;
-		turn: number | null;
-		task: string | null;
-		anchor: string | null;
-		details: string | null;
-	}> {
-		return this.db
-			.prepare(
-				`SELECT id, ts, event, object, node_id, source, model, turn, task, anchor, details
-				 FROM audit_log ORDER BY id DESC LIMIT ?`,
-			)
-			.all(limit) as Array<{
-			id: number;
-			ts: string;
-			event: string;
-			object: string | null;
-			node_id: string | null;
-			source: string | null;
-			model: string | null;
-			turn: number | null;
-			task: string | null;
-			anchor: string | null;
-			details: string | null;
-		}>;
+	listAudit(limit = 50, filter: { event?: string; id?: number } = {}): MemoryAuditRecord[] {
+		const columns =
+			"SELECT id, ts, world_ts, event, object, node_id, source, model, turn, task, anchor, details FROM audit_log";
+		if (filter.id !== undefined) {
+			const row = this.db.prepare(`${columns} WHERE id = ?`).get(filter.id) as MemoryAuditRecord | undefined;
+			return row ? [row] : [];
+		}
+		if (filter.event !== undefined) {
+			return this.db
+				.prepare(`${columns} WHERE event = ? ORDER BY id DESC LIMIT ?`)
+				.all(filter.event, limit) as MemoryAuditRecord[];
+		}
+		return this.db.prepare(`${columns} ORDER BY id DESC LIMIT ?`).all(limit) as MemoryAuditRecord[];
 	}
 
 	// ── Internals ─────────────────────────────────────────────────────────────
@@ -1995,7 +2006,7 @@ export class MemoryStore {
 		// tokens twice.
 		let text = tokenizeForSearch([node.uri, node.content].join(" "));
 		// Full glossary keywords are appended as whole tokens so proper nouns
-		// survive jieba splitting, without touching the global dictionary.
+		// survive word segmentation, without touching any global dictionary.
 		const extra = keywords.filter((k) => k.trim().length > 0).join(" ");
 		if (extra) text = `${text} ${extra}`;
 		const disclosureText = tokenizeForSearch(node.disclosure ?? "");
@@ -2013,11 +2024,78 @@ export class MemoryStore {
 	 * go through reindexNode.
 	 */
 	reindexAll(): void {
+		this.db.transaction(() => this._reindexAllNodes());
+	}
+
+	/** Transaction-free core of `reindexAll` — the tokenizer migration gate
+	 * calls this inside its OWN single transaction (nested BEGIN would throw). */
+	private _reindexAllNodes(): void {
+		const rows = this.db.prepare("SELECT node_id FROM nodes WHERE is_stub = 0").all() as Array<{
+			node_id: string;
+		}>;
+		for (const r of rows) this.reindexNode(r.node_id);
+	}
+
+	/**
+	 * Rebuild every active raw-log row's FTS entry. Bulk entry point for the
+	 * tokenizer-space migration gate (13-D §4 step 5: jieba-era writes also
+	 * populated raw_fts, so a space switch must rebuild BOTH tables); before
+	 * this existed only the per-row upsert path kept raw_fts warm.
+	 */
+	reindexAllRaw(): void {
+		this.db.transaction(() => this._reindexAllRaw());
+	}
+
+	/** Transaction-free core of `reindexAllRaw` (see `_reindexAllNodes`). */
+	private _reindexAllRaw(): void {
+		const rows = this.db.prepare("SELECT raw_id, text FROM raw_log WHERE active = 1").all() as Array<{
+			raw_id: number;
+			text: string;
+		}>;
+		for (const r of rows) this._reindexRawFts(r.raw_id, r.text);
+	}
+
+	/**
+	 * Tokenizer-space migration gate (2026-09-30 拍板, 13-D §4 step 5).
+	 *
+	 * `fts_tokenizer` is the database's recorded token space. Missing (every
+	 * database written before the key existed — all jieba-era ones) or different
+	 * means the FTS indexes hold tokens from another space while the query side
+	 * now speaks Segmenter — an invisible-recall-drift state the contract's
+	 * migration discipline forbids. The fix is a physical rebuild: DROP +
+	 * CREATE from the single-point DDL (FTS5 has no TRUNCATE, and DELETE would
+	 * walk every shadow-table row), then a full re-backfill of BOTH FTS tables,
+	 * then the new key — all in ONE transaction, so any failure rolls back
+	 * DROP + rebuild + key together: the old index is intact, the gate
+	 * condition still holds, and the next open retries (same crash-retry
+	 * semantics as `_healPendingFtsRebuild`). No SCHEMA_VERSION bump: the DDL
+	 * is unchanged, only content and one kv key move (v4 stays v4).
+	 *
+	 * A stale v3-era `fts_rebuild_pending` marker is satisfied by the same
+	 * rebuild and cleared inside the transaction (rebuild-before-delete is the
+	 * frozen order discipline).
+	 */
+	private _migrateFtsTokenizerSpace(): void {
+		let stored: string | null = null;
+		try {
+			stored = this.getKv(FTS_TOKENIZER_KEY);
+		} catch {
+			// memory_kv missing entirely — not a memory database; let the caller
+			// surface whatever the real problem is.
+			return;
+		}
+		if (stored === FTS_TOKENIZER_VALUE) return;
 		this.db.transaction(() => {
-			const rows = this.db.prepare("SELECT node_id FROM nodes WHERE is_stub = 0").all() as Array<{
-				node_id: string;
-			}>;
-			for (const r of rows) this.reindexNode(r.node_id);
+			this.db.exec("DROP TABLE IF EXISTS node_fts");
+			this.db.exec("DROP TABLE IF EXISTS raw_fts");
+			this.db.exec(NODE_FTS_DDL);
+			this.db.exec(RAW_FTS_DDL);
+			this._reindexAllNodes();
+			this._reindexAllRaw();
+			// Order discipline (契约 §10): the key is written only AFTER the
+			// rebuild succeeded — same transaction, never before.
+			this.setKv(FTS_TOKENIZER_KEY, FTS_TOKENIZER_VALUE);
+			this.db.prepare("DELETE FROM memory_kv WHERE key = ?").run(FTS_REBUILD_KEY);
 		});
 	}
 

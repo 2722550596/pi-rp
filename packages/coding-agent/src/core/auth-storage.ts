@@ -3,14 +3,13 @@
  * Provider auth orchestration belongs to ModelRuntime and pi-ai Models.
  */
 
+import type { HarnessStores, StateLocks, StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStateLocks, NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import lockfile from "proper-lockfile";
-import { setTimeout as sleep } from "timers/promises";
 import { getAgentDir } from "../config.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
-import { getFileRevision, normalizePath } from "../utils/paths.ts";
+import { normalizePath } from "../utils/paths.ts";
 import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
 
 type AuthStorageData = Record<string, Credential>;
@@ -19,8 +18,6 @@ type LockResult<T> = {
 	result: T;
 	next?: string;
 };
-
-const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
 
 type AuthFileReload = {
 	controller: AbortController;
@@ -46,50 +43,37 @@ export interface AuthStorageBackend {
 
 export class FileAuthStorageBackend implements AuthStorageBackend {
 	private authPath: string;
+	private readonly storage: StorageBackend;
+	private readonly locks: StateLocks;
 
-	constructor(authPath: string = join(getAgentDir(), "auth.json")) {
+	constructor(
+		authPath: string = join(getAgentDir(), "auth.json"),
+		storage: StorageBackend = NodeStorageBackend.shared,
+		locks: StateLocks = NodeStateLocks.shared,
+	) {
 		this.authPath = normalizePath(authPath);
+		this.storage = storage;
+		this.locks = locks;
 	}
 
 	private ensureParentDir(): void {
 		const dir = dirname(this.authPath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true, mode: 0o700 });
+		if (!this.storage.existsSync(dir)) {
+			this.storage.mkdirSync(dir, { recursive: true, mode: 0o700 });
 		}
 	}
 
 	private ensureFileExists(): void {
-		if (!existsSync(this.authPath)) {
-			writeFileSync(this.authPath, "{}", AUTH_FILE_WRITE_OPTIONS);
-			chmodSync(this.authPath, 0o600);
+		if (!this.storage.existsSync(this.authPath)) {
+			// The encoding/mode write options collapse to: UTF-8 content, then chmod 0600 (the OPFS chmod is a no-op).
+			this.storage.writeTextFileSync(this.authPath, "{}");
+			this.storage.chmodSync?.(this.authPath, 0o600);
 		}
 	}
 
-	private acquireLockSyncWithRetry(path: string): () => void {
-		const maxAttempts = 10;
-		const delayMs = 20;
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			try {
-				return lockfile.lockSync(path, { realpath: false });
-			} catch (error) {
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				if (code !== "ELOCKED" || attempt === maxAttempts) {
-					throw error;
-				}
-				lastError = error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
-			}
-		}
-
-		throw (lastError as Error) ?? new Error("Failed to acquire auth storage lock");
+	private acquireLockSync(path: string): () => void {
+		// Retry discipline (10×20ms busy wait, non-ELOCKED rethrow) lives inside the node StateLocks implementation.
+		return this.locks.lockSync(path);
 	}
 
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
@@ -98,12 +82,14 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 		let release: (() => void) | undefined;
 		try {
-			release = this.acquireLockSyncWithRetry(this.authPath);
-			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
+			release = this.acquireLockSync(this.authPath);
+			const current = this.storage.existsSync(this.authPath)
+				? this.storage.readTextFileSync(this.authPath)
+				: undefined;
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				this.storage.writeTextFileSync(this.authPath, next);
+				this.storage.chmodSync?.(this.authPath, 0o600);
 			}
 			return result;
 		} finally {
@@ -113,45 +99,13 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
-	private async acquireLockAsync(
+	private acquireLockAsync(
 		signal: AbortSignal | undefined,
 		onCompromised: (error: Error) => void,
 	): Promise<() => Promise<void>> {
-		const staleMs = 30_000;
-		const maxDelayMs = 2_000;
-		const deadline = Date.now() + staleMs;
-		let retry = 0;
-		while (true) {
-			signal?.throwIfAborted();
-			let release: (() => Promise<void>) | undefined;
-			try {
-				release = await lockfile.lock(this.authPath, {
-					realpath: false,
-					retries: 0,
-					stale: staleMs,
-					onCompromised,
-				});
-			} catch (error) {
-				signal?.throwIfAborted();
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				const remainingMs = deadline - Date.now();
-				if (code !== "ELOCKED" || remainingMs <= 0) throw error;
-				const baseDelayMs = Math.min(10 * 2 ** retry, maxDelayMs / 2);
-				retry++;
-				const delayMs = Math.min(Math.round(baseDelayMs * (1 + Math.random())), remainingMs);
-				if (signal) await sleep(delayMs, undefined, { signal });
-				else await sleep(delayMs);
-				continue;
-			}
-			if (signal?.aborted) {
-				await release();
-				signal.throwIfAborted();
-			}
-			return release;
-		}
+		// Stale-release window (30s), bounded exponential backoff, and abort handling live in the StateLocks
+		// implementation; the node one preserves the former proper-lockfile parameters exactly.
+		return this.locks.lockAsync(this.authPath, { signal, onCompromised });
 	}
 
 	async withLockAsync<T>(
@@ -179,13 +133,15 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 			throwIfCompromised();
 			options?.signal?.throwIfAborted();
-			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
+			const current = this.storage.existsSync(this.authPath)
+				? this.storage.readTextFileSync(this.authPath)
+				: undefined;
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			options?.signal?.throwIfAborted();
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				this.storage.writeTextFileSync(this.authPath, next);
+				this.storage.chmodSync?.(this.authPath, 0o600);
 			}
 			throwIfCompromised();
 			return result;
@@ -203,10 +159,15 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 export class ReadOnlyAuthStorage implements CredentialStore {
 	private readonly authPath: string;
+	private readonly storage: StorageBackend;
 	private data: AuthStorageData | undefined;
 
-	constructor(authPath: string = join(getAgentDir(), "auth.json")) {
+	constructor(
+		authPath: string = join(getAgentDir(), "auth.json"),
+		storage: StorageBackend = NodeStorageBackend.shared,
+	) {
 		this.authPath = normalizePath(authPath);
+		this.storage = storage;
 	}
 
 	private load(): AuthStorageData {
@@ -214,7 +175,7 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(readFileSync(this.authPath, "utf-8"));
+			parsed = JSON.parse(this.storage.readTextFileSync(this.authPath));
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 				this.data = {};
@@ -328,26 +289,39 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 export class AuthStorage implements CredentialStore {
 	private storage: AuthStorageBackend;
 	private authPath: string | undefined;
+	/** Raw-file seam for revision stamps; undefined only for exotic assemblies (revision checks then never hit). */
+	private fileStorage: StorageBackend | undefined;
 	private readState: AuthFileReadState;
 
-	private constructor(storage: AuthStorageBackend, authPath?: string) {
+	private constructor(storage: AuthStorageBackend, authPath?: string, fileStorage?: StorageBackend) {
 		this.storage = storage;
 		this.authPath = authPath;
+		// Node default keeps the former getFileRevision short-circuit behavior byte-identical.
+		this.fileStorage = fileStorage ?? NodeStorageBackend.shared;
 		this.readState =
 			authPath && sharedAuthFileReadState?.authPath === authPath ? sharedAuthFileReadState.readState : { data: {} };
 		if (authPath && !sharedAuthFileReadState) {
 			sharedAuthFileReadState = { authPath, readState: this.readState };
 		}
 		if (authPath) {
-			const revision = getFileRevision(authPath);
+			const revision = this.revisionOf(authPath);
 			if (revision !== undefined && revision === this.readState.revision) return;
 		}
 		this.reload();
 	}
 
-	static create(authPath: string = join(getAgentDir(), "auth.json")): AuthStorage {
+	private revisionOf(path: string | undefined): string | undefined {
+		if (!path) return undefined;
+		return this.fileStorage?.fileRevisionSync?.(path);
+	}
+
+	static create(authPath: string = join(getAgentDir(), "auth.json"), stores?: HarnessStores): AuthStorage {
 		const normalizedAuthPath = normalizePath(authPath);
-		return new AuthStorage(new FileAuthStorageBackend(normalizedAuthPath), normalizedAuthPath);
+		return new AuthStorage(
+			new FileAuthStorageBackend(normalizedAuthPath, stores?.storage, stores?.locks),
+			normalizedAuthPath,
+			stores?.storage,
+		);
 	}
 
 	static fromStorage(storage: AuthStorageBackend): AuthStorage {
@@ -381,7 +355,7 @@ export class AuthStorage implements CredentialStore {
 		try {
 			this.storage.withLock((current) => {
 				content = current;
-				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
+				revision = this.revisionOf(this.authPath);
 				return { result: undefined };
 			});
 			this.updateReadState(this.parseStorageData(content), revision);
@@ -393,7 +367,7 @@ export class AuthStorage implements CredentialStore {
 	private async reloadFromStorageAsync(options?: AuthOperationOptions): Promise<AuthStorageData> {
 		return this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
-			const revision = this.authPath ? getFileRevision(this.authPath) : undefined;
+			const revision = this.revisionOf(this.authPath);
 			this.updateReadState(currentData, revision);
 			return { result: currentData };
 		}, options);
@@ -405,7 +379,7 @@ export class AuthStorage implements CredentialStore {
 			const reload = this.reloadFromStorageAsync(options);
 			return options?.signal ? reload : reload.catch(() => this.readState.data);
 		}
-		const revision = getFileRevision(this.authPath);
+		const revision = this.revisionOf(this.authPath);
 		if (revision !== undefined && revision === this.readState.revision) return this.readState.data;
 		if (!this.readState.reload) {
 			const controller = new AbortController();
@@ -459,7 +433,7 @@ export class AuthStorage implements CredentialStore {
 			const next = await fn(currentData[provider]);
 			if (next === undefined) {
 				latestData = currentData;
-				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
+				revision = this.revisionOf(this.authPath);
 				return { result: currentData[provider] };
 			}
 
@@ -497,9 +471,10 @@ export class AuthStorage implements CredentialStore {
 export function readStoredCredential(
 	providerId: string,
 	authPath: string = join(getAgentDir(), "auth.json"),
+	storage: StorageBackend = NodeStorageBackend.shared,
 ): Credential | undefined {
 	try {
-		const data = JSON.parse(readFileSync(normalizePath(authPath), "utf-8")) as AuthStorageData;
+		const data = JSON.parse(storage.readTextFileSync(normalizePath(authPath))) as AuthStorageData;
 		return data[providerId];
 	} catch {
 		return undefined;

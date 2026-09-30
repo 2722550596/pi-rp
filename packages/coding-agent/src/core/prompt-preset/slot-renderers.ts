@@ -6,6 +6,7 @@ import { formatSkillsForPrompt } from "../skills.ts";
 import { formatToolSearchCategorySection } from "../tool-search-recovery.ts";
 import { expandMacros } from "./macro-engine.ts";
 import { applyResourcePolicy } from "./policy.ts";
+import { getSlot, registerSlot } from "./slot-registry.ts";
 import type {
 	PromptPreset,
 	PromptPresetDiagnostic,
@@ -13,29 +14,8 @@ import type {
 	PromptPresetSlotItem,
 	PromptPresetSlotOptions,
 	PromptRuntime,
-	SlotDefinition,
 	SlotRenderContext,
 } from "./types.ts";
-
-// =========================================================================
-// Slot Registry
-// =========================================================================
-
-const builtInSlots = new Map<string, SlotDefinition>();
-const customSlots = new Map<string, SlotDefinition>();
-
-export function registerSlot(definition: SlotDefinition, isBuiltIn = false): void {
-	const registry = isBuiltIn ? builtInSlots : customSlots;
-	registry.set(definition.name, definition);
-}
-
-export function getSlot(name: string): SlotDefinition | undefined {
-	return builtInSlots.get(name) ?? customSlots.get(name);
-}
-
-export function getAllSlots(): SlotDefinition[] {
-	return [...builtInSlots.values(), ...customSlots.values()];
-}
 
 /**
  * True when the item is a slot whose registered definition marks the
@@ -46,27 +26,6 @@ export function getAllSlots(): SlotDefinition[] {
 export function isChatHistoryPosition(item: PromptPresetItem): boolean {
 	return item.kind === "slot" && getSlot(item.slot)?.position === "chat-history";
 }
-
-/** Set of built-in slot names for validation. */
-export const SUPPORTED_SLOTS = new Set<string>([
-	"chat-history",
-	"tools",
-	"tool-guidelines",
-	"skills",
-	"project-context",
-	"append-system-prompt",
-	"date",
-	"cwd",
-	"date-cwd",
-	"active-model",
-	"pi-docs",
-	"variables",
-	"state",
-	"file",
-	"awaken",
-	"recent",
-	"index",
-]);
 
 // =========================================================================
 // Render Helpers

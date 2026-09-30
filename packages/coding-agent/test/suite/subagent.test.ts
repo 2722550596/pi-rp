@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, it } from "vitest";
-import { applyResourcePolicy } from "../../src/core/prompt-preset/policy.ts";
 import type { ExtensionContext } from "../../src/core/extensions/types.ts";
+import { applyResourcePolicy } from "../../src/core/prompt-preset/policy.ts";
 import {
 	createSubagentProfilesToolDefinition,
 	createSubagentToolDefinition,

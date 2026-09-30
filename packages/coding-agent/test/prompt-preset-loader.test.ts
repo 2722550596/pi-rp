@@ -128,6 +128,102 @@ describe("prompt preset loader", () => {
 		});
 	});
 
+	// ── hiddenOverrides.tempTidy (docs/design/temp-autotidy/02 §3.C) ─────────
+
+	it("parses both tempTidy override fields", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [],
+			hiddenOverrides: {
+				tempTidy: { systemPrompt: "tidy rules", taskPrompt: "clean TEMP: {temp_list}" },
+			},
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].diagnostics).toEqual([]);
+		expect(loaded[0].preset.hiddenOverrides?.tempTidy).toEqual({
+			systemPrompt: "tidy rules",
+			taskPrompt: "clean TEMP: {temp_list}",
+		});
+	});
+
+	it("drops non-string tempTidy fields per field", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [],
+			hiddenOverrides: {
+				tempTidy: { systemPrompt: 42, taskPrompt: { nested: true } },
+			},
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].preset.hiddenOverrides?.tempTidy).toBeUndefined();
+		expect(loaded[0].preset.hiddenOverrides).toBeUndefined();
+	});
+
+	it("drops blank-string tempTidy fields (deliberate divergence from compaction)", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [],
+			hiddenOverrides: {
+				// compaction accepts "" verbatim; tempTidy must not: an empty
+				// systemPrompt on an unattended background agent is an invisible
+				// accident, so whitespace falls back to the built-in default.
+				compaction: { systemPrompt: "" },
+				tempTidy: { systemPrompt: "", taskPrompt: "   \n\t " },
+			},
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].preset.hiddenOverrides?.compaction?.systemPrompt).toBe("");
+		expect(loaded[0].preset.hiddenOverrides?.tempTidy).toBeUndefined();
+	});
+
+	it("ignores unknown tempTidy keys and a non-object tempTidy value", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [],
+			hiddenOverrides: {
+				tempTidy: "not-an-object",
+			},
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].preset.hiddenOverrides).toBeUndefined();
+
+		const cwd2 = writePresetFile({
+			schemaVersion: 1,
+			id: "test2",
+			items: [],
+			hiddenOverrides: {
+				tempTidy: { systemPrompt: "keep me", briefingPrompt: "unknown key" },
+			},
+		});
+
+		const loaded2 = loadPromptPresets(cwd2);
+		expect(loaded2[0].preset.hiddenOverrides?.tempTidy).toEqual({ systemPrompt: "keep me" });
+	});
+
+	it("keeps tempTidy alongside compaction without interference", () => {
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "test",
+			items: [],
+			hiddenOverrides: {
+				compaction: { systemPrompt: "c" },
+				tempTidy: { taskPrompt: "t" },
+			},
+		});
+
+		const loaded = loadPromptPresets(cwd);
+		expect(loaded[0].preset.hiddenOverrides?.compaction).toEqual({ systemPrompt: "c" });
+		expect(loaded[0].preset.hiddenOverrides?.tempTidy).toEqual({ taskPrompt: "t" });
+	});
+
 	it("passes through chat-history toolMode drop + dropToolNames whitelist", () => {
 		const cwd = writePresetFile({
 			schemaVersion: 1,

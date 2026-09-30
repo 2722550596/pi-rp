@@ -1,12 +1,27 @@
 import { join } from "node:path";
-import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+import {
+	Agent,
+	type AgentMessage,
+	type AgentTool,
+	type Capabilities,
+	type HarnessStores,
+	type SqliteDatabaseFactory,
+	setDefaultStreamFn,
+	type ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import {
+	bashComplementDefaultTools,
+	DEFAULT_THINKING_LEVEL,
+	negotiatedAbsentToolNames,
+	type SessionToolName,
+	SHELL_DEFAULT_ACTIVE_TOOL_NAMES,
+} from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
@@ -37,7 +52,6 @@ import {
 	createReadOnlyTools,
 	createReadTool,
 	createWriteTool,
-	type ToolName,
 	withFileMutationQueue,
 } from "./tools/index.ts";
 
@@ -101,6 +115,14 @@ export interface CreateAgentSessionOptions {
 	tools?: string[];
 	/** Optional denylist of tool names to disable. Applies after `tools` when both are provided. */
 	excludeTools?: string[];
+	/**
+	 * Negotiated harness capabilities (10-A). The ONLY capability query at this
+	 * assembly boundary: `shell: false` removes bash from the registry entirely
+	 * (negotiated absence) and flips the default active tool face to the bash
+	 * complement (grep/find/ls activate by default). Omitted ⇒ node profile
+	 * behavior (unchanged). Explicit `tools`/settings/defaultTools always win.
+	 */
+	capabilities?: Capabilities;
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
 
@@ -112,6 +134,22 @@ export interface CreateAgentSessionOptions {
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
 	settingsManager?: SettingsManager;
+	/**
+	 * Storage seams for pi state (11-B). When omitted, the node defaults apply (node:fs storage backend +
+	 * proper-lockfile + live getAgentDir resolution). Browser/hosted assembly injects the OPFS or host stores.
+	 */
+	stores?: HarnessStores;
+	/**
+	 * Browser/hosted assemblies replace the base built-in tool set with Operations-injected
+	 * variants (13-E: six OPFS-backed file tools; bash negotiated off on shell-less profiles).
+	 * Omitted ⇒ node profile behavior (unchanged). Threading mirrors AgentSessionConfig.
+	 */
+	baseToolsOverride?: Record<string, AgentTool>;
+	/**
+	 * SQLite factory for the memory store (13-D). Omitted ⇒ the memory driver's runtime default
+	 * applies (node:sqlite on node; browser assembly injects the sqlite-wasm factory).
+	 */
+	sqliteFactory?: SqliteDatabaseFactory;
 	/** Request gateway for per-provider concurrency control. When omitted, a new one is created. */
 	requestGateway?: RequestGateway;
 	/** Identity for gateway-attributed requests from this session. Default: main-tier identity. */
@@ -221,13 +259,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
-	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+	const modelRuntime =
+		options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath, stores: options.stores }));
 
-	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir, { stores: options.stores });
+	const sessionManager =
+		options.sessionManager ??
+		SessionManager.create(
+			cwd, // storage 显式透传：缺省参数 NodeStorageBackend.shared 是 getter（browser stub 构造即抛），
+			// stores.storage 注入的装配（browser/hosted）下不得求值；node 无 stores 时缺省不变。
+			getDefaultSessionDir(cwd, agentDir, options.stores?.storage),
+			undefined,
+			options.stores?.storage,
+		);
 
 	if (!resourceLoader) {
-		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, storage: options.stores?.storage });
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
@@ -290,22 +337,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const defaultActiveToolNames: (ToolName | "state_update" | "get_state" | "subagent_profiles" | "subagent")[] = [
-		"read",
-		"bash",
-		"edit",
-		"write",
-		"state_update",
-		"get_state",
-		"subagent_profiles",
-		"subagent",
-	];
+	const defaultActiveToolNames: SessionToolName[] = SHELL_DEFAULT_ACTIVE_TOOL_NAMES;
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
-	const excludedToolNames = options.excludeTools;
+	// 能力→工具开关总表 (契约 §5): negotiated absence merges into the exclusion list at the
+	// assembly boundary; AgentSession only ever sees a plain name list (no capability checks).
+	const absentToolNames = negotiatedAbsentToolNames(options.capabilities);
+	const excludedToolNames =
+		absentToolNames.length === 0
+			? options.excludeTools
+			: [...new Set([...(options.excludeTools ?? []), ...absentToolNames])];
 	const excludedToolNameSet = excludedToolNames ? new Set(excludedToolNames) : undefined;
+	const profileDefaultToolNames = options.capabilities ? bashComplementDefaultTools(options.capabilities) : undefined;
 	const initialActiveToolNames = (
-		options.tools ?? (options.noTools ? [] : (configuredDefaultToolNames ?? defaultActiveToolNames))
+		options.tools ??
+		(options.noTools ? [] : (configuredDefaultToolNames ?? profileDefaultToolNames ?? defaultActiveToolNames))
 	).filter((name) => !excludedToolNameSet?.has(name));
 
 	let agent: Agent;
@@ -502,6 +548,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager,
 		settingsManager,
 		cwd,
+		agentDir,
+		stores: options.stores,
 		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,

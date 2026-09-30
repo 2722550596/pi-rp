@@ -5,12 +5,7 @@
  *   - MEM:// views (timeline / forgotten / recent / diagnostic)
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	type AutoretainTask,
-	DEFAULT_AUTORETAIN_TASKS,
-	dueTasks,
-	runAutoretainTask,
-} from "../src/autoretain.ts";
+import { type AutoretainTask, DEFAULT_AUTORETAIN_TASKS, dueTasks, runAutoretainTask } from "../src/autoretain.ts";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
 import {
 	renderDiagnosticView,

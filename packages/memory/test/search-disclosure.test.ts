@@ -92,12 +92,17 @@ describe("A5 — R1: a disclosure-only revise rebuilds the FTS column", () => {
 		// return, which used to skip reindexNode entirely (R1).
 		store.updateNode(a.node_id, { disclosure: "换成南瓜子条件" });
 		const row = ftsRow(a.node_id);
-		expect(row.disclosure).toContain("南瓜子");
+		// Probes are whole tokens of the unified Intl.Segmenter space
+		// (换成南瓜子条件 → 换/成/南瓜/子/条件): the new term is in, the old
+		// one is out. (Under the removed jieba tokenizer the whole word
+		// 南瓜子 was a single token; segmentation granularity is the
+		// tokenizer's business, the FTS-column rebuild is what A5 pins.)
+		expect(row.disclosure).toContain("南瓜");
 		expect(row.disclosure).not.toContain("醋栗");
 		// The same rebuild must reach MATCH, not just the stored column.
 		// Both probe words must be token-stable (a shared token like 条件
 		// would let the old query still match the new column).
-		expect(store.searchNodeFts(["南瓜子"]).has(a.node_id)).toBe(true);
+		expect(store.searchNodeFts(["南瓜"]).has(a.node_id)).toBe(true);
 		expect(store.searchNodeFts(["醋栗"]).has(a.node_id)).toBe(false);
 	});
 

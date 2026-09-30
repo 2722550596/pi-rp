@@ -55,6 +55,7 @@ export type {
 	// Message and Entry Rendering
 	EntryRenderer,
 	EntryRenderOptions,
+	ExecImpl,
 	ExecOptions,
 	ExecResult,
 	Extension,
@@ -74,6 +75,7 @@ export type {
 	ExtensionMode,
 	// Runtime
 	ExtensionRuntime,
+	ExtensionRuntimeOptions,
 	ExtensionShortcut,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -152,6 +154,7 @@ export type {
 	// Events - Tool
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolCapabilityRequirement,
 	// Tools
 	ToolDefinition,
 	// Events - Tool Execution

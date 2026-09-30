@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { compileMessages } from "../src/core/prompt-preset/compiler.ts";
-import { registerSlot } from "../src/core/prompt-preset/slot-renderers.ts";
+import { registerSlot } from "../src/core/prompt-preset/slot-registry.ts";
 import type { PromptPreset, PromptRuntime, SlotRenderContext } from "../src/core/prompt-preset/types.ts";
 
 const tempDirs: string[] = [];

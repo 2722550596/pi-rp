@@ -3,7 +3,9 @@
  * Enable with PI_TIMING=1 environment variable.
  */
 
-const ENABLED = process.env.PI_TIMING === "1";
+// `typeof process` guard: this module is imported by the profile-independent extension assembly core, which must
+// bundle for runtimes without a Node `process` global (instrumentation is simply off there).
+const ENABLED = typeof process !== "undefined" && process.env.PI_TIMING === "1";
 interface TimingNamespace {
 	timings: Array<{ label: string; ms: number }>;
 	lastTime: number;

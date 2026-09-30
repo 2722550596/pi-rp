@@ -3,8 +3,7 @@
  */
 
 import * as Diff from "diff";
-import { constants } from "fs";
-import { access, readFile } from "fs/promises";
+import { accessReadable, readTextFileUtf8 } from "./node-tool-defaults.ts";
 import { resolveToCwd } from "./path-utils.ts";
 
 export function detectLineEnding(content: string): "\r\n" | "\n" {
@@ -525,14 +524,14 @@ export async function computeEditsDiff(
 	try {
 		// Check if file exists and is readable
 		try {
-			await access(absolutePath, constants.R_OK);
+			await accessReadable(absolutePath);
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
 			return { error: `Could not edit file: ${path}. ${errorMessage}.` };
 		}
 
 		// Read the file
-		const rawContent = await readFile(absolutePath, "utf-8");
+		const rawContent = await readTextFileUtf8(absolutePath);
 
 		// Strip BOM before matching (LLM won't include invisible BOM in oldText)
 		const { text: content } = stripBom(rawContent);
