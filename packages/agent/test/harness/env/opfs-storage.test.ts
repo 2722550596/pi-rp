@@ -76,6 +76,27 @@ describe("OpfsStorageBackend", () => {
 		expect(second.readTextFileSync("/state/agent/models.json")).toBe("[]");
 	});
 
+	it("appends multi-byte text byte-accurately (session JSONL resume path)", async () => {
+		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
+		const backend = await OpfsStorageBackend.create(root);
+		backend.mkdirSync("/state/agent/sessions", { recursive: true });
+		backend.writeTextFileSync("/state/agent/sessions/s.jsonl", '{"kind":"header"}\n');
+
+		// Regression: the merge buffer was sized by UTF-16 string length while the payload is
+		// UTF-8 — CJK appends threw RangeError "offset is out of bounds", which is the
+		// post-first-assistant persist path (_persist → appendTextFileSync), i.e. every turn
+		// of a resumed session died before reaching the model.
+		const line = `${JSON.stringify({ role: "assistant", content: "灰烬堡的壁炉里住着永不熄灭的那位。" })}\n`;
+		expect(() => backend.appendTextFileSync("/state/agent/sessions/s.jsonl", line)).not.toThrow();
+		expect(backend.readTextFileSync("/state/agent/sessions/s.jsonl")).toBe(`{"kind":"header"}\n${line}`);
+		expect(() => backend.appendTextFileSync("/state/agent/sessions/s.jsonl", line)).not.toThrow();
+		expect(backend.readTextFileSync("/state/agent/sessions/s.jsonl")).toBe(`{"kind":"header"}\n${line}${line}`);
+
+		await backend.flush();
+		const asyncFace = new OpfsFileSystem(root, "/");
+		expect(await asyncFsRead(asyncFace, "/state/agent/sessions/s.jsonl")).toBe(`{"kind":"header"}\n${line}${line}`);
+	});
+
 	it("enforces node parity for wx/writes/mkdir/readdir/stat error surfaces", async () => {
 		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
 		const backend = await OpfsStorageBackend.create(root);

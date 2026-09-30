@@ -260,10 +260,15 @@ export class OpfsStorageBackend implements StorageBackend {
 		this.assertFileTarget(absolute, path);
 		this.assertParentExists(absolute);
 		const existing = this.files.get(absolute);
-		const merged = existing ? new Uint8Array(existing.data.length + data.length) : textEncoder.encode(data);
+		const encoded = textEncoder.encode(data);
+		// Allocate by ENCODED byte length, not string length: `data.length` counts UTF-16 code
+		// units while `encoded` is UTF-8 — CJK content makes the latter strictly larger, and
+		// sizing by the former made `merged.set` throw RangeError "offset is out of bounds"
+		// on every post-flush session append (resumed sessions persist via this path).
+		const merged = existing ? new Uint8Array(existing.data.length + encoded.length) : encoded;
 		if (existing) {
 			merged.set(existing.data, 0);
-			merged.set(textEncoder.encode(data), existing.data.length);
+			merged.set(encoded, existing.data.length);
 		}
 		this.files.set(absolute, { data: merged, mtimeMs: Date.now() });
 		this.enqueue(() => this.asyncFs.appendFile(absolute, data));
