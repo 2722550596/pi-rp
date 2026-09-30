@@ -13,6 +13,16 @@ export type { ExecutionEnv, FileSystem, Shell } from "@earendil-works/pi-agent-c
 export { InMemorySessionRepo, streamProxy } from "@earendil-works/pi-agent-core";
 // —— 组装入口工厂（Impl-A：HarnessEnv 的两个合法构造点；negotiate 不转出——构造只发生在工厂内）——
 export { createBrowserHarnessEnv, createHostedHarnessEnv } from "@earendil-works/pi-agent-core/web";
+// —— per-save 会话缝的宿主构造面（amio 阶段 1 回填：storage.sessionManager 缝已修入
+// assemble.ts:110，但宿主侧无法构造 SessionManager/OPFS StorageBackend——两者已在
+// bundle 内（assemble 缺省路径自身消费），此处仅补 runtime 转出，零新增打包内容）——
+export { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
+export {
+	BROWSER_AGENT_DIR,
+	OpfsStateLocks,
+	OpfsStorageBackend,
+	opfsStatePaths,
+} from "@earendil-works/pi-agent-core/web";
 export type { AssistantMessage, Model, StreamFunction, ThinkingLevel } from "@earendil-works/pi-ai";
 export type { ByteTransportFactory } from "@earendil-works/pi-client";
 export type { SessionRepo } from "../../agent/src/harness/session/types.ts";
