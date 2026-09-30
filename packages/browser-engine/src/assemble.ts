@@ -43,6 +43,7 @@ import {
 } from "../../coding-agent/src/core/prompt-preset/loader.ts";
 import { DefaultResourceLoader } from "../../coding-agent/src/core/resource-loader.ts";
 import type { RuntimeCredentials } from "../../coding-agent/src/core/runtime-credentials.ts";
+import type { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 import type { CreateAgentSessionOptions } from "../../coding-agent/src/core/sdk.ts";
 import { createAgentSession } from "../../coding-agent/src/core/sdk.ts";
 import type { Settings } from "../../coding-agent/src/core/settings-manager.ts";
@@ -102,6 +103,11 @@ export interface PiHarnessStorageOptions {
 	/** sqlite 工厂（13-D 定稿 @sqlite.org/sqlite-wasm；映射 memory openMemoryStore 的 options.sqlite 键）。
 	 *  缺省 = `@earendil-works/pi-memory/driver-browser` 的 createBrowserSqliteDatabaseFactory()。 */
 	readonly sqliteFactory?: unknown;
+	/** 会话管理器整体覆盖（sdk.ts sessionManager 缝转传；缺省 SessionManager.create(cwd)）。
+	 *  场景：宿主按存档目录挂 per-save 会话（如 amio `<save>/` 内 writer jsonl 落位），
+	 *  或刷新恢复时经 SessionManager.continueRecent(cwd, sessionDir, storage) 续档。
+	 *  缺省行为不变：会话落 `<agentDir>/sessions/`。 */
+	readonly sessionManager?: SessionManager;
 }
 
 /** 工具面（15-F §3.3；browser 缺省 disabled=["bash"]，E7 / 契约 §5 能力→工具总表）。 */
@@ -507,6 +513,10 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	};
 	if (llmAssembly.kind === "gateway") {
 		sessionOptions.requestGateway = llmAssembly.gateway;
+	}
+	if (options.storage?.sessionManager) {
+		// 会话管理器覆盖（storage.sessionManager → sdk.ts 既有缝）：per-save 会话/续档注入点。
+		sessionOptions.sessionManager = options.storage.sessionManager;
 	}
 	if (options.tools?.enabled) {
 		sessionOptions.tools = [...options.tools.enabled];
