@@ -11,6 +11,8 @@
  */
 export type {
 	ExtensionFactory,
+	ExtensionMode,
+	ExtensionUIContext,
 	LoadExtensionsResult,
 	ToolDefinition,
 } from "../../coding-agent/src/core/extensions/types.ts";

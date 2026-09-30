@@ -68,6 +68,11 @@ const NODE_FREE_WATCH = [
 	`${codingAgentSrc}/core/tools/render-utils.ts`,
 	`${codingAgentSrc}/utils/image-process.ts`,
 	`${codingAgentSrc}/utils/photon.ts`,
+	// 18 号模块 A（资源装载缝）：三个入图 loader storage 化后顶层 node: import 清零。
+	// （state/schema-loader.ts 真身经 alias 不入图、保留 jiti 域 node:fs，故不列。）
+	`${codingAgentSrc}/core/prompt-preset/loader.ts`,
+	`${codingAgentSrc}/extensions/opening/preset.ts`,
+	`${codingAgentSrc}/core/prompt-templates.ts`,
 ];
 
 /** A2 正向白名单（与 12-C §11 T2 同型）：扩展纯核必须存在且可入包。 */
@@ -471,15 +476,104 @@ async function runBundleAssertions() {
 }
 
 // ---------------------------------------------------------------------------
+// A6 资源端到端（18 号 §10：hosted + 显式 stores 冒烟 + metafile 双保险）
+// ---------------------------------------------------------------------------
+
+const RESOURCE_ENTRY = { id: "ci-resources", file: "packages/browser-engine/src/ci-entry-resources.ts" };
+
+async function runResourceSmokeAssertions() {
+	section("A6 资源端到端 · 资源审计 entry（hosted + in-memory stores）");
+	const outcome = await buildEntry(RESOURCE_ENTRY);
+	if (!outcome.ok) {
+		const errors = outcome.error.errors ?? [{ text: String(outcome.error) }];
+		for (const error of errors.slice(0, 4)) {
+			const location = error.location ? `${relative(repoRoot, resolve(error.location.file))}:${error.location.line}` : "(no location)";
+			fail(`${RESOURCE_ENTRY.id}: 构建错误 ${location} ${error.text.split("\n")[0]}`);
+		}
+		return;
+	}
+	const metafile = outcome.result.metafile;
+	pass(`${RESOURCE_ENTRY.id}: 资源审计 entry 构建`);
+
+	// metafile 双保险（18 号 §10）：alias 面在图内、schema-loader 真身不入图。
+	if (!findInput(metafile.inputs, "packages/browser-engine/src/browser-schema-loader.ts")) {
+		fail(`${RESOURCE_ENTRY.id}: alias 面 browser-schema-loader.ts 不在 bundle 图内`);
+	} else {
+		pass(`${RESOURCE_ENTRY.id}: browser-schema-loader.ts（alias 面）在图`);
+	}
+	if (findInput(metafile.inputs, `${codingAgentSrc}/state/schema-loader.ts`)) {
+		fail(`${RESOURCE_ENTRY.id}: state/schema-loader.ts 真身入图（WORKSPACE_ALIAS_MAP 未生效）`);
+	} else {
+		pass(`${RESOURCE_ENTRY.id}: state/schema-loader.ts 真身不在图（设计内）`);
+	}
+	for (const watched of [
+		`${codingAgentSrc}/core/prompt-preset/loader.ts`,
+		`${codingAgentSrc}/extensions/opening/preset.ts`,
+		`${codingAgentSrc}/core/prompt-templates.ts`,
+	]) {
+		if (!findInput(metafile.inputs, watched)) {
+			fail(`${RESOURCE_ENTRY.id}: 资源 loader 未进 bundle 图：${watched}`);
+		}
+	}
+	pass(`${RESOURCE_ENTRY.id}: preset/opening/prompt-templates loader 在图`);
+
+	// 执行 bundle（hosted + 显式 stores 是 node 进程可执行的组合，18 号 §10）。
+	const bundle = outcome.result.outputFiles?.[0]?.text;
+	if (!bundle) {
+		fail(`${RESOURCE_ENTRY.id}: bundle 输出缺失（write:false 应产出 outputFiles）`);
+		return;
+	}
+	const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+	const { pathToFileURL } = await import("node:url");
+	const { tmpdir } = await import("node:os");
+	const { join: joinPath } = await import("node:path");
+	const tmpDir = mkdtempSync(joinPath(tmpdir(), "pi-a6-resources-"));
+	const bundlePath = joinPath(tmpDir, "ci-entry-resources.mjs");
+	try {
+		writeFileSync(bundlePath, bundle);
+		const { runResourceSmoke, runResourceRejects } = await import(pathToFileURL(bundlePath).href);
+		const smoke = await runResourceSmoke();
+		if (!smoke?.ok) {
+			for (const message of smoke?.errors ?? ["runResourceSmoke 未返回结果"]) {
+				fail(`${RESOURCE_ENTRY.id}: ${String(message).split("\n")[0]}`);
+			}
+			return;
+		}
+		pass(`${RESOURCE_ENTRY.id}: 自定义 preset 激活（${smoke.presetId}）`);
+		pass(`${RESOURCE_ENTRY.id}: loadSchema 成功（${(smoke.mergesSeen?.schemaIds ?? []).join(", ") || "(none)"}）`);
+		pass(`${RESOURCE_ENTRY.id}: opening 播种条目存在`);
+		if (!smoke.mergesSeen?.presetSources?.some((source) => source.startsWith("opfs:/state/agent/prompt-presets/cold-open.json"))) {
+			fail(`${RESOURCE_ENTRY.id}: 扫描 preset 溯源缺失 opfs: 标签`);
+		}
+
+		// E5 reject 探针（18 号 §10.4：三要素错误 + disabled 豁免）。
+		const rejects = await runResourceRejects();
+		if (!rejects?.ok) {
+			for (const message of rejects?.errors ?? ["runResourceRejects 未返回结果"]) {
+				fail(`${RESOURCE_ENTRY.id}: reject ${String(message).split("\n")[0]}`);
+			}
+			return;
+		}
+		pass(`${RESOURCE_ENTRY.id}: 显式 ID 未命中 reject 三要素齐备（preset/schema/opening ×3）`);
+		pass(`${RESOURCE_ENTRY.id}: disabled preset（none/off/default）豁免不 reject`);
+	} catch (error) {
+		fail(`${RESOURCE_ENTRY.id}: bundle 执行失败：${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+	} finally {
+		rmSync(tmpDir, { recursive: true, force: true });
+	}
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
-console.log("pi-browser harness CI guard（15-F §11.1 A1–A5）");
+console.log("pi-browser harness CI guard（15-F §11.1 A1–A5 + 18 号 A6 资源端到端）");
 console.log(`repo: ${repoRoot}`);
 
 runSourceLevelAssertions();
 runStubCoverageAssertions();
 await runBundleAssertions();
+await runResourceSmokeAssertions();
 
 console.log(`\nsummary: ${passCount} pass, ${pending.length} pending, ${failures.length} fail`);
 if (pending.length > 0) {

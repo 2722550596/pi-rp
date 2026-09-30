@@ -133,119 +133,21 @@ export function handleParentOrchestrationResponse(
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
  */
-export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
-	takeOverStdout();
-	let session = runtimeHost.session;
-	let unsubscribe: (() => void) | undefined;
-	let unsubscribeBackpressure: (() => void) | undefined;
+/** Pending extension UI requests waiting for extension_ui_response（每次 runRpcMode 调用一张表）。 */
+export type RpcPendingExtensionRequests = Map<
+	string,
+	{ resolve: (value: RpcExtensionUIResponse) => void; reject: (error: Error) => void }
+>;
 
-	/** Active `watch_state` subscriptions (unsubscribed on rebind/shutdown). */
-	const watchSubscriptions: WatchStateSubscription[] = [];
-
-	const output = (obj: RpcResponse | RpcExtensionUIRequest | RpcStateChangedEvent | object) => {
-		writeRawStdout(serializeJsonLine(obj));
-	};
-
-	const success = <T extends RpcCommand["type"]>(
-		id: string | undefined,
-		command: T,
-		data?: object | null,
-	): RpcResponse => {
-		if (data === undefined) {
-			return { id, type: "response", command, success: true } as RpcResponse;
-		}
-		return { id, type: "response", command, success: true, data } as RpcResponse;
-	};
-
-	const error = (id: string | undefined, command: string, message: string): RpcResponse => {
-		return { id, type: "response", command, success: false, error: message };
-	};
-
-	// Pending extension UI requests waiting for response
-	const pendingExtensionRequests = new Map<
-		string,
-		{ resolve: (value: any) => void; reject: (error: Error) => void }
-	>();
-
-	// Pending parent-context requests (affiliated-session B) waiting for context_response
-	const pendingContextRequests = new Map<
-		string,
-		{ resolve: (value: RpcContextResponseData) => void; reject: (error: Error) => void }
-	>();
-	const CONTEXT_REQUEST_TIMEOUT_MS = 10_000;
-
-	// Pending orchestration requests (pass_mic) waiting for orchestration_response
-	const pendingOrchestrationRequests = new Map<
-		string,
-		{ resolve: (value: RpcOrchestrationAckData) => void; reject: (error: Error) => void }
-	>();
-	const ORCHESTRATION_REQUEST_TIMEOUT_MS = 10_000;
-
-	/**
-	 * 子进程扩展调用的「活体读取父会话」：挂起 promise、向客户端发 context_request，
-	 * 等 context_response（stdin 命令通道）回来解析。超时或父进程显式 error → reject
-	 * （调用方按需回退，如世界线角色更新器回退磁盘解析）。
-	 */
-	function requestParentContext(request: { since?: string; namespaces?: string[] }): Promise<RpcContextResponseData> {
-		const requestId = crypto.randomUUID();
-		return new Promise<RpcContextResponseData>((resolve, reject) => {
-			const timeoutId = setTimeout(() => {
-				pendingContextRequests.delete(requestId);
-				reject(new Error("context_request timeout: parent did not respond"));
-			}, CONTEXT_REQUEST_TIMEOUT_MS);
-			pendingContextRequests.set(requestId, {
-				resolve: (value: RpcContextResponseData) => {
-					clearTimeout(timeoutId);
-					pendingContextRequests.delete(requestId);
-					resolve(value);
-				},
-				reject: (error: Error) => {
-					clearTimeout(timeoutId);
-					pendingContextRequests.delete(requestId);
-					reject(error);
-				},
-			});
-			output({ type: "context_request", requestId, ...request } as RpcContextRequestEvent);
-		});
-	}
-
-	/**
-	 * 子进程扩展调用的「请求父会话编排」（pass_mic）：挂起 promise、向客户端发
-	 * orchestration_request，等 orchestration_response（stdin 命令通道）回来解析。
-	 * 超时或父进程显式 error → reject（调用方按需处理）。
-	 */
-	function requestOrchestration(request: {
-		kind: "pass_mic";
-		from: string;
-		target: string;
-	}): Promise<RpcOrchestrationAckData> {
-		const requestId = crypto.randomUUID();
-		const { promise, resolve, reject } = Promise.withResolvers<RpcOrchestrationAckData>();
-		const timeoutId = setTimeout(() => {
-			pendingOrchestrationRequests.delete(requestId);
-			reject(new Error("orchestration_request timeout: parent did not respond"));
-		}, ORCHESTRATION_REQUEST_TIMEOUT_MS);
-		pendingOrchestrationRequests.set(requestId, {
-			resolve: (value: RpcOrchestrationAckData) => {
-				clearTimeout(timeoutId);
-				pendingOrchestrationRequests.delete(requestId);
-				resolve(value);
-			},
-			reject: (error: Error) => {
-				clearTimeout(timeoutId);
-				pendingOrchestrationRequests.delete(requestId);
-				reject(error);
-			},
-		});
-		output({ type: "orchestration_request", requestId, ...request } as RpcOrchestrationRequestEvent);
-		return promise;
-	}
-
-	// Shutdown request flag
-	let shutdownRequested = false;
-	let shuttingDown = false;
-	const signalCleanupHandlers: Array<() => void> = [];
-
+/**
+ * RPC 扩展 UI 上下文工厂 —— runRpcMode 闭包体的模块级提纯（19 号 §10 T14 双实现防漂移测试的
+ * 唯一 test-only 出口：output / pendingExtensionRequests 改为注入参；评审门复杂度②裁决）。
+ * runRpcMode 内传运行时真身调用，运行时路径与提取前逐字节等价（E6：node RPC 行为不受该导出影响）。
+ */
+export function createRpcExtensionUIContext(
+	output: (event: RpcExtensionUIRequest) => void,
+	pendingExtensionRequests: RpcPendingExtensionRequests,
+): ExtensionUIContext {
 	/** Helper for dialog methods with signal/timeout support */
 	function createDialogPromise<T>(
 		opts: ExtensionUIDialogOptions | undefined,
@@ -289,10 +191,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		});
 	}
 
-	/**
-	 * Create an extension UI context that uses the RPC protocol.
-	 */
-	const createExtensionUIContext = (): ExtensionUIContext => ({
+	return {
 		select: (title, options, opts) =>
 			createDialogPromise(opts, undefined, { method: "select", title, options, timeout: opts?.timeout }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
@@ -467,7 +366,130 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		setToolsExpanded(_expanded: boolean) {
 			// Tool expansion not supported in RPC mode - no TUI
 		},
-	});
+	};
+}
+
+export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
+	takeOverStdout();
+	let session = runtimeHost.session;
+	let unsubscribe: (() => void) | undefined;
+	let unsubscribeBackpressure: (() => void) | undefined;
+
+	/** Active `watch_state` subscriptions (unsubscribed on rebind/shutdown). */
+	const watchSubscriptions: WatchStateSubscription[] = [];
+
+	const output = (obj: RpcResponse | RpcExtensionUIRequest | RpcStateChangedEvent | object) => {
+		writeRawStdout(serializeJsonLine(obj));
+	};
+
+	const success = <T extends RpcCommand["type"]>(
+		id: string | undefined,
+		command: T,
+		data?: object | null,
+	): RpcResponse => {
+		if (data === undefined) {
+			return { id, type: "response", command, success: true } as RpcResponse;
+		}
+		return { id, type: "response", command, success: true, data } as RpcResponse;
+	};
+
+	const error = (id: string | undefined, command: string, message: string): RpcResponse => {
+		return { id, type: "response", command, success: false, error: message };
+	};
+
+	// Pending extension UI requests waiting for response
+	const pendingExtensionRequests = new Map<
+		string,
+		{ resolve: (value: any) => void; reject: (error: Error) => void }
+	>();
+
+	// Pending parent-context requests (affiliated-session B) waiting for context_response
+	const pendingContextRequests = new Map<
+		string,
+		{ resolve: (value: RpcContextResponseData) => void; reject: (error: Error) => void }
+	>();
+	const CONTEXT_REQUEST_TIMEOUT_MS = 10_000;
+
+	// Pending orchestration requests (pass_mic) waiting for orchestration_response
+	const pendingOrchestrationRequests = new Map<
+		string,
+		{ resolve: (value: RpcOrchestrationAckData) => void; reject: (error: Error) => void }
+	>();
+	const ORCHESTRATION_REQUEST_TIMEOUT_MS = 10_000;
+
+	/**
+	 * 子进程扩展调用的「活体读取父会话」：挂起 promise、向客户端发 context_request，
+	 * 等 context_response（stdin 命令通道）回来解析。超时或父进程显式 error → reject
+	 * （调用方按需回退，如世界线角色更新器回退磁盘解析）。
+	 */
+	function requestParentContext(request: { since?: string; namespaces?: string[] }): Promise<RpcContextResponseData> {
+		const requestId = crypto.randomUUID();
+		return new Promise<RpcContextResponseData>((resolve, reject) => {
+			const timeoutId = setTimeout(() => {
+				pendingContextRequests.delete(requestId);
+				reject(new Error("context_request timeout: parent did not respond"));
+			}, CONTEXT_REQUEST_TIMEOUT_MS);
+			pendingContextRequests.set(requestId, {
+				resolve: (value: RpcContextResponseData) => {
+					clearTimeout(timeoutId);
+					pendingContextRequests.delete(requestId);
+					resolve(value);
+				},
+				reject: (error: Error) => {
+					clearTimeout(timeoutId);
+					pendingContextRequests.delete(requestId);
+					reject(error);
+				},
+			});
+			output({ type: "context_request", requestId, ...request } as RpcContextRequestEvent);
+		});
+	}
+
+	/**
+	 * 子进程扩展调用的「请求父会话编排」（pass_mic）：挂起 promise、向客户端发
+	 * orchestration_request，等 orchestration_response（stdin 命令通道）回来解析。
+	 * 超时或父进程显式 error → reject（调用方按需处理）。
+	 */
+	function requestOrchestration(request: {
+		kind: "pass_mic";
+		from: string;
+		target: string;
+	}): Promise<RpcOrchestrationAckData> {
+		const requestId = crypto.randomUUID();
+		const { promise, resolve, reject } = Promise.withResolvers<RpcOrchestrationAckData>();
+		const timeoutId = setTimeout(() => {
+			pendingOrchestrationRequests.delete(requestId);
+			reject(new Error("orchestration_request timeout: parent did not respond"));
+		}, ORCHESTRATION_REQUEST_TIMEOUT_MS);
+		pendingOrchestrationRequests.set(requestId, {
+			resolve: (value: RpcOrchestrationAckData) => {
+				clearTimeout(timeoutId);
+				pendingOrchestrationRequests.delete(requestId);
+				resolve(value);
+			},
+			reject: (error: Error) => {
+				clearTimeout(timeoutId);
+				pendingOrchestrationRequests.delete(requestId);
+				reject(error);
+			},
+		});
+		output({ type: "orchestration_request", requestId, ...request } as RpcOrchestrationRequestEvent);
+		return promise;
+	}
+
+	// Shutdown request flag
+	let shutdownRequested = false;
+	let shuttingDown = false;
+	const signalCleanupHandlers: Array<() => void> = [];
+
+	/**
+	 * Create an extension UI context that uses the RPC protocol.
+	 * 实现体提取为模块级 createRpcExtensionUIContext（output / pendingExtensionRequests 注入参）：
+	 * 这是 T14 双实现防漂移测试（19 号 §10）的唯一 test-only 出口；此处传运行时真身，
+	 * 运行时路径与提取前逐字节等价（E6：node RPC 行为不受该导出影响）。
+	 */
+	const createExtensionUIContext = (): ExtensionUIContext =>
+		createRpcExtensionUIContext(output, pendingExtensionRequests);
 
 	runtimeHost.setRebindSession(async () => {
 		await rebindSession();

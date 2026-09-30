@@ -6,7 +6,7 @@ import { APP_NAME, getAgentDir, getExportTemplateDir } from "../../config.ts";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { isDisabledPromptPresetId, loadPromptPresets } from "../prompt-preset/loader.ts";
+import { isDisabledPromptPresetId, type LoadedPromptPresetSource, loadPromptPresets } from "../prompt-preset/loader.ts";
 import { applyDisplayRegexToString } from "../prompt-preset/regex-engine.ts";
 import type { PromptPreset } from "../prompt-preset/types.ts";
 import type { SessionEntry } from "../session-manager.ts";
@@ -50,8 +50,14 @@ export interface ExportOptions {
 	 * browser profile ships them via bundling, not via the OPFS namespace (contract §6.1 has no template slot).
 	 */
 	storage?: StorageBackend;
+	configDir?: string;
 	/** Optional tool renderer for custom tools */
 	toolRenderer?: ToolHtmlRenderer;
+	/**
+	 * Inline prompt presets (bundled-resource channel) merged into the preset resolution scan, mirroring the
+	 * exporting session's own merged set. Omitted on node ⇒ unchanged behavior.
+	 */
+	inlinePresets?: readonly LoadedPromptPresetSource[];
 	/** Active prompt preset. When provided, its display-effect regex rules are applied
 	 * to message text before it is embedded in the HTML, matching TUI rendering. */
 	preset?: PromptPreset;
@@ -310,11 +316,17 @@ function filterEntriesForDisplay(entries: SessionEntry[], preset: PromptPreset):
  * restore logic (`_rebuildSystemPrompt`): the last `preset_change` entry in the
  * session, then the settings default.
  */
-function resolveSessionPreset(sm: SessionManager, agentDir: string, storage: StorageBackend): PromptPreset | undefined {
+function resolveSessionPreset(
+	sm: SessionManager,
+	agentDir: string,
+	storage: StorageBackend,
+	inlinePresets?: readonly LoadedPromptPresetSource[],
+	configDir?: string,
+): PromptPreset | undefined {
 	const header = sm.getHeader();
 	if (!header) return undefined;
 
-	const presets = loadPromptPresets(header.cwd, agentDir);
+	const presets = loadPromptPresets(header.cwd, agentDir, { storage, configDir, inline: inlinePresets });
 	if (presets.length === 0) return undefined;
 
 	const entries = sm.getEntries();
@@ -330,6 +342,7 @@ function resolveSessionPreset(sm: SessionManager, agentDir: string, storage: Sto
 	const settingsPresetId = SettingsManager.create(header.cwd, agentDir, {
 		projectTrusted: false,
 		stores: { storage, locks: NodeStateLocks.shared, paths: { agentDir: () => agentDir } },
+		configDir,
 	}).getDefaultPreset();
 	const restoreId = storedPresetId ?? settingsPresetId;
 	if (!restoreId || isDisabledPromptPresetId(restoreId)) return undefined;
@@ -407,7 +420,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 
 	const sm = SessionManager.open(resolvedInputPath, undefined, undefined, storage);
 
-	const preset = resolveSessionPreset(sm, opts.agentDir ?? getAgentDir(), storage);
+	const preset = resolveSessionPreset(sm, opts.agentDir ?? getAgentDir(), storage, opts.inlinePresets, opts.configDir);
 	const entries = preset ? filterEntriesForDisplay(sm.getEntries(), preset) : sm.getEntries();
 
 	const sessionData: SessionData = {

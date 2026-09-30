@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import type { StorageBackend } from "@earendil-works/pi-agent-core";
 import { NodeStateLocks, NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import chalk from "chalk";
-import { getProjectConfigDir } from "../config.ts";
+import { getProjectConfigDirFor } from "../config.ts";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 
@@ -180,6 +180,7 @@ export interface DefaultResourceLoaderOptions {
 	 * injects the OPFS storage. Non-skill scanners (themes/prompts) are not yet seam-routed.
 	 */
 	storage?: StorageBackend;
+	configDir?: string;
 	noExtensions?: boolean;
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;
@@ -210,6 +211,7 @@ export interface DefaultResourceLoaderOptions {
 export class DefaultResourceLoader implements ResourceLoader {
 	private cwd: string;
 	private agentDir: string;
+	private configDir?: string;
 	/** Storage seam for resource scans (11-B step 8: skills); node default keeps node:fs behavior byte-identical. */
 	private readonly storage: StorageBackend;
 	private settingsManager: SettingsManager;
@@ -270,15 +272,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
+		this.configDir = options.configDir;
 		this.storage = options.storage ?? NodeStorageBackend.shared;
 		// stores 字面量惰性构造：NodeStateLocks.shared 是 getter（browser stub 构造即抛），
 		// 在 settingsManager 已注入的装配（browser/hosted）下不得求值；node 语义不变。
 		this.settingsManager =
 			options.settingsManager ??
-			SettingsManager.create(
-				this.cwd,
-				this.agentDir,
-				options.storage
+			SettingsManager.create(this.cwd, this.agentDir, {
+				...(options.storage
 					? {
 							stores: {
 								storage: this.storage,
@@ -286,8 +287,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 								paths: { agentDir: () => this.agentDir },
 							},
 						}
-					: undefined,
-			);
+					: {}),
+				configDir: options.configDir,
+			});
 		this.eventBus = options.eventBus ?? createEventBus();
 		// Injectable for shell-less profiles (browser/hosted assemblies pass a null implementation); the node default
 		// is unchanged (12-C §9 seam 4).
@@ -527,19 +529,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			: this.mergePaths([...cliEnabledPrompts, ...enabledPrompts], this.additionalPromptTemplatePaths);
 
 		this.lastPromptPaths = promptPaths;
-		this.updatePromptsFromPaths(promptPaths, metadataByPath);
-		for (const p of this.additionalPromptTemplatePaths) {
-			if (isLocalPath(p)) {
-				const resolved = this.resolveResourcePath(p);
-				if (!existsSync(resolved) && !this.promptDiagnostics.some((d) => d.path === resolved)) {
-					this.promptDiagnostics.push({
-						type: "error",
-						message: "Prompt template path does not exist",
-						path: resolved,
-					});
-				}
-			}
-		}
+		this.updatePromptsFromPaths(promptPaths, metadataByPath, true);
 
 		const themePaths = this.noThemes
 			? this.mergePaths(cliEnabledThemes, this.additionalThemePaths)
@@ -735,16 +725,33 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.skillDiagnostics = resolvedSkills.diagnostics;
 	}
 
-	private updatePromptsFromPaths(promptPaths: string[], metadataByPath?: Map<string, PathMetadata>): void {
+	private updatePromptsFromPaths(
+		promptPaths: string[],
+		metadataByPath?: Map<string, PathMetadata>,
+		diagnoseMissingPaths = false,
+	): void {
 		let promptsResult: { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
+		const readFailures = new Set<string>();
 		if (this.noPromptTemplates && promptPaths.length === 0) {
 			promptsResult = { prompts: [], diagnostics: [] };
 		} else {
+			// Browser/hosted package managers do not auto-discover directories. Scan the
+			// project root before agentDir to preserve Node's project-over-user precedence.
+			const pathsToLoad =
+				this.configDir !== undefined || this.storage.kind !== "node-fs"
+					? this.mergePaths(
+							[getProjectConfigDirFor(this.cwd, this.configDir, "prompts"), join(this.agentDir, "prompts")],
+							promptPaths,
+						)
+					: promptPaths;
 			const allPrompts = loadPromptTemplates({
 				cwd: this.cwd,
 				agentDir: this.agentDir,
-				promptPaths,
+				promptPaths: pathsToLoad,
+				configDir: this.configDir,
+				onReadError: (path) => readFailures.add(resolve(path)),
 				includeDefaults: false,
+				storage: this.storage,
 			});
 			promptsResult = this.dedupePrompts(allPrompts);
 		}
@@ -756,7 +763,42 @@ export class DefaultResourceLoader implements ResourceLoader {
 				prompt.sourceInfo ??
 				this.getDefaultSourceInfoForPath(prompt.filePath),
 		}));
-		this.promptDiagnostics = resolvedPrompts.diagnostics;
+		this.promptDiagnostics = [...resolvedPrompts.diagnostics];
+		const diagnosedPaths = new Set(
+			this.promptDiagnostics.flatMap((diagnostic) => (diagnostic.path ? [diagnostic.path] : [])),
+		);
+		for (const p of this.additionalPromptTemplatePaths) {
+			if (!isLocalPath(p)) continue;
+			const resolved = this.resolveResourcePath(p);
+			let exists: boolean;
+			try {
+				exists = this.storage.existsSync(resolved);
+			} catch {
+				exists = false;
+			}
+			if (!exists) {
+				if (diagnoseMissingPaths && !diagnosedPaths.has(resolved)) {
+					this.promptDiagnostics.push({
+						type: this.storage.kind === "node-fs" ? "error" : "warning",
+						message: "Prompt template path does not exist",
+						path: resolved,
+					});
+					diagnosedPaths.add(resolved);
+				}
+				continue;
+			}
+			const hasReadFailure = [...readFailures].some(
+				(path) => path === resolved || path.startsWith(`${resolved}${sep}`),
+			);
+			if (exists && this.storage.kind !== "node-fs" && hasReadFailure && !diagnosedPaths.has(resolved)) {
+				this.promptDiagnostics.push({
+					type: "warning",
+					message: "Prompt template path could not be read",
+					path: resolved,
+				});
+				diagnosedPaths.add(resolved);
+			}
+		}
 	}
 
 	private updateThemesFromPaths(themePaths: string[], metadataByPath?: Map<string, PathMetadata>): void {
@@ -859,10 +901,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			join(this.agentDir, "extensions"),
 		];
 		const projectRoots = [
-			getProjectConfigDir(this.cwd, "skills"),
-			getProjectConfigDir(this.cwd, "prompts"),
-			getProjectConfigDir(this.cwd, "themes"),
-			getProjectConfigDir(this.cwd, "extensions"),
+			getProjectConfigDirFor(this.cwd, this.configDir, "skills"),
+			getProjectConfigDirFor(this.cwd, this.configDir, "prompts"),
+			getProjectConfigDirFor(this.cwd, this.configDir, "themes"),
+			getProjectConfigDirFor(this.cwd, this.configDir, "extensions"),
 		];
 
 		for (const root of agentRoots) {
@@ -915,7 +957,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const themes: Theme[] = [];
 		const diagnostics: ResourceDiagnostic[] = [];
 		if (includeDefaults) {
-			const defaultDirs = [join(this.agentDir, "themes"), getProjectConfigDir(this.cwd, "themes")];
+			const defaultDirs = [
+				join(this.agentDir, "themes"),
+				getProjectConfigDirFor(this.cwd, this.configDir, "themes"),
+			];
 
 			for (const dir of defaultDirs) {
 				this.loadThemesFromDir(dir, themes, diagnostics);
@@ -1048,7 +1093,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverSystemPromptFile(): string | undefined {
-		const projectPath = getProjectConfigDir(this.cwd, "SYSTEM.md");
+		const projectPath = getProjectConfigDirFor(this.cwd, this.configDir, "SYSTEM.md");
 		if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
 			return projectPath;
 		}
@@ -1062,7 +1107,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverAppendSystemPromptFile(): string | undefined {
-		const projectPath = getProjectConfigDir(this.cwd, "APPEND_SYSTEM.md");
+		const projectPath = getProjectConfigDirFor(this.cwd, this.configDir, "APPEND_SYSTEM.md");
 		if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
 			return projectPath;
 		}

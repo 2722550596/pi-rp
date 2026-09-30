@@ -513,6 +513,15 @@ export function getProjectConfigDir(cwd: string, ...segments: string[]): string 
 	return join(cwd, getProjectConfigDirName(), ...segments);
 }
 
+/**
+ * Resolve a project config subdirectory against an explicit per-harness configDir.
+ * Unlike getProjectConfigDir, an explicit configDir never consults process.env;
+ * undefined preserves the existing CLI/env behavior for node callers.
+ */
+export function getProjectConfigDirFor(cwd: string, configDir: string | undefined, ...segments: string[]): string {
+	return join(cwd, configDir ?? getProjectConfigDirName(), ...segments);
+}
+
 export const VERSION: string = pkg.version || "0.0.0";
 
 // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR

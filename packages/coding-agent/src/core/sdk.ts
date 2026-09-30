@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
+import type { SchemaDefSource } from "../state/schema-loader.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./agent-session-services.ts";
@@ -26,7 +27,7 @@ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefi
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
-import { chooseDefaultPreset, loadPromptPresets } from "./prompt-preset/loader.ts";
+import { chooseDefaultPreset, type LoadedPromptPresetSource, loadPromptPresets } from "./prompt-preset/loader.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { RequestIdentity } from "./request-gateway.ts";
 import { RequestGateway } from "./request-gateway.ts";
@@ -82,6 +83,8 @@ function latestSchemaChangeForNamespace(entries: SessionEntry[], namespace: stri
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
+	/** Per-harness project config root relative to cwd; omitted Node callers retain PI_PROJECT_CONFIG_DIR. */
+	configDir?: string;
 	/** Global config directory. Default: ~/.pi/agent */
 	agentDir?: string;
 
@@ -162,6 +165,14 @@ export interface CreateAgentSessionOptions {
 	initialMessages?: AgentMessage[];
 	/** State schema IDs to load at startup, in order. Recorded as schema_change entries. */
 	schemas?: string[];
+	/**
+	 * Inline prompt presets (bundled-resource channel, contract §3.2). Merged over the scanned set
+	 * (inline wins on ID collision); threaded to the session so /reload and subagents inherit them.
+	 * Omitted on node ⇒ unchanged behavior.
+	 */
+	inlinePresets?: readonly LoadedPromptPresetSource[];
+	/** Inline state-schema definitions (bundled-resource channel). See inlinePresets. */
+	inlineSchemas?: readonly SchemaDefSource[];
 	/** Enable state schema strict mode: reject state writes to paths not covered by a loaded schema. */
 	strict?: boolean;
 	/** Mount the cross-process shared state store (default: true). Pass false for in-memory subagents. */
@@ -262,7 +273,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const modelRuntime =
 		options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath, stores: options.stores }));
 
-	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir, { stores: options.stores });
+	const settingsManager =
+		options.settingsManager ??
+		SettingsManager.create(cwd, agentDir, { stores: options.stores, configDir: options.configDir });
 	const sessionManager =
 		options.sessionManager ??
 		SessionManager.create(
@@ -274,7 +287,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		);
 
 	if (!resourceLoader) {
-		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, storage: options.stores?.storage });
+		resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			storage: options.stores?.storage,
+			configDir: options.configDir,
+		});
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
@@ -538,7 +557,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const initialPresetId =
 			options.preset ??
 			settingsManager.getDefaultPreset() ??
-			chooseDefaultPreset(loadPromptPresets(cwd, agentDir))?.preset.id ??
+			chooseDefaultPreset(
+				loadPromptPresets(cwd, agentDir, {
+					storage: options.stores?.storage,
+					configDir: options.configDir,
+					inline: options.inlinePresets,
+				}),
+			)?.preset.id ??
 			"default";
 		sessionManager.appendPresetChange(initialPresetId);
 	}
@@ -549,7 +574,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		settingsManager,
 		cwd,
 		agentDir,
+		configDir: options.configDir,
 		stores: options.stores,
+		inlinePresets: options.inlinePresets,
+		inlineSchemas: options.inlineSchemas,
 		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,

@@ -1,10 +1,12 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getProjectConfigDir } from "../../config.ts";
+import type { StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
+import { getProjectConfigDirFor } from "../../config.ts";
+import { join } from "../../utils/node-globals.ts";
 import { validateRegexConfig } from "./regex-engine.ts";
 import { SUPPORTED_SLOTS } from "./slot-registry.ts";
 import type {
 	LoadedPromptPreset,
+	LoadedPromptPresetSource,
 	PromptPreset,
 	PromptPresetDiagnostic,
 	PromptPresetHiddenOverrides,
@@ -14,6 +16,8 @@ import type {
 	PromptPresetSlot,
 	PromptResourcePolicy,
 } from "./types.ts";
+
+export type { LoadedPromptPresetSource };
 
 const PROMPT_PRESET_DIR = "prompt-presets";
 
@@ -27,38 +31,95 @@ export function promptPresetsDir(parentDir: string): string {
 	return join(parentDir, PROMPT_PRESET_DIR);
 }
 
-export function promptPresetsProjectDir(cwd: string): string {
-	return getProjectConfigDir(cwd, PROMPT_PRESET_DIR);
+export function promptPresetsProjectDir(cwd: string, configDir?: string): string {
+	return getProjectConfigDirFor(cwd, configDir, PROMPT_PRESET_DIR);
 }
 
 /** Collect *.json files under `dir`, including nested subdirectories (sorted, depth-first). */
-function collectPresetFiles(dir: string): string[] {
+function collectPresetFiles(dir: string, storage: StorageBackend): string[] {
 	const out: string[] = [];
-	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+	for (const entry of storage.readdirSync(dir)) {
 		const full = join(dir, entry.name);
-		if (entry.isDirectory()) out.push(...collectPresetFiles(full));
+		if (entry.isDirectory) out.push(...collectPresetFiles(full, storage));
 		else if (entry.name.endsWith(".json")) out.push(full);
 	}
 	return out.sort();
 }
 
-export function loadPromptPresets(cwd: string, agentDir?: string): LoadedPromptPreset[] {
+/**
+ * 溯源串（契约 §4 / Q2 裁决）：opfs → `opfs:<path>`、host-fs → `host:<path>`；node-fs 不设置
+ * （对象形状与 JSON 序列化零差异，E6）。
+ */
+function scanSourceLabel(storage: StorageBackend, filePath: string): string | undefined {
+	if (storage.kind === "opfs") return `opfs:${filePath}`;
+	if (storage.kind === "host-fs") return `host:${filePath}`;
+	return undefined;
+}
+
+export interface LoadPromptPresetsOptions {
+	/**
+	 * 存储缝（11-B 步骤 8 同款）。缺省 NodeStorageBackend.shared（node 逐字节等价）；
+	 * browser/hosted 装配恒显式传入 OPFS/host 实现。
+	 */
+	storage?: StorageBackend;
+	/** Per-harness project config root (relative to cwd); omitted Node callers retain getProjectConfigDir/env. */
+	configDir?: string;
+	/**
+	 * 内联 preset（打包通道）。并入扫描结果：同 ID 内联胜出（替换扫描项 + warn 诊断）；
+	 * 内联数组内部同 ID 后项胜出 + warn。每项经 normalizePreset 重入复验，坏内联 =
+	 * error 诊断 + fallbackPreset（与磁盘坏文件同待遇）。
+	 */
+	inline?: readonly LoadedPromptPresetSource[];
+}
+
+export function loadPromptPresets(
+	cwd: string,
+	agentDir?: string,
+	options?: LoadPromptPresetsOptions,
+): LoadedPromptPreset[] {
+	const { storage = NodeStorageBackend.shared, configDir, inline } = options ?? {};
+
 	const dirs: string[] = [];
 	if (agentDir) dirs.push(join(agentDir, PROMPT_PRESET_DIR));
-	dirs.push(getProjectConfigDir(cwd, PROMPT_PRESET_DIR));
+	dirs.push(promptPresetsProjectDir(cwd, configDir));
 
 	const presets: LoadedPromptPreset[] = [];
 	for (const dir of dirs) {
-		if (!existsSync(dir)) continue;
-		const files = collectPresetFiles(dir);
+		if (!storage.existsSync(dir)) continue;
+		const files = collectPresetFiles(dir, storage);
 		for (const filePath of files) {
-			const loaded = loadPromptPresetFile(filePath);
+			const loaded = loadPromptPresetFile(filePath, storage);
+			const source = scanSourceLabel(storage, filePath);
+			if (source !== undefined) loaded.source = source;
 			// Project presets override global ones with the same ID
 			const existing = presets.findIndex((p) => p.preset.id === loaded.preset.id);
 			if (existing !== -1) {
 				presets[existing] = loaded;
 			} else {
 				presets.push(loaded);
+			}
+		}
+	}
+
+	// 内联合并（契约 §3.3 C1 裁决版）：内联 > 扫描；内联数组内部同 ID 后项胜出；冲突必 warn。
+	if (inline) {
+		for (const item of inline) {
+			const diagnostics: PromptPresetDiagnostic[] = [...item.diagnostics];
+			const preset = normalizePreset(item.preset, item.filePath, diagnostics);
+			const id = preset.id;
+			const source = item.source ?? `inline:${id}`;
+			const existing = presets.findIndex((p) => p.preset.id === id);
+			if (existing !== -1) {
+				const overridden = presets[existing]!;
+				diagnostics.push({
+					level: "warning",
+					message: `Inline preset "${id}" (${source}) overrides ${
+						overridden.source?.startsWith("inline:") ? "inline" : "scanned"
+					} ${overridden.filePath}`,
+				});
+				presets[existing] = { preset, filePath: item.filePath, diagnostics, source };
+			} else {
+				presets.push({ preset, filePath: item.filePath, diagnostics, source });
 			}
 		}
 	}
@@ -96,12 +157,12 @@ export function isDisabledPromptPresetId(id: string | undefined): boolean {
 // Internal
 // =========================================================================
 
-function loadPromptPresetFile(filePath: string): LoadedPromptPreset {
+function loadPromptPresetFile(filePath: string, storage: StorageBackend): LoadedPromptPreset {
 	const diagnostics: PromptPresetDiagnostic[] = [];
 	let raw: unknown;
 
 	try {
-		const content = readFileSync(filePath, "utf-8");
+		const content = storage.readTextFileSync(filePath);
 		raw = JSON.parse(content);
 	} catch (error) {
 		return {

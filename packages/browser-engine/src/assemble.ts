@@ -14,6 +14,7 @@
  * S6 扩展打包通道（extensionFactories + NullPackageManager；磁盘通道经 build alias 剔除）
  * S7 LLM 三态（streamFn > proxyUrl > byok，皆空组装错误——见 ./llm.ts）
  * S8 session 构造与就绪（await _buildRuntimePromise 后才暴露 PiHarness）
+ * S8.5 扩展绑定（E4/E2：恒执行一次 bindExtensions，ui/opening 只决定绑入内容——C3 裁决）
  * S9 dispose（settings flush → storage flush → env cleanup，逐层 best-effort 不抛）
  */
 
@@ -27,8 +28,19 @@ import {
 import type { AssistantMessage, Model, StreamFunction, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ByteTransportFactory } from "@earendil-works/pi-client";
 import type { AgentSession } from "../../coding-agent/src/core/agent-session.ts";
+import type {
+	ExtensionError,
+	ExtensionMode,
+	ExtensionUIContext,
+	InlineExtension,
+} from "../../coding-agent/src/core/extensions/types.ts";
 import { ModelRuntime } from "../../coding-agent/src/core/model-runtime.ts";
 import type { PackageManager } from "../../coding-agent/src/core/package-manager.ts";
+import {
+	isDisabledPromptPresetId,
+	type LoadedPromptPresetSource,
+	loadPromptPresets,
+} from "../../coding-agent/src/core/prompt-preset/loader.ts";
 import { DefaultResourceLoader } from "../../coding-agent/src/core/resource-loader.ts";
 import type { RuntimeCredentials } from "../../coding-agent/src/core/runtime-credentials.ts";
 import type { CreateAgentSessionOptions } from "../../coding-agent/src/core/sdk.ts";
@@ -45,6 +57,10 @@ import {
 	createWriteTool,
 } from "../../coding-agent/src/core/tools/index.ts";
 import type { OpfsDirectoryHandle as ToolsOpfsDirectoryHandle } from "../../coding-agent/src/core/tools/opfs/types.ts";
+import { createOpeningExtension } from "../../coding-agent/src/extensions/opening/index.ts";
+import { listOpeningPresets, type OpeningPresetSource } from "../../coding-agent/src/extensions/opening/preset.ts";
+import { loadSchemaDefs, type SchemaDefSource } from "../../coding-agent/src/state/schema-loader.ts";
+import { dirname } from "../../coding-agent/src/utils/node-globals.ts";
 import { createBrowserSqliteDatabaseFactory } from "../../memory/src/driver-browser.ts";
 
 /** createOpfsOperations 的返回面（六文件工具 Operations，键 = ToolName 去掉 bash）。 */
@@ -53,6 +69,7 @@ type OpfsToolOperations = ReturnType<typeof createOpfsOperations>;
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Capabilities, HarnessEnv } from "./capabilities.ts";
 import { execExportTemplateAssets } from "./export-html-assets.ts";
+import { assembleExtensionBindings } from "./extension-ui.ts";
 import { resolveLlmAssembly } from "./llm.ts";
 import { NullPackageManager } from "./null-package-manager.ts";
 import type { ExtensionFactory, LoadExtensionsResult, Skill, ToolName } from "./reexports.ts";
@@ -107,13 +124,46 @@ export interface CreatePiHarnessOptions {
 	/** agent 工作区根。与 pi 自身状态存储分属不同子树（契约 §6）。browser 规范值 =
 	 *  BROWSER_DEFAULT_WORKSPACE（/workspace/default）。 */
 	readonly cwd: string;
+	/** 项目配置目录名（相对 cwd；如 `.pi` 或 `world`）；缺省 = `.pi`。Browser/hosted resource loaders 使用同一解析结果。 */
+	readonly configDir?: string;
 	readonly model: Model<any>;
 	readonly thinkingLevel?: ThinkingLevel;
 	readonly preset?: string;
 	readonly schemas?: string[];
+	/** E4 UI 接缝（契约 §3.5；形状经 2026-09-30 裁决回填：uiContext 可选化 U3、onError 扩张 U1）。
+	 *  S8.5 恒执行一次 bindExtensions（C3 裁决）；本字段只决定绑入的内容。
+	 *  uiContext 缺省（undefined）⇒ runner 保持 noOpUIContext（hasUI false、对话框 no-op）——
+	 *  宿主要对话框就传自己的 ExtensionUIContext 或 createHostExtensionUIContext 产物。 */
+	readonly ui?: {
+		readonly uiContext?: ExtensionUIContext;
+		/** 缺省 "rpc"：ExtensionMode 四值中唯一表示「无 TUI 但对话框可用」。
+		 *  "tui" 组装期拒绝（U5）——宿主没有 TUI 对象可交给组件工厂。 */
+		readonly mode?: ExtensionMode;
+		/** 结构化扩展错误上抛（U1 采纳）。缺省 = 引擎内置 console 记录器（19 号 §7 E1）。
+		 *  形状 = ExtensionBindings.onError（core/agent-session.ts）。 */
+		readonly onError?: (error: ExtensionError) => void;
+	};
+
+	/** E2 opening 触发（契约 §3.4）：不经 env（Browser 无 process.env 语义），由内建 opening 扩展消费。
+	 *  ID 解析走契约 §3 合并集（内联 > OPFS 扫描；装载器归模块 A / 18 号：
+	 *  listOpeningPresets(cwd, {storage, inline}) / loadOpeningPreset(cwd, id, {…})）。
+	 *  显式 ID 未命中 ⇒ createPiHarness 组装期 reject（E5 口径；reject 机制与错误格式归 A 的
+	 *  资源 reject 块，与 preset/schemas reject 同一通道；本字段只持触发源与消费端工厂）。 */
+	readonly opening?: string;
 	/** 打包 skills 注入；引擎包不内置任何 skill 内容，缺省空集（15-F §3.3）。
 	 *  与 OPFS 扫描源（/workspace/<p>/.pi/skills，经 stores.storage 缝）合并。 */
 	readonly skills?: readonly Skill[];
+
+	// ── 资源装载缝（18 号模块 A；契约 §3.2/§3.4；与上方 ui?/opening? 字段段相邻不相交）──
+	/** 内联 prompt preset（打包通道）。并入扫描集：同 ID 内联胜出 + warn；经 normalizePreset 重入复验。 */
+	readonly presets?: readonly LoadedPromptPresetSource[];
+	/** 内联 opening preset（打包通道）。同 ID 内联胜出；由内建 opening 工厂消费（缺省装配归 B）。 */
+	readonly openings?: readonly OpeningPresetSource[];
+	/** 内联 state schema（打包通道；契约 §3.2 C2 裁决定名——`schemas` 保留为显式 ID 列表）。 */
+	readonly inlineSchemas?: readonly SchemaDefSource[];
+	/** 显式 prompt 模板目录（wl `--prompt-template` 等价物，Q1 裁决采纳）→ DefaultResourceLoader.additionalPromptTemplatePaths。 */
+	readonly promptTemplatePaths?: readonly string[];
+
 	/** 存储单点覆盖（优先级最高）。 */
 	readonly storage?: PiHarnessStorageOptions;
 	/** 状态装配面（11-B 四缝）。缺省由 capabilities 派生值驱动：browser ⇒ OPFS 持久（非 inMemory）；
@@ -230,6 +280,66 @@ async function assembleBrowserBaseTools(
 }
 
 /**
+ * S6：browser 缺省扩展集（19 号 B2）。恒含内建 opening 播种器——对象形 InlineExtension
+ * （DesignReview 条件 3，与 extensions/index.ts 的 builtInExtensions 外壳同形，只差 factory
+ * 闭包 deps）：触发源 = options.opening（env 通道仅 node，B3），装载走 A 的 storage/inline/
+ * configDir 参数化 loader。llama/memories 不随入（node:fs 顶层依赖 / TUI-only，证据见 19 号 B2）。
+ * B4 的 opening ID reject 不在此函数（归 A 资源 reject 块）。
+ */
+function assembleDefaultExtensions(
+	options: CreatePiHarnessOptions,
+	stores: HarnessStores,
+	configDir: string,
+): readonly InlineExtension[] {
+	return [
+		createOpeningExtension({
+			getOpeningId: () => options.opening,
+			storage: stores.storage,
+			inline: options.openings,
+			configDir,
+		}),
+	];
+}
+
+// ── 资源 reject 错误面（18 号 §3 步骤 4 / 契约 §4 三要素）──
+
+interface ResourceSourceEntry {
+	id: string;
+	/** 溯源串：`inline:<id>` / `opfs:<path>` / `host:<path>`；node-fs 扫描面不设置。 */
+	source?: string;
+	/** 扫描面文件路径（opening 列表条目无此键）。 */
+	filePath?: string;
+}
+
+/**
+ * E5 错误文本：`pi-harness: <kind> "<id>" not found in the merged resource set.
+ * Requested: <id>. Available: <id 列表或 "(none)">. Sources: inline=[…]; opfs:<dir> (N); …`
+ */
+function formatResourceMiss(kind: string, requestedId: string, entries: readonly ResourceSourceEntry[]): string {
+	const available = entries.length > 0 ? entries.map((entry) => entry.id).join(", ") : "(none)";
+	const inlineIds: string[] = [];
+	const scannedGroups = new Map<string, { label: string; count: number }>();
+	for (const entry of entries) {
+		if (entry.source?.startsWith("inline:")) {
+			inlineIds.push(entry.id);
+			continue;
+		}
+		const schemeMatch = /^(opfs|host):/.exec(entry.source ?? "");
+		const scheme = schemeMatch?.[1];
+		const rawPath = scheme ? (entry.source as string).slice(scheme.length + 1) : (entry.filePath ?? "");
+		const label = `${scheme ? `${scheme}:` : ""}${rawPath ? dirname(rawPath) : "unknown"}`;
+		const group = scannedGroups.get(label);
+		if (group) group.count += 1;
+		else scannedGroups.set(label, { label, count: 1 });
+	}
+	const sources = [
+		`inline=[${inlineIds.join(", ")}]`,
+		...[...scannedGroups.values()].map((group) => `${group.label} (${group.count})`),
+	].join("; ");
+	return `pi-harness: ${kind} "${requestedId}" not found in the merged resource set. Requested: ${requestedId}. Available: ${available}. Sources: ${sources}`;
+}
+
+/**
  * S1（剖面纯断言）+ S2–S9 装配。唯一入口（契约 §9）。
  */
 export async function createPiHarness(options: CreatePiHarnessOptions): Promise<PiHarness> {
@@ -264,6 +374,9 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		);
 	}
 
+	// Hosted/browser 资源共用每 harness 的项目配置根；显式值不读取 PI_OPENINGS_DIR 等 node env 覆盖。
+	const configDir = options.configDir ?? ".pi";
+
 	// ---- S3: 状态装配（缺省持久，Impl-B 公式；覆盖优先级 storage.* > stores > 缺省） ----
 	// browser 缺省 = 持久 OPFS；hosted 的存储拓扑只有宿主自己知道，必须显式注入 stores。
 	if (options.profile === "hosted" && !options.stores) {
@@ -274,6 +387,58 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	const stores = options.stores ?? (await assembleDefaultStores(cwd));
 	const agentDir = stores.paths.agentDir();
 
+	// ---- S3.5: 资源装载缝（18 号模块 A：合并集预扫 + 显式 ID reject，E5） ----
+	// 合并集 = 内联 > OPFS/host 扫描（扫描内保持 node 现行替换语义）。显式 ID 未命中 ⇒ 组装期
+	// reject，错误含三要素：请求 ID、合并集实际 ID、各源摘要——消除 fs-shim 式静默回落。
+	// 豁免 none/off/default（「关闭」语义不是资源引用）。reject 先于 createAgentSession ⇒
+	// 不产生半构造会话；node CLI 不经此入口，sdk warning 通道原样保留。
+	const storage = stores.storage;
+	const mergedPresets = loadPromptPresets(cwd, agentDir, { storage, configDir, inline: options.presets });
+	if (
+		options.preset &&
+		!isDisabledPromptPresetId(options.preset) &&
+		!mergedPresets.some((p) => p.preset.id === options.preset)
+	) {
+		throw new Error(
+			formatResourceMiss(
+				"prompt preset",
+				options.preset,
+				mergedPresets.map((p) => ({ id: p.preset.id, source: p.source, filePath: p.filePath })),
+			),
+		);
+	}
+	const mergedSchemas = await loadSchemaDefs(cwd, agentDir, {
+		storage,
+		configDir,
+		inline: options.inlineSchemas,
+	});
+	const inlineSchemaIds = new Set((options.inlineSchemas ?? []).map((s) => s.schemaId));
+	for (const schemaId of options.schemas ?? []) {
+		if (!mergedSchemas.schemas.some((s) => s.schemaId === schemaId)) {
+			throw new Error(
+				formatResourceMiss(
+					"schema",
+					schemaId,
+					mergedSchemas.schemas.map((s) => ({
+						id: s.schemaId,
+						source: inlineSchemaIds.has(s.schemaId) ? `inline:${s.schemaId}` : undefined,
+						filePath: s.filePath,
+					})),
+				),
+			);
+		}
+	}
+	const mergedOpenings = listOpeningPresets(cwd, { storage, configDir, inline: options.openings });
+	if (options.opening && !mergedOpenings.some((o) => o.id === options.opening)) {
+		throw new Error(
+			formatResourceMiss(
+				"opening",
+				options.opening,
+				mergedOpenings.map((o) => ({ id: o.id, source: o.source })),
+			),
+		);
+	}
+
 	// ---- S4: 模型运行时装配（credentials 单点 > stores 派生持久凭据；modelsPath: null） ----
 	const modelRuntime = await ModelRuntime.create({
 		authPath: undefined,
@@ -282,7 +447,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		credentials: options.storage?.credentials,
 	});
 
-	const settingsManager = SettingsManager.create(cwd, agentDir, { stores });
+	const settingsManager = SettingsManager.create(cwd, agentDir, { stores, configDir });
 	if (options.settings) {
 		settingsManager.applyOverrides(options.settings);
 	}
@@ -306,9 +471,14 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		cwd,
 		agentDir,
 		settingsManager,
+		configDir,
 		storage: stores.storage,
 		packageManager,
-		extensionFactories: [...(options.extensions?.factories ?? [])],
+		additionalPromptTemplatePaths: [...(options.promptTemplatePaths ?? [])],
+		extensionFactories: [
+			...assembleDefaultExtensions(options, stores, configDir),
+			...(options.extensions?.factories ?? []),
+		],
 		skillsOverride: bundledSkills.length
 			? (base) => ({
 					skills: [...base.skills, ...bundledSkills],
@@ -321,6 +491,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	// ---- S8: session 构造与就绪（createAgentSession 内部 await _buildRuntimePromise） ----
 	const sessionOptions: CreateAgentSessionOptions = {
 		cwd,
+		configDir,
 		agentDir,
 		stores,
 		capabilities,
@@ -331,6 +502,8 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		resourceLoader,
 		preset: options.preset,
 		schemas: options.schemas,
+		inlinePresets: options.presets,
+		inlineSchemas: options.inlineSchemas,
 	};
 	if (llmAssembly.kind === "gateway") {
 		sessionOptions.requestGateway = llmAssembly.gateway;
@@ -355,6 +528,11 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	}
 
 	const { session, extensionsResult } = await createAgentSession(sessionOptions);
+	// ---- S8.5: 扩展绑定（E4/E2；C3 裁决：恒执行一次，无「不绑定」分支） ----
+	// session_start 是 node 不变的生命周期事件，唯一发射点在 bindExtensions——缺省装配
+	// （noOp UIContext + mode "rpc"）也让宿主工厂扩展的生命周期事件激活。时序与 node 三模式
+	// 一致（createAgentSession 完成后绑定：preset/schema 已就位，_ensureRuntimeReady 即决，B5）。
+	await session.bindExtensions(assembleExtensionBindings(options));
 	// export-html 模板资产：构建期 ?raw 收编（Impl-B setExportTemplateLoader 缝）；node 缺省不受影响。
 	execExportTemplateAssets();
 

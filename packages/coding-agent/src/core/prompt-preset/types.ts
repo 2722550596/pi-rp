@@ -351,7 +351,15 @@ export interface LoadedPromptPreset {
 	preset: PromptPreset;
 	filePath: string;
 	diagnostics: PromptPresetDiagnostic[];
+	/**
+	 * 溯源串（契约 §4）：`inline:<id>` / `opfs:<path>` / `host:<path>`（hosted host-fs）。
+	 * node 扫描面不设置（对象形状与 JSON 序列化零差异）；内联通道恒设置。
+	 */
+	source?: string;
 }
+
+/** 内联打包通道的源形状 = loader 返回形状；filePath 允许合成值（如 "inline:cold-open"）。 */
+export type LoadedPromptPresetSource = LoadedPromptPreset & { source?: string };
 
 export interface SlotRenderContext {
 	runtime: PromptRuntime;

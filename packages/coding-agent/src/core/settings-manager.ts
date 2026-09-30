@@ -5,7 +5,7 @@ import type { MemorySettings } from "@earendil-works/pi-memory";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
 import { dirname, join } from "path";
-import { ENV_SETTINGS_FILE, getAgentDir, getProjectConfigDir } from "../config.ts";
+import { ENV_SETTINGS_FILE, getAgentDir, getProjectConfigDirFor } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import type { RequestGatewayConfig } from "./request-gateway.ts";
@@ -241,6 +241,8 @@ export interface SettingsManagerCreateOptions {
 	 * browser assembly injects the OPFS stores.
 	 */
 	stores?: HarnessStores;
+	/** Per-harness project config root; undefined preserves Node's env-driven default. */
+	configDir?: string;
 }
 
 export interface SettingsStorage {
@@ -265,11 +267,12 @@ export class FileSettingsStorage implements SettingsStorage {
 		overlayPath?: string,
 		storage: StorageBackend = NodeStorageBackend.shared,
 		locks: StateLocks = NodeStateLocks.shared,
+		configDir?: string,
 	) {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
 		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
-		this.projectSettingsPath = getProjectConfigDir(resolvedCwd, "settings.json");
+		this.projectSettingsPath = getProjectConfigDirFor(resolvedCwd, configDir, "settings.json");
 		// 进程级覆盖层：--settings-file 语义与 --config-dir/--session-dir 同构（相对 cwd 拼接）。
 		this.overlaySettingsPath = overlayPath ? join(resolvedCwd, overlayPath) : undefined;
 		this.storage = storage;
@@ -397,6 +400,7 @@ export class SettingsManager {
 			overlayPath,
 			options.stores?.storage,
 			options.stores?.locks,
+			options.configDir,
 		);
 		return SettingsManager.fromStorage(storage, options);
 	}

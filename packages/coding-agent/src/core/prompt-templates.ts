@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { basename, dirname, join, resolve, sep } from "path";
-import { getProjectConfigDir } from "../config.ts";
+import type { StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
+import { getProjectConfigDirFor } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
+import { basename, dirname, join, resolve, sep } from "../utils/node-globals.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
@@ -101,9 +102,14 @@ export function substituteArgs(content: string, args: string[]): string {
 	);
 }
 
-function loadTemplateFromFile(filePath: string, sourceInfo: SourceInfo): PromptTemplate | null {
+function loadTemplateFromFile(
+	filePath: string,
+	sourceInfo: SourceInfo,
+	storage: StorageBackend,
+	onReadError?: (path: string) => void,
+): PromptTemplate | null {
 	try {
-		const rawContent = readFileSync(filePath, "utf-8");
+		const rawContent = storage.readTextFileSync(filePath);
 		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(rawContent);
 
 		const name = basename(filePath).replace(/\.md$/, "");
@@ -128,6 +134,7 @@ function loadTemplateFromFile(filePath: string, sourceInfo: SourceInfo): PromptT
 			filePath,
 		};
 	} catch {
+		onReadError?.(filePath);
 		return null;
 	}
 }
@@ -135,39 +142,50 @@ function loadTemplateFromFile(filePath: string, sourceInfo: SourceInfo): PromptT
 /**
  * Scan a directory for .md files (non-recursive) and load them as prompt templates.
  */
-function loadTemplatesFromDir(dir: string, getSourceInfo: (filePath: string) => SourceInfo): PromptTemplate[] {
+function loadTemplatesFromDir(
+	dir: string,
+	getSourceInfo: (filePath: string) => SourceInfo,
+	storage: StorageBackend,
+	onReadError?: (path: string) => void,
+): PromptTemplate[] {
 	const templates: PromptTemplate[] = [];
-
-	if (!existsSync(dir)) {
+	let exists: boolean;
+	try {
+		exists = storage.existsSync(dir);
+	} catch {
+		onReadError?.(dir);
+		return templates;
+	}
+	if (!exists) {
 		return templates;
 	}
 
 	try {
-		const entries = readdirSync(dir, { withFileTypes: true });
+		const entries = storage.readdirSync(dir);
 
 		for (const entry of entries) {
 			const fullPath = join(dir, entry.name);
 
 			// For symlinks, check if they point to a file
-			let isFile = entry.isFile();
-			if (entry.isSymbolicLink()) {
+			let isFile = entry.isFile;
+			if (entry.isSymbolicLink === true) {
 				try {
-					const stats = statSync(fullPath);
-					isFile = stats.isFile();
+					isFile = storage.statSync(fullPath).isFile;
 				} catch {
-					// Broken symlink, skip it
+					onReadError?.(fullPath);
 					continue;
 				}
 			}
 
 			if (isFile && entry.name.endsWith(".md")) {
-				const template = loadTemplateFromFile(fullPath, getSourceInfo(fullPath));
+				const template = loadTemplateFromFile(fullPath, getSourceInfo(fullPath), storage, onReadError);
 				if (template) {
 					templates.push(template);
 				}
 			}
 		}
 	} catch {
+		onReadError?.(dir);
 		return templates;
 	}
 
@@ -183,6 +201,16 @@ export interface LoadPromptTemplatesOptions {
 	promptPaths: string[];
 	/** Include default prompt directories. */
 	includeDefaults: boolean;
+	/**
+	 * 存储缝（11-B 同款）。缺省 NodeStorageBackend.shared（node 逐字节等价）；browser/hosted
+	 * 装配经 resource-loader 注入 OPFS/host 实现——触点全清单：loadTemplatesFromDir 读写、
+	 * getSourceInfo 的 statSync、显式 promptPaths 分支的 existsSync/statSync。
+	 */
+	storage?: StorageBackend;
+	/** Per-harness project config root; omitted Node callers retain getProjectConfigDir/env. */
+	configDir?: string;
+	/** Called for an existing explicit path that cannot be inspected or read. */
+	onReadError?: (path: string) => void;
 }
 
 /**
@@ -196,11 +224,13 @@ export function loadPromptTemplates(options: LoadPromptTemplatesOptions): Prompt
 	const resolvedAgentDir = resolvePath(options.agentDir);
 	const promptPaths = options.promptPaths;
 	const includeDefaults = options.includeDefaults;
+	const storage = options.storage ?? NodeStorageBackend.shared;
+	const onReadError = options.onReadError;
 
 	const templates: PromptTemplate[] = [];
 
 	const globalPromptsDir = join(resolvedAgentDir, "prompts");
-	const projectPromptsDir = getProjectConfigDir(resolvedCwd, "prompts");
+	const projectPromptsDir = getProjectConfigDirFor(resolvedCwd, options.configDir, "prompts");
 
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);
@@ -226,36 +256,50 @@ export function loadPromptTemplates(options: LoadPromptTemplatesOptions): Prompt
 				baseDir: projectPromptsDir,
 			});
 		}
+		let baseDir: string;
+		try {
+			baseDir = storage.statSync(resolvedPath).isDirectory ? resolvedPath : dirname(resolvedPath);
+		} catch {
+			onReadError?.(resolvedPath);
+			baseDir = dirname(resolvedPath);
+		}
 		return createSyntheticSourceInfo(resolvedPath, {
 			source: "local",
-			baseDir: statSync(resolvedPath).isDirectory() ? resolvedPath : dirname(resolvedPath),
+			baseDir,
 		});
 	};
 
 	if (includeDefaults) {
-		templates.push(...loadTemplatesFromDir(globalPromptsDir, getSourceInfo));
-		templates.push(...loadTemplatesFromDir(projectPromptsDir, getSourceInfo));
+		templates.push(...loadTemplatesFromDir(globalPromptsDir, getSourceInfo, storage, onReadError));
+		templates.push(...loadTemplatesFromDir(projectPromptsDir, getSourceInfo, storage, onReadError));
 	}
 
 	// 3. Load explicit prompt paths
 	for (const rawPath of promptPaths) {
 		const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
-		if (!existsSync(resolvedPath)) {
+		let exists: boolean;
+		try {
+			exists = storage.existsSync(resolvedPath);
+		} catch {
+			onReadError?.(resolvedPath);
+			continue;
+		}
+		if (!exists) {
 			continue;
 		}
 
 		try {
-			const stats = statSync(resolvedPath);
-			if (stats.isDirectory()) {
-				templates.push(...loadTemplatesFromDir(resolvedPath, getSourceInfo));
-			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
-				const template = loadTemplateFromFile(resolvedPath, getSourceInfo(resolvedPath));
+			const stats = storage.statSync(resolvedPath);
+			if (stats.isDirectory) {
+				templates.push(...loadTemplatesFromDir(resolvedPath, getSourceInfo, storage, onReadError));
+			} else if (stats.isFile && resolvedPath.endsWith(".md")) {
+				const template = loadTemplateFromFile(resolvedPath, getSourceInfo(resolvedPath), storage, onReadError);
 				if (template) {
 					templates.push(template);
 				}
 			}
 		} catch {
-			// Ignore read failures
+			onReadError?.(resolvedPath);
 		}
 	}
 

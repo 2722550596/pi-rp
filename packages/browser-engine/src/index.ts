@@ -16,6 +16,7 @@ export { createBrowserHarnessEnv, createHostedHarnessEnv } from "@earendil-works
 export type { AssistantMessage, Model, StreamFunction, ThinkingLevel } from "@earendil-works/pi-ai";
 export type { ByteTransportFactory } from "@earendil-works/pi-client";
 export type { SessionRepo } from "../../agent/src/harness/session/types.ts";
+export type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../../coding-agent/src/modes/rpc/rpc-types.ts";
 // —— 入口工厂与选项面 ——
 export {
 	type CreatePiHarnessOptions,
@@ -27,7 +28,18 @@ export {
 } from "./assemble.ts";
 // —— 能力契约转出（Impl-A 定稿形状，negotiate 为唯一构造点）——
 export type { BrowserHarnessEnv, Capabilities, HarnessEnv, NodeHarnessEnv } from "./capabilities.ts";
+// —— 扩展 UI 接缝（19 号 §2.2/§2.3：宿主回调工厂 + wire 类型 type-only 转出，U2 裁决——
+// type-only 打包期擦除，无 rpc 运行时进包风险）——
+export { createHostExtensionUIContext, type HostExtensionUiHandlers } from "./extension-ui.ts";
 // —— coding-agent 纯核类型转出（12-C 已落地：类型权威 = extensions/types.ts；api.ts 为运行时核）——
-export type { ExtensionFactory, LoadExtensionsResult, Skill, ToolDefinition, ToolName } from "./reexports.ts";
+export type {
+	ExtensionFactory,
+	ExtensionMode,
+	ExtensionUIContext,
+	LoadExtensionsResult,
+	Skill,
+	ToolDefinition,
+	ToolName,
+} from "./reexports.ts";
 // —— 状态装配面（Impl-B 定稿类型，经 pi-agent-core storage-backend 转出）——
 export type { HarnessStores, StateLocks, StatePaths, StateStores, StorageBackend } from "./state-stores.ts";

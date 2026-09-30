@@ -145,6 +145,13 @@ export async function runSubagent(
 	// In-memory session manager: no disk I/O, nothing to clean up.
 	const sessionManager = SessionManager.inMemory(preparation.cwd);
 
+	// Resource supply inheritance (contract §3.7): the subagent session resolves presets/schemas from
+	// the parent's storage seam + inline sets. Node parents carry node defaults (byte-identical);
+	// browser parents carry the OPFS stores (without this, SettingsManager/state creation would hit
+	// the node-fs stub). No parent session ⇒ undefined ⇒ current behavior.
+	const parentSession = preparation.session ?? options.parentSession;
+	const supply = parentSession?.getResourceSupply();
+
 	const { session } = await createAgentSession({
 		cwd: preparation.cwd,
 		modelRuntime,
@@ -160,6 +167,15 @@ export async function runSubagent(
 		thinkingLevel: preparation.thinkingLevel,
 		strict: options.strict,
 		customTools: preparation.customTools,
+		...(supply
+			? {
+					configDir: supply.configDir,
+					agentDir: supply.agentDir,
+					stores: supply.stores,
+					inlinePresets: [...supply.inlinePresets],
+					inlineSchemas: [...supply.inlineSchemas],
+				}
+			: {}),
 		// In-memory session: must not write the shared state store (would
 		// conflict with the main session's CAS commits).
 		attachStateStore: false,
@@ -184,7 +200,6 @@ export async function runSubagent(
 		},
 	});
 
-	const parentSession = preparation.session ?? options.parentSession;
 	if (parentSession) {
 		const parentRunner = parentSession.extensionRunner;
 		await session.bindExtensions({

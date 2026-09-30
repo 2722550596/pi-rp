@@ -1,24 +1,32 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import { createJiti } from "jiti/static";
-import { getAgentDir, getProjectConfigDir, isBunBinary } from "../config.ts";
+import { getAgentDir, getProjectConfigDir, getProjectConfigDirFor, isBunBinary } from "../config.ts";
 import { getAliases, VIRTUAL_MODULES } from "../core/extensions/loader.ts";
+import {
+	type LoadedSchemaDef,
+	type LoadedSchemaDefs,
+	type LoadSchemaDefsOptions,
+	mergeInlineSchemaDefs,
+	parseJsonSchemaDef,
+} from "./schema-json.ts";
 import type { CustomValidator } from "./schema-validator.ts";
+
+export type {
+	LoadedSchemaDef,
+	LoadedSchemaDefs,
+	LoadSchemaDefsOptions,
+	SchemaDefSource,
+	SchemaMergeDiagnostic,
+} from "./schema-json.ts";
+
+// node 真身（browser 构建经 build.mjs WORKSPACE_ALIAS_MAP 改写到 browser-schema-loader.ts，本文件
+// 不进 browser 图）：顶层 node:fs 仅为 jiti 域的 loadCustomValidators 保留（18 号 §12 Q4「不参数化」）；
+// schema .json 扫描面已收敛到 StorageBackend（loadSchemaDefs 的 storage + inline 缝）。
 
 const SCHEMA_DIR = "schemas";
 const VALIDATOR_DIR = "validators";
-
-export interface LoadedSchemaDef {
-	schemaId: string; // filename without extension
-	namespace: string; // declared in schema file or defaults to schemaId
-	schema: object; // TypeBox TSchema object compiled via typebox/compile.Compile
-	filePath: string;
-}
-
-export interface LoadedSchemaDefs {
-	schemas: LoadedSchemaDef[];
-	errors: Array<{ filePath: string; message: string }>;
-}
 
 /** Create a jiti instance with the same config used by the extension loader.
  *
@@ -38,16 +46,22 @@ function createSchemaJiti() {
 }
 
 /** Discover and load schema definitions from standard locations. */
-export async function loadSchemaDefs(cwd: string, agentDir?: string): Promise<LoadedSchemaDefs> {
+export async function loadSchemaDefs(
+	cwd: string,
+	agentDir?: string,
+	options?: LoadSchemaDefsOptions,
+): Promise<LoadedSchemaDefs> {
+	const { storage = NodeStorageBackend.shared, configDir, inline } = options ?? {};
 	const resolvedAgentDir = agentDir ?? getAgentDir();
-	const dirs = [join(resolvedAgentDir, SCHEMA_DIR), getProjectConfigDir(cwd, SCHEMA_DIR)];
+	const dirs = [join(resolvedAgentDir, SCHEMA_DIR), getProjectConfigDirFor(cwd, configDir, SCHEMA_DIR)];
 	const schemas: LoadedSchemaDef[] = [];
 	const errors: Array<{ filePath: string; message: string }> = [];
 
 	for (const dir of dirs) {
-		if (!existsSync(dir)) continue;
-		const files = readdirSync(dir);
-		for (const file of files) {
+		if (!storage.existsSync(dir)) continue;
+		const entries = storage.readdirSync(dir);
+		for (const entry of entries) {
+			const file = entry.name;
 			const filePath = join(dir, file);
 			if (file.endsWith(".ts")) {
 				const result = await loadSchemaFile(filePath);
@@ -55,8 +69,7 @@ export async function loadSchemaDefs(cwd: string, agentDir?: string): Promise<Lo
 				else errors.push({ filePath, message: "Failed to load schema" });
 			} else if (file.endsWith(".json")) {
 				try {
-					const result = loadJsonSchemaFile(filePath);
-					if (result) schemas.push(result);
+					schemas.push(parseJsonSchemaDef(filePath, storage.readTextFileSync(filePath)));
 				} catch (e) {
 					errors.push({
 						filePath,
@@ -65,6 +78,17 @@ export async function loadSchemaDefs(cwd: string, agentDir?: string): Promise<Lo
 				}
 			}
 		}
+	}
+
+	// 内联合并（契约 §3.3）：仅内联存在时执行 —— 同 schemaId 扫描副本被内联胜出去重（warn 记入
+	// mergeDiagnostics），内联条目追加于列表尾；无内联时保序返回（node 同 ID 双条目共存语义，E6）。
+	if (inline && inline.length > 0) {
+		const merged = mergeInlineSchemaDefs(schemas, inline);
+		return {
+			schemas: merged.schemas,
+			errors: [...errors, ...merged.errors],
+			mergeDiagnostics: merged.mergeDiagnostics,
+		};
 	}
 
 	return { schemas, errors };
@@ -90,43 +114,6 @@ async function loadSchemaFile(filePath: string): Promise<LoadedSchemaDef | null>
 
 	if (!schema || typeof schema !== "object") return null;
 	return { schemaId: basename(filePath, ".ts"), namespace, schema, filePath };
-}
-
-/**
- * Load a JSON Schema file (.json) from a schemas/ directory.
- * Accepts the same two shapes as the .ts loader:
- * - default: { namespace: string, schema: JSON Schema }
- * - default: bare JSON Schema object (namespace defaults to filename)
- * Throws with a diagnostic message on any invalid shape (caller surfaces it
- * in the errors list).
- */
-function loadJsonSchemaFile(filePath: string): LoadedSchemaDef | null {
-	let raw: unknown;
-	try {
-		raw = JSON.parse(readFileSync(filePath, "utf-8"));
-	} catch (e) {
-		throw new Error(`unparseable JSON: ${e instanceof Error ? e.message : String(e)}`);
-	}
-	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-		throw new Error("root must be a JSON object");
-	}
-	const obj = raw as Record<string, unknown>;
-	let namespace: string;
-	let schema: unknown;
-	if ("schema" in obj) {
-		if (obj.namespace !== undefined && typeof obj.namespace !== "string") {
-			throw new Error('wrapper "namespace" must be a string');
-		}
-		namespace = typeof obj.namespace === "string" ? obj.namespace : basename(filePath, ".json");
-		schema = obj.schema;
-	} else {
-		namespace = basename(filePath, ".json");
-		schema = obj;
-	}
-	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-		throw new Error('"schema" must be a JSON Schema object');
-	}
-	return { schemaId: basename(filePath, ".json"), namespace, schema, filePath };
 }
 
 /** Discover and load custom validators from standard locations. */

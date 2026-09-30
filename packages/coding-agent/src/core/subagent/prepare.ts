@@ -128,7 +128,13 @@ export async function prepareSubagentConversation(options: PrepareSubagentOption
 	// then disk fallback (handles presets added after session creation).
 	const sessionPresets = options.session ? options.session.getAllPresets() : [];
 	const foundInSession = sessionPresets.find((p) => p.preset.id === profileId);
-	const allPresets = foundInSession ? sessionPresets : loadPromptPresets(cwd, getDefaultSessionDir(cwd));
+	const resourceSupply = options.session?.getResourceSupply();
+	const allPresets = foundInSession
+		? sessionPresets
+		: loadPromptPresets(cwd, resourceSupply?.agentDir ?? getDefaultSessionDir(cwd), {
+				storage: resourceSupply?.stores.storage,
+				configDir: resourceSupply?.configDir,
+			});
 	const foundPreset = foundInSession ?? allPresets.find((p) => p.preset.id === profileId);
 	if (!foundPreset && !isDisabledPromptPresetId(profileId)) {
 		return {

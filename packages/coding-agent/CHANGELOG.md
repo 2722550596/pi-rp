@@ -32,6 +32,8 @@
 - The memory browser shows disclosure in all read views (tree, node, recent, search, wakeup, edit) with an amber badge, and the edit form labels the field as the **current entry's** condition. A grey chip distinguishes the association-edge condition, which is a different concept.
 - Added `packages/memory/src/diff.ts`, a same-source copy of the `edit` tool's diff generator (memory must not import coding-agent), plus a fixture shared by both sides so either copy drifting turns a test red. `revise` now reports a diff like `edit` does, and HTML export keeps it through `details`.
 
+- Added browser/hosted resource supply: preset, opening, JSON-schema, and prompt-template loaders accept StorageBackend-backed scans; inline resources merge above scans with provenance/diagnostics, explicit missing IDs reject during harness assembly, and subagents inherit the parent supply seam. A per-harness `configDir` (default `.pi`) isolates project resources, settings, and the default state-store root without process-environment mutation; Node callers retain existing defaults. Browser extension UI notifications now emit the same `extension_ui_request` wire event as RPC mode through the required host `fire` callback.
+
 ### Changed
 - `GET /api/meta` without a `?db=` parameter still reports the process DB's `db_path`, so the `/memories web` reuse probe keeps its existing meaning. The launcher is unchanged: it passes only `--db`/`--port` and borrows nothing but the DB path.
 - `memorize` tool results now confirm with `已记下：<uri>` only; the body is carried by the tool-call arguments and shown streaming in the TUI, so it is no longer echoed back into the model's context a second time.

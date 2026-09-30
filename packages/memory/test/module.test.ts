@@ -1,5 +1,5 @@
+import { type AssistantMessage, type AssistantMessageEvent, EventStream } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EventStream, type AssistantMessage, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
 import {
 	buildMemoriesBlock,
@@ -11,10 +11,10 @@ import {
 	rebuildInjectedFromEntries,
 	shouldCaptureCustomType,
 } from "../src/module.ts";
-import { DEFAULT_TIDY_SYSTEM_PROMPT } from "../src/tidy-prompts.ts";
 import { createSchema } from "../src/schema.ts";
 import type { MemoryNode } from "../src/store.ts";
 import { MemoryStore } from "../src/store.ts";
+import { DEFAULT_TIDY_SYSTEM_PROMPT } from "../src/tidy-prompts.ts";
 import { createFakeEmbeddingClient } from "./fake-embeddings.ts";
 
 /** Keep unit tests offline: no embedding API calls (docs §9 mode:"off"). */
@@ -54,7 +54,10 @@ function createHostMock(
 		) => unknown;
 		rejectSide?: unknown;
 		promptOverrides?: { systemPrompt?: string; taskPrompt?: string };
-		sent?: Array<{ message: { customType: string; content: string; display: false; details?: unknown }; options?: { triggerTurn?: boolean } }>;
+		sent?: Array<{
+			message: { customType: string; content: string; display: false; details?: unknown };
+			options?: { triggerTurn?: boolean };
+		}>;
 	} = {},
 ) {
 	const tools = new Map<string, RegisteredTool>();
@@ -89,7 +92,7 @@ function createHostMock(
 		completeSideRequest: async (prompt) => prompt,
 	};
 	if (tidy.streamFn || tidy.rejectSide !== undefined) {
-		host.sideStreamFn = async (options) => {
+		host.sideStreamFn = async (_options) => {
 			if (tidy.rejectSide !== undefined) throw tidy.rejectSide;
 			if (!tidy.streamFn) throw new Error("no scripted stream");
 			return { streamFn: tidy.streamFn as never, model: { id: "mock-model" } as never };
@@ -829,7 +832,10 @@ describe("autoTidy trigger wiring", () => {
 	it("threshold hit runs the tidy via the host side-stream and delivers the briefing triggerTurn:false", async () => {
 		store.put({ uri: "TEMP://draft-1", content: "草稿一" });
 		store.put({ uri: "TEMP://draft-2", content: "草稿二" });
-		const sent: Array<{ message: { customType: string; content: string; display: false; details?: unknown }; options?: { triggerTurn?: boolean } }> = [];
+		const sent: Array<{
+			message: { customType: string; content: string; display: false; details?: unknown };
+			options?: { triggerTurn?: boolean };
+		}> = [];
 		const captured: Array<{ systemPrompt: string; messages: Array<{ role: string; content: unknown }> }> = [];
 		const h = createHostMock({}, [], [], {
 			streamFn: (_model, context) => {
@@ -848,7 +854,14 @@ describe("autoTidy trigger wiring", () => {
 					api: "openai-completions",
 					provider: "mock",
 					model: "mock-model",
-					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
 					stopReason: "stop",
 					timestamp: Date.now(),
 				};

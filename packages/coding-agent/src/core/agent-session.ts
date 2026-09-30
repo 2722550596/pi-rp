@@ -75,9 +75,14 @@ import {
 	shouldCaptureCustomType,
 } from "@earendil-works/pi-memory";
 import { registerBuiltinCommandEntries, syncExtensionCommands } from "../commands/index.ts";
-import { getAgentDir, getProjectConfigDir } from "../config.ts";
+import { getAgentDir, getProjectConfigDirFor } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
-import { type LoadedSchemaDef, loadCustomValidators, loadSchemaDefs } from "../state/schema-loader.ts";
+import {
+	type LoadedSchemaDef,
+	loadCustomValidators,
+	loadSchemaDefs,
+	type SchemaDefSource,
+} from "../state/schema-loader.ts";
 import { type CustomValidator, SchemaValidator } from "../state/schema-validator.ts";
 import { type JsonValue, StateManager } from "../state/state-manager.ts";
 import { StateStore } from "../state/state-store.ts";
@@ -160,7 +165,12 @@ import type {
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
 import { defaultPreset } from "./prompt-preset/index.ts";
-import { chooseDefaultPreset, isDisabledPromptPresetId, loadPromptPresets } from "./prompt-preset/loader.ts";
+import {
+	chooseDefaultPreset,
+	isDisabledPromptPresetId,
+	type LoadedPromptPresetSource,
+	loadPromptPresets,
+} from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
@@ -366,11 +376,21 @@ export interface AgentSessionConfig {
 	 * the session falls back to the live `getAgentDir()` resolution (node default, byte-identical).
 	 */
 	agentDir?: string;
+	/** Per-harness project config root; omitted Node callers retain the CLI env default. */
+	configDir?: string;
 	/**
 	 * Storage seams for pi state (11-B). When omitted, the node defaults apply: node:fs storage backend +
 	 * proper-lockfile + live `getAgentDir()` path resolution. Browser assembly injects the OPFS stores.
 	 */
 	stores?: HarnessStores;
+	/**
+	 * Inline prompt presets (bundled-resource channel, contract §3.2). Merged over the scanned set on every
+	 * preset load (initial restore + /reload + runtime activation); subagents inherit via getResourceSupply().
+	 * Omitted on node ⇒ unchanged behavior.
+	 */
+	inlinePresets?: readonly LoadedPromptPresetSource[];
+	/** Inline state-schema definitions (bundled-resource channel). Merged over every schema load. */
+	inlineSchemas?: readonly SchemaDefSource[];
 	/**
 	 * SQLite factory for the memory store (13-D). Omitted ⇒ the memory driver's
 	 * runtime default applies (node:sqlite on node; browser assembly injects the
@@ -411,6 +431,19 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Mount the cross-process shared state store (default: true). Subagents pass false. */
 	attachStateStore?: boolean;
+}
+
+/**
+ * 子代理资源供给缝（契约 §3.7 / 18 号 §3 步骤 7）：父会话向 `createAgentSession` 转发的
+ * 四元组（storage/agentDir/configDir/inline）。继承的是缝，不复制资源快照——子代理仍重扫
+ * 同一存储命名空间，语义同源。
+ */
+export interface ResourceSupply {
+	stores: HarnessStores;
+	configDir?: string;
+	agentDir: string;
+	inlinePresets: readonly LoadedPromptPresetSource[];
+	inlineSchemas: readonly SchemaDefSource[];
 }
 
 export interface ExtensionBindings {
@@ -639,8 +672,13 @@ export class AgentSession {
 	private _cwd: string;
 	/** Resolved agent-state root (getAgentDir seam); preset/schema loading and derived state paths key off it. */
 	private _agentDir: string;
+	private _configDir?: string;
 	/** Storage seams for pi state; node defaults keep pre-injection behavior byte-identical. */
 	private _stores: HarnessStores;
+	/** Inline prompt presets (bundled-resource channel); merged into every preset load. */
+	private _inlinePresets: readonly LoadedPromptPresetSource[];
+	/** Inline state-schema definitions (bundled-resource channel); merged into every schema load. */
+	private _inlineSchemas: readonly SchemaDefSource[];
 	/** Memory sqlite factory seam (13-D); undefined ⇒ memory driver's runtime default. */
 	private _sqliteFactory: SqliteDatabaseFactory | undefined;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
@@ -782,6 +820,9 @@ export class AgentSession {
 		this._cwd = config.cwd;
 		this._agentDir = config.agentDir ?? getAgentDir();
 		this._stores = config.stores ?? nodeHarnessStores();
+		this._configDir = config.configDir;
+		this._inlinePresets = config.inlinePresets ?? [];
+		this._inlineSchemas = config.inlineSchemas ?? [];
 		this._sqliteFactory = config.sqliteFactory;
 		this._modelRuntime = config.modelRuntime;
 		this._requestGateway = config.requestGateway;
@@ -1939,7 +1980,7 @@ export class AgentSession {
 		if (!this._attachStateStore) return;
 		const cfg = this.settingsManager.getStateStoreConfig();
 		if (!cfg.enabled) return;
-		let dir = getProjectConfigDir(this._cwd, "state");
+		let dir = getProjectConfigDirFor(this._cwd, this._configDir, "state");
 		if (cfg.storeDir !== undefined) {
 			dir = resolve(this._cwd, cfg.storeDir);
 		} else {
@@ -2134,7 +2175,11 @@ export class AgentSession {
 	 */
 	private _ensureActivePresetRestored(): void {
 		if (this._loadedPresets.length > 0) return;
-		this._loadedPresets = loadPromptPresets(this._cwd, this._agentDir);
+		this._loadedPresets = loadPromptPresets(this._cwd, this._agentDir, {
+			storage: this._stores.storage,
+			configDir: this._configDir,
+			inline: this._inlinePresets,
+		});
 		const entries = this.sessionManager.getEntries();
 		let storedPresetId: string | undefined;
 		for (let i = entries.length - 1; i >= 0; i--) {
@@ -2177,10 +2222,29 @@ export class AgentSession {
 		return this._loadedPresets;
 	}
 
+	/**
+	 * Resource supply seam for subagent inheritance (contract §3.7): the parent session's storage seam,
+	 * agent/config roots, and inline resource sets. `run.ts` forwards this to `createAgentSession` so
+	 * browser-profile subagents resolve project resources from the same merged supply.
+	 */
+	getResourceSupply(): ResourceSupply {
+		return {
+			stores: this._stores,
+			configDir: this._configDir,
+			agentDir: this._agentDir,
+			inlinePresets: this._inlinePresets,
+			inlineSchemas: this._inlineSchemas,
+		};
+	}
+
 	/** Load presets from disk and re-resolve active preset. */
 	reloadPresets(preferredId?: string): void {
 		const preferred = preferredId && !isDisabledPromptPresetId(preferredId) ? preferredId : undefined;
-		this._loadedPresets = loadPromptPresets(this._cwd, this._agentDir);
+		this._loadedPresets = loadPromptPresets(this._cwd, this._agentDir, {
+			storage: this._stores.storage,
+			configDir: this._configDir,
+			inline: this._inlinePresets,
+		});
 
 		// Re-resolve active preset against the newly loaded list
 		const activeId = this._activePreset.id;
@@ -4754,7 +4818,13 @@ export class AgentSession {
 		// Load schema definitions and custom validators. Async jiti.import so
 		// dependency modules (typebox) come from Node's ESM cache instead of
 		// being re-transformed per file (sync jiti() cost ~300ms per schema).
-		const schemaResult = await loadSchemaDefs(this._cwd, this._agentDir);
+		// On the browser profile the alias face resolves this import; both faces
+		// take the storage + inline merge seam (contract §3).
+		const schemaResult = await loadSchemaDefs(this._cwd, this._agentDir, {
+			storage: this._stores.storage,
+			configDir: this._configDir,
+			inline: this._inlineSchemas,
+		});
 		this._loadedSchemaDefs = schemaResult.schemas;
 		this._loadedCustomValidators = await loadCustomValidators(this._cwd, this._agentDir);
 		this._schemaValidator.setCustomValidators(this._loadedCustomValidators);
@@ -5832,7 +5902,9 @@ export class AgentSession {
 			themeName,
 			toolRenderer,
 			agentDir: this._agentDir,
+			configDir: this._configDir,
 			storage: this._stores.storage,
+			inlinePresets: this._inlinePresets,
 			preset:
 				this._activePreset !== defaultPreset && this._activePreset.id !== "pi-default"
 					? this._activePreset

@@ -13,6 +13,7 @@ export {
 export { getAllSlots, getSlot, registerSlot, SUPPORTED_SLOTS } from "./slot-registry.ts";
 export type {
 	LoadedPromptPreset,
+	LoadedPromptPresetSource,
 	MacroDefinition,
 	MacroRenderContext,
 	MacroRenderer,

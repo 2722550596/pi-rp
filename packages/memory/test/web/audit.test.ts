@@ -249,7 +249,15 @@ describe("审计事件名 ∈ 事件名全集", () => {
 	it("契约 §6.5 的事件名全集 与 src/ 里 logAudit 调用点集合 双向相等", () => {
 		// ⭐ 双向相等：少一个（漏登记）与多一个（幽灵事件名）都要 fail。
 		const found = new Set<string>();
-		for (const rel of ["store.ts", "tools.ts", "module.ts", "autoretain.ts", "temp-notify.ts", "slots.ts", "temp-tidy.ts"]) {
+		for (const rel of [
+			"store.ts",
+			"tools.ts",
+			"module.ts",
+			"autoretain.ts",
+			"temp-notify.ts",
+			"slots.ts",
+			"temp-tidy.ts",
+		]) {
 			let text: string;
 			try {
 				text = readFileSync(join(SRC_DIR, rel), "utf8");

@@ -17,10 +17,11 @@
  * `applyOpeningPreset`.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getProjectConfigDir } from "../../config.ts";
+import type { StorageBackend } from "@earendil-works/pi-agent-core";
+import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
+import { getProjectConfigDir, getProjectConfigDirFor } from "../../config.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
+import { join } from "../../utils/node-globals.ts";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,24 @@ export interface OpeningPreset {
 	state?: Record<string, unknown>;
 }
 
+/**
+ * 内联 opening 源（打包通道）：openings 的 ID 现由文件名派生，内联需显式携带；
+ * `source` 为溯源串（缺省 `inline:<id>`）。
+ */
+export interface OpeningPresetSource extends OpeningPreset {
+	id: string;
+	source?: string;
+}
+
+export interface OpeningLoadOptions {
+	/** 存储缝；缺省 NodeStorageBackend.shared（node 逐字节等价）。 */
+	storage?: StorageBackend;
+	/** Per-harness project config root; explicit value bypasses PI_OPENINGS_DIR/process env. */
+	configDir?: string;
+	/** 内联 opening（打包通道）；同 ID 内联胜出。 */
+	inline?: readonly OpeningPresetSource[];
+}
+
 export interface ApplyOpeningResult {
 	ok: boolean;
 	reason?: string;
@@ -53,30 +72,91 @@ export interface ApplyOpeningResult {
 
 // ── Preset loading ───────────────────────────────────────────────────────────
 
-/** Resolve the openings directory: PI_OPENINGS_DIR overrides the project-local default. */
-export function openingsDir(cwd: string): string {
+/** Resolve openings root: explicit per-harness configDir wins; otherwise preserve legacy PI_OPENINGS_DIR precedence. */
+export function openingsDir(cwd: string, configDir?: string): string {
+	if (configDir !== undefined) return getProjectConfigDirFor(cwd, configDir, "openings");
 	return process.env.PI_OPENINGS_DIR ?? getProjectConfigDir(cwd, "openings");
 }
 
-export function listOpeningPresets(cwd: string): Array<{ id: string; name?: string; description?: string }> {
-	let ids: string[];
-	try {
-		ids = readdirSync(openingsDir(cwd))
-			.filter((f) => f.endsWith(".json"))
-			.map((f) => f.slice(0, -".json".length))
-			.sort();
-	} catch {
-		return [];
-	}
-	return ids.map((id) => {
-		const preset = loadOpeningPreset(cwd, id);
-		return { id, name: preset?.name, description: preset?.description };
-	});
+/** 溯源串（契约 §4 / Q2 裁决）：opfs → `opfs:<path>`、host-fs → `host:<path>`；node-fs 不设置。 */
+function scanSourceLabel(storage: StorageBackend, filePath: string): string | undefined {
+	if (storage.kind === "opfs") return `opfs:${filePath}`;
+	if (storage.kind === "host-fs") return `host:${filePath}`;
+	return undefined;
 }
 
-export function loadOpeningPreset(cwd: string, id: string): OpeningPreset | undefined {
+/**
+ * 合并列表（契约 §3.3）：扫描 id 排序 + 内联 id 排序拼接；同 id 内联胜出——扫描条目让位、
+ * 内联条目进内联段，冲突 console.warn（opening 无 diagnostics 通道）。
+ */
+export function listOpeningPresets(
+	cwd: string,
+	options?: OpeningLoadOptions,
+): Array<{ id: string; name?: string; description?: string; source?: string }> {
+	const { storage = NodeStorageBackend.shared, configDir, inline } = options ?? {};
+	const inlineById = new Map<string, { id: string; name?: string; description?: string; source: string }>();
+
+	// 内联数组内部同 ID：后项胜出 + warn（三资源同规则）。
+	for (const item of inline ?? []) {
+		const source = item.source ?? `inline:${item.id}`;
+		const previous = inlineById.get(item.id);
+		if (previous) {
+			console.warn(`[opening] Inline opening "${item.id}" (${source}) overrides inline ${previous.source}`);
+		}
+		inlineById.set(item.id, { id: item.id, name: item.name, description: item.description, source });
+	}
+
+	let ids: string[];
 	try {
-		const parsed = JSON.parse(readFileSync(join(openingsDir(cwd), `${id}.json`), "utf-8")) as unknown;
+		ids = storage
+			.readdirSync(openingsDir(cwd, configDir))
+			.filter((entry) => entry.isFile && entry.name.endsWith(".json"))
+			.map((entry) => entry.name.slice(0, -".json".length))
+			.sort();
+	} catch {
+		ids = [];
+	}
+
+	const out: Array<{ id: string; name?: string; description?: string; source?: string }> = [];
+	for (const id of ids) {
+		const inlineWinner = inlineById.get(id);
+		if (inlineWinner) {
+			console.warn(
+				`[opening] Inline opening "${id}" (${inlineWinner.source}) overrides scanned ${join(openingsDir(cwd, configDir), `${id}.json`)}`,
+			);
+			continue;
+		}
+		const preset = loadOpeningPreset(cwd, id, { storage, configDir });
+		const entry: { id: string; name?: string; description?: string; source?: string } = {
+			id,
+			name: preset?.name,
+			description: preset?.description,
+		};
+		const source = scanSourceLabel(storage, join(openingsDir(cwd, configDir), `${id}.json`));
+		if (source !== undefined) entry.source = source;
+		out.push(entry);
+	}
+	for (const inlineEntry of [...inlineById.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+		out.push(inlineEntry);
+	}
+	return out;
+}
+
+/** 先查内联再查扫描 ⇒ 装载语义与列表一致（18 号 §3 步骤 3）。 */
+export function loadOpeningPreset(cwd: string, id: string, options?: OpeningLoadOptions): OpeningPreset | undefined {
+	const { storage = NodeStorageBackend.shared, configDir, inline } = options ?? {};
+
+	if (inline) {
+		// OpeningPreset 本就宽松（applyOpeningPreset 容错）：仅要求对象 + id，不发明新校验。
+		const hit = inline.find((item) => item.id === id);
+		if (hit) {
+			const { id: _inlineId, source: _inlineSource, ...preset } = hit;
+			return preset;
+		}
+	}
+
+	try {
+		const parsed = JSON.parse(storage.readTextFileSync(join(openingsDir(cwd, configDir), `${id}.json`))) as unknown;
 		if (parsed === null || typeof parsed !== "object") return undefined;
 		return parsed as OpeningPreset;
 	} catch {
