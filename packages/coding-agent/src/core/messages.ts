@@ -8,20 +8,14 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 
-export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+import { summaryToUserMessage } from "@earendil-works/pi-session-protocol";
 
-<summary>
-`;
-
-export const COMPACTION_SUMMARY_SUFFIX = `
-</summary>`;
-
-export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
-
-<summary>
-`;
-
-export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+export {
+	BRANCH_SUMMARY_PREFIX,
+	BRANCH_SUMMARY_SUFFIX,
+	COMPACTION_SUMMARY_PREFIX,
+	COMPACTION_SUMMARY_SUFFIX,
+} from "@earendil-works/pi-session-protocol";
 
 /**
  * Message type for bash executions via the ! command.
@@ -293,22 +287,26 @@ export function convertToLlm(
 				} as Message;
 				break;
 			}
-			case "branchSummary":
-				converted = {
-					role: "user",
-					content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
+			case "branchSummary": {
+				const summary = summaryToUserMessage({
+					id: "branch-summary",
 					timestamp: m.timestamp,
-				};
+					kind: "branch",
+					summary: m.summary,
+				});
+				converted = { role: "user", content: summary.content, timestamp: summary.timestamp };
 				break;
-			case "compactionSummary":
-				converted = {
-					role: "user",
-					content: [
-						{ type: "text" as const, text: COMPACTION_SUMMARY_PREFIX + m.summary + COMPACTION_SUMMARY_SUFFIX },
-					],
+			}
+			case "compactionSummary": {
+				const summary = summaryToUserMessage({
+					id: "compaction-summary",
 					timestamp: m.timestamp,
-				};
+					kind: "compaction",
+					summary: m.summary,
+				});
+				converted = { role: "user", content: summary.content, timestamp: summary.timestamp };
 				break;
+			}
 			case "system":
 			case "user":
 			case "assistant":

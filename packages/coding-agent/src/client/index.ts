@@ -1,4 +1,11 @@
 export {
+	applyTranscriptProgress,
+	applyTranscriptSnapshot,
+	createTranscriptState,
+	selectTranscript,
+	type TranscriptState,
+} from "@earendil-works/pi-session-protocol";
+export {
 	type CreateRemoteSessionOptions,
 	RemoteSession,
 	type RemoteSessionLifecycle,
@@ -6,10 +13,3 @@ export {
 	type RemoteSessionOptions,
 	type RemoteSessionState,
 } from "./remote-session.ts";
-export {
-	applyTranscriptProgress,
-	applyTranscriptSnapshot,
-	createTranscriptState,
-	selectTranscript,
-	type TranscriptState,
-} from "./transcript.ts";

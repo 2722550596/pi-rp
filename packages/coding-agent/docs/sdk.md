@@ -56,6 +56,8 @@ For browser or hosted environments, use the separate `@earendil-works/pi-browser
 The harness accepts inline resources through `presets`, `openings`, `inlineSchemas`, `skills`, and `promptTemplatePaths`, merging supported inline resources with scans through its storage backend. Inline definitions win on matching IDs; explicit missing preset/schema/opening IDs fail during assembly. `configDir` is relative to `cwd` (default `.pi`) and scopes project resources, settings, and the default state-store root to that harness; it does not change Node callers' defaults. See the [`createPiHarness` options](../../browser-engine/src/assemble.ts).
 
 With `capabilities: { shell: false }`, bash is absent rather than merely unavailable at execution time. In the Node SDK this selects the bash-complement defaults; browser harnesses likewise default to no bash and inject OPFS-backed `read`, `edit`, `write`, `grep`, `find`, and `ls`. These tools operate within their configured workspace root; paths escaping it are rejected. Explicit tool selection (`tools` or `defaultTools`) takes precedence. Browser/hosted profiles have no bash command execution; the OPFS tools provide file operations, not a general shell.
+For real-time collaboration, start a `BrowserExecutor` and route its authenticated outbound transport to a PiServer `ExecutorSessionBridge`. Local controls in shared mode must use `executor.commands`; see [Browser session collaboration](browser-session-collaboration.md) for lifecycle, platform responsibilities, and transcript limits.
+
 
 ```typescript
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";

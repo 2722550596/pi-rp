@@ -1,11 +1,12 @@
 /**
  * @earendil-works/pi-browser —— pi harness 浏览器/hosted 剖面分发入口（契约 §9 / 15-F §3.3）。
  *
- * 下游唯一入口：一个包、一个工厂（createPiHarness）、一组类型重出口（§7.1 可见面白名单）。
+ * 下游入口：一个包；createPiHarness 装配浏览器/hosted harness，startBrowserExecutor 将
+ * 该 harness 的 AgentSession 接入 PiServer 执行者通道。
  * 不可见面：coding-agent 主 barrel、磁盘布局（getAgentDir）、auth-storage、jiti 磁盘通道、
  * modes/interactive、rpc stdio。
  *
- * Wave 1：类型面 + 工厂签名骨架；装配主体 Wave 3（assemble.ts，15-F §4）。
+ * Harness 装配主体位于 assemble.ts，执行者驱动位于 executor.ts。
  */
 
 // —— 上游重出口（15-F §3.3；InMemorySessionRepo/streamProxy 已在上游 browser-smoke 守护内，浏览器可打包）——
@@ -22,6 +23,11 @@ export {
 } from "@earendil-works/pi-agent-core/web";
 export type { AssistantMessage, Model, StreamFunction, ThinkingLevel } from "@earendil-works/pi-ai";
 export type { ByteTransportFactory } from "@earendil-works/pi-client";
+export {
+	EXECUTOR_PROTOCOL_VERSION,
+	MAX_EXECUTOR_INBOUND_CHUNK_BYTES,
+	MIN_ABORT_CONTROL_BYTES,
+} from "@earendil-works/pi-protocol";
 export type { SessionRepo } from "../../agent/src/harness/session/types.ts";
 // —— per-save 会话缝的宿主构造面（amio 阶段 1 回填：storage.sessionManager 缝已修入
 // assemble.ts:110，但宿主侧无法构造 SessionManager/OPFS StorageBackend——两者已在
@@ -33,7 +39,6 @@ export type { BrowserSqliteDatabaseFactoryOptions } from "../../memory/src/drive
 // VFS 形状注入 storage.sqliteFactory（04-D §4.3 C7 定稿）——缺省工厂（sahpool）仍是
 // assemble 缺省路径的兜底，此处仅补 runtime 转出，零新增打包内容）——
 export { createBrowserSqliteDatabaseFactory } from "../../memory/src/driver-browser.ts";
-// —— 入口工厂与选项面 ——
 export {
 	type CreatePiHarnessOptions,
 	createPiHarness,
@@ -44,6 +49,15 @@ export {
 } from "./assemble.ts";
 // —— 能力契约转出（Impl-A 定稿形状，negotiate 为唯一构造点）——
 export type { BrowserHarnessEnv, Capabilities, HarnessEnv, NodeHarnessEnv } from "./capabilities.ts";
+// —— 入口工厂与选项面 ——
+export {
+	type BrowserExecutor,
+	type BrowserExecutorOptions,
+	type BrowserSessionCommands,
+	ExecutorBootstrapError,
+	type ExecutorSessionTimeouts,
+	startBrowserExecutor,
+} from "./executor.ts";
 // —— 扩展 UI 接缝（19 号 §2.2/§2.3：宿主回调工厂 + wire 类型 type-only 转出，U2 裁决——
 // type-only 打包期擦除，无 rpc 运行时进包风险）——
 export { createHostExtensionUIContext, type HostExtensionUiHandlers } from "./extension-ui.ts";

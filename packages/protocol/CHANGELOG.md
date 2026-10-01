@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added an independent executor wire schema and codec for browser session uplinks, runtime commands, and versioned generation handshakes; participant messages are unchanged.
+
 ## [0.84.2] - 2026-08-14
 
 ## [0.84.1] - 2026-08-07

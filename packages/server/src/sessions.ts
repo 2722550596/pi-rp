@@ -10,15 +10,22 @@ interface LiveSession {
 	connections: Set<ConnectionState>;
 	unsubscribe: () => void;
 	operationCount: number;
+	stateRevision: number;
 	ready: boolean;
 	terminal: boolean;
 	disposing?: Promise<void>;
 }
 
+interface PreparedAttachFrames {
+	readonly response: Uint8Array;
+	readonly sessionSnapshot: Uint8Array;
+}
 interface LiveSessionManagerOptions {
 	service: PiServerService;
 	isClosing: () => boolean;
 	sendMessage: (connection: ConnectionState, message: EventEnvelope) => Promise<boolean>;
+	sendFrame: (connection: ConnectionState, frame: Uint8Array) => Promise<boolean>;
+	canSendMessage: (message: EventEnvelope) => boolean;
 	closeConnection: (connection: ByteConnection) => Promise<void>;
 	disconnect: (connection: ConnectionState) => Promise<void>;
 	broadcastServerSnapshot: () => void;
@@ -44,7 +51,11 @@ export class LiveSessionManager {
 		this.options = options;
 	}
 
-	async executeCommand(connection: ConnectionState, command: Command) {
+	async executeCommand(
+		connection: ConnectionState,
+		command: Command,
+		preflightAttach?: (result: { command: "create" | "attach"; session: SessionSnapshot }) => PreparedAttachFrames,
+	) {
 		switch (command.command) {
 			case "list":
 				return { command: "list" as const, sessions: await this.listMetadata() };
@@ -58,19 +69,39 @@ export class LiveSessionManager {
 					thinkingLevel: command.thinkingLevel,
 				};
 				const live = await this.acquire(id, () => this.options.service.createSession(options));
-				await this.attach(connection, live);
-				const session = this.forConnection(await this.broadcastSnapshot(live), connection);
-				this.options.broadcastServerSnapshot();
-				return { command: "create" as const, session };
+				try {
+					let candidate = await this.prepareAttach(live, "create", preflightAttach);
+					while (candidate.revision !== live.stateRevision) {
+						candidate = await this.prepareAttach(live, "create", preflightAttach);
+					}
+					const { snapshot, prepared } = candidate;
+					this.attach(connection, live);
+					this.publishSnapshot(live, snapshot, prepared?.sessionSnapshot);
+					this.options.broadcastServerSnapshot();
+					return { command: "create" as const, session: this.forConnection(snapshot, connection) };
+				} finally {
+					live.operationCount--;
+					this.scheduleMaybeDispose(live);
+				}
 			}
 			case "attach": {
 				const live = await this.acquire(command.sessionId, () =>
 					this.options.service.openSession(command.sessionId),
 				);
-				await this.attach(connection, live);
-				const session = this.forConnection(await this.broadcastSnapshot(live), connection);
-				this.options.broadcastServerSnapshot();
-				return { command: "attach" as const, session };
+				try {
+					let candidate = await this.prepareAttach(live, "attach", preflightAttach);
+					while (candidate.revision !== live.stateRevision) {
+						candidate = await this.prepareAttach(live, "attach", preflightAttach);
+					}
+					const { snapshot, prepared } = candidate;
+					this.attach(connection, live);
+					this.publishSnapshot(live, snapshot, prepared?.sessionSnapshot);
+					this.options.broadcastServerSnapshot();
+					return { command: "attach" as const, session: this.forConnection(snapshot, connection) };
+				} finally {
+					live.operationCount--;
+					this.scheduleMaybeDispose(live);
+				}
 			}
 			case "detach": {
 				const live = this.liveSessions.get(command.sessionId);
@@ -192,10 +223,15 @@ export class LiveSessionManager {
 					await existing.disposing;
 					continue;
 				}
+				existing.operationCount++;
 				return existing;
 			}
 			const opening = this.openingSessions.get(id);
-			if (opening) return opening;
+			if (opening) {
+				const live = await opening;
+				live.operationCount++;
+				return live;
+			}
 			const pending = this.create(id, acquireRuntime);
 			this.openingSessions.set(id, pending);
 			try {
@@ -226,8 +262,9 @@ export class LiveSessionManager {
 				runtime,
 				connections: new Set(),
 				unsubscribe: () => {},
-				operationCount: 0,
+				operationCount: 1,
 				ready: false,
+				stateRevision: 0,
 				terminal: false,
 			};
 			live.unsubscribe = runtime.subscribe((event) => this.handleRuntimeEvent(live!, event));
@@ -246,6 +283,7 @@ export class LiveSessionManager {
 	}
 
 	private handleRuntimeEvent(live: LiveSession, event: PiSessionRuntimeEvent): void {
+		live.stateRevision++;
 		if (event.type === "error") {
 			void this.terminate(live, event.error).catch((error: unknown) => this.options.reportError(error));
 			return;
@@ -273,6 +311,24 @@ export class LiveSessionManager {
 		await this.maybeDispose(live);
 	}
 
+	private async prepareAttach(
+		live: LiveSession,
+		command: "create" | "attach",
+		preflightAttach?: (result: { command: "create" | "attach"; session: SessionSnapshot }) => PreparedAttachFrames,
+	): Promise<{ snapshot: SessionSnapshot; prepared?: PreparedAttachFrames; revision: number }> {
+		for (;;) {
+			const revision = live.stateRevision;
+			const snapshot = { ...(await this.normalizedSnapshot(live)), attached: true };
+			const prepared = preflightAttach?.({ command, session: snapshot });
+			if (
+				!prepared &&
+				!this.options.canSendMessage({ type: "event", event: { type: "session_snapshot", snapshot } })
+			) {
+				throw new PiServerError("invalid_request", "Session snapshot exceeds the maximum frame size");
+			}
+			if (revision === live.stateRevision) return { snapshot, prepared, revision };
+		}
+	}
 	private async normalizedSnapshot(live: LiveSession): Promise<SessionSnapshot> {
 		const snapshot = await live.runtime.snapshot();
 		if (snapshot.id !== live.id) {
@@ -292,14 +348,21 @@ export class LiveSessionManager {
 
 	private async broadcastSnapshot(live: LiveSession): Promise<SessionSnapshot> {
 		const snapshot = await this.normalizedSnapshot(live);
-		const envelope: EventEnvelope = { type: "event", event: { type: "session_snapshot", snapshot } };
-		for (const connection of live.connections) void this.options.sendMessage(connection, envelope);
+		this.publishSnapshot(live, snapshot);
 		return snapshot;
 	}
 
-	private async attach(connection: ConnectionState, live: LiveSession): Promise<void> {
+	private publishSnapshot(live: LiveSession, snapshot: SessionSnapshot, frame?: Uint8Array): void {
+		const envelope: EventEnvelope = { type: "event", event: { type: "session_snapshot", snapshot } };
+		if (frame) {
+			for (const connection of live.connections) void this.options.sendFrame(connection, frame);
+		} else if (this.options.canSendMessage(envelope)) {
+			for (const connection of live.connections) void this.options.sendMessage(connection, envelope);
+		}
+	}
+
+	private attach(connection: ConnectionState, live: LiveSession): void {
 		if (connection.disconnected || connection.stage !== "ready" || connection.connection.closed) {
-			await this.maybeDispose(live);
 			throw new PiServerError("invalid_request", "Connection closed while attaching to a session");
 		}
 		connection.sessionIds.add(live.id);

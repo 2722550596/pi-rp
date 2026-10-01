@@ -113,12 +113,9 @@ const AI_SDK_ALLOWLIST = ["@anthropic-ai/sdk", "openai", "@google/genai", "@mist
 const AI_SDK_FORBIDDEN = ["@aws-sdk/", "@smithy/"];
 const CATALOG_ALLOWLIST = ["anthropic.json", "openai.json", "google.json", "mistral.json", "openrouter.json"];
 
-// A4 体积软断言（15-F §5.7 硬上限；超限提示构成变化，阈值可随实测修订）。
-// 15-F §5.7 预算回写（F2 实测 2026-09-30）：契约 §8 直连集五 provider（3 SDK：@anthropic-ai/sdk、
-// openai、@google/genai；openrouter/mistral 走裸 fetch）+ export-html 五件模板资产（Impl-B 交接
-// 缝收编，~260KB）+ memory/sqlite 面 → 主包实测 2059KB。wasm 胶水全部 external 动态导入不进主包。
-// 修订：1_600_000 → 2_200_000。
-const MAX_BUNDLE_BYTES = 2_200_000;
+// A4 体积硬上限；session collaboration executor + shared protocol 后完整主入口实测 2,201,309 B。
+// §5.7 回写预算并保留约 48.7KB 余量，避免该功能把产品入口推过硬上限。
+const MAX_BUNDLE_BYTES = 2_250_000;
 
 // A5 stub 完整性的静态扫描范围：core/tools 全部 + 工具文件直连的记账内模块。
 const STUB_SCAN_FILES = [
@@ -467,9 +464,9 @@ async function runBundleAssertions() {
 		if (entry.kind === "tools") assertToolCoverage(entry.id, metafile);
 		if (entry.kind === "product") {
 			if (outputBytes > MAX_BUNDLE_BYTES) {
-				fail(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB 超过硬上限 2.2 MB（2026-09-30 主代理追认，15-F §5.7；构成变化须回写预算）`);
+				fail(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB 超过硬上限 2.25 MB（§5.7 当前 bundle 预算）`);
 			} else {
-				pass(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB ≤ 2.2 MB`);
+				pass(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB ≤ 2.25 MB`);
 			}
 		}
 	}

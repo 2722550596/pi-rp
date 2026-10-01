@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `createExecutorSessionBridge()` for routing browser-local Pi sessions through a bounded executor channel, and made session attachment preflight its response/snapshot before committing membership.
+
 ## [0.84.2] - 2026-08-14
 
 ## [0.84.1] - 2026-08-07

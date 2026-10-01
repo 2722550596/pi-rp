@@ -48,7 +48,8 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "^0.84.2",
-		"@earendil-works/pi-protocol": "^0.84.2"
+		"@earendil-works/pi-protocol": "^0.84.2",
+		"@earendil-works/pi-session-protocol": "^0.84.2"
 	},
 	"devDependencies": {
 		"shx": "0.4.0",

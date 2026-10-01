@@ -10,6 +10,7 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@earendil-works/pi-protocol": fileURLToPath(new URL("../protocol/src/index.ts", import.meta.url)),
+			"@earendil-works/pi-session-protocol": fileURLToPath(new URL("../session-protocol/src/index.ts", import.meta.url)),
 		},
 	},
 });

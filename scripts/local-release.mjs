@@ -11,10 +11,12 @@ const packages = [
 	{ directory: "packages/tui", name: "@earendil-works/pi-tui" },
 	{ directory: "packages/agent", name: "@earendil-works/pi-agent-core" },
 	{ directory: "packages/protocol", name: "@earendil-works/pi-protocol" },
+	{ directory: "packages/session-protocol", name: "@earendil-works/pi-session-protocol" },
 	{ directory: "packages/client", name: "@earendil-works/pi-client" },
 	{ directory: "packages/session-backends/sqlite-node", name: "@earendil-works/pi-session-backend-sqlite-node" },
 	{ directory: "packages/server", name: "@earendil-works/pi-server" },
 	{ directory: "packages/coding-agent", name: "@earendil-works/pi-coding-agent" },
+	{ directory: "packages/browser-engine", name: "@earendil-works/pi-browser" },
 ];
 
 function printUsage() {

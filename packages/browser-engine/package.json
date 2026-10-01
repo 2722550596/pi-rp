@@ -1,7 +1,7 @@
 {
   "name": "@earendil-works/pi-browser",
   "version": "0.84.2",
-  "description": "pi harness packaged for the browser/hosted profiles: single createPiHarness entry (15-F)",
+  "description": "Browser/hosted Pi harness with an outbound executor channel for shared PiServer sessions",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,12 +14,17 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "clean": "shx rm -rf dist",
     "build": "node build.mjs",
+    "test": "vitest --run",
     "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
   },
   "keywords": [
     "ai",
@@ -43,9 +48,11 @@
     "@sqlite.org/sqlite-wasm": "3.53.4-build1"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "workspace:*",
-    "@earendil-works/pi-ai": "workspace:*",
-    "@earendil-works/pi-coding-agent": "workspace:*",
-    "@earendil-works/pi-client": "workspace:*"
+    "@earendil-works/pi-agent-core": "^0.84.2",
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-client": "^0.84.2",
+    "@earendil-works/pi-protocol": "^0.84.2",
+    "@earendil-works/pi-session-protocol": "^0.84.2"
   }
 }

@@ -62,6 +62,15 @@ export class PiServer {
 			service,
 			isClosing: () => this.closing,
 			sendMessage: (connection, message) => this.sendMessage(connection, message),
+			sendFrame: (connection, frame) => this.sendFrame(connection, frame),
+			canSendMessage: (message) => {
+				try {
+					encodeServerMessage(message, { maxFrameLength: this.maxFrameLength });
+					return true;
+				} catch {
+					return false;
+				}
+			},
 			closeConnection: (connection) => this.closeConnection(connection),
 			disconnect: (connection) => this.disconnect(connection),
 			broadcastServerSnapshot: () => void this.snapshots.broadcast(),
@@ -251,13 +260,26 @@ export class PiServer {
 
 	private async handleRequest(state: ConnectionState, envelope: RequestEnvelope): Promise<void> {
 		try {
-			const result = await this.sessions.executeCommand(state, envelope.request);
-			await this.sendMessage(state, {
-				type: "response",
-				id: envelope.id,
-				ok: true,
-				result,
-			} satisfies ResponseEnvelope);
+			let preparedAttach: { response: Uint8Array; sessionSnapshot: Uint8Array } | undefined;
+			const result = await this.sessions.executeCommand(state, envelope.request, (attachResult) => {
+				const response = encodeServerMessage(
+					{ type: "response", id: envelope.id, ok: true, result: attachResult },
+					{ maxFrameLength: this.maxFrameLength },
+				);
+				const sessionSnapshot = encodeServerMessage(
+					{ type: "event", event: { type: "session_snapshot", snapshot: attachResult.session } },
+					{ maxFrameLength: this.maxFrameLength },
+				);
+				const prepared = { response, sessionSnapshot };
+				preparedAttach = prepared;
+				return prepared;
+			});
+			if (preparedAttach) await this.sendFrame(state, preparedAttach.response);
+			else {
+				const response: ResponseEnvelope = { type: "response", id: envelope.id, ok: true, result };
+				encodeServerMessage(response, { maxFrameLength: this.maxFrameLength });
+				await this.sendMessage(state, response);
+			}
 		} catch (error) {
 			await this.sendMessage(state, {
 				type: "response",
@@ -301,6 +323,11 @@ export class PiServer {
 			await this.disconnect(connection);
 			return false;
 		}
+		return this.sendFrame(connection, frame);
+	}
+
+	private async sendFrame(connection: ConnectionState, frame: Uint8Array): Promise<boolean> {
+		if (connection.disconnected || connection.connection.closed) return false;
 		try {
 			await connection.connection.send(frame);
 			return true;

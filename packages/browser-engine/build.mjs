@@ -32,7 +32,8 @@ const WORKSPACE_SRC_PREFIXES = [
 	["@earendil-works/pi-memory/", "packages/memory/src/"],
 	["@earendil-works/pi-memory", "packages/memory/src/index.ts"],
 	["@earendil-works/pi-protocol/", "packages/protocol/src/"],
-	["@earendil-works/pi-protocol", "packages/protocol/src/index.ts"],
+	["@earendil-works/pi-session-protocol/", "packages/session-protocol/src/"],
+	["@earendil-works/pi-session-protocol", "packages/session-protocol/src/index.ts"],
 	["@earendil-works/pi-telemetry/", "packages/telemetry/src/"],
 	["@earendil-works/pi-telemetry", "packages/telemetry/src/index.ts"],
 ];

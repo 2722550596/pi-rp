@@ -31,6 +31,8 @@
 			"@earendil-works/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
 			"@earendil-works/pi-protocol": ["./packages/protocol/src/index.ts"],
 			"@earendil-works/pi-protocol/*": ["./packages/protocol/src/*"],
+			"@earendil-works/pi-session-protocol": ["./packages/session-protocol/src/index.ts"],
+			"@earendil-works/pi-session-protocol/*": ["./packages/session-protocol/src/*.ts"],
 			"@earendil-works/pi-client": ["./packages/client/src/index.ts"],
 			"@earendil-works/pi-client/*": ["./packages/client/src/*"],
 			"@earendil-works/pi-server": ["./packages/server/src/index.ts"],

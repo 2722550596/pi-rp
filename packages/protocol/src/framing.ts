@@ -71,11 +71,18 @@ export class FrameDecoder {
 	}
 
 	push(chunk: Uint8Array): Uint8Array[] {
+		const frames: Uint8Array[] = [];
+		this.pushEach(chunk, (frame) => frames.push(frame));
+		return frames;
+	}
+
+	/** Processes each completed frame before decoding further bytes from this chunk. */
+	pushEach(chunk: Uint8Array, onFrame: (frame: Uint8Array) => void): void {
 		if (this.state === "ended") throw new FrameError("Frame decoder has ended");
 		if (this.state === "failed") throw new FrameError("Frame decoder has failed");
 		if (!(chunk instanceof Uint8Array)) throw new TypeError("Frame chunk must be a Uint8Array");
+		if (typeof onFrame !== "function") throw new TypeError("Frame callback must be a function");
 
-		const frames: Uint8Array[] = [];
 		let chunkOffset = 0;
 		while (chunkOffset < chunk.byteLength) {
 			if (this.expectedPayloadLength === undefined) {
@@ -92,7 +99,7 @@ export class FrameDecoder {
 					this.fail(`Frame length ${frameLength} exceeds configured limit of ${this.maxFrameLength}`);
 				}
 				if (frameLength === 0) {
-					frames.push(new Uint8Array());
+					onFrame(new Uint8Array());
 					continue;
 				}
 				this.expectedPayloadLength = frameLength;
@@ -122,27 +129,26 @@ export class FrameDecoder {
 				chunkOffset += payloadBytes;
 			}
 			if (this.payloadLength === expectedPayloadLength) {
+				let payload: Uint8Array;
 				if (this.payloadBlocks.length === 1) {
-					frames.push(this.payloadBlocks[0]!);
+					payload = this.payloadBlocks[0]!;
 				} else {
-					const payload = new Uint8Array(expectedPayloadLength);
+					payload = new Uint8Array(expectedPayloadLength);
 					let offset = 0;
 					for (const payloadBlock of this.payloadBlocks) {
 						payload.set(payloadBlock, offset);
 						offset += payloadBlock.byteLength;
 					}
-					frames.push(payload);
 				}
 				this.payloadBlocks = [];
 				this.currentPayloadBlock = undefined;
 				this.currentPayloadBlockLength = 0;
 				this.expectedPayloadLength = undefined;
 				this.payloadLength = 0;
+				onFrame(payload);
 			}
 		}
-		return frames;
 	}
-
 	end(): void {
 		if (this.state === "ended") throw new FrameError("Frame decoder has ended");
 		if (this.state === "failed") throw new FrameError("Frame decoder has failed");
