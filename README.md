@@ -30,6 +30,29 @@ Use it as an interactive terminal agent, embed it through the SDK or RPC, or bui
 | **Browser and hosted harness** | Run agent sessions with host-supplied resources, storage, and LLM access; browser profiles use workspace-scoped file tools rather than a general shell. | [SDK and hosted harness](packages/coding-agent/docs/sdk.md#browser-and-hosted-harnesses) |
 | **Extensible display and runtime** | Add custom tools, commands, lifecycle handlers, display-time message transformations, and streaming-tolerant XML-like tag projections. | [Extensions](packages/coding-agent/docs/extensions.md) |
 
+## Showcase
+
+Projects built with pi-rp as their agent engine:
+
+### LivingCanvas
+
+An open-world interactive storytelling platform. Pi-rp runs its writer and character-agent processes and streams their events over RPC; LivingCanvas builds the world canvas and player experience around them.
+
+- [One-minute film](https://www.youtube.com/watch?v=FnUXFOv74Tg&feature=youtu.be)
+- [Project repository](https://github.com/LudicDynamics/LivingCanvas)
+
+![LivingCanvas world canvas](assets/showcase/livingcanvas.jpg)
+
+![LivingCanvas story browser](assets/showcase/livingcanvas-2.jpg)
+
+### Worldlines
+
+A multi-agent narrative roleplaying platform. Pi-rp supplies the session/RPC runtime, prompt-preset compilation, schema validation, subagents, and opening support. Worldlines uses those primitives to run a writer and separate character agents, with world and IP behavior built in its own configuration and extensions.
+
+![Worldlines world and story selection](assets/showcase/worldlines.jpg)
+
+![Worldlines interactive story](assets/showcase/worldlines-2.jpg)
+
 Pi's coding-agent features remain available alongside these additions: built-in providers, interactive TUI, skills, prompt templates, packages, session compaction, and custom providers. See the [coding-agent documentation index](packages/coding-agent/docs/index.md) for setup and the complete user guide.
 
 ## Why core, not extensions?

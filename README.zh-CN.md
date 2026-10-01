@@ -30,6 +30,29 @@
 | **浏览器与托管 Harness** | 由宿主注入资源、存储和 LLM 访问；浏览器 profile 使用受工作区限制的文件工具，而非通用 shell。 | [SDK 与托管 Harness](packages/coding-agent/docs/sdk.md#browser-and-hosted-harnesses) |
 | **可扩展的显示与运行时** | 增加自定义工具、命令、生命周期处理器、仅影响显示的消息变换，以及支持流式输出的类 XML 标签投影。 | [扩展](packages/coding-agent/docs/extensions.md) |
 
+## 案例展示
+
+以下项目均以 pi-rp 作为 agent 引擎：
+
+### LivingCanvas
+
+开放世界式互动叙事游戏平台。pi-rp 运行作家与角色 agent 进程，并通过 RPC 转发事件；LivingCanvas 在此之上构建世界画布与玩家体验。
+
+- [一分钟短片](https://www.youtube.com/watch?v=FnUXFOv74Tg&feature=youtu.be)
+- [项目地址](https://github.com/LudicDynamics/LivingCanvas)
+
+![LivingCanvas 世界画布](assets/showcase/livingcanvas.jpg)
+
+![LivingCanvas 故事浏览界面](assets/showcase/livingcanvas-2.jpg)
+
+### Worldlines
+
+多智能体叙事角色扮演平台。pi-rp 提供会话/RPC 运行时、提示词预设编译、Schema 校验、subagent 和开场预设支持；Worldlines 用这些基础能力运行作家与独立角色 agent，世界与 IP 机制则由自身配置和扩展实现。
+
+![Worldlines 世界与故事选择界面](assets/showcase/worldlines.jpg)
+
+![Worldlines 互动叙事界面](assets/showcase/worldlines-2.jpg)
+
 以上能力建立在 Pi coding-agent 功能之上：内置 provider、交互式 TUI、skills、提示词模板、Pi packages、会话压缩和自定义 provider 均可继续使用。安装与完整使用说明见 [coding-agent 文档索引](packages/coding-agent/docs/index.md)。
 
 ## 为什么写进核心，而不是做成扩展？
