@@ -219,4 +219,43 @@ describe("compaction model overrides", () => {
 			},
 		);
 	});
+
+	describe("thresholdTokens", () => {
+		it("defaults to undefined so the window-derived threshold stays in effect", () => {
+			const manager = SettingsManager.inMemory();
+			expect(manager.getCompactionThresholdTokens(model)).toBeUndefined();
+			expect(manager.getCompactionSettings(model).thresholdTokens).toBeUndefined();
+		});
+
+		it("resolves model override over ordinary value", () => {
+			const manager = SettingsManager.inMemory({
+				compaction: { thresholdTokens: 80000, modelOverrides: { [modelKey]: { thresholdTokens: 120000 } } },
+			});
+			expect(manager.getCompactionThresholdTokens(model)).toBe(120000);
+			expect(manager.getCompactionThresholdTokens({ provider: "other", id: "x" })).toBe(80000);
+			expect(manager.getCompactionThresholdTokens()).toBe(80000);
+			// reserveTokens keeps its built-in default even though thresholdTokens is set.
+			expect(manager.getCompactionSettings(model).reserveTokens).toBe(16384);
+		});
+
+		it.each([null, -1, 1.5, "80000", true, Number.MAX_SAFE_INTEGER + 1])(
+			"rejects invalid ordinary values: %j",
+			(value) => {
+				const storage = new InMemorySettingsStorage();
+				storage.withLock("global", () => JSON.stringify({ compaction: { thresholdTokens: value } }));
+				expect(() => SettingsManager.fromStorage(storage).getCompactionSettings()).toThrow(
+					`Invalid compaction.thresholdTokens setting: ${String(value)}. Expected a non-negative safe integer.`,
+				);
+			},
+		);
+
+		it("rejects invalid model override values", () => {
+			const manager = SettingsManager.inMemory({
+				compaction: { modelOverrides: { [modelKey]: { thresholdTokens: -5 } } },
+			});
+			expect(() => manager.getCompactionSettings(model)).toThrow(
+				`Invalid compaction.modelOverrides["${modelKey}"].thresholdTokens setting: -5. Expected a non-negative safe integer.`,
+			);
+		});
+	});
 });

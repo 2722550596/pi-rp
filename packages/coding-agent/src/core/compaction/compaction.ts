@@ -136,6 +136,8 @@ export interface CompactionSettings {
 	keepRecentTokens: number;
 	/** Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation. */
 	summaryMaxTokens?: number;
+	/** Absolute trigger threshold in tokens; replaces the `contextWindow - reserveTokens` derivation. */
+	thresholdTokens?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -244,6 +246,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
+	if (settings.thresholdTokens !== undefined) return contextTokens > settings.thresholdTokens;
 	return contextTokens > contextWindow - settings.reserveTokens;
 }
 

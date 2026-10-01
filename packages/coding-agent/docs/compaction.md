@@ -34,6 +34,8 @@ contextTokens > contextWindow - reserveTokens
 
 By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
 
+Alternatively, set `thresholdTokens` to an absolute trigger that ignores the model's context window entirely: auto-compaction fires once `contextTokens > thresholdTokens`. See the [configuration table](#configuration) below.
+
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
 ### How It Works
@@ -398,6 +400,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
 | `summaryMaxTokens` | - | Explicit summarization output cap (defaults to `0.8 * reserveTokens`) |
+| `thresholdTokens` | - | Absolute auto-compaction trigger; replaces the `contextWindow - reserveTokens` derivation |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 
@@ -428,6 +431,7 @@ By default the summarization output cap is `floor(0.8 * reserveTokens)` for hist
 
 Keys are exact, case-sensitive `provider/modelId` values, including any slashes within the model ID. Each `reserveTokens` and `keepRecentTokens` value falls back independently from the model override to the ordinary setting to the built-in default. Values must be non-negative safe integers. Invalid values in the matching model override produce an error when read; only omitted fields fall back to the ordinary setting. Model override entries must be objects. Invalid ordinary token settings produce an error when read, even if the active model has a valid override. Only omitted ordinary values use built-in defaults. `enabled` remains global, not model-specific.
 `summaryMaxTokens` resolves the same way as the other two: matching model override → ordinary `compaction` setting → unset. Unset keeps the derived cap.
+`thresholdTokens` also resolves override → ordinary → unset. Unset keeps the `contextWindow - reserveTokens` trigger; setting it only changes *when* compaction fires — `reserveTokens` and `keepRecentTokens` continue to control the response headroom and what a compaction keeps.
 
 
 These resolved values are used for manual compaction, all automatic threshold checks, overflow recovery, and extension-visible `preparation.settings`. Model switches affect subsequent checks and compactions without changing ordinary settings. Compaction already in progress uses the model and settings captured for that operation. Branch summarization settings are unaffected.

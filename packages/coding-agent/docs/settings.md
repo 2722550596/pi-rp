@@ -117,7 +117,8 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
 | `compaction.summaryMaxTokens` | number | - | Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation |
-| `compaction.modelOverrides` | object | - | Per-model `reserveTokens`, `keepRecentTokens`, and `summaryMaxTokens` overrides keyed by exact `"provider/modelId"` |
+| `compaction.thresholdTokens` | number | - | Absolute auto-compaction trigger; replaces the `contextWindow - reserveTokens` derivation |
+| `compaction.modelOverrides` | object | - | Per-model `reserveTokens`, `keepRecentTokens`, `summaryMaxTokens`, and `thresholdTokens` overrides keyed by exact `"provider/modelId"` |
 
 ```json
 {
@@ -165,6 +166,8 @@ See [compaction.md](compaction.md) for trigger and summarization behavior.
 
 
 `summaryMaxTokens` decouples the summary's output budget from `reserveTokens`. Without it the cap is `floor(0.8 * reserveTokens)`, which ties the "when to compact" threshold to how much room the summary gets — a problem for reasoning models, where thinking and the summary share that budget and a small cap truncates the summary (surfacing as `Compaction failed: Summarization failed: generation hit the token cap`). The model's own output limit still applies as a hard ceiling, so a value above `model.maxTokens` is clamped rather than rejected. Set it on the ordinary `compaction` object or per model under `modelOverrides`; unlike `reserveTokens`/`keepRecentTokens` it has no built-in default (unset means "derive it").
+
+`thresholdTokens` decouples the auto-compaction trigger from the model's context window. Without it the trigger is `contextWindow - reserveTokens`; set, auto-compaction fires once context tokens exceed this absolute value, so switching between models with different windows needs no recalculation. Set it on the ordinary `compaction` object or per model under `modelOverrides`; like `summaryMaxTokens` it has no built-in default (unset means "derive it"), and it only changes *when* compaction fires — `reserveTokens` and `keepRecentTokens` still control the response headroom and what a compaction keeps.
 
 ### Tool search
 

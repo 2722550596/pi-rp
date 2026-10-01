@@ -16,6 +16,8 @@ export interface CompactionModelOverride {
 	keepRecentTokens?: number;
 	/** Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation. */
 	summaryMaxTokens?: number;
+	/** Absolute auto-compaction trigger in tokens; replaces the `contextWindow - reserveTokens` derivation. */
+	thresholdTokens?: number;
 }
 
 const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<Pick<CompactionModelOverride, "reserveTokens" | "keepRecentTokens">> =
@@ -36,6 +38,7 @@ export interface CompactionSettings {
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
 	summaryMaxTokens?: number; // default: undefined - derived from reserveTokens
+	thresholdTokens?: number; // default: undefined - derived from contextWindow - reserveTokens
 	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
 }
 
@@ -991,16 +994,20 @@ export class SettingsManager {
 	}
 
 	/**
-	 * Resolve the explicit summarization output cap, or undefined when unset.
-	 * Unlike reserve/keepRecent there is no built-in default: undefined means the
-	 * summarizer derives its cap from reserveTokens.
+	 * Resolve an optional compaction token setting through model override, then
+	 * ordinary setting. Unlike reserve/keepRecent there is no built-in default:
+	 * undefined means the caller derives the value (summary cap from
+	 * reserveTokens, trigger threshold from contextWindow - reserveTokens).
 	 */
-	getCompactionSummaryMaxTokens(model?: Pick<Model<string>, "provider" | "id">): number | undefined {
+	private getOptionalCompactionTokenSetting(
+		field: "summaryMaxTokens" | "thresholdTokens",
+		model?: Pick<Model<string>, "provider" | "id">,
+	): number | undefined {
 		const compaction = this.settings.compaction;
-		const ordinary = compaction?.summaryMaxTokens;
+		const ordinary = compaction?.[field];
 		if (ordinary !== undefined && (typeof ordinary !== "number" || !Number.isSafeInteger(ordinary) || ordinary < 0)) {
 			throw new Error(
-				`Invalid compaction.summaryMaxTokens setting: ${String(ordinary)}. Expected a non-negative safe integer.`,
+				`Invalid compaction.${field} setting: ${String(ordinary)}. Expected a non-negative safe integer.`,
 			);
 		}
 
@@ -1011,13 +1018,31 @@ export class SettingsManager {
 				`Invalid compaction.modelOverrides["${modelKey}"] setting: ${String(entry)}. Expected an object.`,
 			);
 		}
-		const override = entry?.summaryMaxTokens;
+		const override = entry?.[field];
 		if (override !== undefined && (typeof override !== "number" || !Number.isSafeInteger(override) || override < 0)) {
 			throw new Error(
-				`Invalid compaction.modelOverrides["${modelKey}"].summaryMaxTokens setting: ${String(override)}. Expected a non-negative safe integer.`,
+				`Invalid compaction.modelOverrides["${modelKey}"].${field} setting: ${String(override)}. Expected a non-negative safe integer.`,
 			);
 		}
 		return override ?? ordinary;
+	}
+
+	/**
+	 * Resolve the explicit summarization output cap, or undefined when unset.
+	 * Unlike reserve/keepRecent there is no built-in default: undefined means the
+	 * summarizer derives its cap from reserveTokens.
+	 */
+	getCompactionSummaryMaxTokens(model?: Pick<Model<string>, "provider" | "id">): number | undefined {
+		return this.getOptionalCompactionTokenSetting("summaryMaxTokens", model);
+	}
+
+	/**
+	 * Resolve the absolute auto-compaction trigger, or undefined when unset.
+	 * Undefined means the trigger derives from the active model's context
+	 * window minus reserveTokens.
+	 */
+	getCompactionThresholdTokens(model?: Pick<Model<string>, "provider" | "id">): number | undefined {
+		return this.getOptionalCompactionTokenSetting("thresholdTokens", model);
 	}
 
 	/** Resolve each token setting through model override, ordinary setting, then built-in default. */
@@ -1026,12 +1051,14 @@ export class SettingsManager {
 		reserveTokens: number;
 		keepRecentTokens: number;
 		summaryMaxTokens?: number;
+		thresholdTokens?: number;
 	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(model),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(model),
 			summaryMaxTokens: this.getCompactionSummaryMaxTokens(model),
+			thresholdTokens: this.getCompactionThresholdTokens(model),
 		};
 	}
 

@@ -292,6 +292,20 @@ describe("shouldCompact", () => {
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
 	});
+
+	it("should use absolute thresholdTokens instead of the window-derived threshold when set", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 16384,
+			keepRecentTokens: 20000,
+			thresholdTokens: 100000,
+		};
+
+		expect(shouldCompact(100001, 1000000, settings)).toBe(true);
+		expect(shouldCompact(100000, 1000000, settings)).toBe(false);
+		// Same context against the window-derived threshold would be far from triggering.
+		expect(shouldCompact(990000, 1000000, settings)).toBe(true);
+	});
 });
 
 describe("findCutPoint", () => {
