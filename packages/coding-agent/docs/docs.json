@@ -73,6 +73,10 @@
           "path": "prompt-presets.md"
         },
         {
+          "title": "Opening Presets",
+          "path": "opening-presets.md"
+        },
+        {
           "title": "State Schemas",
           "path": "state-schemas.md"
         },

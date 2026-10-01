@@ -30,6 +30,10 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 
 See [Keybindings](keybindings.md) for all shortcuts and customization.
 
+## Built-in file tools
+
+The `read` tool accepts either one path or an array of paths, so a model can inspect several files in one call. Each file is truncated independently under the normal read limits. Passing a directory path returns its entry listing rather than raising a file-read error. These are tool semantics (available to extensions and SDK consumers too), not the terminal `@file` attachment syntax.
+
 ## Slash Commands
 
 Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`.

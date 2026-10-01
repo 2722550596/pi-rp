@@ -49,6 +49,14 @@ The main factory function for a single `AgentSession`.
 
 `createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
 
+### Browser and hosted harnesses
+
+For browser or hosted environments, use the separate `@earendil-works/pi-browser` package, whose public entry point is `createPiHarness()` (see the [browser harness assembly source](../../browser-engine/src/assemble.ts), re-exported from [the package entry point](../../browser-engine/src/index.ts)). It assembles a `createAgentSession` runtime with host-provided storage and LLM access; it is not the Node `DefaultResourceLoader` path. Provide `profile: "browser"` or `"hosted"`, a `HarnessEnv`, `cwd`, and the required `llm` connection. Browser defaults use OPFS-backed storage and a shell-free file-tool profile.
+
+The harness accepts inline resources through `presets`, `openings`, `inlineSchemas`, `skills`, and `promptTemplatePaths`, merging supported inline resources with scans through its storage backend. Inline definitions win on matching IDs; explicit missing preset/schema/opening IDs fail during assembly. `configDir` is relative to `cwd` (default `.pi`) and scopes project resources, settings, and the default state-store root to that harness; it does not change Node callers' defaults. See the [`createPiHarness` options](../../browser-engine/src/assemble.ts).
+
+With `capabilities: { shell: false }`, bash is absent rather than merely unavailable at execution time. In the Node SDK this selects the bash-complement defaults; browser harnesses likewise default to no bash and inject OPFS-backed `read`, `edit`, `write`, `grep`, `find`, and `ls`. These tools operate within their configured workspace root; paths escaping it are rejected. Explicit tool selection (`tools` or `defaultTools`) takes precedence. Browser/hosted profiles have no bash command execution; the OPFS tools provide file operations, not a general shell.
+
 ```typescript
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 

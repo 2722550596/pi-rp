@@ -242,9 +242,9 @@ The currently selected model as `provider/id` (e.g. `anthropic/claude-sonnet-4-5
 
 ### `chat-history`
 
-The conversation insertion point. This slot determines WHERE in the message array the real conversation appears — it does not render text itself. Place it explicitly to control position and filtering.
+The conversation insertion point. This slot determines where in the message array the real conversation appears — it does not render text itself. Place it explicitly to control position and filtering.
 
-**Fallback:** if a preset declares no `chat-history` position slot at all, the real conversation is appended at the very end of the compiled message array instead of being dropped (source kind `implicit-history`). The only exception is the stateless one-shot pattern where an item re-inserts the latest user message via `{{lastUserMessage}}` without a slot — there history stays omitted, since injecting it would duplicate the latest user message. Presets that want a specific position or per-slot options should always declare the slot explicitly.
+**Fallback:** if a preset declares no `chat-history` position slot, the real conversation is appended to the end of the compiled message array instead of being dropped. The exception is a stateless one-shot preset that re-inserts the latest user message with `{{lastUserMessage}}` and has no history slot: history stays omitted to avoid duplicating that user message. Declare the slot when you need a specific position or per-slot filtering options.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

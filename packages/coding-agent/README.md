@@ -12,11 +12,11 @@
 
 ---
 
-Pi is a minimal terminal coding harness. Adapt pi to your workflows, not the other way around, without having to fork and modify pi internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Pi Packages](#pi-packages) and share them with others via npm or git.
+Pi is a flexible agent harness for terminal use and application embedding. It preserves the coding-agent workflow while providing an extension system for adapting tools, prompts, rendering, and runtime behavior. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes), or bundle them in [Pi Packages](#pi-packages).
 
-Pi ships with powerful defaults but skips features like plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow. This fork additionally ships native subagents, prompt presets, and state schemas in core — see [docs/prompt-presets.md](docs/prompt-presets.md) and [docs/state-schemas.md](docs/state-schemas.md).
+This pi-rp fork adds roleplay-oriented core capabilities: modular [prompt presets](docs/prompt-presets.md), [opening presets](docs/opening-presets.md), persistent [conversation state and schemas](docs/state-schemas.md), native preset-backed subagents, and the standalone [memory system](../../memory/README.md). It also supports client-side [tool search](docs/tool-search.md), a host-supplied [browser/hosted harness](docs/sdk.md#browser-and-hosted-harnesses), RPC session integration, and display-time message transformations. These additions coexist with Pi's standard coding-agent features.
 
-Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
+Pi supports interactive terminal, print/JSON, and RPC modes. The Node.js SDK embeds sessions in applications; browser and hosted integrations use the separate `@earendil-works/pi-browser` harness.
 
 ## Share your OSS coding agent sessions
 
@@ -501,19 +501,11 @@ See [docs/rpc.md](docs/rpc.md) for the protocol.
 
 ## Philosophy
 
-Pi is aggressively extensible so it doesn't have to dictate your workflow. Features that other tools bake in can be built with [extensions](#extensions), [skills](#skills), or installed from third-party [pi packages](#pi-packages). This keeps the core minimal while letting you shape pi to fit how you work.
+Pi keeps its general-purpose coding workflow small and configurable: integrations that depend on a particular environment can be supplied by extensions or host applications rather than imposed on every user.
 
-**No MCP.** Build CLI tools with READMEs (see [Skills](#skills)), or build an extension that adds MCP support. [Why?](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/)
+This fork adds shared primitives where roleplay extensions need stable contracts—prompt presets, session state, native preset-backed subagents, openings, and memory—while keeping custom tools, interfaces, and workflows extensible. See the [project README](../../README.md) for the pi-rp feature overview.
 
-**No sub-agents.** There's many ways to do this. Spawn pi instances via tmux, or build your own with [extensions](#extensions), or install a package that does it your way.
-
-**No permission popups.** Run in a container, or build your own confirmation flow with [extensions](#extensions) inline with your environment and security requirements.
-
-**No plan mode.** Write plans to files, or build it with [extensions](#extensions), or install a package.
-
-**No built-in to-dos.** They confuse models. Use a TODO.md file, or build your own with [extensions](#extensions).
-
-**No background bash.** Use tmux. Full observability, direct interaction.
+Pi does not prescribe a plan mode, permission policy, or MCP server. Add those to your workflow with extensions, packages, or a host integration appropriate to your environment.
 
 Read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/) for the full rationale.
 

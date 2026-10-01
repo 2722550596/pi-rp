@@ -995,6 +995,42 @@ Each command has:
 
 **Note**: Built-in TUI commands (`/settings`, `/hotkeys`, etc.) are not included. They are handled only in interactive mode and would not execute if sent via `prompt`.
 
+## Affiliated session coordination
+
+RPC exposes primitives for a host that coordinates related Pi processes. Pi provides the wire protocol; the host extension/application owns process relationships, context filtering, authorization, and orchestration policy.
+
+### Seed a child session with initial context
+
+Send `init_context` to the child before its first prompt. The supplied history seeds the child's in-memory LLM context and `state` loads into its state manager; neither is written as entries to the child's session file.
+
+```json
+{"type":"init_context","history":[{"role":"user","content":"The shared scene begins at dusk."}],"state":{"world":{"location":"harbor"}}}
+```
+
+Response: `{"type":"response","command":"init_context","success":true,"data":{"ok":true}}`.
+
+### Serve a child's request for parent context
+
+An extension in a child process can emit `context_request`. It includes a unique `requestId`, an optional `since` parent-session entry ID (to request messages after that anchor), and optional `namespaces` identifying requested state namespaces. The host decides what the child may receive, then sends `context_response` to that child with the same `requestId`:
+
+```json
+{"type":"context_request","requestId":"req-7","since":"entry-42","namespaces":["world"]}
+{"type":"context_response","requestId":"req-7","messages":[{"role":"user","content":"The ship has left port."}],"state":{"world":{"location":"open sea"}}}
+```
+
+`messages` contains the host-filtered context projection; `state` is optional. Send `error` instead when the host cannot provide the request. A successful `context_response` is acknowledged on the child's RPC stream. The child request rejects on an explicit error or if no response arrives within 10 seconds.
+
+### Return an orchestration decision
+
+Child extensions can also emit `orchestration_request`, currently with `kind: "pass_mic"`, `from` and a `target` character ID or `"player"`. The host applies its own policy and sends `orchestration_response` to the child with the matching request ID:
+
+```json
+{"type":"orchestration_request","requestId":"req-8","kind":"pass_mic","from":"elias","target":"player"}
+{"type":"orchestration_response","requestId":"req-8","ack":{"status":"approved"}}
+```
+
+`ack.status` is `"approved"`, `"blocked"`, or `"error"` (the error form includes an `error` string). This request also times out after 10 seconds. These messages are coordination seams, not an authorization mechanism: the host must enforce its own context and handoff policy.
+
 ## Events
 
 Events are streamed to stdout as JSON lines during agent operation. Events do not generally include an `id` field; `bash_execution_update` includes the `id` of its originating `bash` command when one was provided.

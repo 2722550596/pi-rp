@@ -109,18 +109,22 @@ describe("docs drift guard", () => {
 	it("keeps the English and Chinese feature tables in sync", () => {
 		const en = readFileSync(join(repoRoot, "README.md"), "utf-8");
 		const zh = readFileSync(join(repoRoot, "README.zh-CN.md"), "utf-8");
-		const enFeatures = featureNames(en, "### Implemented");
-		const zhFeatures = featureNames(zh, "### 已实现");
+		const enFeatures = featureNames(en, "## What pi-rp adds");
+		const zhFeatures = featureNames(zh, "## pi-rp 增加了什么");
 		// The tables are localized; this maps each English feature to its
 		// Chinese counterpart so both tables must list exactly the same set.
 		const enToZh = new Map<string, string>([
-			["Prompt preset system", "预设提示词系统"],
-			["/reroll", "/reroll"],
-			["/continue", "/continue"],
-			["Live message editing", "实时消息编辑"],
-			["State validation", "状态校验"],
-			["State management", "状态管理"],
-			["Native Subagent", "原生 Subagent"],
+			["Composable prompt presets", "可组合提示词预设"],
+			["Opening presets", "开场预设"],
+			["Persistent memory system", "持久化记忆系统"],
+			["Memory browser", "记忆浏览器"],
+			["Native subagents", "原生 Subagent"],
+			["State schemas and validators", "状态 Schema 与校验器"],
+			["Branch-aware sessions", "分支会话"],
+			["RPC integration", "RPC 集成"],
+			["Tool search", "工具搜索"],
+			["Browser and hosted harness", "浏览器与托管 Harness"],
+			["Extensible display and runtime", "可扩展的显示与运行时"],
 		]);
 		expect(enFeatures).toEqual([...enToZh.keys()]);
 		expect(zhFeatures).toEqual([...enToZh.values()]);

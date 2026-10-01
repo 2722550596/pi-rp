@@ -1,6 +1,6 @@
 # Pi Documentation
 
-Pi is a minimal terminal coding harness. It is designed to stay small at the core while being extended through TypeScript extensions, skills, prompt templates, themes, and pi packages.
+Pi is a coding-agent harness for interactive terminal use and for embedding in Node.js, browser, or hosted applications. It stays small at the core while supporting extensions, skills, prompt templates, themes, and pi packages.
 
 ## Quick start
 
@@ -48,6 +48,7 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 - [Keybindings](keybindings.md) - default shortcuts and custom keybindings.
 - [Sessions](sessions.md) - session management, branching, and tree navigation.
 - [Compaction](compaction.md) - context compaction and branch summarization.
+- [Tool search](tool-search.md) - fold eligible low-frequency tools and load them on demand.
 
 ## Customization
 
@@ -56,6 +57,7 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
 - [Prompt presets](prompt-presets.md) - JSON-based modular prompt stacks with slots, macros, and regex rules.
 - [Opening presets](opening-presets.md) - seed cold-open messages and initial state into a session from JSON.
+- [Memory system](../../memory/README.md) - persistent memory, automatic recall, editing, and multi-database browser.
 - [State schemas](state-schemas.md) - schema validation and custom validators for conversation state.
 - [Themes](themes.md) - built-in and custom terminal themes.
 - [Pi packages](packages.md) - bundle and share extensions, skills, prompts, and themes.
@@ -64,7 +66,7 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 
 ## Programmatic usage
 
-- [SDK](sdk.md) - embed pi in Node.js applications.
+- [SDK](sdk.md) - embed pi in Node.js applications or use the browser/hosted harness entry point described there.
 - [RPC mode](rpc.md) - integrate over stdin/stdout JSONL.
 - [JSON event stream mode](json.md) - print mode with structured events.
 - [TUI components](tui.md) - build custom terminal UI for extensions.

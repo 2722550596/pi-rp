@@ -15,6 +15,14 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 - **Session persistence** - Store state that survives restarts via `pi.appendEntry()`
 - **Custom rendering** - Control how tool calls/results and messages appear in TUI
 
+### Display-time message transformers
+
+Extensions can register a `MessageContentTransformer` with `pi.registerMessageContentTransformer(transformer)` to project rendered message text without changing the conversation sent to the model or persisted in the session. Transformers receive the content and a context identifying message type, available width, streaming state, and (for custom messages) `customType`; use them for display-only formatting such as structured dialogue.
+
+The package also exports `scanXmlTags()` and `createXmlTagTransformer()` for allow-listed XML-like tag projection. The scanner recognizes only supplied tag names, parses quoted or bare attributes, and treats an unterminated recognized tag as pending content through end-of-input; a later streaming frame can complete it. Incomplete/half-open headers remain plain text, and ordinary text/unrecognized tags pass through. Renderers receive attributes, content, closed/pending state, and rendering context. This is a display projection, not XML parsing or sanitization.
+
+Custom messages rendered by a `registerMessageRenderer` handler bypass this transformer pipeline; default custom-message rendering is included.
+
 **Example use cases:**
 - Permission gates (confirm before `rm -rf`, `sudo`, etc.)
 - Git checkpointing (stash at each turn, restore on branch)

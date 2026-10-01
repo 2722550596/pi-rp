@@ -1,6 +1,8 @@
 # Docs Consistency Review — docs vs implementation (pi-rp, architecture session)
 
-Audit scope: packages/coding-agent/docs/{rpc,prompt-presets,state-schemas,extensions,session-format,usage}.md, docs.json; README.md; README.zh-CN.md; plan.md; CONTEXT.md; packages/coding-agent/README.md vs src/commands/*, src/core/slash-commands.ts, src/core/agent-session.ts, src/core/prompt-preset/*, src/modes/rpc/*, src/modes/interactive/interactive-mode.ts. Static read-only; no builds/tests run. All findings verified against code.
+**Status:** historical snapshot; rechecked 2026-10-01 against current docs. Findings F1–F5 are resolved in the current tree: `rpc.md` now documents `navigate_tree`, all three session events, and nested `sourceInfo`; `extensions.md` documents all three events and clarifies `session_tree` as extension-only. Do not treat the findings below as current gaps.
+
+Original scope and findings below are preserved as an audit record; line references and conclusions describe the checkout at the time of that review.
 
 ## Findings (severity: location — doc_claims → actual → suggested_fix)
 

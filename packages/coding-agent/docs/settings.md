@@ -277,6 +277,22 @@ Windows paths in JSON must use forward slashes or escaped backslashes:
 
 ### Tools
 
+### Request concurrency
+
+The request gateway can cap simultaneous LLM requests separately for each provider. Configure provider-specific limits with `providers.<id>.maxConcurrency`; `requestGateway.defaultMaxConcurrency` supplies the fallback limit for providers without an override. A provider with neither limit configured is not gated. A value of `0` means unlimited, not zero allowed requests. These settings limit concurrent requests, not request rate.
+
+```json
+{
+  "requestGateway": { "defaultMaxConcurrency": 4 },
+  "providers": {
+    "anthropic": { "maxConcurrency": 2 }
+  }
+}
+```
+
+Provider entries are keyed by provider ID (for example, `"anthropic"`); a provider-specific limit takes precedence over the gateway default.
+
+
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `defaultTools` | string[] | - | Built-in tools enabled initially. When omitted, Pi uses its standard defaults |

@@ -1,6 +1,6 @@
 # @earendil-works/pi-memory — pi-rp 记忆系统
 
-> 面向使用者与下游集成者的系统介绍。设计规格见根目录 [`docs/memory-system.md`](../../docs/memory-system.md)(v5.1),本文档描述实现行为,不重复设计论证。
+> 面向使用者与下游集成者的系统介绍。设计背景与详细规格见根目录 [`docs/memory-system.md`](../../docs/memory-system.md)；本文描述当前实现行为。
 
 ## 1. 这是什么
 
@@ -35,11 +35,12 @@ agent:(召回注入自动带上该节点;必要时可主动 recall)
 pi --memory-db ./world/magnolia/memory.db
 
 # 或 settings 文件
-# settings.json:
 # { "memory": { "dbPath": "./world/magnolia/memory.db" } }
 ```
 
 解析链:`--memory-db`(CLI,经 `PI_MEMORY_DB` env 传入)> settings `memory.dbPath` > prompt preset 声明 > 默认 `<cwd>/.pi/memory.db`。
+
+独立 `pi-memory-web` 支持 `--db`、`--port`、`--host`、`--temp-threshold`、可重复的 `--roots`、`--allow-any-path`、`--open`；该命令中 `PI_MEMORY_DB` 优先于 `--db`。
 
 ### 2.3 在 TUI 里看库
 
@@ -117,8 +118,9 @@ pi-memory-web --db ./memory.db --port 9000 --open   # 指定端口 / 直接开�
 ### 2.5 记忆库选择器(多库)
 
 一个 world 下往往有**几十个**记忆库 —— **world 级一个、每个角色各一个**,其中
-绝大多数还是空的。浏览器可以**同时连着它们**:页面顶部的下拉框选中哪个库,当前
-页面的**全部读视图与写操作**就作用于哪个库,不需要重启、也不需要换端口。
+绝大多数还是空的。浏览器可以注册多个库并按需切换:页面顶部的下拉框选中哪个库,
+当前页面的**全部读视图与写操作**就作用于哪个库,不需要重启、也不需要换端口。
+同时打开的连接有上限(默认 8),较少使用的库会按需关闭,注册信息仍保留。
 
 #### 怎么用
 
@@ -146,19 +148,13 @@ pi-memory-web --db ~/projects/hackathon/worlds/fpal/.pi/memory.db \
 
 #### 安全边界(重要)
 
-- **非回环绑定 ⇒ 多库整体禁用。** 用 `--host 0.0.0.0` 启动时,库管理功能一律 `403`,
-  发现扫描**不执行**,`?db=` 只接受进程库。原因:无认证的服务对网络可达时,
-  "能注册任意路径"等于**网络上的任何人都能读写你机器上任意 SQLite 文件**。
-  单库(进程库)仍然可读写 —— 即退化成当前行为。
-- **只有通过校验的路径能被打开。** 进入可写列表前必须:归一化 → 落在 roots 内
-  (**逐段真实解析**,并核验「你写的路径」与「实际解析到的文件」是同一个,故
-  `..` 与符号链接都绕不出去) → 是**已存在的普通文件** → **只读探测**能读到
-  记忆库的 schema 版本。探测失败或版本不兼容一律拒绝,**绝不注册**。
-  > ⚠️ **已作废(2026-09-16)**的措辞:政策改为**就地迁移**后,「版本不兼容」的判据**收窄**为
-  > 「**本程序没有该版本的迁移器**」(v2 有 ⇒ 被接纳,写开时自动升级)。故这里的「一律拒绝」
-  > 现在只覆盖**无迁移器**的版本。见 `docs/memory-system.md` §0 决策 3 与 `plan/memory-web/23-迁移.md`。
-- **探测不改动库文件本身**:只读连接打开,主文件逐字节不变。对 WAL 模式的库,
-  读它可能留下 `-wal`/`-shm` 附属文件(任何只读客户端读 WAL 库的正常行为,删除安全)。
+- **非回环绑定 ⇒ 多库整体禁用。** 使用非回环 `--host` 时,管理注册与发现扫描被禁用,
+  `?db=` 只接受进程库。未认证且网络可达的服务,若开放路径注册,会让远端访问机器上的其他 SQLite 文件。
+- **只有通过校验的路径能被打开。** 进入注册列表前必须:归一化 → 落在 roots 内
+  (**逐段真实解析**,核验路径解析后仍位于 roots,故 `..` 与符号链接不能绕出) →
+  是**已存在的普通文件** → **只读探测**能读到支持的记忆库 schema。当前 schema v4；
+  v2、v3 可迁移到 v4，无迁移器的版本拒绝。通过只读探测后，首次实际打开时执行就地迁移。
+  对 WAL 模式库的只读探测可能留下 `-wal`/`-shm` 附属文件。
 - 选错路径的代价被挡住了:填一个**不是记忆库**的文件(笔记、别的应用的数据文件)
   会被探测拒绝,而不是被写进一整套记忆库表。
 - **库正被另一个进程写入时会报「稍后重试」**,不是"服务挂了":同一个库被 pi 会话
@@ -218,16 +214,14 @@ export interface MemoryModule {
 
 ## 4. 数据模型
 
-库内全部表(`packages/memory/src/schema.ts`)。schema **v3**;v2 库由**就地迁移器**升级
-(`MIGRATABLE_FROM = ["2"]`),无迁移器的版本在探测闸门被拒。⚠️ **已作废(2026-09-16)**:
-本行原文是「全新 schema,**无兼容/迁移代码**」——v2→v3 迁移是本轨(边级 disclosure)新增的。
+库内全部表(`packages/memory/src/schema.ts`)。当前 schema **v4**；v2、v3 库由就地迁移器升级，无迁移器的版本在探测闸门被拒。
 
 | 表 | 职责 |
 |---|---|
-| `nodes` | 记忆树。`node_id` PK、`parent_id`、`domain`、`uri`(唯一)、`content`、`disclosure`(想起条件)、`importance`(0–10,数值越大越重要,单列)、`source`(auto/manual/import)、`model`、`anchor_entry_id`、`anchor_session_id`、`first_raw_id`/`last_raw_id`(原文区间)、`last_accessed_at`(主动想起时间)、`created_at`/`world_ts`/`updated_ts`、`content_hash`、`is_stub` |
+| `nodes` | 记忆树。`node_id` PK、`parent_id`、`domain`、`uri`(唯一)、`content`、`disclosure`(该节点地址的默认想起条件)、`importance`(0–10,数值越大越重要,单列)、`source`(auto/manual/import)、`model`、`anchor_entry_id`、`anchor_session_id`、`first_raw_id`/`last_raw_id`(原文区间)、`last_accessed_at`(主动想起时间)、`created_at`/`world_ts`/`updated_ts`、`content_hash`、`is_stub` |
 | `node_revisions` | 修订制:`(node_id, version)` PK,逐行带 `uri`。编辑时旧版归档于此,现行版在 nodes;`restoreRevision` 指定版本回滚;删除后经 `restoreDeleted` 按原 node_id 找回 |
-| `edges` | 联想图(associate `related_uri` 建立),显式 retrieve 一跳扩散 |
-| `aliases` | 别名寻址:rename/relocate 后旧地址转 alias,已有引用不破链 |
+| `edges` | 联想图(associate `related_uri` 建立),显式 retrieve 一跳扩散;可带关系自身的 `disclosure` |
+| `aliases` | 别名寻址:rename/relocate 后旧地址转 alias,已有引用不破链;可有独立 `disclosure` |
 | `raw_log` | 原文日志:每消息一行,`raw_id` 全库自增、`session_id`、`role`、`text`、`entry_id`、`wall_ts`(entry 原始时间)、`world_ts`、`active`(活动路径标记);`(session_id, entry_id)` 唯一 |
 | `node_fts` / `raw_fts` | FTS5(unified token 文本 + 稳定 ID 回表过滤);召回候选与 retrace query 的真实读端;只收 `is_stub=0` 行 |
 | `autoretain_progress` | autoretain 逐任务消费进度 `(session_id, task, entry_id)` |
@@ -235,6 +229,12 @@ export interface MemoryModule {
 | `glossary` | 专名表(trigger 工具维护),专名 → 节点;完整专名参与索引与检索 |
 | `memory_kv` | 键值:世界钟(`world_time`)、awaken_uris 等 |
 | `audit_log` | append-only 审计流(node_id/source/model/turn/task/anchor/details),见 §15 |
+
+- **想起条件(disclosure)**描述未来什么线索应唤起这条记忆，不是正文摘要。节点条件参与 FTS 关键词检索，也作为独立向量通道参与自动召回；FTS 命中仍受候选规则与关键词得分约束，向量通道则与正文向量排名融合。`recall`/`retrieve` 展示节点条件。
+- 条件按入口分别拥有：规范 URI 使用节点的 `nodes.disclosure`；alias 可有自己的条件，未设置时继承目标节点条件。通过 `revise` 或 Web 编辑某个 alias 的条件只改该 alias，不会改规范节点或其他 alias；编辑规范 URI 则改节点条件。检索 alias 地址时按该入口的有效条件处理。
+- edge 的 disclosure 是关系自身的条件，仅描述这条联想边；不继承节点条件，也不参与自动召回的节点向量/FTS通道。它随显式关联读取展示。
+
+节点页编辑表单按当前入口读写想起条件：从 alias 进入时显示并编辑该 alias 的条件，留空会清除此入口的覆盖值；规范 URI 编辑节点条件。edge 条件通过关联信息展示，Web 编辑器不提供 edge 条件编辑。
 
 关键概念:
 
@@ -296,8 +296,7 @@ slots:
 ## 7. 召回与注入(引擎内建)
 
 - 每次 `before_agent_start`,对当前 prompt 做 **双 query**:当前 prompt(检索意图)+ `Prior context:` 最近 6 条消息(陈述文本)。
-- 打分:权重 vec 0.55 / keyword 0.3 / importance 0.15(v5.4 单列;数值越大越重要),keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max),世界钟 recency 加成(0.08/0.04/0.02)。**向量分量 = 正文视图与 disclosure 视图的 RRF(k=30) 融合**(§9.1:想起条件单独嵌入、独立缓存于 `memory_embeddings` 的 `seg_index = -1` 行;两路 ranklist 在 rank 空间融合后 pool 内归一,两路余弦均 < 0.3 的节点融合为 0;库内无任何 disclosure 信号时逐位回退旧排序。2026-09-22 elias 库基准:联想 query MRR 0.350→0.540、@3 33%→73%,descriptive query 逐位不动;复跑 `node --experimental-strip-types scripts/benchmark-recall.ts --db <库路径>`);vector 模式 `MIN_SCORE 0.35`、keyword 模式独立 `keywordMinScore 0.12`、`TOP_K 3`、`HIGH_CONFIDENCE 0.55`(唯一"高度相关"绝对档,keyword 模式按设计打不出)。
-- **候选集**:keyword 模式 = 节点 FTS `MATCH` 命中 ∩ kw>0(glossary 专名也算命中);vector 模式保留全 pool 语义空间但只为 FTS 命中节点算 kw。稳定同分次键:`score → kw → vec → bm25 → importance → updated_ts → uri`。
+- 打分:权重 vec 0.55 / keyword 0.3 / importance 0.15(v5.4 单列;数值越大越重要),keyword 双归一化(query-precision 与 doc-coverage×1.4 取 max),世界钟 recency 加成(0.08/0.04/0.02)。向量分量融合正文与节点 disclosure 独立向量排名(RRF k=30)；关键词通道按节点 FTS 命中计算，FTS 索引含正文与 disclosure 列。无 disclosure 信号时向量排序回退旧行为。vector 模式 `MIN_SCORE 0.35`、keyword 模式独立 `keywordMinScore 0.12`、`TOP_K 3`、`HIGH_CONFIDENCE 0.55`。
 - 注入只出 **树节点**(命中片段 ≤200 字 + 软锚),原文日志不进注入,只能 `retrace` 主动取。片段定位:向量模式取最佳余弦块的原文范围,keyword 模式以最早 token 命中为中心开窗,退化时为开头摘要。
 - 去重:每 prompt 从 `buildContextEntries()` 重建 `uri → md5(uri|content)` 表;同内容版本不重复注入,修订后自动失效重注;只在真正 fresh 注入时记一条 `inject` 审计。
 - **注入断路器(§9.1,opt-in)**:`memory.recall.breaker: {}` 声明启用——注入前用 `BAAI/bge-reranker-v2-m3` 对 fused top-8 的 500 字正文打 cross-encoder 分,`max < tau`(默认 0.01)→ 本 prompt 不注入任何记忆(跨域/技术类话题不再被语域相似度误触发;benchmark:跨域 15/15 全断、同域真实锚 0% 误伤、联想误断 ≤17%)。reranker 不可用时 fail-open;断路记 `recall_breaker` 审计;模型可用 `memory.embeddings.rerankModel` 覆盖。
@@ -532,7 +531,6 @@ store.export();  // { nodes, revisions, kv, aliases, edges, glossary } JSON 快�
 
 ## 17. 测试与验证
 
-- 包内测试：`packages/memory/test/` **675 例 / 38 文件**（`:memory:` 真库 + Web API/浏览器剖面）；覆盖 session 隔离镜像、stub 导航、relocate 原子迁移、revise history/restore、回滚投影、关联边与 glossary 检索、retrace、embeddings 降级、审计完整列，以及 agent 经 `MEM://audit` 取回完整 tidy 简报的消费链。
-- 集成测试:`packages/coding-agent/test/memory-module.test.ts`(13 例:真实 harness 工具注册/注入去重/raw_log 镜像/reroll active 标记与切回复活/v4 memorize 随分支遮蔽与复活/autoretain 消费 side response/时间戳落库/preset 路径/dispose 幂等)、`settings-manager.test.ts`(61 例,含 MemorySettings 深合并)。
+- 包内及集成测试位于 `packages/memory/test/` 与 `packages/coding-agent/test/`;此处不固定测试数量,以当前测试套件为准。
 - 全仓:`npm run check`(biome / pinned-deps / ts-imports / shrinkwrap / install-lock / tsgo / browser-smoke)。
 - Bun 编译冒烟:`bun build --compile` 含 `openDatabase` 的最小入口,验证动态导入不炸构建。
