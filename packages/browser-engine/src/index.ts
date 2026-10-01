@@ -28,11 +28,11 @@ export type { SessionRepo } from "../../agent/src/harness/session/types.ts";
 // bundle 内（assemble 缺省路径自身消费），此处仅补 runtime 转出，零新增打包内容）——
 export { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 export type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../../coding-agent/src/modes/rpc/rpc-types.ts";
+export type { BrowserSqliteDatabaseFactoryOptions } from "../../memory/src/driver-browser.ts";
 // —— 记忆 sqlite 工厂的宿主构造面（amio 阶段 4b 回填：宿主需以 {vfs:"opfs"} 真路径
 // VFS 形状注入 storage.sqliteFactory（04-D §4.3 C7 定稿）——缺省工厂（sahpool）仍是
 // assemble 缺省路径的兜底，此处仅补 runtime 转出，零新增打包内容）——
 export { createBrowserSqliteDatabaseFactory } from "../../memory/src/driver-browser.ts";
-export type { BrowserSqliteDatabaseFactoryOptions } from "../../memory/src/driver-browser.ts";
 // —— 入口工厂与选项面 ——
 export {
 	type CreatePiHarnessOptions,
