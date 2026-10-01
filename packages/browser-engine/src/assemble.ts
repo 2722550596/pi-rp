@@ -43,9 +43,9 @@ import {
 } from "../../coding-agent/src/core/prompt-preset/loader.ts";
 import { DefaultResourceLoader } from "../../coding-agent/src/core/resource-loader.ts";
 import type { RuntimeCredentials } from "../../coding-agent/src/core/runtime-credentials.ts";
-import type { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 import type { CreateAgentSessionOptions } from "../../coding-agent/src/core/sdk.ts";
 import { createAgentSession } from "../../coding-agent/src/core/sdk.ts";
+import type { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 import type { Settings } from "../../coding-agent/src/core/settings-manager.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
