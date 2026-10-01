@@ -15,6 +15,7 @@
 				"@earendil-works/pi-memory": "^0.84.2",
 				"@earendil-works/pi-session-protocol": "^0.84.2",
 				"@earendil-works/pi-protocol": "^0.84.2",
+				"@earendil-works/pi-server": "^0.84.2",
 				"@earendil-works/pi-tui": "^0.84.2",
 				"@silvia-odwyer/photon-node": "0.3.4",
 				"chalk": "5.6.2",
@@ -552,6 +553,19 @@
 			"license": "MIT",
 			"dependencies": {
 				"typebox": "1.3.7"
+			},
+			"engines": {
+				"node": ">=22.19.0"
+			}
+		},
+		"node_modules/@earendil-works/pi-server": {
+			"version": "0.84.2",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-server/-/pi-server-0.84.2.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@earendil-works/pi-ai": "^0.84.2",
+				"@earendil-works/pi-protocol": "^0.84.2",
+				"@earendil-works/pi-session-protocol": "^0.84.2"
 			},
 			"engines": {
 				"node": ">=22.19.0"

@@ -1,4 +1,5 @@
 import { contentToText } from "./content-utils.ts";
+import type { PromptRegistryReader, PromptRegistryScope } from "./registry-scope.ts";
 import type { MacroDefinition, PromptPresetDiagnostic, PromptRuntime } from "./types.ts";
 
 // =========================================================================
@@ -9,21 +10,25 @@ const builtInMacros = new Map<string, MacroDefinition>();
 const customMacros = new Map<string, MacroDefinition>();
 
 /** Register a built-in or custom macro definition. */
-export function registerMacro(definition: MacroDefinition, isBuiltIn = false): void {
+export function registerMacro(definition: MacroDefinition, isBuiltIn = false, scope?: PromptRegistryScope): void {
+	if (scope && !isBuiltIn) {
+		scope.registerMacro(definition);
+		return;
+	}
 	const registry = isBuiltIn ? builtInMacros : customMacros;
 	registry.set(definition.name, definition);
 }
 
 /** Get all registered macros. */
-export function getAllMacros(): MacroDefinition[] {
-	return [...builtInMacros.values(), ...customMacros.values()];
+export function getAllMacros(scope?: PromptRegistryReader): MacroDefinition[] {
+	return scope
+		? [...builtInMacros.values(), ...scope.getAllMacros()]
+		: [...builtInMacros.values(), ...customMacros.values()];
 }
 
-/** Get a registered macro by name. */
-export function getMacro(name: string): MacroDefinition | undefined {
-	return builtInMacros.get(name) ?? customMacros.get(name);
+export function getMacro(name: string, scope?: PromptRegistryReader): MacroDefinition | undefined {
+	return builtInMacros.get(name) ?? (scope ? scope.getMacro(name) : customMacros.get(name));
 }
-
 // =========================================================================
 // Built-in Macro Definitions
 // =========================================================================
@@ -245,7 +250,7 @@ export function expandMacros(text: string, runtime: PromptRuntime, _options?: Ex
 						const name = match[1];
 						const params = match[2];
 
-						const macro = getMacro(name);
+						const macro = getMacro(name, runtime.promptRegistry);
 						if (macro) {
 							const isStatic = macro.static === true;
 							const shouldExpand =

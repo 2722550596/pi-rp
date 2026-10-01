@@ -484,6 +484,37 @@ await session.prompt("What files are in the current directory?");
 For advanced multi-session runtime replacement, use `createAgentSessionRuntime()` and `AgentSessionRuntime`.
 
 See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
+#### PiServer Host
+
+Node.js applications can expose coding-agent sessions through the existing `@earendil-works/pi-server` protocol/server and reuse its TypeScript/Node.js PiClient. Import the host factory from the package subpath:
+
+```typescript
+import { createCodingAgentPiServer } from "@earendil-works/pi-coding-agent/server";
+import { createUnixListener } from "@earendil-works/pi-server/unix";
+
+const host = await createCodingAgentPiServer({
+  sessionStorageDir: "/var/lib/my-app/pi-sessions",
+  listeners: [createUnixListener({ path: "/run/my-app/pi.sock" })],
+  maxActiveRuntimes: 8,
+  requestGatewayConfig: { defaultMaxConcurrency: 4 },
+});
+
+await host.start();
+// Reuse @earendil-works/pi-client from your Node.js/TypeScript application
+// to connect to the server; no second client or RPC protocol is needed.
+```
+
+`createCodingAgentPiServer(options)` returns `Promise<CodingAgentPiServerHandle>`; the handle provides `server`, `start()`, and `close()`. Supply exactly one storage choice: `sessionStorageDir` for a dedicated host-managed root, or an already acquired caller-owned `sessionStore`. The built-in listener subpath is Unix-only; Windows consumers must provide their own `PiServerListener` transport. The host/service does not provide a built-in TCP or Windows listener. The default store requires a supported durable local filesystem on Linux, macOS, or Windows. Remote, unknown, volatile, and ephemeral filesystems/volumes (including tmpfs) are unsupported and fail closed; session and lock durability is not promised on volatile storage. Runtime verification has been performed on Linux under WSL; macOS and Windows require verification on their respective OS/CI runners. Do not point multiple hosts at the same root.
+
+The optional `sessionOptionsForSession` callback runs for each created or reopened session. Return fresh mutable state, tools, resource-loader, and storage instances for each session; do not override Host-owned `cwd`, config/root, session identity, model, gateway, or `sessionManager` fields. This is trusted code, not a JavaScript sandbox.
+
+The store does not recursively migrate or change permissions on existing session directories, manifests, or JSONL files. New records are created with private permissions and the root ACL/mode is resecured; manually protect any legacy per-session entries that already exist.
+
+Each protocol session ID is permanently bound to one durable coding-agent session. This v1 host does not switch, replace, fork, or import a different session behind that ID. When `maxActiveRuntimes` is occupied, creation fails with a protocol `busy` error rather than queueing or evicting a runtime. Existing CLI/project sessions are not automatically migrated; use a new dedicated storage directory.
+
+Only curated trusted extensions are appropriate in this host. Extension JavaScript has process-level capabilities and is not sandboxed or automatically isolated per session; do not load untrusted extensions or assume the host provides a security boundary between them.
+
+See [docs/sdk.md](docs/sdk.md) for the Node.js SDK and [@earendil-works/pi-server](https://www.npmjs.com/package/@earendil-works/pi-server) for the server APIs.
 
 ### RPC Mode
 

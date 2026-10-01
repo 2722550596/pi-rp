@@ -221,6 +221,7 @@ export async function prepareSubagentConversation(options: PrepareSubagentOption
 			// preset.model), so macros/slots see the model that will answer.
 			model,
 			thinkingLevel: effectiveThinkingLevel,
+			promptRegistry: options.session.promptRegistryScope,
 		};
 	} else {
 		const systemPromptOptions: BuildSystemPromptOptions = {

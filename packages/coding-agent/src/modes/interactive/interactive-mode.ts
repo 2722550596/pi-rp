@@ -1989,6 +1989,8 @@ export class InteractiveMode {
 			},
 			reload: () => this.session.requestReload(),
 			getSystemPrompt: () => this.session.systemPrompt,
+			getActivePresetExtensionData: (namespace) =>
+				extensionRunner.createContext().getActivePresetExtensionData(namespace),
 			getMemoryDbPath: () => this.session.getMemoryDbPath(),
 			completeSideRequest: (options) => extensionRunner.createContext().completeSideRequest(options),
 			compilePreset: (presetId, runtime) => extensionRunner.createContext().compilePreset(presetId, runtime),

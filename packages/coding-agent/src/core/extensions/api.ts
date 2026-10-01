@@ -19,8 +19,6 @@ import type { EventBus } from "../event-bus.ts";
 import { createMemoryEventBus } from "../event-bus-memory.ts";
 import type { ExecOptions } from "../exec.ts";
 import { type CustomTypePolicy, DEFAULT_CUSTOM_TYPE_POLICY } from "../messages.ts";
-import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
-import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-registry.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import { refusalExec } from "./exec-impl.ts";
@@ -87,8 +85,8 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 		getState: notInitialized,
 		subscribeState: notInitialized,
 		updateState: notInitialized,
-		registerSlot: (definition) => registerCustomSlot(definition, false),
-		registerMacro: (definition) => registerCustomMacro(definition, false),
+		registerSlot: (definition) => runtime.pendingSlotRegistrations.push(definition),
+		registerMacro: (definition) => runtime.pendingMacroRegistrations.push(definition),
 		registerCustomType: (customType, policy) => {
 			if (!customTypePolicies.has(customType)) {
 				customTypePolicies.set(customType, policy);
@@ -101,6 +99,8 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 		pendingRegistrationWarnings: [],
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],
+		pendingSlotRegistrations: [],
+		pendingMacroRegistrations: [],
 		assertActive,
 		invalidate: (message) => {
 			if (state.staleMessage) return;
@@ -129,10 +129,13 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 		registerNativeProvider: (provider, extensionPath = "<unknown>") => {
 			runtime.pendingNativeProviderRegistrations.push({ provider, extensionPath });
 		},
-		unregisterProvider: (name) => {
-			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
+		unregisterProvider: (name, extensionPath = "<unknown>") => {
+			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter(
+				(registration) => registration.name !== name || registration.extensionPath !== extensionPath,
+			);
 			runtime.pendingNativeProviderRegistrations = runtime.pendingNativeProviderRegistrations.filter(
-				(r) => r.provider.id !== name,
+				(registration) =>
+					registration.provider.id !== name || registration.extensionPath !== extensionPath,
 			);
 		},
 	};

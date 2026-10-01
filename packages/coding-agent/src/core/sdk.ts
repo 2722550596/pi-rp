@@ -41,6 +41,7 @@ import {
 	SessionManager,
 	type StrictChangeEntry,
 } from "./session-manager.ts";
+import type { AgentSessionScope } from "./session-scope.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import {
@@ -175,6 +176,8 @@ export interface CreateAgentSessionOptions {
 	inlineSchemas?: readonly SchemaDefSource[];
 	/** Enable state schema strict mode: reject state writes to paths not covered by a loaded schema. */
 	strict?: boolean;
+	/** Host-owned isolation scope; dispose it after disposing the returned session. */
+	scope?: AgentSessionScope;
 	/** Mount the cross-process shared state store (default: true). Pass false for in-memory subagents. */
 	attachStateStore?: boolean;
 }
@@ -425,7 +428,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const gateway =
 		options.requestGateway ?? new RequestGateway(modelRuntime, settingsManager.getRequestGatewayConfig());
 	// Hoisted before streamFn's own `options` param shadows the session options.
-	const sessionRequestIdentity = options.requestIdentity;
+	const sessionRequestIdentity: RequestIdentity = options.requestIdentity ?? {
+		sessionId: "?",
+		priority: 2,
+		label: "main",
+	};
 
 	agent = new Agent({
 		initialState: {
@@ -466,7 +473,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							: (headers ?? {});
 					},
 				},
-				sessionRequestIdentity ?? { sessionId: "?", priority: 2, label: "main" },
+				sessionRequestIdentity,
 				options?.signal,
 			);
 		},
@@ -589,6 +596,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 		attachStateStore: options.attachStateStore,
+		scope: options.scope,
+		requestIdentity: sessionRequestIdentity,
 	});
 	// Wait for the async construction work (schema/validator loading,
 	// extension runner wiring) before exposing the session.

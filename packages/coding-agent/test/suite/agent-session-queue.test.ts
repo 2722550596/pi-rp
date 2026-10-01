@@ -203,6 +203,50 @@ describe("AgentSession queue characterization", () => {
 		]);
 	});
 
+	it("keeps same-text concurrent follow-up inputs independently correlated", async () => {
+		const inputIdsByToken = new Map<string, string>();
+		const turnInputIds: Array<string | undefined> = [];
+		const waiting = await createWaitingHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("input", (event) => {
+						if (event.correlationToken) inputIdsByToken.set(event.correlationToken, event.inputId);
+					});
+					pi.on("turn_end", (event) => {
+						turnInputIds.push(event.userInputId);
+					});
+				},
+			],
+		});
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("initial turn complete"),
+			fauxAssistantMessage("follow-up one"),
+			fauxAssistantMessage("follow-up two"),
+		]);
+
+		await waitForToolStart;
+		await harness.session.sendUserMessage("same text", {
+			deliverAs: "followUp",
+			correlationToken: "same-text-one",
+		});
+		await harness.session.sendUserMessage("same text", {
+			deliverAs: "followUp",
+			correlationToken: "same-text-two",
+		});
+		releaseToolExecution();
+		await promptPromise;
+
+		const firstId = inputIdsByToken.get("same-text-one");
+		const secondId = inputIdsByToken.get("same-text-two");
+		expect(firstId).toBeTruthy();
+		expect(secondId).toBeTruthy();
+		expect(firstId).not.toBe(secondId);
+		expect(turnInputIds).toContain(firstId);
+		expect(turnInputIds).toContain(secondId);
+	});
 	it("delivers all steering messages in one batch in all mode", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
@@ -230,8 +274,21 @@ describe("AgentSession queue characterization", () => {
 		expect(getAssistantTexts(harness)).toEqual(["", "batched steer response"]);
 	});
 
-	it("delivers all follow-up messages in one batch in all mode", async () => {
-		const waiting = await createWaitingHarness();
+	it("delivers all follow-up messages in one batch with the last input ID", async () => {
+		const inputIdsByToken = new Map<string, string>();
+		const turnInputIds: Array<string | undefined> = [];
+		const waiting = await createWaitingHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("input", (event) => {
+						if (event.correlationToken) inputIdsByToken.set(event.correlationToken, event.inputId);
+					});
+					pi.on("turn_end", (event) => {
+						turnInputIds.push(event.userInputId);
+					});
+				},
+			],
+		});
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
 		harnesses.push(harness);
 		harness.session.setFollowUpMode("all");
@@ -249,13 +306,19 @@ describe("AgentSession queue characterization", () => {
 		]);
 
 		await waitForToolStart;
-		await harness.session.followUp("follow-up 1");
-		await harness.session.followUp("follow-up 2");
+		await harness.session.sendUserMessage("follow-up 1", { deliverAs: "followUp", correlationToken: "follow-up-1" });
+		await harness.session.sendUserMessage("follow-up 2", { deliverAs: "followUp", correlationToken: "follow-up-2" });
 		releaseToolExecution();
 		await promptPromise;
 
 		expect(batchedUserMessages).toEqual(["start", "follow-up 1", "follow-up 2"]);
 		expect(getAssistantTexts(harness)).toEqual(["", "original turn complete", "batched follow-up response"]);
+		const firstId = inputIdsByToken.get("follow-up-1");
+		const lastId = inputIdsByToken.get("follow-up-2");
+		expect(firstId).toBeTruthy();
+		expect(lastId).toBeTruthy();
+		expect(turnInputIds[turnInputIds.length - 1]).toBe(lastId);
+		expect(turnInputIds[turnInputIds.length - 1]).not.toBe(firstId);
 	});
 
 	it("queues custom messages with deliverAs steer while streaming", async () => {
@@ -419,6 +482,23 @@ describe("AgentSession queue characterization", () => {
 			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
 		);
 	});
+	it("clears visible queue text and its private queue identities together", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await harness.session.steer("same text");
+		await harness.session.followUp("same text");
+		expect(harness.session.getSteeringMessages()).toEqual(["same text"]);
+		expect(harness.session.getFollowUpMessages()).toEqual(["same text"]);
+
+		expect(harness.session.clearQueue()).toEqual({
+			steering: ["same text"],
+			followUp: ["same text"],
+		});
+		expect(harness.session.getSteeringMessages()).toEqual([]);
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
 
 	it("delivers follow-ups queued during agent_end", async () => {
 		let sent = false;
@@ -444,7 +524,7 @@ describe("AgentSession queue characterization", () => {
 	});
 	// Regression test for #8718.
 	it("runs direct steering and follow-up messages through input handlers", async () => {
-		const inputEvents: Array<Pick<InputEvent, "text" | "source" | "streamingBehavior">> = [];
+		const inputEvents: Array<Pick<InputEvent, "text" | "source" | "streamingBehavior" | "inputId">> = [];
 		const waiting = await createWaitingHarness({
 			extensionFactories: [
 				(pi) => {
@@ -453,6 +533,7 @@ describe("AgentSession queue characterization", () => {
 							text: event.text,
 							source: event.source,
 							streamingBehavior: event.streamingBehavior,
+							inputId: event.inputId,
 						});
 						if (event.text.startsWith("handle")) return { action: "handled" };
 						return { action: "transform", text: `transformed: ${event.text}` };
@@ -476,12 +557,15 @@ describe("AgentSession queue characterization", () => {
 			await harness.session.followUp("follow me", undefined, { source: "rpc" });
 			await harness.session.followUp("handle follow", undefined, { source: "rpc" });
 
-			expect(inputEvents).toEqual([
+			expect(
+				inputEvents.map(({ text, source, streamingBehavior }) => ({ text, source, streamingBehavior })),
+			).toEqual([
 				{ text: "steer me", source: "rpc", streamingBehavior: "steer" },
 				{ text: "handle steer", source: "rpc", streamingBehavior: "steer" },
 				{ text: "follow me", source: "rpc", streamingBehavior: "followUp" },
 				{ text: "handle follow", source: "rpc", streamingBehavior: "followUp" },
 			]);
+			expect(new Set(inputEvents.map((event) => event.inputId)).size).toBe(4);
 			expect(harness.session.getSteeringMessages()).toEqual(["transformed: steer me"]);
 			expect(harness.session.getFollowUpMessages()).toEqual(["transformed: follow me"]);
 		} finally {

@@ -40,6 +40,51 @@ describe("prompt preset loader", () => {
 		expect(loaded[0].preset.hiddenOverrides?.compaction?.systemPrompt).toBe("summarize");
 	});
 
+	it("preserves opaque namespace payloads and isolates invalid namespaces", () => {
+		const payload = {
+			instructions: "keep",
+			nested: { list: [1, true, null, { future: "value" }] },
+		};
+		const cwd = writePresetFile({
+			schemaVersion: 1,
+			id: "extensions",
+			items: [],
+			extensions: {
+				"bad-array": [],
+				"bad-null": null,
+				"bad-scalar": "invalid",
+				"good-namespace": payload,
+			},
+			voiceInstructions: "unknown top-level field stays discarded",
+		});
+
+		const [loaded] = loadPromptPresets(cwd);
+		expect(loaded.preset.extensions).toEqual({ "good-namespace": payload });
+		expect(loaded.preset).not.toHaveProperty("voiceInstructions");
+		expect(
+			loaded.diagnostics.filter((diagnostic) => diagnostic.level === "warning").map(({ message }) => message),
+		).toEqual([
+			"Invalid extensions.bad-array value; ignoring this namespace (expected an object).",
+			"Invalid extensions.bad-null value; ignoring this namespace (expected an object).",
+			"Invalid extensions.bad-scalar value; ignoring this namespace (expected an object).",
+		]);
+	});
+
+	it("warns and ignores only an invalid top-level extensions container", () => {
+		for (const extensions of [[], null, "invalid"]) {
+			const cwd = writePresetFile({ schemaVersion: 1, id: "extensions", items: [], extensions });
+			const [loaded] = loadPromptPresets(cwd);
+			expect(loaded.preset.id).toBe("extensions");
+			expect(loaded.preset.extensions).toBeUndefined();
+			expect(loaded.diagnostics).toEqual([
+				{
+					level: "warning",
+					message: "Invalid extensions value; ignoring extensions (expected an object of namespaces).",
+				},
+			]);
+		}
+	});
+
 	it("normalizes wrap on block and slot items", () => {
 		const cwd = writePresetFile({
 			schemaVersion: 1,

@@ -1,4 +1,5 @@
 import { Agent } from "@earendil-works/pi-agent-core";
+import { contentText } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
 	type FauxProviderRegistration,
@@ -6,12 +7,13 @@ import {
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { LoadedPromptPresetSource } from "../src/core/prompt-preset/loader.ts";
-import type { PromptPreset } from "../src/core/prompt-preset/types.ts";
+import type { PromptPreset, SlotDefinition } from "../src/core/prompt-preset/types.ts";
+import { RequestGateway } from "../src/core/request-gateway.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { type AgentSessionScope, createAgentSessionScope } from "../src/core/session-scope.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { prepareSubagentConversation, runSubagent } from "../src/core/subagent";
 import type { SchemaDefSource } from "../src/state/schema-loader.ts";
@@ -77,7 +79,17 @@ describe("subagent resource supply inheritance (18 号 §10.5)", () => {
 		const storage = seedStorage();
 		const stores = { storage, locks: noopLocks(), paths: { agentDir: () => "/state/agent" } };
 		const inlinePresets: LoadedPromptPresetSource[] = [
-			{ preset: presetBody("inline-peer", { delegatable: true }), filePath: "inline:inline-peer", diagnostics: [] },
+			{
+				preset: presetBody("inline-peer", {
+					delegatable: true,
+					items: [
+						{ kind: "block", id: "intro", content: "{{subagentParentMacro}}" },
+						{ kind: "slot", id: "parent-slot", slot: "subagentParentSlot" },
+					],
+				}),
+				filePath: "inline:inline-peer",
+				diagnostics: [],
+			},
 		];
 		const inlineSchemas: SchemaDefSource[] = [
 			{ schemaId: "peer-schema", namespace: "peer", schema: { type: "object", properties: {} } },
@@ -90,7 +102,9 @@ describe("subagent resource supply inheritance (18 号 §10.5)", () => {
 		const authStorage = AuthStorage.inMemory();
 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
 		const modelRuntime = getModelRuntime(await createInMemoryModelRegistry(authStorage));
+		const parentGateway = new RequestGateway(modelRuntime, {});
 
+		const parentScope = createAgentSessionScope({ rejectSessionReplacement: true });
 		// Parent session: browser-shaped supply (OPFS-kind stores + inline sets) over a faux-model agent.
 		const agent = new Agent({
 			getApiKey: () => "faux-key",
@@ -109,11 +123,26 @@ describe("subagent resource supply inheritance (18 号 §10.5)", () => {
 			inlinePresets,
 			inlineSchemas,
 			modelRuntime,
+			requestGateway: parentGateway,
 			resourceLoader: createTestResourceLoader(),
+			requestIdentity: { sessionId: "parent-host-session", priority: 2, label: "main" },
+			scope: parentScope,
 		});
-		await parent._buildRuntimePromise;
-
 		try {
+			await parent._buildRuntimePromise;
+			expect(parent.sessionScope).toBe(parentScope);
+			parentScope.promptRegistry.registerMacro({
+				name: "subagentParentMacro",
+				description: "parent-scoped macro",
+				render: () => "parent-scoped-macro-value",
+			});
+			parentScope.promptRegistry.registerSlot({
+				name: "subagentParentSlot",
+				description: "parent-scoped async slot",
+				async: true,
+				render: async () => "parent-scoped-slot-value",
+			});
+
 			const preparation = await prepareSubagentConversation({
 				cwd: "/workspace/default",
 				profileId: "inline-peer",
@@ -123,15 +152,45 @@ describe("subagent resource supply inheritance (18 号 §10.5)", () => {
 			});
 			if (!("messages" in preparation)) throw new Error(`prepare failed: ${JSON.stringify(preparation)}`);
 
+			const preparedText = preparation.messages
+				.map((message) => ("content" in message ? contentText(message.content, "") : ""))
+				.join("\n");
+			expect(preparedText).toContain("parent-scoped-macro-value");
+			expect(preparedText).toContain("parent-scoped-slot-value");
+
 			let child: AgentSession | undefined;
+			let childScope: AgentSessionScope | undefined;
+			let childSlot: SlotDefinition | undefined;
+			const parentSlot = parent.promptRegistryScope?.getCustomSlot("subagentParentSlot");
 			const result = await runSubagent(preparation, modelRuntime, {
 				parentSession: parent,
 				onSessionCreated: (session) => {
 					child = session;
+					childScope = session.sessionScope;
+					expect(session.promptRegistryScope?.getCustomSlot("subagentParentSlot")).toBeUndefined();
+					const slot: SlotDefinition = {
+						name: "subagentParentSlot",
+						description: "child-scoped async slot",
+						async: true,
+						render: async () => "child-scoped-slot-value",
+					};
+					session.promptRegistryScope?.registerSlot(slot);
+					childSlot = session.promptRegistryScope?.getCustomSlot("subagentParentSlot");
+					expect(session.requestIdentity).toEqual({
+						sessionId: "parent-host-session",
+						priority: 0,
+						label: "subagent",
+					});
+					expect(session.requestGateway).toBe(parentGateway);
 				},
 			});
 			expect(result.status).toBe("completed");
 			expect(child).toBeDefined();
+			expect(childScope).toBeDefined();
+			expect(childScope).not.toBe(parentScope);
+			expect(parentSlot).toBeDefined();
+			expect(childSlot).toBeDefined();
+			expect(childSlot).not.toBe(parentSlot);
 
 			// The supply seam (not a snapshot) is inherited: same storage backend + inline sets.
 			const supply = child!.getResourceSupply();
@@ -152,6 +211,7 @@ describe("subagent resource supply inheritance (18 号 §10.5)", () => {
 			expect(child!.loadSchema("world").ok).toBe(true);
 		} finally {
 			parent.dispose();
+			parentScope.dispose();
 		}
 	});
 });

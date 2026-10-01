@@ -1,0 +1,9 @@
+{
+  "name": "pi-live-voice-extension",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "sherpa-onnx-node": "1.13.8"
+  }
+}

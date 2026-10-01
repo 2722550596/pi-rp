@@ -108,6 +108,29 @@ describe("Input Event", () => {
 		expect((globalThis as any).testVar).toBeUndefined();
 	});
 
+	it("keeps the input identity and opt-in token stable through transforms", async () => {
+		const globalTest = globalThis as typeof globalThis & {
+			inputEvents?: Array<{ id: string; token: string | undefined; text: string }>;
+		};
+		globalTest.inputEvents = [];
+		const r = await createRunner(
+			`export default p => p.on("input", async e => {
+				globalThis.inputEvents.push({ id: e.inputId, token: e.correlationToken, text: e.text });
+				return { action: "transform", text: e.text + "[one]" };
+			});`,
+			`export default p => p.on("input", async e => {
+				globalThis.inputEvents.push({ id: e.inputId, token: e.correlationToken, text: e.text });
+				return { action: "transform", text: e.text + "[two]" };
+			});`,
+		);
+
+		await r.emitInput("x", undefined, "extension", undefined, "dispatch-42", "voice-42");
+		expect(globalTest.inputEvents).toEqual([
+			{ id: "dispatch-42", token: "voice-42", text: "x" },
+			{ id: "dispatch-42", token: "voice-42", text: "x[one]" },
+		]);
+	});
+
 	it("catches handler errors and continues", async () => {
 		const r = await createRunner(`export default p => p.on("input", async () => { throw new Error("boom"); });`);
 		const errs: string[] = [];

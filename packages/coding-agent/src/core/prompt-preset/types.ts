@@ -2,6 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { Skill } from "../skills.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { PromptRegistryReader } from "./registry-scope.ts";
 
 // =========================================================================
 // Prompt Stack
@@ -273,6 +274,8 @@ export interface PromptPreset {
 	regex?: PromptPresetRegexConfig;
 	hiddenOverrides?: PromptPresetHiddenOverrides;
 	variables?: Record<string, string>;
+	/** Generic extension-owned metadata, isolated by namespace and not rendered into prompts. */
+	extensions?: Record<string, Record<string, unknown>>;
 	/** Memory-system declaration: preset-level dbPath (lowest precedence in
 	 *  the CLI > settings > preset > default chain, docs memory-system §2). */
 	memory?: { dbPath?: string };
@@ -309,6 +312,8 @@ export interface PromptRuntime {
 	state?: Record<string, unknown>;
 	/** If true, {{macros}} are left unexpanded in the compiled output. */
 	skipMacroExpansion?: boolean;
+	/** Session-owned slot/macro definitions; omitted for legacy process-global behavior. */
+	promptRegistry?: PromptRegistryReader;
 }
 
 // =========================================================================

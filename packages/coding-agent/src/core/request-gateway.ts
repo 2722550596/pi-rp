@@ -35,6 +35,30 @@ export interface RequestGatewayConfig {
 	defaultMaxConcurrency?: number;
 }
 
+/** Validate the strict positive-finite concurrency limits required by shared Host assemblies. */
+export function assertValidRequestGatewayConfig(
+	config: RequestGatewayConfig | undefined,
+): asserts config is RequestGatewayConfig {
+	const fallback = config?.defaultMaxConcurrency;
+	if (!config || typeof fallback !== "number" || !Number.isFinite(fallback) || fallback <= 0) {
+		throw new TypeError("RequestGatewayConfig.defaultMaxConcurrency must be a positive finite number");
+	}
+	if (
+		config.providers !== undefined &&
+		(!config.providers || typeof config.providers !== "object" || Array.isArray(config.providers))
+	) {
+		throw new TypeError("RequestGatewayConfig.providers must be an object when provided");
+	}
+	for (const [providerId, override] of Object.entries(config.providers ?? {})) {
+		const maxConcurrency = override?.maxConcurrency;
+		if (typeof maxConcurrency !== "number" || !Number.isFinite(maxConcurrency) || maxConcurrency <= 0) {
+			throw new TypeError(
+				`RequestGatewayConfig.providers[${JSON.stringify(providerId)}].maxConcurrency must be a positive finite number`,
+			);
+		}
+	}
+}
+
 interface QueuedAcquire {
 	priority: number;
 	resolve: () => void;

@@ -422,20 +422,7 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	return [];
 }
 
-/**
- * Build the active, compaction-aware session entry list.
- *
- * This follows the current leaf path. If the path contains compaction entries,
- * the latest compaction is represented by the compaction entry itself, followed
- * by the kept entries starting at firstKeptEntryId and all entries after the
- * compaction entry. Older summarized entries are omitted.
- */
-export function buildContextEntries(
-	entries: SessionEntry[],
-	leafId?: string | null,
-	byId?: Map<string, SessionEntry>,
-): SessionEntry[] {
-	const path = buildSessionPath(entries, leafId, byId);
+function buildContextEntriesFromPath(path: SessionEntry[]): SessionEntry[] {
 	let compaction: CompactionEntry | null = null;
 
 	for (const entry of path) {
@@ -469,6 +456,28 @@ export function buildContextEntries(
 }
 
 /**
+ * Build the active, compaction-aware session entry list.
+ *
+ * This follows the current leaf path. If the path contains compaction entries,
+ * the latest compaction is represented by the compaction entry itself, followed
+ * by the kept entries starting at firstKeptEntryId and all entries after the
+ * compaction entry. Older summarized entries are omitted.
+ */
+export function buildContextEntries(
+	entries: SessionEntry[],
+	leafId?: string | null,
+	byId?: Map<string, SessionEntry>,
+): SessionEntry[] {
+	return buildContextEntriesFromPath(buildSessionPath(entries, leafId, byId));
+}
+
+function buildSessionContextFromPath(path: SessionEntry[]): SessionContext {
+	const { thinkingLevel, model } = getSessionContextSettings(path);
+	const messages = buildContextEntriesFromPath(path).flatMap(sessionEntryToContextMessages);
+	return { messages, thinkingLevel, model };
+}
+
+/**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
  * Handles compaction and branch summaries along the path.
@@ -478,10 +487,7 @@ export function buildSessionContext(
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 ): SessionContext {
-	const path = buildSessionPath(entries, leafId, byId);
-	const { thinkingLevel, model } = getSessionContextSettings(path);
-	const messages = buildContextEntries(entries, leafId, byId).flatMap(sessionEntryToContextMessages);
-	return { messages, thinkingLevel, model };
+	return buildSessionContextFromPath(buildSessionPath(entries, leafId, byId));
 }
 
 /**
@@ -1327,18 +1333,18 @@ export class SessionManager {
 
 	/**
 	 * Build the active, compaction-aware entry list for context/rendering.
-	 * Uses tree traversal from current leaf.
+	 * Walks the current branch without enumerating entries from other branches.
 	 */
 	buildContextEntries(): SessionEntry[] {
-		return buildContextEntries(this.getEntries(), this.leafId, this.byId);
+		return buildContextEntriesFromPath(this.getBranch());
 	}
 
 	/**
-	 * Build the session context (what gets sent to the LLM).
-	 * Uses tree traversal from current leaf.
+	 * Build the session context (what gets sent to the LLM) from the current branch.
+	 * The branch path is built once; the full append log remains available via getEntries().
 	 */
 	buildSessionContext(): SessionContext {
-		return buildSessionContext(this.getEntries(), this.leafId, this.byId);
+		return buildSessionContextFromPath(this.getBranch());
 	}
 
 	/**

@@ -196,6 +196,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 
 		// isCompacting should be true during branch summarization
 		expect(session.isCompacting).toBe(true);
+		expect(session.isBranchSummarizing).toBe(true);
 
 		session.abortBranchSummary();
 
@@ -205,6 +206,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		expect(result.aborted).toBe(true);
 		expect(result.summaryEntry).toBeUndefined();
 
+		expect(session.isBranchSummarizing).toBe(false);
 		// Session should be unchanged
 		const entriesAfter = sessionManager.getEntries();
 		expect(entriesAfter.length).toBe(entriesBefore.length);

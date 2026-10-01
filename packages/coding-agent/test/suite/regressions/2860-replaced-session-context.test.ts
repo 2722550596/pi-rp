@@ -146,6 +146,7 @@ describe("regression #2860: replaced session callbacks", () => {
 
 	it("rebinds before withSession, targets the replacement session, and invalidates stale pi/ctx", async () => {
 		const events: string[] = [];
+		const replacementInputTokens: string[] = [];
 		let oldCtx: ExtensionCommandContext | undefined;
 		let oldPi: ExtensionAPI | undefined;
 		let oldSessionFile: string | undefined;
@@ -156,6 +157,9 @@ describe("regression #2860: replaced session callbacks", () => {
 		const { runtime } = await createRuntimeForTest(
 			(pi) => {
 				const currentInstance = ++instanceId;
+				pi.on("input", (event) => {
+					if (event.correlationToken) replacementInputTokens.push(event.correlationToken);
+				});
 				pi.on("session_start", () => {
 					events.push(`start:${currentInstance}`);
 				});
@@ -183,7 +187,9 @@ describe("regression #2860: replaced session callbacks", () => {
 								} catch {
 									stalePiThrows = true;
 								}
-								await replacedCtx.sendUserMessage("Hello from the new session!");
+								await replacedCtx.sendUserMessage("Hello from the new session!", {
+									correlationToken: "replacement-token",
+								});
 							},
 						});
 					},
@@ -201,6 +207,7 @@ describe("regression #2860: replaced session callbacks", () => {
 		expect(replacementSessionFile).not.toBe(oldSessionFile);
 		expect(staleCtxThrows).toBe(true);
 		expect(stalePiThrows).toBe(true);
+		expect(replacementInputTokens).toEqual(["replacement-token"]);
 		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
 			"user:Hello from the new session!",
 			"assistant:hello reply",

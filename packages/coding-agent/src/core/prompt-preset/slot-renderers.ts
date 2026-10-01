@@ -6,6 +6,7 @@ import { formatSkillsForPrompt } from "../skills.ts";
 import { formatToolSearchCategorySection } from "../tool-search-recovery.ts";
 import { expandMacros } from "./macro-engine.ts";
 import { applyResourcePolicy } from "./policy.ts";
+import type { PromptRegistryReader } from "./registry-scope.ts";
 import { getSlot, registerSlot } from "./slot-registry.ts";
 import type {
 	PromptPreset,
@@ -23,8 +24,8 @@ import type {
  * slot registered with `position: "chat-history"` is the insertion point
  * regardless of its name.
  */
-export function isChatHistoryPosition(item: PromptPresetItem): boolean {
-	return item.kind === "slot" && getSlot(item.slot)?.position === "chat-history";
+export function isChatHistoryPosition(item: PromptPresetItem, scope?: PromptRegistryReader): boolean {
+	return item.kind === "slot" && getSlot(item.slot, scope)?.position === "chat-history";
 }
 
 // =========================================================================
@@ -480,7 +481,7 @@ export function renderSlotSync(
 	runtime: PromptRuntime,
 	diagnostics: PromptPresetDiagnostic[],
 ): string {
-	const slotDef = getSlot(item.slot);
+	const slotDef = getSlot(item.slot, runtime.promptRegistry);
 	if (!slotDef) {
 		diagnostics.push({
 			level: "warning",
@@ -522,7 +523,7 @@ export async function renderSlotAsync(
 	runtime: PromptRuntime,
 	diagnostics: PromptPresetDiagnostic[],
 ): Promise<string> {
-	const slotDef = getSlot(item.slot);
+	const slotDef = getSlot(item.slot, runtime.promptRegistry);
 	if (!slotDef) {
 		diagnostics.push({
 			level: "warning",

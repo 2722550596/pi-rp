@@ -13,6 +13,7 @@ import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-registry.ts";
+import type { PromptRegistryScope } from "../prompt-preset/registry-scope.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
@@ -289,6 +290,7 @@ const noOpUIContext: ExtensionUIContext = {
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
+	private inputEventSequence = 0;
 	private uiContext: ExtensionUIContext;
 	private mode: ExtensionMode = "print";
 	private parentContextRequestFn:
@@ -317,6 +319,8 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private getActivePresetExtensionDataFn: (namespace: string) => Readonly<Record<string, unknown>> | undefined = () =>
+		undefined;
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
 	/** Session-resolved memory DB path (or undefined when memory failed to init). */
 	private memoryDbPathFn: () => string | undefined = () => undefined;
@@ -356,6 +360,7 @@ export class ExtensionRunner {
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
 		settingsManager: SettingsManager,
+		promptRegistry?: PromptRegistryScope,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -364,16 +369,24 @@ export class ExtensionRunner {
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
 		this.settingsManager = settingsManager;
-		this.runtime.registerSlot = (definition) => registerCustomSlot(definition, false);
-		this.runtime.registerMacro = (definition) => registerCustomMacro(definition, false);
+		for (const definition of this.runtime.pendingSlotRegistrations) {
+			registerCustomSlot(definition, false, promptRegistry);
+		}
+		this.runtime.pendingSlotRegistrations = [];
+		for (const definition of this.runtime.pendingMacroRegistrations) {
+			registerCustomMacro(definition, false, promptRegistry);
+		}
+		this.runtime.pendingMacroRegistrations = [];
+		this.runtime.registerSlot = (definition) => registerCustomSlot(definition, false, promptRegistry);
+		this.runtime.registerMacro = (definition) => registerCustomMacro(definition, false, promptRegistry);
 	}
 	bindCore(
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,
 		providerActions?: {
-			registerProvider?: (name: string, config: ProviderConfig) => void;
-			registerNativeProvider?: (provider: Provider) => void;
-			unregisterProvider?: (name: string) => void;
+			registerProvider?: (name: string, config: ProviderConfig, extensionPath: string) => void;
+			registerNativeProvider?: (provider: Provider, extensionPath: string) => void;
+			unregisterProvider?: (name: string, extensionPath: string) => void;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
@@ -409,6 +422,7 @@ export class ExtensionRunner {
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
+		this.getActivePresetExtensionDataFn = contextActions.getActivePresetExtensionData ?? (() => undefined);
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
 		this.memoryDbPathFn = contextActions.getMemoryDbPath ?? (() => undefined);
 		this.completeSideRequestFn = contextActions.completeSideRequest;
@@ -420,7 +434,7 @@ export class ExtensionRunner {
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
 			try {
 				if (providerActions?.registerProvider) {
-					providerActions.registerProvider(name, config);
+					providerActions.registerProvider(name, config, extensionPath);
 				} else {
 					this.modelRegistry.registerProvider(name, config);
 				}
@@ -437,7 +451,7 @@ export class ExtensionRunner {
 		for (const { provider, extensionPath } of this.runtime.pendingNativeProviderRegistrations) {
 			try {
 				if (providerActions?.registerNativeProvider) {
-					providerActions.registerNativeProvider(provider);
+					providerActions.registerNativeProvider(provider, extensionPath);
 				} else {
 					this.modelRegistry.registerProvider(provider);
 				}
@@ -454,23 +468,23 @@ export class ExtensionRunner {
 
 		// From this point on, provider registration/unregistration takes effect immediately
 		// without requiring a /reload.
-		this.runtime.registerProvider = (name, config) => {
+		this.runtime.registerProvider = (name, config, extensionPath = "<unknown>") => {
 			if (providerActions?.registerProvider) {
-				providerActions.registerProvider(name, config);
+				providerActions.registerProvider(name, config, extensionPath);
 				return;
 			}
 			this.modelRegistry.registerProvider(name, config);
 		};
-		this.runtime.registerNativeProvider = (provider) => {
+		this.runtime.registerNativeProvider = (provider, extensionPath = "<unknown>") => {
 			if (providerActions?.registerNativeProvider) {
-				providerActions.registerNativeProvider(provider);
+				providerActions.registerNativeProvider(provider, extensionPath);
 				return;
 			}
 			this.modelRegistry.registerProvider(provider);
 		};
-		this.runtime.unregisterProvider = (name) => {
+		this.runtime.unregisterProvider = (name, extensionPath = "<unknown>") => {
 			if (providerActions?.unregisterProvider) {
-				providerActions.unregisterProvider(name);
+				providerActions.unregisterProvider(name, extensionPath);
 				return;
 			}
 			this.modelRegistry.unregisterProvider(name);
@@ -883,6 +897,10 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			getActivePresetExtensionData: (namespace) => {
+				runner.assertActive();
+				return runner.getActivePresetExtensionDataFn(namespace);
 			},
 			getMemoryDbPath: () => {
 				runner.assertActive();
@@ -1359,6 +1377,8 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		source: InputSource,
 		streamingBehavior?: "steer" | "followUp",
+		inputId = `input-${++this.inputEventSequence}`,
+		correlationToken?: string,
 	): Promise<InputEventResult> {
 		const ctx = this.createContext();
 		let currentText = text;
@@ -1369,6 +1389,8 @@ export class ExtensionRunner {
 				try {
 					const event: InputEvent = {
 						type: "input",
+						inputId,
+						...(correlationToken !== undefined ? { correlationToken } : {}),
 						text: currentText,
 						images: currentImages,
 						source,

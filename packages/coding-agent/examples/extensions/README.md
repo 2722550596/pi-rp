@@ -80,6 +80,10 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 | `inline-bash.ts` | Expands `!{command}` patterns in prompts via `input` event transformation |
 | `input-transform-streaming.ts` | Skips expensive input preprocessing for mid-stream steering via `streamingBehavior` |
 
+### Local Audio Runtime
+
+- `live-voice/` — WSL2 PulseAudio/Sherpa local audio and model primitives. This is not registered as a Pi extension: the `/live` controller and real provider adapters are still blocked on API details. See [`live-voice/README.md`](live-voice/README.md).
+
 ### Git Integration
 
 | Extension | Description |

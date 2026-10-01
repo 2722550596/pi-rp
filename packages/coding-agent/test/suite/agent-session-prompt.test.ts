@@ -321,6 +321,203 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
 		expect(getMessageText(harness.session.messages[0]!)).toBe("from extension");
 	});
+	it("correlates an opted-in extension input with its assistant turn without persistence", async () => {
+		let extensionApi: ExtensionAPI | undefined;
+		let resolveAgentStart!: () => void;
+		const agentStarted = new Promise<void>((resolve) => {
+			resolveAgentStart = resolve;
+		});
+		const inputEvents: InputEvent[] = [];
+		const turnInputIds: Array<string | undefined> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					extensionApi = pi;
+					pi.on("input", (event) => {
+						inputEvents.push(event);
+					});
+					pi.on("agent_start", () => {
+						resolveAgentStart();
+					});
+					pi.on("turn_end", (event) => {
+						turnInputIds.push(event.userInputId);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("response")]);
+
+		expect(extensionApi).toBeDefined();
+		extensionApi!.sendUserMessage("same text", { correlationToken: "voice-token-1" });
+		await agentStarted;
+		await harness.session.waitForIdle();
+
+		expect(inputEvents).toHaveLength(1);
+		expect(inputEvents[0]?.correlationToken).toBe("voice-token-1");
+		expect(inputEvents[0]?.inputId).toBeTruthy();
+		expect(turnInputIds).toEqual([inputEvents[0]?.inputId]);
+		const serializedEntries = JSON.stringify(harness.sessionManager.getEntries());
+		expect(serializedEntries).not.toContain("voice-token-1");
+		expect(serializedEntries).not.toContain(inputEvents[0]?.inputId);
+	});
+	it("does not reuse the previous user ID for a standalone custom-trigger run", async () => {
+		const turnInputIds: Array<string | undefined> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("turn_end", (event) => {
+						turnInputIds.push(event.userInputId);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("user reply"), fauxAssistantMessage("custom reply")]);
+
+		await harness.session.prompt("user input");
+		await harness.session.sendCustomMessage(
+			{ customType: "independent", content: [{ type: "text", text: "start" }] },
+			{ triggerTurn: true },
+		);
+
+		expect(turnInputIds[0]).toBeTruthy();
+		expect(turnInputIds[1]).toBeUndefined();
+	});
+	it("restores a user input ID only through same-process branch entry identity", async () => {
+		const turnInputIds: Array<string | undefined> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("turn_end", (event) => {
+						turnInputIds.push(event.userInputId);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("first reply"),
+			fauxAssistantMessage("second reply"),
+			fauxAssistantMessage("branch reply"),
+		]);
+
+		await harness.session.prompt("first input");
+		await harness.session.prompt("second input");
+		const firstAssistantEntryId = harness.sessionManager
+			.getBranch()
+			.find((entry) => entry.type === "message" && entry.message.role === "assistant")?.id;
+		if (!firstAssistantEntryId) throw new Error("first assistant entry was not persisted");
+
+		await harness.session.navigateTree(firstAssistantEntryId);
+		expect(await harness.session.continueSession()).toBe(true);
+
+		expect(turnInputIds[0]).toBeTruthy();
+		expect(turnInputIds[2]).toBe(turnInputIds[0]);
+	});
+	it("does not inherit an earlier input ID across an uncorrelated custom user turn", async () => {
+		const turnInputIds: Array<string | undefined> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCustomType("custom-user-turn", { context: "include", llmRole: "user" });
+					pi.on("turn_end", (event) => {
+						turnInputIds.push(event.userInputId);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("first reply"),
+			fauxAssistantMessage("custom reply"),
+			fauxAssistantMessage("rerolled custom reply"),
+		]);
+
+		await harness.session.prompt("first input");
+		await harness.session.sendCustomMessage(
+			{
+				customType: "custom-user-turn",
+				content: [{ type: "text", text: "synthetic user message" }],
+			},
+			{ triggerTurn: true },
+		);
+		expect(await harness.session.reroll()).toBe(true);
+		await harness.session.startRerollRun();
+
+		expect(turnInputIds[0]).toBeTruthy();
+		expect(turnInputIds[1]).toBeUndefined();
+		expect(turnInputIds[2]).toBeUndefined();
+	});
+	it("returns detached metadata from the effective active preset", async () => {
+		const extensionData: Array<Readonly<Record<string, unknown>> | undefined> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("turn_end", (_event, ctx) => {
+						const data = ctx.getActivePresetExtensionData("voice-test");
+						extensionData.push(data);
+						if (extensionData.length === 1 && data) {
+							const mutable = data as unknown as {
+								transcriptInstructions: string;
+								nested: { value: string };
+							};
+							mutable.transcriptInstructions = "mutated";
+							mutable.nested.value = "mutated";
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const globalPresets = join(harness.tempDir, "agent", "prompt-presets");
+		const projectPresets = join(harness.tempDir, ".pi", "prompt-presets");
+		mkdirSync(globalPresets, { recursive: true });
+		mkdirSync(projectPresets, { recursive: true });
+		writeFileSync(
+			join(globalPresets, "shared.json"),
+			JSON.stringify({
+				schemaVersion: 1,
+				id: "shared",
+				items: [],
+				extensions: { "voice-test": { transcriptInstructions: "global", nested: { value: "global" } } },
+			}),
+		);
+		writeFileSync(
+			join(projectPresets, "shared.json"),
+			JSON.stringify({
+				schemaVersion: 1,
+				id: "shared",
+				items: [],
+				extensions: { "voice-test": { transcriptInstructions: "project", nested: { value: "original" } } },
+			}),
+		);
+		writeFileSync(
+			join(projectPresets, "next.json"),
+			JSON.stringify({
+				schemaVersion: 1,
+				id: "next",
+				items: [],
+				extensions: { "voice-test": { transcriptInstructions: "next", nested: { value: "next" } } },
+			}),
+		);
+		harness.session.reloadPresets();
+		expect((await harness.session.setActivePreset("shared")).ok).toBe(true);
+		harness.setResponses([
+			fauxAssistantMessage("first"),
+			fauxAssistantMessage("second"),
+			fauxAssistantMessage("third"),
+		]);
+
+		await harness.session.prompt("first input");
+		await harness.session.prompt("second input");
+		expect((await harness.session.setActivePreset("next")).ok).toBe(true);
+		await harness.session.prompt("third input");
+
+		expect(extensionData[0]).toMatchObject({ transcriptInstructions: "mutated", nested: { value: "mutated" } });
+		expect(extensionData[1]).toEqual({ transcriptInstructions: "project", nested: { value: "original" } });
+		expect(extensionData[2]).toEqual({ transcriptInstructions: "next", nested: { value: "next" } });
+	});
 
 	it("does not report streamingBehavior to input handlers while idle", async () => {
 		const inputEvents: InputEvent[] = [];

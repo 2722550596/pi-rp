@@ -61,7 +61,6 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import {
 	createMemoryModule,
-	createMemorySlots,
 	MEMORY_TOOL_NAMES,
 	type MemoryBranchSnapshot,
 	type MemoryModule,
@@ -174,10 +173,11 @@ import {
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
 import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
+import type { PromptRegistryScope } from "./prompt-preset/registry-scope.ts";
 import { registerSlot } from "./prompt-preset/slot-registry.ts";
 import { isChatHistoryPosition } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
-import type { RequestGateway } from "./request-gateway.ts";
+import type { RequestGateway, RequestIdentity } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import {
@@ -186,6 +186,7 @@ import {
 	type SessionHeader,
 	sessionEntryToContextMessages,
 } from "./session-manager.ts";
+import { type AgentSessionScope, createAgentSessionScope } from "./session-scope.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -412,6 +413,10 @@ export interface AgentSessionConfig {
 	modelRuntime: ModelRuntime;
 	/** Optional request gateway for per-provider concurrency control. */
 	requestGateway?: RequestGateway;
+	/** Gateway identity used by this session, also inherited by nested subagents. */
+	requestIdentity?: RequestIdentity;
+	/** Optional Host-owned isolation scope. Caller disposes it after the session. */
+	scope?: AgentSessionScope;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -477,8 +482,10 @@ export interface PromptOptions {
 	expandPromptTemplates?: boolean;
 	/** Image attachments */
 	images?: ImageContent[];
-	/** When streaming, how to queue the message: "steer" (interrupt) or "followUp" (wait). Required if streaming. */
+	/** How to deliver while streaming: "steer" or "followUp". Required if streaming. */
 	streamingBehavior?: "steer" | "followUp";
+	/** Optional caller-supplied runtime correlation value echoed by InputEvent. */
+	correlationToken?: string;
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
@@ -559,6 +566,8 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 // AgentSession Class
 // ============================================================================
 
+let nextProcessInputId = 0;
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -575,9 +584,15 @@ export class AgentSession {
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
+	private _steeringQueueItemIds: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
-	/** Messages queued to be included with the next user prompt as context ("asides"). */
+	private _followUpQueueItemIds: string[] = [];
+	private _queueItemIdByMessage = new WeakMap<AgentMessage, string>();
+	private _inputIdByMessage = new WeakMap<AgentMessage, string>();
+	private _inputIdByEntry = new WeakMap<SessionEntry, string>();
+	private _currentUserInputId: string | undefined;
+	private _nextQueueItemId = 0;
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
 	private _pendingCustomMessages: CustomMessage[] = [];
@@ -698,7 +713,9 @@ export class AgentSession {
 	private _extensionParentContextRequest?: ExtensionBindings["parentContextRequest"];
 	private _extensionOrchestrationRequest?: ExtensionBindings["orchestrationRequest"];
 	private _modelRuntime: ModelRuntime;
+	private _agentSessionScope?: AgentSessionScope;
 	private _requestGateway?: RequestGateway;
+	private _requestIdentity: RequestIdentity = { sessionId: "?", priority: 2, label: "main" };
 	private _attachStateStore = true;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -793,6 +810,23 @@ export class AgentSession {
 		return this._requestGateway;
 	}
 
+	get requestIdentity(): RequestIdentity {
+		return this._requestIdentity;
+	}
+
+	get sessionScope(): AgentSessionScope | undefined {
+		return this._agentSessionScope;
+	}
+
+	get promptRegistryScope(): PromptRegistryScope | undefined {
+		return this._agentSessionScope?.promptRegistry;
+	}
+
+	/** Create a fresh child scope without sharing session-bound memory slot closures. */
+	createSubagentScope(): AgentSessionScope | undefined {
+		return this._agentSessionScope ? createAgentSessionScope({ rejectSessionReplacement: true }) : undefined;
+	}
+
 	get stateManager(): StateManager {
 		return this._stateManager;
 	}
@@ -825,7 +859,10 @@ export class AgentSession {
 		this._inlineSchemas = config.inlineSchemas ?? [];
 		this._sqliteFactory = config.sqliteFactory;
 		this._modelRuntime = config.modelRuntime;
+		this._agentSessionScope = config.scope;
+		this._agentSessionScope?.bindModelRuntime(config.modelRuntime);
 		this._requestGateway = config.requestGateway;
+		this._requestIdentity = config.requestIdentity ?? { sessionId: "?", priority: 2, label: "main" };
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
@@ -862,6 +899,11 @@ export class AgentSession {
 	 */
 	private async _ensureRuntimeReady(): Promise<void> {
 		await this._buildRuntimePromise;
+	}
+
+	/** Throw the typed Host policy error before a replacement path can mutate a session tree. */
+	assertReplacementAllowed(): void {
+		this._agentSessionScope?.assertReplacementAllowed();
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -1104,17 +1146,21 @@ export class AgentSession {
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
-			const messageText = contentText(event.message.content, "");
-			if (messageText) {
-				// Check steering queue first
-				const steeringIndex = this._steeringMessages.indexOf(messageText);
+			const inputId = this._inputIdByMessage.get(event.message);
+			if (inputId) this._currentUserInputId = inputId;
+
+			const queueItemId = this._queueItemIdByMessage.get(event.message);
+			if (queueItemId) {
+				this._queueItemIdByMessage.delete(event.message);
+				const steeringIndex = this._steeringQueueItemIds.indexOf(queueItemId);
 				if (steeringIndex !== -1) {
+					this._steeringQueueItemIds.splice(steeringIndex, 1);
 					this._steeringMessages.splice(steeringIndex, 1);
 					this._emitQueueUpdate();
 				} else {
-					// Check follow-up queue
-					const followUpIndex = this._followUpMessages.indexOf(messageText);
+					const followUpIndex = this._followUpQueueItemIds.indexOf(queueItemId);
 					if (followUpIndex !== -1) {
+						this._followUpQueueItemIds.splice(followUpIndex, 1);
 						this._followUpMessages.splice(followUpIndex, 1);
 						this._emitQueueUpdate();
 					}
@@ -1145,7 +1191,10 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				const entryId = this.sessionManager.appendMessage(event.message);
+				const entry = this.sessionManager.getEntry(entryId);
+				const inputId = this._inputIdByMessage.get(event.message);
+				if (entry && inputId) this._inputIdByEntry.set(entry, inputId);
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
@@ -1265,6 +1314,7 @@ export class AgentSession {
 				turnIndex: this._turnIndex,
 				message: event.message,
 				toolResults: event.toolResults,
+				...(this._currentUserInputId !== undefined ? { userInputId: this._currentUserInputId } : {}),
 			};
 			await this._extensionRunner.emit(extensionEvent);
 			// Memory module raw_log write-through (§4): after extensions saw the
@@ -1876,6 +1926,11 @@ export class AgentSession {
 		);
 	}
 
+	/** Whether a branch summary is currently running (distinct from compaction). */
+	get isBranchSummarizing(): boolean {
+		return this._branchSummaryAbortController !== undefined;
+	}
+
 	/** All messages including custom types like BashExecutionMessage */
 	get messages(): AgentMessage[] {
 		return this.agent.state.messages;
@@ -2095,7 +2150,7 @@ export class AgentSession {
 		// agent.state.systemPrompt = "" (content lives in the compiled messages
 		// array), so this sync path must not attempt to await async slot
 		// renderers. The result feeds only extension-visible systemPrompt values.
-		if (presetHasAsyncSlots(this._activePreset)) {
+		if (presetHasAsyncSlots(this._activePreset, this._agentSessionScope?.promptRegistry)) {
 			return "";
 		}
 
@@ -2145,6 +2200,7 @@ export class AgentSession {
 			skills: loadedSkills,
 			model,
 			thinkingLevel,
+			promptRegistry: this._agentSessionScope?.promptRegistry,
 		};
 		const compiled = compileMessagesSync(this._activePreset, staticRuntime);
 		const derived = deriveSystemPrompt(compiled, this._activePreset, "");
@@ -2485,6 +2541,7 @@ export class AgentSession {
 			state: this._stateManager.snapshot(),
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
+			promptRegistry: this._agentSessionScope?.promptRegistry,
 		};
 		return (await compileMessages(this._activePreset, runtime)).messages;
 	}
@@ -2504,6 +2561,7 @@ export class AgentSession {
 			state: this._stateManager.snapshot(),
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
+			promptRegistry: this._agentSessionScope?.promptRegistry,
 		};
 		const result = await compileSystemPrompt(this._activePreset, runtime, "");
 		return result.systemPrompt;
@@ -2610,11 +2668,14 @@ export class AgentSession {
 				);
 			}
 
-			// Emit input event for extension interception (before skill/template expansion)
+			// Allocate before dispatch so every transform handler observes one stable ID.
+			const inputId = `input-${++nextProcessInputId}`;
 			const processedInput = await this._runInputHandlers(
 				text,
 				options?.images,
 				options?.source ?? "interactive",
+				inputId,
+				options?.correlationToken,
 				this.isStreaming ? options?.streamingBehavior : undefined,
 			);
 			if (!processedInput) {
@@ -2639,9 +2700,9 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages);
+					await this._queueFollowUp(expandedText, currentImages, inputId);
 				} else {
-					await this._queueSteer(expandedText, currentImages);
+					await this._queueSteer(expandedText, currentImages, inputId);
 				}
 				preflightResult?.(true);
 				preflightAccepted = true;
@@ -2687,11 +2748,13 @@ export class AgentSession {
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
-			messages.push({
+			const userMessage: AgentMessage = {
 				role: "user",
 				content: userContent,
 				timestamp: Date.now(),
-			});
+			};
+			messages.push(userMessage);
+			this._inputIdByMessage.set(userMessage, inputId);
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
 			for (const msg of this._pendingNextTurnMessages) {
@@ -2843,13 +2906,22 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		source: InputSource,
+		inputId: string,
+		correlationToken?: string,
 		streamingBehavior?: "steer" | "followUp",
 	): Promise<{ text: string; images: ImageContent[] | undefined } | undefined> {
 		if (!this._extensionRunner.hasHandlers("input")) {
 			return { text, images };
 		}
 
-		const inputResult = await this._extensionRunner.emitInput(text, images, source, streamingBehavior);
+		const inputResult = await this._extensionRunner.emitInput(
+			text,
+			images,
+			source,
+			streamingBehavior,
+			inputId,
+			correlationToken,
+		);
 		if (inputResult.action === "handled") {
 			return undefined;
 		}
@@ -2873,10 +2945,13 @@ export class AgentSession {
 			this._throwIfExtensionCommand(text);
 		}
 
+		const inputId = `input-${++nextProcessInputId}`;
 		const processedInput = await this._runInputHandlers(
 			text,
 			images,
 			source,
+			inputId,
+			undefined,
 			this.isStreaming ? behavior : undefined,
 		);
 		if (!processedInput) return;
@@ -2885,9 +2960,9 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		if (behavior === "steer") {
-			await this._queueSteer(expandedText, processedInput.images);
+			await this._queueSteer(expandedText, processedInput.images, inputId);
 		} else {
-			await this._queueFollowUp(expandedText, processedInput.images);
+			await this._queueFollowUp(expandedText, processedInput.images, inputId);
 		}
 	}
 
@@ -2921,35 +2996,45 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueSteer(text: string, images?: ImageContent[], inputId?: string): Promise<void> {
+		const queueItemId = `queue-${++this._nextQueueItemId}`;
 		this._steeringMessages.push(text);
+		this._steeringQueueItemIds.push(queueItemId);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		this._queueItemIdByMessage.set(message, queueItemId);
+		if (inputId) this._inputIdByMessage.set(message, inputId);
+		this.agent.steer(message);
 	}
 
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueFollowUp(text: string, images?: ImageContent[], inputId?: string): Promise<void> {
+		const queueItemId = `queue-${++this._nextQueueItemId}`;
 		this._followUpMessages.push(text);
+		this._followUpQueueItemIds.push(queueItemId);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		this._queueItemIdByMessage.set(message, queueItemId);
+		if (inputId) this._inputIdByMessage.set(message, inputId);
+		this.agent.followUp(message);
 	}
 
 	/**
@@ -3015,6 +3100,7 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
+			this._currentUserInputId = undefined;
 			await this._runAgentPrompt(appMessage);
 		} else if (this.isStreaming) {
 			// Appending now would put the message between an assistant tool call and its
@@ -3105,7 +3191,11 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			correlationToken?: string;
+		},
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -3132,6 +3222,7 @@ export class AgentSession {
 			streamingBehavior: options?.deliverAs,
 			images,
 			source: "extension",
+			correlationToken: options?.correlationToken,
 		});
 	}
 
@@ -3147,6 +3238,26 @@ export class AgentSession {
 		// D22: the active path changed (branch/reroll/rewind/compaction) —
 		// replay recovery so discovered reflects the new branch, not siblings.
 		this._replayToolSearchRestore();
+	}
+
+	private _restoreCurrentUserInputIdFromBranch(): void {
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type === "message" && entry.message.role === "user") {
+				this._currentUserInputId = this._inputIdByEntry.get(entry);
+				return;
+			}
+			if (
+				entry.type === "custom_message" &&
+				this._extensionRunner.getCustomTypePolicy(entry.customType).llmRole === "user"
+			) {
+				// A custom user-role turn has no accepted-input sidecar; never inherit an earlier ID.
+				this._currentUserInputId = undefined;
+				return;
+			}
+		}
+		this._currentUserInputId = undefined;
 	}
 
 	/**
@@ -3266,6 +3377,7 @@ export class AgentSession {
 
 		// Update agent state
 		this._syncAgentStateFromSession();
+		this._restoreCurrentUserInputIdFromBranch();
 
 		// Restore StateManager state + schemas to the target branch (rollback)
 		this._restoreStateFromSessionEntries();
@@ -3392,7 +3504,10 @@ export class AgentSession {
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
+		this._steeringQueueItemIds = [];
 		this._followUpMessages = [];
+		this._followUpQueueItemIds = [];
+		this._queueItemIdByMessage = new WeakMap();
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };
@@ -4401,13 +4516,25 @@ export class AgentSession {
 
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
 		runner.setUIContext(this._extensionUIContext, this._extensionMode);
+		const rejectReplacement = this._agentSessionScope?.rejectSessionReplacement
+			? async () => {
+					this.assertReplacementAllowed();
+					return { cancelled: false };
+				}
+			: undefined;
 		runner.bindCommandContext({
 			waitForIdle: this._extensionCommandContextActions?.waitForIdle ?? (() => this.agent.waitForIdle()),
 			getPromptDisplay: (section) => renderPromptDisplay(this, section),
-			newSession: this._extensionCommandContextActions?.newSession ?? (async () => ({ cancelled: false })),
-			fork: this._extensionCommandContextActions?.fork ?? (async () => ({ cancelled: false })),
+			newSession:
+				rejectReplacement ??
+				this._extensionCommandContextActions?.newSession ??
+				(async () => ({ cancelled: false })),
+			fork: rejectReplacement ?? this._extensionCommandContextActions?.fork ?? (async () => ({ cancelled: false })),
 			navigateTree: this._extensionCommandContextActions?.navigateTree ?? (async () => ({ cancelled: false })),
-			switchSession: this._extensionCommandContextActions?.switchSession ?? (async () => ({ cancelled: false })),
+			switchSession:
+				rejectReplacement ??
+				this._extensionCommandContextActions?.switchSession ??
+				(async () => ({ cancelled: false })),
 			reload: this._extensionCommandContextActions?.reload ?? (() => this.requestReload()),
 		});
 		runner.setParentContextRequest(this._extensionParentContextRequest);
@@ -4601,6 +4728,10 @@ export class AgentSession {
 				reload: () => this.requestReload(),
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getActivePresetExtensionData: (namespace) => {
+					const data = this._activePreset?.extensions?.[namespace];
+					return data === undefined ? undefined : structuredClone(data);
+				},
 				getMemoryDbPath: () => this._memoryDbPath,
 				completeSideRequest: async ({
 					model,
@@ -4655,7 +4786,10 @@ export class AgentSession {
 					}
 					// Single pipeline run: compileMessages is the one compile path;
 					// the system prompt is derived from its output, not re-compiled.
-					const messages = await compileMessages(loaded.preset, runtime);
+					const messages = await compileMessages(loaded.preset, {
+						...runtime,
+						promptRegistry: this._agentSessionScope?.promptRegistry ?? runtime.promptRegistry,
+					});
 					const system = deriveSystemPrompt(messages, loaded.preset, "");
 					return {
 						messages: messages.messages,
@@ -4669,16 +4803,19 @@ export class AgentSession {
 				spawnAgent: (options) => spawnAgent(this, options),
 			},
 			{
-				registerProvider: (name, config) => {
-					this._modelRuntime.registerProvider(name, config);
+				registerProvider: (name, config, extensionPath) => {
+					if (this._agentSessionScope) this._agentSessionScope.registerProvider(extensionPath, name, config);
+					else this._modelRuntime.registerProvider(name, config);
 					this._refreshCurrentModelFromRegistry();
 				},
-				registerNativeProvider: (provider) => {
-					this._modelRuntime.registerNativeProvider(provider);
+				registerNativeProvider: (provider, extensionPath) => {
+					if (this._agentSessionScope) this._agentSessionScope.registerNativeProvider(extensionPath, provider);
+					else this._modelRuntime.registerNativeProvider(provider);
 					this._refreshCurrentModelFromRegistry();
 				},
-				unregisterProvider: (name) => {
-					this._modelRuntime.unregisterProvider(name);
+				unregisterProvider: (name, extensionPath) => {
+					if (this._agentSessionScope) this._agentSessionScope.unregisterProvider(extensionPath, name);
+					else this._modelRuntime.unregisterProvider(name);
 					this._refreshCurrentModelFromRegistry();
 				},
 			},
@@ -4796,6 +4933,23 @@ export class AgentSession {
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
 	}): Promise<void> {
+		const update = this._agentSessionScope?.beginUpdate();
+		try {
+			await this._buildRuntimeCore(options);
+			update?.commit();
+			if (update) this._refreshCurrentModelFromRegistry();
+			if (update) this._staticPromptCache = undefined;
+		} catch (error) {
+			update?.rollback();
+			throw error;
+		}
+	}
+
+	private async _buildRuntimeCore(options: {
+		activeToolNames?: string[];
+		flagValues?: Map<string, boolean | string>;
+		includeAllExtensionTools?: boolean;
+	}): Promise<void> {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
@@ -4855,6 +5009,7 @@ export class AgentSession {
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
 			this.settingsManager,
+			this._agentSessionScope?.promptRegistry,
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
@@ -4921,27 +5076,25 @@ export class AgentSession {
 			this._activePreset.memory ? { memory: this._activePreset.memory } : undefined,
 			this._cwd,
 		);
+		let module: MemoryModule | undefined;
 		try {
 			// Dispose the previous module (cancels in-flight recall/side work)
 			// before building a fresh one — reloads re-apply current settings.
 			this._memoryModule?.dispose();
 			this._memoryModule = undefined;
 			const store = await getMemoryStoreSingleton(dbPath, this._stores.storage, this._sqliteFactory);
-			const module = createMemoryModule(store, { settings: settings.memory });
-			const host = this._createMemoryModuleHost(store);
+			module = createMemoryModule(store, { settings: settings.memory });
+			const memorySlots: MemorySlotDefinition[] = [];
+			const host = this._createMemoryModuleHost(store, (slot) => memorySlots.push(slot));
 			module.registerSession(host);
-			// Slots render in the prompt-preset compile path — register statically
-			// so presets can reference awaken/recent/index without an extension.
-			for (const slot of createMemorySlots(store)) {
-				this._registerMemorySlot(slot);
-			}
+			// Backfill before publishing session-bound slot closures.
+			await module.onLeafChange();
+			// Do not publish renderers from a memory module whose initialization failed.
+			for (const slot of memorySlots) this._registerMemorySlot(slot);
 			this._memoryModule = module;
 			this._memoryDbPath = dbPath;
-			// Backfill the raw mirror + recompute visibility for the current
-			// branch immediately — resume / merely-browsed paths do not wait
-			// for the next turn (§3.3).
-			await module.onLeafChange();
 		} catch (error) {
+			module?.dispose();
 			this._memoryModule?.dispose();
 			this._memoryModule = undefined;
 			this._memoryDbPath = undefined;
@@ -4965,6 +5118,7 @@ export class AgentSession {
 					slot.render({ item: { options: context.item.options as Record<string, unknown> | undefined } }),
 			},
 			true,
+			this._agentSessionScope?.promptRegistry,
 		);
 	}
 
@@ -4974,7 +5128,10 @@ export class AgentSession {
 	 * by the current ExtensionRunner, so /reload discards them together with the
 	 * old runner and registerSession() runs again against a fresh host.
 	 */
-	private _createMemoryModuleHost(store: MemoryStore): MemoryModuleHost {
+	private _createMemoryModuleHost(
+		store: MemoryStore,
+		registerMemorySlot: (definition: MemorySlotDefinition) => void,
+	): MemoryModuleHost {
 		const session = this;
 		const runner = this._extensionRunner;
 		// Bound to the session's store singleton — one build per runtime, not per tool.
@@ -5018,7 +5175,7 @@ export class AgentSession {
 				});
 			},
 			registerSlot(definition) {
-				session._registerMemorySlot(definition);
+				registerMemorySlot(definition);
 			},
 			registerCustomType(customType, policy) {
 				runner.getExtensionRuntime().registerCustomType(customType, policy);
@@ -5258,7 +5415,7 @@ export class AgentSession {
 		await this.settingsManager.reload();
 		this._stateManager.detachStore();
 		this.syncQueueModesFromSettings();
-		resetApiProviders();
+		if (!this._agentSessionScope) resetApiProviders();
 		await this._resourceLoader.reload();
 		this.reloadPresets();
 		await this._buildRuntime({
@@ -5573,6 +5730,7 @@ export class AgentSession {
 		// context must not silently stay stale.
 		if (targetId === oldLeafId) {
 			this._syncAgentStateFromSession();
+			this._restoreCurrentUserInputIdFromBranch();
 			return { cancelled: false };
 		}
 

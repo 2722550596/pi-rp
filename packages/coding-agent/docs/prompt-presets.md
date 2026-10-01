@@ -48,7 +48,27 @@ Switch to it with `/preset simple`. Verify with `/prompt`.
 | `tools` | object | no | Filter tool visibility (see [Resource Policies](#resource-policies)). |
 | `skills` | object | no | Filter skill visibility (see [Resource Policies](#resource-policies)). |
 | `variables` | object | no | Static variable values available as `{{name}}` in block content. |
+| `extensions` | object | no | Opaque extension-owned metadata keyed by namespace (see [Extension Metadata](#extension-metadata)). |
 | `items` | array | yes | Ordered list of items composing the prompt. |
+
+### Extension Metadata
+
+The optional `extensions` object carries opaque, extension-owned JSON metadata without adding extension-specific fields to Pi's preset schema:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "voice-ready",
+  "items": [],
+  "extensions": {
+    "my-extension": { "featureEnabled": true, "settings": { "style": "brief" } }
+  }
+}
+```
+
+Each key is an isolated namespace whose value must be an object. Pi preserves nested payload fields without interpreting them. If `extensions` is not an object, Pi warns and ignores the whole metadata section; if one namespace value is not an object, Pi warns and ignores only that namespace. Unknown top-level preset fields are still discarded. Preset precedence remains whole-object replacement: a project or inline preset with the same ID replaces the previous preset rather than merging extension metadata.
+
+Extensions read only the currently effective preset through `ctx.getActivePresetExtensionData(namespace)`. It returns a detached read-only-typed payload or `undefined` when no such namespace is configured; it does not scan files or reload presets. See [ExtensionContext](extensions.md#ctxgetactivepresetextensiondatanamespace).
 
 ### Items
 

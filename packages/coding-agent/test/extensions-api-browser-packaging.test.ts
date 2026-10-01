@@ -31,7 +31,6 @@ describe("extension assembly core browser packaging (T2 guard)", () => {
 		// The pure seams the browser bundle is built on must actually be in the graph.
 		expect(inputs.some((input) => input.endsWith("core/extensions/api.ts"))).toBe(true);
 		expect(inputs.some((input) => input.endsWith("core/event-bus-memory.ts"))).toBe(true);
-		expect(inputs.some((input) => input.endsWith("core/prompt-preset/slot-registry.ts"))).toBe(true);
 
 		const bundle = Object.values(result.metafile.outputs).find((output) => output.entryPoint !== undefined);
 		expect(bundle?.exports).toEqual(

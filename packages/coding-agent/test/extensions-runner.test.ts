@@ -138,6 +138,30 @@ describe("ExtensionRunner", () => {
 			expect(runner.createContext().scopedModels).toBe(scoped);
 		});
 	});
+	describe("active preset extension metadata", () => {
+		it("resolves the effective namespace on every getter call", async () => {
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir,
+				sessionManager,
+				modelRegistry,
+				SettingsManager.inMemory(),
+			);
+			let activePayload: Readonly<Record<string, unknown>> | undefined = { version: "first" };
+			runner.bindCore(extensionActions, {
+				...extensionContextActions,
+				getActivePresetExtensionData: (namespace) => (namespace === "sample" ? activePayload : undefined),
+			});
+			const context = runner.createContext();
+
+			expect(context.getActivePresetExtensionData("sample")).toEqual({ version: "first" });
+			activePayload = { version: "second" };
+			expect(context.getActivePresetExtensionData("sample")).toEqual({ version: "second" });
+			expect(context.getActivePresetExtensionData("missing")).toBeUndefined();
+		});
+	});
 
 	describe("settings", () => {
 		it("exposes the merged settings snapshot on ctx.settings", async () => {
@@ -1231,6 +1255,30 @@ describe("ExtensionRunner", () => {
 
 			runtime.unregisterProvider("instant-provider");
 			expect(modelRegistry.find("instant-provider", "instant-model")).toBeUndefined();
+		});
+
+		it("preserves extensionPath on queued and dynamic provider actions", () => {
+			const extensionPath = "/tmp/session-scoped-provider.ts";
+			const runtime = createExtensionRuntime();
+			runtime.registerProvider("queued-provider", providerModelConfig, extensionPath);
+			const registerProvider = vi.fn();
+			const unregisterProvider = vi.fn();
+			const runner = new ExtensionRunner(
+				[],
+				runtime,
+				tempDir,
+				sessionManager,
+				modelRegistry,
+				SettingsManager.inMemory(),
+			);
+
+			runner.bindCore(extensionActions, extensionContextActions, { registerProvider, unregisterProvider });
+			expect(registerProvider).toHaveBeenCalledWith("queued-provider", providerModelConfig, extensionPath);
+
+			runtime.registerProvider("dynamic-provider", providerModelConfig, extensionPath);
+			runtime.unregisterProvider("dynamic-provider", extensionPath);
+			expect(registerProvider).toHaveBeenLastCalledWith("dynamic-provider", providerModelConfig, extensionPath);
+			expect(unregisterProvider).toHaveBeenCalledWith("dynamic-provider", extensionPath);
 		});
 	});
 

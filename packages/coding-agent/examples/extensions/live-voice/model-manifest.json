@@ -1,0 +1,30 @@
+{
+  "sampleRate": 16000,
+  "kws": {
+    "name": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+    "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2",
+    "sha256": "b2f7c89690dc8ce4c6ed6afeab7cd800c36ad1421fb6b6302b4a4b194cf7f35f",
+    "license": "Apache-2.0",
+    "licenseEvidence": "The exact official release archive contains its own model README.md with YAML metadata `license: Apache License 2.0`; the official ModelScope model card also declares Apache License 2.0 for this exact model. This evidence applies only to this exact WenetSpeech L KWS model.",
+    "licenseSource": "https://www.modelscope.cn/models/pkufool/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+    "archiveDirectory": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+    "encoder": "kws/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+    "decoder": "kws/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+    "joiner": "kws/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+    "tokens": "kws/tokens.txt",
+    "keywords": "kws/keywords.txt",
+    "targetKeyword": "话说",
+    "targetKeywordTokens": "h uà sh uō @话说"
+  },
+  "vad": {
+    "name": "Silero VAD silero_vad.onnx",
+    "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+    "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+    "license": "MIT",
+    "licenseEvidenceSource": "https://huggingface.co/onemira/silero-vad-onnx/resolve/main/source-metadata.json",
+    "licenseEvidence": "This unmodified byte-for-byte mirror metadata explicitly maps the exact Sherpa release URL and SHA-256 above to the pretrained Silero weight license MIT; its source-metadata.json records byte_changes=none.",
+    "licenseSource": "https://github.com/snakers4/silero-vad/blob/867c2aa692646a1f1de3e94a15c9dd9f614c0acb/LICENSE",
+    "licenseSha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+    "model": "vad/silero_vad.onnx"
+  }
+}

@@ -282,6 +282,35 @@ function normalizePreset(raw: unknown, filePath: string, diagnostics: PromptPres
 		}
 	}
 
+	// Preserve the generic extension namespace while validating only its two
+	// container levels. Payload keys belong to the extension and stay opaque.
+	if (Object.hasOwn(obj, "extensions")) {
+		if (!isPlainObject(obj.extensions)) {
+			diagnostics.push({
+				level: "warning",
+				message: "Invalid extensions value; ignoring extensions (expected an object of namespaces).",
+			});
+		} else {
+			const extensions: NonNullable<PromptPreset["extensions"]> = {};
+			for (const [namespace, payload] of Object.entries(obj.extensions)) {
+				if (!isPlainObject(payload)) {
+					diagnostics.push({
+						level: "warning",
+						message: `Invalid extensions.${namespace} value; ignoring this namespace (expected an object).`,
+					});
+					continue;
+				}
+				Object.defineProperty(extensions, namespace, {
+					configurable: true,
+					enumerable: true,
+					value: payload,
+					writable: true,
+				});
+			}
+			preset.extensions = extensions;
+		}
+	}
+
 	// Copy hidden prompt overrides
 	if (isPlainObject(obj.hiddenOverrides)) {
 		const ho = obj.hiddenOverrides as Record<string, unknown>;

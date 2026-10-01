@@ -7,6 +7,7 @@ import type { ModelRuntime } from "../model-runtime.ts";
 import type { RequestGateway } from "../request-gateway.ts";
 import { createAgentSession } from "../sdk.ts";
 import { SessionManager } from "../session-manager.ts";
+import { createAgentSessionScope } from "../session-scope.ts";
 import { truncateTail } from "../tools/truncate.ts";
 import type { SubagentPreparation } from "./prepare.ts";
 
@@ -148,96 +149,122 @@ export async function runSubagent(
 	// Resource supply inheritance (contract §3.7): the subagent session resolves presets/schemas from
 	// the parent's storage seam + inline sets. Node parents carry node defaults (byte-identical);
 	// browser parents carry the OPFS stores (without this, SettingsManager/state creation would hit
-	// the node-fs stub). No parent session ⇒ undefined ⇒ current behavior.
+	// the node-fs stub).
 	const parentSession = preparation.session ?? options.parentSession;
 	const supply = parentSession?.getResourceSupply();
+	// A child always gets its own scope. A scoped parent propagates its fixed-session policy;
+	// unscoped parents still get isolation rather than an undefined scope.
+	const childScope = parentSession?.createSubagentScope() ?? createAgentSessionScope();
 
-	const { session } = await createAgentSession({
-		cwd: preparation.cwd,
-		modelRuntime,
-		requestGateway: options.requestGateway,
-		requestIdentity: { sessionId: "?", priority: 0, label: "subagent" },
-		model: preparation.model,
-		sessionManager,
-		initialMessages,
-		tools: preparation.effectiveTools,
-		noTools: "builtin",
-		preset: preparation.profile.id,
-		schemas: preparation.schemas,
-		thinkingLevel: preparation.thinkingLevel,
-		strict: options.strict,
-		customTools: preparation.customTools,
-		...(supply
-			? {
-					configDir: supply.configDir,
-					agentDir: supply.agentDir,
-					stores: supply.stores,
-					inlinePresets: [...supply.inlinePresets],
-					inlineSchemas: [...supply.inlineSchemas],
+	let session: AgentSession;
+	try {
+		({ session } = await createAgentSession({
+			cwd: preparation.cwd,
+			modelRuntime,
+			requestGateway:
+				options.requestGateway ?? (parentSession?.sessionScope ? parentSession.requestGateway : undefined),
+			requestIdentity: {
+				sessionId: parentSession?.sessionScope ? parentSession.requestIdentity.sessionId : "?",
+				priority: 0,
+				label: "subagent",
+			},
+			model: preparation.model,
+			sessionManager,
+			initialMessages,
+			tools: preparation.effectiveTools,
+			noTools: "builtin",
+			preset: preparation.profile.id,
+			schemas: preparation.schemas,
+			thinkingLevel: preparation.thinkingLevel,
+			strict: options.strict,
+			customTools: preparation.customTools,
+			...(supply
+				? {
+						configDir: supply.configDir,
+						agentDir: supply.agentDir,
+						stores: supply.stores,
+						inlinePresets: [...supply.inlinePresets],
+						inlineSchemas: [...supply.inlineSchemas],
+					}
+				: {}),
+			// In-memory session: must not write the shared state store (would
+			// conflict with the main session's CAS commits).
+			attachStateStore: false,
+			scope: childScope,
+			// Omit extensions to fulfill "no extensions"
+			resourceLoader: {
+				getExtensions: () => ({
+					extensions: [],
+					errors: [],
+					runtime: createExtensionRuntime(),
+				}),
+				getSkills: () => ({ skills: [], diagnostics: [] }),
+				getPrompts: () => ({ prompts: [], diagnostics: [] }),
+				getThemes: () => ({ themes: [], diagnostics: [] }),
+				getAgentsFiles: () => ({ agentsFiles: [] }),
+				getSystemPrompt: () => undefined,
+				getSystemPromptSource: () => undefined,
+				getAppendSystemPrompt: () => [],
+				getAppendSystemPromptSources: () => [],
+				extendResources: () => {},
+				reloadPromptTemplates: () => {},
+				reload: async () => {},
+			},
+		}));
+	} catch (error) {
+		childScope.dispose();
+		throw error;
+	}
+
+	try {
+		if (parentSession) {
+			const parentRunner = parentSession.extensionRunner;
+			await session.bindExtensions({
+				uiContext: parentRunner.getUIContext(),
+				mode: parentRunner.getMode(),
+				onError: (err) => parentRunner.emitError(err),
+			});
+
+			// Forward tool-related event handlers from parent extensions
+			const parentExtensions = parentRunner.getExtensions();
+			for (const parentExt of parentExtensions) {
+				const toolHandlers = new Map<string, HandlerFn[]>();
+				for (const eventName of [
+					"tool_call",
+					"tool_result",
+					"tool_execution_start",
+					"tool_execution_update",
+					"tool_execution_end",
+				]) {
+					const handlers = parentExt.handlers.get(eventName);
+					if (handlers && handlers.length > 0) {
+						toolHandlers.set(eventName, [...handlers]);
+					}
 				}
-			: {}),
-		// In-memory session: must not write the shared state store (would
-		// conflict with the main session's CAS commits).
-		attachStateStore: false,
-		// Omit extensions to fulfill "no extensions"
-		resourceLoader: {
-			getExtensions: () => ({
-				extensions: [],
-				errors: [],
-				runtime: createExtensionRuntime(),
-			}),
-			getSkills: () => ({ skills: [], diagnostics: [] }),
-			getPrompts: () => ({ prompts: [], diagnostics: [] }),
-			getThemes: () => ({ themes: [], diagnostics: [] }),
-			getAgentsFiles: () => ({ agentsFiles: [] }),
-			getSystemPrompt: () => undefined,
-			getSystemPromptSource: () => undefined,
-			getAppendSystemPrompt: () => [],
-			getAppendSystemPromptSources: () => [],
-			extendResources: () => {},
-			reloadPromptTemplates: () => {},
-			reload: async () => {},
-		},
-	});
-
-	if (parentSession) {
-		const parentRunner = parentSession.extensionRunner;
-		await session.bindExtensions({
-			uiContext: parentRunner.getUIContext(),
-			mode: parentRunner.getMode(),
-			onError: (err) => parentRunner.emitError(err),
-		});
-
-		// Forward tool-related event handlers from parent extensions
-		const parentExtensions = parentRunner.getExtensions();
-		for (const parentExt of parentExtensions) {
-			const toolHandlers = new Map<string, HandlerFn[]>();
-			for (const eventName of [
-				"tool_call",
-				"tool_result",
-				"tool_execution_start",
-				"tool_execution_update",
-				"tool_execution_end",
-			]) {
-				const handlers = parentExt.handlers.get(eventName);
-				if (handlers && handlers.length > 0) {
-					toolHandlers.set(eventName, [...handlers]);
+				if (toolHandlers.size > 0) {
+					session.extensionRunner.attachSyntheticExtension({
+						path: parentExt.path,
+						resolvedPath: parentExt.resolvedPath,
+						sourceInfo: parentExt.sourceInfo,
+						handlers: toolHandlers,
+						tools: new Map(),
+						messageRenderers: new Map(),
+						commands: new Map(),
+						flags: new Map(),
+						shortcuts: new Map(),
+					});
 				}
-			}
-			if (toolHandlers.size > 0) {
-				session.extensionRunner.attachSyntheticExtension({
-					path: parentExt.path,
-					resolvedPath: parentExt.resolvedPath,
-					sourceInfo: parentExt.sourceInfo,
-					handlers: toolHandlers,
-					tools: new Map(),
-					messageRenderers: new Map(),
-					commands: new Map(),
-					flags: new Map(),
-					shortcuts: new Map(),
-				});
 			}
 		}
+	} catch (error) {
+		session.agent.abort();
+		await session.waitForIdle().catch(() => {});
+		try {
+			session.dispose();
+		} finally {
+			childScope.dispose();
+		}
+		throw error;
 	}
 
 	const controller = new AbortController();
@@ -251,13 +278,17 @@ export async function runSubagent(
 	const signalHandler = (): void => session.agent.abort();
 	combinedSignal.addEventListener("abort", signalHandler);
 
-	// Seed state after schema loading (createAgentSession), before the run starts.
-	// onSessionCreated fires here so subscriptions capture every tool execution event.
-	if (options.seedState) session.stateManager.load(options.seedState);
-	const onSessionCleanup = options.onSessionCreated?.(session);
-	const activityCleanup = options.activitySink ? observeSubagentActivity(session, options.activitySink) : undefined;
+	let onSessionCleanup: (() => void) | undefined;
+	let activityCleanup: (() => void) | undefined;
 
 	try {
+		// Seed state after schema loading (createAgentSession), before the run starts.
+		// onSessionCreated fires here so subscriptions capture every tool execution event.
+		if (options.seedState) session.stateManager.load(options.seedState);
+		const cleanup = options.onSessionCreated?.(session);
+		if (typeof cleanup === "function") onSessionCleanup = cleanup;
+		activityCleanup = options.activitySink ? observeSubagentActivity(session, options.activitySink) : undefined;
+
 		// 播种消息已含 task（最后一条 user 消息），直接 continue() 触发 run——
 		// 再 prompt(task) 会双份发送。continue() 要求上下文以 user/toolResult 结尾，
 		// 播种后的末尾正是 task。
@@ -299,10 +330,20 @@ export async function runSubagent(
 	} finally {
 		clearTimeout(timeoutId);
 		combinedSignal.removeEventListener("abort", signalHandler);
-		activityCleanup?.();
-		onSessionCleanup?.();
-		session.agent.abort();
-		await session.waitForIdle().catch(() => {});
-		session.dispose();
+		try {
+			activityCleanup?.();
+			onSessionCleanup?.();
+		} finally {
+			session.agent.abort();
+			try {
+				await session.waitForIdle().catch(() => {});
+			} finally {
+				try {
+					session.dispose();
+				} finally {
+					childScope.dispose();
+				}
+			}
+		}
 	}
 }

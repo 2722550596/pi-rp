@@ -7,6 +7,7 @@ export type {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { expandMacros } from "./macro-engine.ts";
 import { applyRegexRulesToMessages, applyRegexRulesToString } from "./regex-engine.ts";
+import type { PromptRegistryReader } from "./registry-scope.ts";
 import { getSlot } from "./slot-registry.ts";
 import { isChatHistoryPosition, renderSlotAsync, renderSlotSync } from "./slot-renderers.ts";
 import type {
@@ -88,7 +89,7 @@ export function deriveSystemPromptString(
  * call — no extra await tick or restructuring cost.
  */
 export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): Promise<CompileMessagesResult> {
-	if (!presetHasAsyncSlots(preset)) {
+	if (!presetHasAsyncSlots(preset, runtime.promptRegistry)) {
 		return Promise.resolve(compileMessagesSync(preset, runtime));
 	}
 	return compileMessagesAsync(preset, runtime);
@@ -111,7 +112,7 @@ export function compileMessagesSync(preset: PromptPreset, runtime: PromptRuntime
 	// The chat-history position is a slot-registry property, not a name match:
 	// any slot registered with position "chat-history" (built-in or custom)
 	// is the conversation insertion point.
-	const chatHistoryIndex = items.findIndex(isChatHistoryPosition);
+	const chatHistoryIndex = items.findIndex((item) => isChatHistoryPosition(item, runtime.promptRegistry));
 
 	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
 	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
@@ -155,7 +156,7 @@ async function compileMessagesAsync(preset: PromptPreset, runtime: PromptRuntime
 	let result: AgentMessage[] = [];
 	const items = enabledItems(preset);
 
-	const chatHistoryIndex = items.findIndex(isChatHistoryPosition);
+	const chatHistoryIndex = items.findIndex((item) => isChatHistoryPosition(item, runtime.promptRegistry));
 	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
 	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
 
@@ -297,8 +298,8 @@ function addChatHistory(
  * `async: true`. The sync fast path and static system-prompt rebuild use
  * this to decide whether a full async compile is required.
  */
-export function presetHasAsyncSlots(preset: PromptPreset): boolean {
-	return enabledItems(preset).some((item) => item.kind === "slot" && getSlot(item.slot)?.async === true);
+export function presetHasAsyncSlots(preset: PromptPreset, scope?: PromptRegistryReader): boolean {
+	return enabledItems(preset).some((item) => item.kind === "slot" && getSlot(item.slot, scope)?.async === true);
 }
 
 /** Side-effecting macro names: their render writes to the shared variables. */

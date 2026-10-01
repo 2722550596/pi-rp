@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { getModel, type Message } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -196,6 +196,20 @@ type SessionHooks = {
 	_buildToolSearchCompactionDetails(existingDetails: unknown): unknown;
 };
 
+type CatalogQueueHooks = {
+	_currentUserInputId: string | undefined;
+	_inputIdByMessage: WeakMap<AgentMessage, string>;
+	_toolSearchBaselineSeeded: boolean;
+	_queueToolCatalogDelta(manager: ToolSearchManagerContract, activated: boolean): void;
+	_handleAgentEvent(event: AgentEvent): Promise<void>;
+};
+
+type SteeringQueueHooks = {
+	steeringQueue: {
+		drain(): AgentMessage[];
+	};
+};
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -301,6 +315,39 @@ describe("tool-search session wiring", () => {
 		expect(baseline).not.toContain("ext_alpha");
 		session.syncToolSearchState();
 		expect(session.getSteeringMessages()).toEqual([]);
+		session.dispose();
+	});
+	it("removes a direct catalog steer by queue identity without consuming same-text user input", async () => {
+		const manager = new FakeToolSearchManager();
+		manager.searchable = [searchable("new_tool")];
+		const session = await buildSession({ toolSearchManager: manager, mode: "on" });
+		const internals = session as unknown as CatalogQueueHooks;
+		const agentQueues = session.agent as unknown as SteeringQueueHooks;
+		internals._toolSearchBaselineSeeded = true;
+		manager.markCatalogAdvertised([]);
+
+		const acceptedMessage: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "accepted user input" }],
+			timestamp: 1,
+		};
+		internals._inputIdByMessage.set(acceptedMessage, "accepted-input-id");
+		await internals._handleAgentEvent({ type: "message_start", message: acceptedMessage });
+		expect(internals._currentUserInputId).toBe("accepted-input-id");
+
+		internals._queueToolCatalogDelta(manager, true);
+		const catalogText = session.getSteeringMessages()[0];
+		if (catalogText === undefined) throw new Error("catalog delta did not enter the steering queue");
+		expect(catalogText).toBe("Tools added: new_tool");
+		await session.steer(catalogText);
+		expect(session.getSteeringMessages()).toEqual([catalogText, catalogText]);
+
+		const catalogMessage = agentQueues.steeringQueue.drain()[0];
+		if (!catalogMessage) throw new Error("catalog steer was not queued");
+		await internals._handleAgentEvent({ type: "message_start", message: catalogMessage });
+
+		expect(session.getSteeringMessages()).toEqual([catalogText]);
+		expect(internals._currentUserInputId).toBe("accepted-input-id");
 		session.dispose();
 	});
 

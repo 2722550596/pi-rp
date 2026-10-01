@@ -343,6 +343,8 @@ export interface ExtensionContext {
 	/** 合并后的生效 settings（global ← project ← process overlay），只读快照。
 	 *  overlay 由 --settings-file / PI_SETTINGS_FILE 提供（消费方持有该文件）。 */
 	settings: Readonly<Settings>;
+	/** Read the active preset's opaque extension-owned namespace payload. */
+	getActivePresetExtensionData(namespace: string): Readonly<Record<string, unknown>> | undefined;
 	/** Read a persisted per-extension setting (see Settings.extensionSettings).
 	 *  Returns undefined when the key or namespace is absent. */
 	getExtensionSetting<T = unknown>(extensionId: string, key: string): T | undefined;
@@ -474,7 +476,11 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			correlationToken?: string;
+		},
 	): Promise<void>;
 }
 
@@ -870,6 +876,8 @@ export interface TurnEndEvent {
 	turnIndex: number;
 	message: AgentMessage;
 	toolResults: ToolResultMessage[];
+	/** Runtime-only ID of the accepted user input that owns this turn. */
+	userInputId?: string;
 }
 
 /** Fired when a message starts (user, assistant, or toolResult) */
@@ -963,6 +971,10 @@ export type InputSource = "interactive" | "rpc" | "extension";
 /** Fired when user input is received, before agent processing */
 export interface InputEvent {
 	type: "input";
+	/** Unique process-local identity shared across the complete input handler chain. */
+	inputId: string;
+	/** Optional caller-supplied correlation value, echoed only when opted in. */
+	correlationToken?: string;
 	/** The input text */
 	text: string;
 	/** Attached images, if any */
@@ -1532,7 +1544,11 @@ export interface ExtensionAPI {
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			correlationToken?: string;
+		},
 	): void;
 
 	/** Start a live (streamable) custom message. Returns a handle to stream updates and finalize. */
@@ -1829,7 +1845,11 @@ export type EmitActivityHandler = (event: Omit<AgentActivityEvent, "type" | "tim
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		expandPromptTemplates?: boolean;
+		correlationToken?: string;
+	},
 ) => void;
 
 export type StartLiveMessageHandler = <T = unknown>(
@@ -1923,10 +1943,11 @@ export interface ExtensionRuntimeState {
 	 * LoadExtensionsResult.errors at the tail of every load pass.
 	 */
 	pendingRegistrationWarnings: Array<{ path: string; error: string }>;
-	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
+	/** Registrations queued during extension loading, preserving source ownership until the runner binds. */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
-	/** Native pi-ai provider registrations queued during extension loading, processed when runner binds. */
 	pendingNativeProviderRegistrations: Array<{ provider: Provider; extensionPath: string }>;
+	pendingSlotRegistrations: SlotDefinition[];
+	pendingMacroRegistrations: MacroDefinition[];
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
@@ -1934,10 +1955,8 @@ export interface ExtensionRuntimeState {
 	/** Retain an event-bus subscription until this runtime is invalidated. */
 	trackEventBusSubscription: (unsubscribe: () => void) => () => void;
 	/**
-	 * Register or unregister a provider.
-	 *
-	 * Before bindCore(): queues registrations / removes from queue.
-	 * After bindCore(): calls ModelRegistry directly for immediate effect.
+	 * Before bindCore(): queues registrations and their extension owner.
+	 * After bindCore(): forwards registrations to the owner-aware host callback.
 	 */
 	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
 	registerNativeProvider: (provider: Provider, extensionPath?: string) => void;
@@ -2000,6 +2019,8 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
+	/** Dynamically read an opaque namespace from the active preset. */
+	getActivePresetExtensionData?: (namespace: string) => Readonly<Record<string, unknown>> | undefined;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	/**
 	 * Resolved memory DB path of the current session (after settings + active

@@ -410,7 +410,7 @@ describe("SessionManager append and tree traversal", () => {
 			// Main: 1 -> 2 -> 3
 			session.appendMessage(userMsg("msg1"));
 			const id2 = session.appendMessage(assistantMsg("msg2"));
-			session.appendMessage(userMsg("msg3"));
+			const id3 = session.appendMessage(userMsg("msg3"));
 
 			// Branch from 2: 2 -> 4
 			session.branch(id2);
@@ -422,6 +422,9 @@ describe("SessionManager append and tree traversal", () => {
 			expect((ctx.messages[0] as any).content).toBe("msg1");
 			expect((ctx.messages[1] as any).content[0].text).toBe("msg2");
 			expect((ctx.messages[2] as any).content[0].text).toBe("msg4-branch");
+			// Context projection must not discard the inactive branch from the full session tree.
+			expect(session.getEntries().some((entry) => entry.id === id3)).toBe(true);
+			expect(session.getTree()[0]?.children[0]?.children.map((node) => node.entry.id)).toContain(id3);
 		});
 	});
 });

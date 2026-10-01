@@ -617,7 +617,9 @@ pi.on("turn_start", async (event, ctx) => {
 pi.on("turn_end", async (event, ctx) => {
   // event.turnIndex, event.message, event.toolResults
 });
+
 ```
+`turn_end` also includes optional `userInputId`, the process-local ID of the accepted user input associated with that assistant turn. Tool turns and continuations retain the owning ID; queued follow-up inputs keep their own IDs. Input IDs and correlation tokens are runtime-only: Pi does not add them to `AgentMessage`, session entries, transcript output, prompts, or persisted sessions.
 
 #### message_start / message_update / message_end
 
@@ -934,6 +936,8 @@ pi.on("input", async (event, ctx) => {
   // event.streamingBehavior - "steer" | "followUp" | undefined
   //   undefined when idle, "steer" for mid-stream interrupts,
   //   "followUp" for messages queued until the agent finishes
+  // event.inputId - stable process-local ID shared across this dispatch's transform chain
+  // event.correlationToken - optional caller-supplied value from sendUserMessage()
 
   // Transform: rewrite input before expansion
   if (event.text.startsWith("?quick "))
@@ -997,6 +1001,16 @@ export default function (pi: ExtensionAPI) {
   });
 }
 ```
+
+### ctx.getActivePresetExtensionData(namespace)
+
+Read the named extension metadata object from the session's effective active preset:
+
+```typescript
+const config = ctx.getActivePresetExtensionData("my-extension");
+```
+
+Returns a detached payload typed as `Readonly<Record<string, unknown>>`, or `undefined` when the active preset has no such namespace. The lookup follows the currently active preset (including project/inline same-ID winners and later preset switches), without rescanning files. Pi validates only that `extensions` and each namespace payload are objects; namespace contents remain extension-owned and opaque.
 
 ### ctx.isProjectTrusted()
 
@@ -1265,6 +1279,7 @@ pi.registerCommand("switch", {
 ### Session replacement lifecycle and footguns
 
 `withSession` receives a fresh `ReplacedSessionContext`, which extends `ExtensionCommandContext` with async `sendMessage()` and `sendUserMessage()` helpers bound to the replacement session.
+The replacement context's `sendUserMessage()` accepts the same optional `correlationToken` as `pi.sendUserMessage()`; when supplied, it is echoed only on that input's `InputEvent`.
 
 Lifecycle and footguns:
 - `withSession` runs only after the old session has emitted `session_shutdown`, the old runtime has been torn down, the replacement session has been rebound, and the new extension instance has already received `session_start`.
@@ -1456,6 +1471,7 @@ pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
   - `"followUp"` - Waits for agent to finish all tools
 - `expandPromptTemplates` - Dispatch extension commands and expand skill commands and prompt templates. Defaults to `false`.
+- `correlationToken` - Optional runtime correlation value. When provided, it is echoed unchanged as `InputEvent.correlationToken`; Pi does not persist it or add it to the user message.
 
 When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
 

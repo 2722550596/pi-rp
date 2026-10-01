@@ -26,6 +26,8 @@ import type {
 	ToolCall,
 	Usage,
 } from "@earendil-works/pi-ai";
+import type { AgentSessionScope } from "../src/core/session-scope.ts";
+import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -341,6 +343,10 @@ export interface HarnessOptions {
 	baseToolsOverride?: Record<string, AgentTool>;
 	/** Optional resource loader override. */
 	resourceLoader?: ResourceLoader;
+	/** Optional Host-owned scope for exercising multi-session behavior. */
+	scope?: AgentSessionScope;
+	/** Reuse a ModelRuntime when exercising isolated parent/child sessions. */
+	modelRuntime?: ModelRuntime;
 	/** Inline extensions to load into the session resource loader. */
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 }
@@ -422,9 +428,10 @@ async function createHarnessWithResourceLoader(
 		sessionManager,
 		settingsManager,
 		cwd: tempDir,
-		modelRuntime: getModelRuntime(modelRegistry),
+		modelRuntime: options.modelRuntime ?? getModelRuntime(modelRegistry),
 		resourceLoader,
 		baseToolsOverride: options.baseToolsOverride,
+		scope: options.scope,
 	});
 	// AgentSession wires the extension runner asynchronously; wait for it
 	// so harness consumers never race the wiring window.

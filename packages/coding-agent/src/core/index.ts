@@ -25,6 +25,12 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
+export {
+	AgentSessionScope,
+	AgentSessionScopeError,
+	createAgentSessionScope,
+	type AgentSessionScopeErrorCode,
+} from "./session-scope.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
@@ -115,6 +121,7 @@ export {
 	registerSlot,
 } from "./prompt-preset/index.ts";
 export {
+	assertValidRequestGatewayConfig,
 	RequestGateway,
 	type RequestGatewayConfig,
 	type RequestIdentity,
