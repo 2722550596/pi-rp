@@ -455,7 +455,11 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 
 	const settingsManager = SettingsManager.create(cwd, agentDir, { stores, configDir });
 	if (options.settings) {
-		settingsManager.applyOverrides(options.settings);
+		// options.settings 是构造期持久注入（角色 memory.dbPath、thinkingLevel 等宿主设置），
+		// 必须走 overlay 层：applyOverrides 只补丁合并视图，会被 resource-loader.reload()
+		// 的 settingsManager.reload() 作用域重建冲掉（S8 会话构造读到无注入 settings）。
+		// 与 CLI flags 注入同语义（settings-manager.ts applyOverlay vs applyOverrides）。
+		settingsManager.applyOverlay(options.settings);
 	}
 
 	// ---- S7: LLM 三态分派（streamFn > proxyUrl > byok；byok key 注入 credentials 缝） ----
