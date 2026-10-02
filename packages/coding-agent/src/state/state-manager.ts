@@ -58,6 +58,30 @@ export function isObject(val: JsonValue | undefined): val is Record<string, Json
 }
 
 /**
+ * If `value` is a JSON string encoding an object/array, parse and return it;
+ * otherwise return the value unchanged.
+ *
+ * LLMs occasionally double-encode object values as JSON strings in state_update
+ * calls (e.g. value: "{\"mood\": \"...\"}"). Only objects/arrays are unwrapped:
+ * a plain string may itself be a legitimate state value (dialogue, description),
+ * so a parse result that is not an object/array leaves the value untouched.
+ */
+export function unwrapJsonStringValue(value: unknown): unknown {
+	if (typeof value !== "string") return value;
+	const trimmed = value.trim();
+	if (trimmed === "" || (trimmed[0] !== "{" && trimmed[0] !== "[")) {
+		return value;
+	}
+	try {
+		const parsed: unknown = JSON.parse(trimmed);
+		if (parsed !== null && typeof parsed === "object") return parsed;
+	} catch {
+		// Not JSON → keep as-is
+	}
+	return value;
+}
+
+/**
  * Deep merge `src` into `target` (RFC 7396). If a value in `src` is null, the
  * key is deleted from `target`.
  */

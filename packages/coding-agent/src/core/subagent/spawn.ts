@@ -1,6 +1,7 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { JsonValue } from "../../state/state-manager.ts";
+import { unwrapJsonStringValue } from "../../state/state-manager.ts";
 import type { AgentSession } from "../agent-session.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { DEFAULT_SUBAGENT_TOOLS, isPrepareError, pick, prepareSubagentConversation } from "./prepare.ts";
@@ -10,7 +11,7 @@ import { runSubagent, type SubagentResultStatus, subagentActivityForwarder } fro
 // Types
 // =========================================================================
 
-/** A state_update tool call that succeeded in the spawned session (op/path/value as invoked). */
+/** A state_update tool call that succeeded in the spawned session (value unwrapped if it was a JSON-encoded object/array string). */
 export interface SpawnedStateOp {
 	op: "add" | "remove" | "replace" | "merge";
 	/** Path for add/remove/replace; omitted for merge. */
@@ -162,7 +163,7 @@ function subscribeStateOps(sub: AgentSession, ops: SpawnedStateOp[]): void {
 			pending.set(e.toolCallId, e.args as SpawnedStateOp);
 		} else if (e.type === "tool_execution_end" && e.toolName === "state_update") {
 			const op = pending.get(e.toolCallId);
-			if (op && !e.isError) ops.push(op);
+			if (op && !e.isError) ops.push({ ...op, value: unwrapJsonStringValue(op.value) });
 			pending.delete(e.toolCallId);
 		}
 	});

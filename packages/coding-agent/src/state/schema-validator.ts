@@ -1,7 +1,7 @@
 import type { TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Create } from "typebox/value";
-import { deepMerge, isObject, type JsonValue } from "./state-manager.ts";
+import { deepMerge, isObject, type JsonValue, unwrapJsonStringValue } from "./state-manager.ts";
 
 export interface ValidationResult {
 	ok: boolean;
@@ -106,8 +106,28 @@ export class SchemaValidator {
 	 * @param value - The value being written (undefined for "remove")
 	 * @param currentState - Readonly snapshot of full current state
 	 * @returns validation result
+	 *
+	 * If the write is rejected and `value` is a JSON string encoding an object/array
+	 * (LLM double-encoding), the validation is retried with the unwrapped value; on
+	 * success the unwrapped value is returned via `correctedValue` so callers apply
+	 * what actually validated. Values that pass as-is are never modified.
 	 */
 	validate(
+		fullPath: string,
+		op: "add" | "remove" | "replace" | "merge",
+		value: JsonValue | undefined,
+		currentState: Readonly<Record<string, JsonValue>>,
+	): ValidationResult {
+		const result = this._validate(fullPath, op, value, currentState);
+		if (result.ok || op === "remove" || typeof value !== "string") return result;
+		const unwrapped = unwrapJsonStringValue(value);
+		if (unwrapped === value) return result;
+		const retried = this._validate(fullPath, op, unwrapped as JsonValue, currentState);
+		if (!retried.ok) return result;
+		return { ...retried, correctedValue: (retried.correctedValue ?? unwrapped) as JsonValue };
+	}
+
+	private _validate(
 		fullPath: string,
 		op: "add" | "remove" | "replace" | "merge",
 		value: JsonValue | undefined,

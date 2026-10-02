@@ -141,24 +141,26 @@ describe("SchemaValidator.validate — merge", () => {
 });
 
 describe("SchemaValidator.validate — whole-namespace replace/add", () => {
-	it("rejects a JSON-encoded string value replacing a namespace root", () => {
+	it("unwraps a JSON-encoded string value replacing a namespace root", () => {
 		const v = new SchemaValidator();
 		v.loadSchema("s", "character", Type.Object({ mood: Type.String() }));
 		const state: Record<string, JsonValue> = { character: { mood: "calm" } };
 
 		const res = v.validate("character", "replace", '{"mood": "angry"}', state);
 
-		expect(res.ok).toBe(false);
+		expect(res.ok).toBe(true);
+		expect(res.correctedValue).toEqual({ mood: "angry" });
 	});
 
-	it("rejects a JSON-encoded string value added at a namespace root", () => {
+	it("unwraps a JSON-encoded string value added at a namespace root", () => {
 		const v = new SchemaValidator();
 		v.loadSchema("s", "world", Type.Object({ time: Type.String() }));
 		const state: Record<string, JsonValue> = { world: { time: "day" } };
 
 		const res = v.validate("world", "add", '{"time": "night"}', state);
 
-		expect(res.ok).toBe(false);
+		expect(res.ok).toBe(true);
+		expect(res.correctedValue).toEqual({ time: "night" });
 	});
 
 	it("validates the incoming object on a whole-namespace replace (not the old state)", () => {
@@ -254,5 +256,49 @@ describe("SchemaValidator.getDefaultValue", () => {
 		v.loadSchema("s", "world", Type.Object({ day: Type.Number({ default: 1 }), mood: Type.String() }));
 
 		expect(v.getDefaultValue("world")).toEqual({ day: 1, mood: "" });
+	});
+});
+
+describe("SchemaValidator.validate — double-encoded value unwrap retry", () => {
+	const state: Record<string, JsonValue> = { character: { name: "裴执" } };
+
+	it("unwraps a JSON-encoded object string and surfaces it via correctedValue", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ name: Type.String(), mood: Type.Optional(Type.Object({ text: Type.String() })) }));
+
+		const res = v.validate("character.mood", "replace", '{"text": "冷"}', state);
+
+		expect(res.ok).toBe(true);
+		expect(res.correctedValue).toEqual({ text: "冷" });
+	});
+
+	it("unwraps a JSON-encoded merge value", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ name: Type.String(), mood: Type.Optional(Type.Object({ text: Type.String() })) }));
+
+		const res = v.validate("", "merge", '{"character": {"mood": {"text": "冷"}}}', state);
+
+		expect(res.ok).toBe(true);
+		expect(res.correctedValue).toEqual({ character: { mood: { text: "冷" } } });
+	});
+
+	it("keeps a string value that legitimately validates as-is (no unwrap)", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ name: Type.String() }));
+
+		const res = v.validate("character.name", "replace", "裴执", state);
+
+		expect(res.ok).toBe(true);
+		expect(res.correctedValue).toBeUndefined();
+	});
+
+	it("keeps a JSON-encoded object string as-is when the schema expects a string", () => {
+		const v = new SchemaValidator();
+		v.loadSchema("s", "character", Type.Object({ name: Type.String() }));
+
+		const res = v.validate("character.name", "replace", '{"first": "裴"}', state);
+
+		expect(res.ok).toBe(true);
+		expect(res.correctedValue).toBeUndefined();
 	});
 });
