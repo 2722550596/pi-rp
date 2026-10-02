@@ -20,6 +20,9 @@
 			"@earendil-works/pi-agent-core/*": ["./packages/agent/src/*"],
 			"@earendil-works/pi-session-backend-sqlite-node": ["./packages/session-backends/sqlite-node/src/index.ts"],
 			"@earendil-works/pi-memory": ["./packages/memory/src/index.ts"],
+			"@earendil-works/pi-codemode": ["./packages/codemode/src/index.ts"],
+			"@earendil-works/pi-mcp": ["./packages/mcp/src/index.ts"],
+			"@earendil-works/pi-mcp/oauth": ["./packages/mcp/src/oauth/index.ts"],
 			"@earendil-works/pi-coding-agent": ["./packages/coding-agent/src/index.ts"],
   "@earendil-works/pi-browser": [
    "./packages/browser-engine/src/index.ts"

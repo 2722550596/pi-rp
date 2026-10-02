@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+
+- Added MCP client support for stdio and Streamable HTTP servers, OAuth login/logout, trust-gated project configuration, and per-tool exposure control. Added codemode's QuickJS/WASM script tool with authorized nested tool dispatch. See [MCP servers](docs/mcp.md) and [Codemode](docs/codemode.md).
 - Added the Node.js `@earendil-works/pi-coding-agent/server` entry point with `createCodingAgentPiServer()` for hosting coding-agent sessions through `@earendil-works/pi-server` and its existing PiClient protocol. The host uses a dedicated session store/root, binds each protocol ID to one durable session, enforces a configured active-runtime limit, and documents the default local-filesystem lock and trusted-extension boundary.
 
 - Reused the browser-safe `@earendil-works/pi-session-protocol` converters, summary wrappers, and transcript reducer; documented the browser session collaboration lifecycle and limits.

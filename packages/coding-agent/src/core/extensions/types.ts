@@ -10,6 +10,8 @@
 
 import type {
 	AgentMessage,
+	AgentTool,
+	AgentToolCallOutcome,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	Capabilities,
@@ -24,6 +26,7 @@ import type {
 	ConstrainedSamplingConfig,
 	Context,
 	ImageContent,
+	JsonValue,
 	Message,
 	Model,
 	OAuthCredentials,
@@ -56,6 +59,7 @@ import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
+import type { McpServerRegistry, RegisteredMcpServer } from "../mcp-servers.ts";
 import type { CustomMessage, CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
@@ -412,6 +416,24 @@ export interface ExtensionContext {
 	}>;
 }
 
+/** Options for nested calls made by extension tools. */
+export interface ExecuteToolOptions {
+	/** Defaults to the calling tool's signal. */
+	signal?: AbortSignal;
+	/** Receives partial results of the nested tool, in addition to tool execution events. */
+	onUpdate?: AgentToolUpdateCallback;
+}
+
+/**
+ * Tool execution context with the same authorization, validation, hooks, and abort semantics as
+ * a model-issued call. Nested calls are not separate transcript entries.
+ */
+export interface ExtensionToolContext extends ExtensionContext {
+	/** Tools callable through executeTool under this caller's authorization snapshot. */
+	readonly tools: readonly AgentTool[];
+	executeTool(name: string, args: unknown, options?: ExecuteToolOptions): Promise<AgentToolCallOutcome>;
+}
+
 /**
  * 编排裁决（父→子）：approved/blocked 为正常裁决，error 为父进程判定无法执行
  * （子进程侧快速失败，不走超时）。
@@ -530,6 +552,31 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
  */
 export type ToolCapabilityRequirement = "shell" | "diskExtensions" | "concurrentFsAccess";
 
+/** How the model and other extension tools can reach an extension tool. */
+export type ToolExposure = "direct" | "model-only" | "codemode" | "deferred" | "hidden";
+
+/** A group of related tools, such as the tools exposed by one MCP server. */
+export interface ToolNamespace {
+	name: string;
+	description?: string;
+	instructions?: string;
+}
+
+/** Tool sets visible to extensions when preparing the model-facing loadout. */
+export interface ToolLoadout {
+	readonly declared: readonly AgentTool[];
+	readonly callable: readonly AgentTool[];
+	readonly registered: readonly AgentTool[];
+	getExposure(name: string): ToolExposure;
+	getNamespace(name: string): ToolNamespace | undefined;
+}
+
+/** Model-facing changes returned by a tool's prepareLoadout callback. */
+export interface ToolLoadoutChanges {
+	descriptions?: Readonly<Record<string, string>>;
+	hiddenDeclarations?: readonly string[];
+}
+
 /**
  * Tool definition for registerTool().
  */
@@ -546,6 +593,18 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
+	/** JSON Schema for structured content returned by this tool. */
+	outputSchema?: TSchema;
+	/** Controls the model-facing and nested-call exposure of this tool. Default: direct. */
+	exposure?: ToolExposure;
+	/** Group of related tools, such as the tools of one MCP server. */
+	namespace?: ToolNamespace;
+	/** MCP-compatible hints about tool behavior. */
+	annotations?: ToolAnnotations;
+	/** Whether registering this tool activates it. Default depends on exposure. */
+	defaultActive?: boolean;
+	/** Adjust model-facing declarations when the active tools change. */
+	prepareLoadout?: (loadout: ToolLoadout) => ToolLoadoutChanges | undefined;
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
 
@@ -578,7 +637,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 		params: Static<TParams>,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
-		ctx: ExtensionContext,
+		ctx: ExtensionToolContext,
 	): Promise<AgentToolResult<TDetails>>;
 
 	/** Custom rendering for tool call display */
@@ -608,6 +667,15 @@ export function defineTool<TParams extends TSchema, TDetails = unknown, TState =
 	tool: ToolDefinition<TParams, TDetails, TState>,
 ): ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition {
 	return tool as ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition;
+}
+
+/** Hints about a tool's safety and effect surface. */
+export interface ToolAnnotations {
+	title?: string;
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
 }
 
 // ============================================================================
@@ -650,6 +718,11 @@ export interface ResourcesDiscoverResult {
 	skillPaths?: string[];
 	promptPaths?: string[];
 	themePaths?: string[];
+}
+
+export interface McpServersChangeEvent {
+	type: "mcp_servers_change";
+	servers: RegisteredMcpServer[];
 }
 
 // ============================================================================
@@ -905,6 +978,7 @@ export interface ToolExecutionStartEvent {
 	toolCallId: string;
 	toolName: string;
 	args: any;
+	parentToolCallId?: string;
 }
 
 /** Fired during tool execution with partial/streaming output */
@@ -914,6 +988,7 @@ export interface ToolExecutionUpdateEvent {
 	toolName: string;
 	args: any;
 	partialResult: any;
+	parentToolCallId?: string;
 }
 
 /** Fired when a tool finishes executing */
@@ -923,6 +998,7 @@ export interface ToolExecutionEndEvent {
 	toolName: string;
 	result: any;
 	isError: boolean;
+	parentToolCallId?: string;
 }
 
 // ============================================================================
@@ -998,6 +1074,7 @@ export type InputEventResult =
 interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
+	parentToolCallId?: string;
 }
 
 export interface BashToolCallEvent extends ToolCallEventBase {
@@ -1062,8 +1139,11 @@ interface ToolResultEventBase {
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	isError: boolean;
+	/** Structured output consumed by programmatic callers. */
+	structuredContent?: JsonValue;
 	/** Usage from the tool execution itself, if available. */
 	usage?: Usage;
+	parentToolCallId?: string;
 }
 
 export interface BashToolResultEvent extends ToolResultEventBase {
@@ -1180,6 +1260,7 @@ export type ExtensionEvent =
 	| ProjectTrustEvent
 	| ResourcesDiscoverEvent
 	| SessionEvent
+	| McpServersChangeEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
@@ -1235,6 +1316,7 @@ export interface UserBashEventResult {
 export interface ToolResultEventResult {
 	content?: (TextContent | ImageContent)[];
 	details?: unknown;
+	structuredContent?: JsonValue;
 	isError?: boolean;
 	usage?: Usage;
 }
@@ -1372,6 +1454,7 @@ export interface ExtensionAPI {
 
 	on(event: "project_trust", handler: ProjectTrustHandler): void;
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
+	on(event: "mcp_servers_change", handler: ExtensionHandler<McpServersChangeEvent>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
 	on(
@@ -1428,6 +1511,15 @@ export interface ExtensionAPI {
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown, TState = any>(
 		tool: ToolDefinition<TParams, TDetails, TState>,
 	): void;
+
+	/** Register a server for the built-in MCP connector. */
+	registerMcpServer(name: string, config: RegisteredMcpServer["config"]): void;
+
+	/** Remove an MCP server this extension registered. */
+	unregisterMcpServer(name: string): void;
+
+	/** Every MCP server registered by extensions. */
+	getMcpServers(): RegisteredMcpServer[];
 
 	// =========================================================================
 	// Command, Shortcut, Flag Registration
@@ -1878,8 +1970,18 @@ export type GetSessionNameHandler = () => string | undefined;
 
 export type GetActiveToolsHandler = () => string[];
 
-/** Tool info with name, description, parameter schema, prompt guidelines, and source metadata. */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
+/** Tool info with model and nested-call exposure metadata. */
+export type ToolInfo = Pick<
+	ToolDefinition,
+	| "name"
+	| "description"
+	| "parameters"
+	| "promptGuidelines"
+	| "exposure"
+	| "namespace"
+	| "annotations"
+	| "defaultActive"
+> & {
 	sourceInfo: SourceInfo;
 };
 
@@ -1930,6 +2032,7 @@ export interface ExtensionRuntimeOptions {
  */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
+	mcpServers: McpServerRegistry;
 	/** Implementation backing `pi.exec`; assembly-selected per the negotiated shell capability. */
 	execImpl: ExecImpl;
 	/**

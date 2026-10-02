@@ -19,6 +19,7 @@ export interface ResolveProjectTrustedOptions {
 	extensionsResult?: LoadExtensionsResult;
 	projectTrustContext: ProjectTrustContext;
 	onExtensionError?: (message: string) => void;
+	additionalProjectResourcePaths?: readonly string[];
 }
 
 function formatProjectTrustPrompt(cwd: string): string {
@@ -47,7 +48,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 	if (options.trustOverride !== undefined) {
 		return options.trustOverride;
 	}
-	if (!hasTrustRequiringProjectResources(options.cwd)) {
+	if (!hasTrustRequiringProjectResources(options.cwd, undefined, options.additionalProjectResourcePaths)) {
 		return true;
 	}
 

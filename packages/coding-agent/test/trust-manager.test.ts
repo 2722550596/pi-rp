@@ -64,4 +64,10 @@ describe("ProjectTrustStore", () => {
 			}
 		}
 	});
+	it("detects an explicitly resolved MCP config path", () => {
+		const projectMcpConfig = join(cwd, "custom-profile", "mcp.json");
+		mkdirSync(join(cwd, "custom-profile"), { recursive: true });
+		writeFileSync(projectMcpConfig, "{}");
+		expect(hasTrustRequiringProjectResources(cwd, undefined, [projectMcpConfig])).toBe(true);
+	});
 });

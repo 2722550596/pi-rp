@@ -63,7 +63,6 @@ export {
 	shouldCompact,
 } from "./core/compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
-// Extension system
 export type {
 	AgentEndEvent,
 	AgentSettledEvent,
@@ -89,6 +88,7 @@ export type {
 	ExecImpl,
 	ExecOptions,
 	ExecResult,
+	ExecuteToolOptions,
 	Extension,
 	ExtensionActions,
 	ExtensionAPI,
@@ -104,6 +104,7 @@ export type {
 	ExtensionRuntime,
 	ExtensionRuntimeOptions,
 	ExtensionShortcut,
+	ExtensionToolContext,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -119,6 +120,9 @@ export type {
 	LsToolCallEvent,
 	MarkdownTransformContext,
 	MarkdownTransformer,
+	McpExposure,
+	McpServerConfig,
+	McpServersChangeEvent,
 	MessageContentTransformContext,
 	MessageContentTransformer,
 	MessageEndEvent,
@@ -135,6 +139,7 @@ export type {
 	ProviderModelConfig,
 	ReadToolCallEvent,
 	RegisteredCommand,
+	RegisteredMcpServer,
 	RegisteredTool,
 	ResolvedCommand,
 	SessionBeforeCompactEvent,
@@ -159,7 +164,11 @@ export type {
 	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	ToolExposure,
 	ToolInfo,
+	ToolLoadout,
+	ToolLoadoutChanges,
+	ToolNamespace,
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	TurnEndEvent,
@@ -302,6 +311,7 @@ export {
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.ts";
 export {
+	type CodemodeSettings,
 	type CompactionModelOverride,
 	type CompactionSettings,
 	type DefaultProjectTrust,

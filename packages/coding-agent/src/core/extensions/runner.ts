@@ -2,7 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool, AgentToolCallOutcome } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
@@ -18,6 +18,7 @@ import type { SessionManager } from "../session-manager.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -29,6 +30,7 @@ import type {
 	ContextEventResult,
 	ContextUsage,
 	EntryRenderer,
+	ExecuteToolOptions,
 	Extension,
 	ExtensionActions,
 	ExtensionCommandContext,
@@ -41,6 +43,7 @@ import type {
 	ExtensionMode,
 	ExtensionRuntime,
 	ExtensionShortcut,
+	ExtensionToolContext,
 	ExtensionUIContext,
 	InputEvent,
 	InputEventResult,
@@ -409,6 +412,12 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.mcpServers.setChangeListener(() => {
+			void this.emit({
+				type: "mcp_servers_change",
+				servers: this.runtime.mcpServers.list(),
+			});
+		});
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
@@ -925,6 +934,41 @@ export class ExtensionRunner {
 		};
 	}
 
+	private toolExecutionContextFactory?: (
+		toolCallId: string,
+		signal: AbortSignal | undefined,
+	) => {
+		tools: readonly AgentTool[];
+		executeTool: (name: string, args: unknown, options?: ExecuteToolOptions) => Promise<AgentToolCallOutcome>;
+	};
+
+	setToolExecutionContextFactory(
+		factory: (
+			toolCallId: string,
+			signal: AbortSignal | undefined,
+		) => {
+			tools: readonly AgentTool[];
+			executeTool: (name: string, args: unknown, options?: ExecuteToolOptions) => Promise<AgentToolCallOutcome>;
+		},
+	): void {
+		this.toolExecutionContextFactory = factory;
+	}
+
+	createToolContext(toolCallId: string, signal?: AbortSignal): ExtensionToolContext {
+		this.assertActive();
+		const execution = this.toolExecutionContextFactory?.(toolCallId, signal);
+		const context = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
+		Object.defineProperty(context, "signal", { value: signal, enumerable: true, configurable: true });
+		return Object.assign(context, {
+			tools: execution?.tools.slice() ?? [],
+			executeTool: (name: string, args: unknown, options?: ExecuteToolOptions) => {
+				this.assertActive();
+				if (!execution) return Promise.reject(new Error("Nested tool execution is unavailable"));
+				return execution.executeTool(name, args, options);
+			},
+		}) as unknown as ExtensionToolContext;
+	}
+
 	createCommandContext(): ExtensionCommandContext {
 		// Use property descriptors instead of object spread so the guarded getters from
 		// createContext() stay lazy. A spread would eagerly read them once and freeze the
@@ -1079,6 +1123,10 @@ export class ExtensionRunner {
 						currentEvent.isError = handlerResult.isError;
 						modified = true;
 					}
+					if (handlerResult.structuredContent !== undefined) {
+						currentEvent.structuredContent = handlerResult.structuredContent;
+						modified = true;
+					}
 					if (handlerResult.usage !== undefined) {
 						currentEvent.usage = handlerResult.usage;
 						modified = true;
@@ -1103,6 +1151,7 @@ export class ExtensionRunner {
 		return {
 			content: currentEvent.content,
 			details: currentEvent.details,
+			structuredContent: currentEvent.structuredContent,
 			isError: currentEvent.isError,
 			usage: currentEvent.usage,
 		};

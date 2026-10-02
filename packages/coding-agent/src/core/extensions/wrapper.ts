@@ -15,13 +15,19 @@ import type { RegisteredTool } from "./types.ts";
  * Uses the runner's createContext() for consistent context across tools and event handlers.
  */
 export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: ExtensionRunner): AgentTool {
-	const tool = wrapToolDefinition(registeredTool.definition, () => runner.createContext());
-	const execute = tool.execute;
+	const definition = registeredTool.definition;
+	const tool = wrapToolDefinition(definition);
 	return {
 		...tool,
+		exposure: definition.exposure,
+		namespace: definition.namespace,
+		annotations: definition.annotations,
+		defaultActive: definition.defaultActive,
+		prepareLoadout: definition.prepareLoadout,
 		execute: async (toolCallId, params, signal, onUpdate) => {
 			const activeBefore = runner.getActiveTools();
-			const result = await execute(toolCallId, params, signal, onUpdate);
+			const context = runner.createToolContext(toolCallId, signal);
+			const result = await definition.execute(toolCallId, params, signal, onUpdate, context);
 			const activeAfter = runner.getActiveTools();
 			if (!activeBefore.every((name) => activeAfter.includes(name))) return result;
 
@@ -33,7 +39,7 @@ export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: Exten
 				addedToolNames: [...new Set([...(result.addedToolNames ?? []), ...addedToolNames])],
 			};
 		},
-	};
+	} as AgentTool;
 }
 
 /**

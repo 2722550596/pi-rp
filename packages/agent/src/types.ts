@@ -5,6 +5,7 @@ import type {
 	AssistantMessageEventStream,
 	Context,
 	ImageContent,
+	JsonValue,
 	Message,
 	Model,
 	SimpleStreamOptions,
@@ -85,6 +86,8 @@ export interface AfterToolCallResult {
 	content?: (TextContent | ImageContent)[];
 	details?: unknown;
 	isError?: boolean;
+	/** Structured JSON content returned by a tool, including explicit null. */
+	structuredContent?: JsonValue;
 	/** Usage from the final tool execution itself, if available. Not used for main LLM context accounting. */
 	usage?: Usage;
 	/**
@@ -404,6 +407,10 @@ export interface AgentToolResult<T> {
 	content: (TextContent | ImageContent)[];
 	/** Arbitrary structured details for logs or UI rendering. */
 	details: T;
+	/** Structured output consumed by tools that call this tool programmatically. */
+	structuredContent?: JsonValue;
+	/** Report failure without requiring the tool to throw. */
+	isError?: boolean;
 	/** Usage from the final tool execution itself, if available. Not used for main LLM context accounting. */
 	usage?: Usage;
 	/** Names of tools introduced by this result and available from this transcript point onward. */
@@ -427,6 +434,9 @@ export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
 	/** Human-readable label for UI display. */
 	label: string;
+	promptSnippet?: string;
+	/** JSON Schema advertised for structured output. */
+	outputSchema?: TSchema;
 	/**
 	 * Optional compatibility shim for raw tool-call arguments before schema validation.
 	 * Must return an object that matches `TParameters`.
@@ -479,6 +489,20 @@ export type AgentEvent =
 	| { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
 	| { type: "message_end"; message: AgentMessage }
 	// Tool execution lifecycle
-	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
-	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
+	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any; parentToolCallId?: string }
+	| {
+			type: "tool_execution_update";
+			toolCallId: string;
+			toolName: string;
+			args: any;
+			partialResult: any;
+			parentToolCallId?: string;
+	  }
+	| {
+			type: "tool_execution_end";
+			toolCallId: string;
+			toolName: string;
+			result: any;
+			isError: boolean;
+			parentToolCallId?: string;
+	  };

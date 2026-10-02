@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import type { ExtensionContext } from "../extensions/types.ts";
+import type { ExtensionToolContext } from "../extensions/types.ts";
 import { ToolSearchManager } from "./manager.ts";
 import {
 	firstSentence,
@@ -236,7 +236,7 @@ describe("tool_search execute adapter (R3/D3/D15)", () => {
 		return manager;
 	}
 
-	const stubContext = {} as ExtensionContext;
+	const stubContext = {} as unknown as ExtensionToolContext;
 
 	async function runToolSearch(manager: ToolSearchManager, callId: string, params: unknown) {
 		const definition = manager.getToolSearchDefinition();

@@ -1,24 +1,26 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import type { ExtensionToolContext, ToolDefinition } from "../extensions/types.ts";
 
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
 export function wrapToolDefinition<TDetails = unknown>(
 	definition: ToolDefinition<any, TDetails>,
-	ctxFactory?: () => ExtensionContext,
+	ctxFactory?: () => ExtensionToolContext,
 ): AgentTool<any, TDetails> {
 	// `deferrable` is coding-agent registry-layer metadata (I4): forwarded on the
 	// runtime object even though `AgentTool` does not declare it as a type field.
 	const wrapped: AgentTool<any, TDetails> & { deferrable?: boolean } = {
 		name: definition.name,
 		label: definition.label,
+		promptSnippet: definition.promptSnippet,
 		description: definition.description,
+		outputSchema: definition.outputSchema,
 		parameters: definition.parameters,
 		constrainedSampling: definition.constrainedSampling,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
 		deferrable: definition.deferrable,
-		execute: (toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) =>
-			definition.execute(toolCallId, params, signal, onUpdate, ctx ?? (ctxFactory?.() as ExtensionContext)),
+		execute: (toolCallId, params, signal, onUpdate, ctx?: ExtensionToolContext) =>
+			definition.execute(toolCallId, params, signal, onUpdate, ctx ?? (ctxFactory?.() as ExtensionToolContext)),
 	};
 	return wrapped;
 }
@@ -26,7 +28,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 /** Wrap multiple ToolDefinitions into AgentTools for the core runtime. */
 export function wrapToolDefinitions(
 	definitions: ToolDefinition<any, any>[],
-	ctxFactory?: () => ExtensionContext,
+	ctxFactory?: () => ExtensionToolContext,
 ): AgentTool<any>[] {
 	return definitions.map((definition) => wrapToolDefinition(definition, ctxFactory));
 }
@@ -42,6 +44,7 @@ export function createToolDefinitionFromAgentTool(tool: AgentTool<any>): ToolDef
 		name: tool.name,
 		label: tool.label,
 		description: tool.description,
+		outputSchema: tool.outputSchema,
 		parameters: tool.parameters as any,
 		constrainedSampling: tool.constrainedSampling,
 		prepareArguments: tool.prepareArguments,

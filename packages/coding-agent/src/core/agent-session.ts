@@ -19,20 +19,22 @@ export type {
 	CompileSystemPromptResult,
 } from "./prompt-preset/compiler.ts";
 
-import type {
-	Agent,
-	AgentContext,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	AgentToolResult,
-	HarnessStores,
-	PrepareNextTurnContext,
-	SqliteDatabaseFactory,
-	StorageBackend,
-	StreamFn,
-	ThinkingLevel,
+import {
+	type Agent,
+	type AgentContext,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type AgentToolCallOutcome,
+	type AgentToolResult,
+	type HarnessStores,
+	type PrepareNextTurnContext,
+	runToolCall,
+	type SqliteDatabaseFactory,
+	type StorageBackend,
+	type StreamFn,
+	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { contentText } from "@earendil-works/pi-ai";
@@ -141,7 +143,14 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import type { OrchestrationAck, ResolvedCommand } from "./extensions/types.ts";
+import type {
+	ExecuteToolOptions,
+	OrchestrationAck,
+	ResolvedCommand,
+	ToolExposure,
+	ToolLoadout,
+	ToolNamespace,
+} from "./extensions/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -717,9 +726,20 @@ export class AgentSession {
 	private _requestGateway?: RequestGateway;
 	private _requestIdentity: RequestIdentity = { sessionId: "?", priority: 2, label: "main" };
 	private _attachStateStore = true;
+	private _selectedToolNames: string[] = [];
 	private _extensionUIContext?: ExtensionUIContext;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
+	private _toolCallContexts = new Map<
+		string,
+		{
+			assistantMessage: AssistantMessage;
+			context: AgentContext;
+			loadout: ToolLoadout;
+			parentToolCallId?: string;
+			signal?: AbortSignal;
+		}
+	>();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
@@ -976,57 +996,67 @@ export class AgentSession {
 	 * happens here instead of in wrappers.
 	 */
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+		this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args, context }, signal) => {
+			const existing = this._toolCallContexts.get(toolCall.id);
+			this._toolCallContexts.set(toolCall.id, {
+				assistantMessage,
+				context,
+				loadout: existing?.loadout ?? this._createToolLoadout(),
+				parentToolCallId: existing?.parentToolCallId,
+				signal: signal ?? existing?.signal,
+			});
 			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_call")) {
-				return undefined;
-			}
+			if (!runner.hasHandlers("tool_call")) return undefined;
 
 			try {
 				return await runner.emitToolCall({
 					type: "tool_call",
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
+					parentToolCallId: this._toolCallContexts.get(toolCall.id)?.parentToolCallId,
 					input: args as Record<string, unknown>,
 				});
 			} catch (err) {
-				if (err instanceof Error) {
-					throw err;
-				}
+				if (err instanceof Error) throw err;
 				throw new Error(`Extension failed, blocking execution: ${String(err)}`);
 			}
 		};
 
-		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+		this.agent.afterToolCall = async ({ assistantMessage, toolCall, args, result, isError, context }) => {
+			const callContext = this._toolCallContexts.get(toolCall.id);
 			const runner = this._extensionRunner;
 			const hookResult = runner.hasHandlers("tool_result")
 				? await runner.emitToolResult({
 						type: "tool_result",
 						toolName: toolCall.name,
 						toolCallId: toolCall.id,
+						parentToolCallId: callContext?.parentToolCallId,
 						input: args as Record<string, unknown>,
 						content: result.content,
 						details: result.details,
+						structuredContent: result.structuredContent,
 						isError,
 						usage: result.usage,
 					})
 				: undefined;
 
 			const content = hookResult?.content ?? result.content ?? [];
-			// Runs after the extension hook so images injected or replaced by extensions are normalized too.
 			const normalizedContent = await normalizeToolResultImages(content, {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
-
-			if (!hookResult && normalizedContent === content) {
-				return undefined;
-			}
-
+			this._toolCallContexts.set(toolCall.id, {
+				assistantMessage,
+				context,
+				loadout: callContext?.loadout ?? this._createToolLoadout(),
+				parentToolCallId: callContext?.parentToolCallId,
+			});
+			if (!hookResult && normalizedContent === content) return undefined;
 			return {
 				content: normalizedContent,
-				details: hookResult?.details,
+				details: hookResult?.details ?? result.details,
+				structuredContent: hookResult?.structuredContent ?? result.structuredContent,
 				isError: hookResult?.isError ?? isError,
-				usage: hookResult?.usage,
+				usage: hookResult?.usage ?? result.usage,
 			};
 		};
 	}
@@ -1231,6 +1261,7 @@ export class AgentSession {
 			// values over the fresher session snapshot.
 			this._stateManager.flushStore();
 		}
+		if (event.type === "tool_execution_end") this._toolCallContexts.delete(event.toolCallId);
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
@@ -1375,6 +1406,7 @@ export class AgentSession {
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				args: event.args,
+				parentToolCallId: event.parentToolCallId,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_update") {
@@ -1384,6 +1416,7 @@ export class AgentSession {
 				toolName: event.toolName,
 				args: event.args,
 				partialResult: event.partialResult,
+				parentToolCallId: event.parentToolCallId,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_end") {
@@ -1393,6 +1426,7 @@ export class AgentSession {
 				toolName: event.toolName,
 				result: event.result,
 				isError: event.isError,
+				parentToolCallId: event.parentToolCallId,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		}
@@ -1509,14 +1543,6 @@ export class AgentSession {
 	}
 
 	/**
-	 * Get the names of currently active tools.
-	 * Returns the names of tools currently set on the agent.
-	 */
-	getActiveToolNames(): string[] {
-		return this.agent.state.tools.map((t) => t.name);
-	}
-
-	/**
 	 * Messages captured from the last agent run, for /prompt inspection.
 	 * Includes preset items, extension custom messages, and the user message.
 	 */
@@ -1527,9 +1553,10 @@ export class AgentSession {
 	get lastCompiledSystemPrompt(): string {
 		return this._lastCompiledSystemPrompt;
 	}
-	/**
-	 * Get all configured tools with name, description, parameter schema, prompt guidelines, and source metadata.
-	 */
+
+	getActiveToolNames(): string[] {
+		return [...this._selectedToolNames];
+	}
 
 	getAllTools(): ToolInfo[] {
 		return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
@@ -1537,6 +1564,10 @@ export class AgentSession {
 			description: definition.description,
 			parameters: definition.parameters,
 			promptGuidelines: definition.promptGuidelines,
+			exposure: definition.exposure,
+			namespace: definition.namespace,
+			annotations: definition.annotations,
+			defaultActive: definition.defaultActive,
 			sourceInfo,
 		}));
 	}
@@ -1545,27 +1576,132 @@ export class AgentSession {
 		return this._toolDefinitions.get(name)?.definition;
 	}
 
-	/**
-	 * Set active tools by name.
-	 * Only tools in the registry can be enabled. Unknown tool names are ignored.
-	 * Also rebuilds the system prompt to reflect the new tool set.
-	 * Changes take effect on the next agent turn.
-	 */
-	setActiveToolsByName(toolNames: string[]): void {
-		const tools: AgentTool[] = [];
-		const validToolNames: string[] = [];
-		for (const name of toolNames) {
-			const tool = this._toolRegistry.get(name);
-			if (tool) {
-				tools.push(tool);
-				validToolNames.push(name);
-			}
+	private _createToolLoadout(): ToolLoadout {
+		const activeTools = this._selectedToolNames
+			.map((name) => this._toolRegistry.get(name))
+			.filter((tool): tool is AgentTool => tool !== undefined);
+		const registered = [...this._toolRegistry.values()];
+		const exposureFor = (name: string): ToolExposure =>
+			this._toolDefinitions.get(name)?.definition.exposure ?? "direct";
+		const activeNames = new Set(activeTools.map((tool) => tool.name));
+		const callable = registered.filter((tool) => {
+			const exposure = exposureFor(tool.name);
+			return (
+				exposure === "codemode" || exposure === "deferred" || (exposure === "direct" && activeNames.has(tool.name))
+			);
+		});
+		const declared = activeTools.filter((tool) => {
+			const exposure = exposureFor(tool.name);
+			return exposure === "direct" || exposure === "deferred" || exposure === "model-only";
+		});
+		const namespaces = new Map<string, ToolNamespace>();
+		for (const tool of registered) {
+			const namespace = this._toolDefinitions.get(tool.name)?.definition.namespace;
+			if (namespace) namespaces.set(tool.name, namespace);
 		}
-		this.agent.state.tools = tools;
+		const baseLoadout: ToolLoadout = {
+			declared,
+			callable,
+			registered,
+			getExposure: exposureFor,
+			getNamespace: (name) => namespaces.get(name),
+		};
+		const descriptions: Record<string, string> = {};
+		const hiddenDeclarations = new Set<string>();
+		for (const tool of activeTools) {
+			const changes = this._toolDefinitions.get(tool.name)?.definition.prepareLoadout?.(baseLoadout);
+			if (!changes) continue;
+			Object.assign(descriptions, changes.descriptions);
+			for (const name of changes.hiddenDeclarations ?? []) hiddenDeclarations.add(name);
+		}
+		return {
+			...baseLoadout,
+			declared: declared
+				.filter((tool) => !hiddenDeclarations.has(tool.name))
+				.map((tool) =>
+					descriptions[tool.name] === undefined ? tool : { ...tool, description: descriptions[tool.name] },
+				),
+		};
+	}
 
-		// Rebuild base system prompt with new tool set (plus the R9 folded-tool
-		// category section maintained by syncToolSearchState/discovery).
-		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames, this._toolSearchCategories);
+	private _makeNestedToolExecutionContext(
+		callerToolCallId: string,
+		signal: AbortSignal | undefined,
+	): {
+		tools: readonly AgentTool[];
+		executeTool: (name: string, args: unknown, options?: ExecuteToolOptions) => Promise<AgentToolCallOutcome>;
+	} {
+		const caller = this._toolCallContexts.get(callerToolCallId);
+		if (!caller) {
+			return {
+				tools: [],
+				executeTool: async () => ({
+					result: {
+						content: [{ type: "text", text: "Nested tool context is unavailable" }],
+						details: undefined,
+					},
+					isError: true,
+					status: "validation_error",
+				}),
+			};
+		}
+		let childSequence = 0;
+		return {
+			tools: caller.loadout.callable,
+			executeTool: async (name, args, options) => {
+				if (typeof args !== "object" || args === null || Array.isArray(args)) {
+					return {
+						result: {
+							content: [{ type: "text", text: "Tool arguments must be an object" }],
+							details: undefined,
+							isError: true,
+						},
+						isError: true,
+						status: "validation_error",
+					};
+				}
+				const childToolCallId = `${callerToolCallId}/${++childSequence}`;
+				const childSignal = options?.signal ?? signal ?? caller.signal;
+				this._toolCallContexts.set(childToolCallId, {
+					...caller,
+					parentToolCallId: callerToolCallId,
+					signal: childSignal,
+				});
+				try {
+					return await runToolCall({
+						toolCall: { type: "toolCall", id: childToolCallId, name, arguments: args },
+						assistantMessage: caller.assistantMessage,
+						tools: caller.loadout.callable,
+						context: caller.context,
+						hooks: {
+							beforeToolCall: this.agent.beforeToolCall,
+							afterToolCall: this.agent.afterToolCall,
+						},
+						signal: childSignal,
+						parentToolCallId: callerToolCallId,
+						emit: (event) => {
+							if (event.type === "tool_execution_update") options?.onUpdate?.(event.partialResult);
+							return this._handleAgentEvent(event);
+						},
+					});
+				} finally {
+					this._toolCallContexts.delete(childToolCallId);
+				}
+			},
+		};
+	}
+
+	setActiveToolsByName(toolNames: string[]): void {
+		this._selectedToolNames = [...new Set(toolNames.filter((name) => this._toolRegistry.has(name)))];
+		const loadout = this._createToolLoadout();
+		this.agent.state.tools = loadout.declared.map((declaration) => {
+			const tool = this._toolRegistry.get(declaration.name);
+			return tool ? { ...tool, description: declaration.description } : declaration;
+		});
+		this._baseSystemPrompt = this._rebuildSystemPrompt(
+			loadout.declared.map((tool) => tool.name),
+			this._toolSearchCategories,
+		);
 		this._applyDynamicSystemPrompt();
 	}
 
@@ -1669,7 +1805,7 @@ export class AgentSession {
 	 */
 	private _applyToolSearchActiveSet(activated: boolean): void {
 		const manager = this._toolSearchManager;
-		const current = this.agent.state.tools.map((tool) => tool.name);
+		const current = [...this._selectedToolNames];
 		let finalNames = current;
 		const searchableCount = manager.getSearchableTools().length;
 		if (activated) {
@@ -4561,6 +4697,9 @@ export class AgentSession {
 	}
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {
+		runner.setToolExecutionContextFactory((toolCallId, signal) =>
+			this._makeNestedToolExecutionContext(toolCallId, signal),
+		);
 		const getCommands = (): SlashCommandInfo[] => {
 			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
 				name: command.invocationName,
@@ -4863,7 +5002,12 @@ export class AgentSession {
 		// sourceInfo).
 		const deferrableByName = new Map<string, boolean>();
 		for (const [name, entry] of definitionRegistry) {
-			deferrableByName.set(name, normalizeDeferrable(entry.definition, entry.sourceInfo));
+			const exposure = entry.definition.exposure ?? "direct";
+			deferrableByName.set(
+				name,
+				exposure === "deferred" ||
+					(exposure === "direct" && normalizeDeferrable(entry.definition, entry.sourceInfo)),
+			);
 		}
 		this._toolSearchDeferrable = deferrableByName;
 
@@ -4913,11 +5057,18 @@ export class AgentSession {
 			}
 		} else if (options?.includeAllExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
-				nextActiveToolNames.push(tool.name);
+				const definition = this._toolDefinitions.get(tool.name)?.definition;
+				if (definition?.defaultActive ?? (definition?.exposure ?? "direct") === "direct") {
+					nextActiveToolNames.push(tool.name);
+				}
 			}
 		} else if (!options?.activeToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (!previousRegistryNames.has(toolName)) {
+				const definition = this._toolDefinitions.get(toolName)?.definition;
+				if (
+					!previousRegistryNames.has(toolName) &&
+					(definition?.defaultActive ?? (definition?.exposure ?? "direct") === "direct")
+				) {
 					nextActiveToolNames.push(toolName);
 				}
 			}

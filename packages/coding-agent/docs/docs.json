@@ -50,6 +50,14 @@
         {
           "title": "Tool Search",
           "path": "tool-search.md"
+        },
+        {
+          "title": "MCP Servers",
+          "path": "mcp.md"
+        },
+        {
+          "title": "Codemode",
+          "path": "codemode.md"
         }
       ]
     },

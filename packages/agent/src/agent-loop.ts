@@ -10,6 +10,7 @@ import {
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AgentContext,
@@ -116,6 +117,105 @@ export async function runAgentLoop(
 
 	await runLoop(currentContext, newMessages, config, signal, emit, streamFn ?? getDefaultStreamFn());
 	return newMessages;
+}
+
+export interface RunToolCallOptions<TParameters extends TSchema = TSchema> {
+	toolCall: AgentToolCall;
+	assistantMessage: AssistantMessage;
+	/** Authorized tool snapshot supplied by the session adapter. */
+	tools: readonly AgentTool<TParameters>[];
+	context: AgentContext;
+	hooks?: Pick<AgentLoopConfig, "beforeToolCall" | "afterToolCall">;
+	signal?: AbortSignal;
+	parentToolCallId?: string;
+	emit?: AgentEventSink;
+}
+
+export interface AgentToolCallOutcome {
+	result: AgentToolResult<unknown>;
+	isError: boolean;
+	status: "success" | "blocked" | "validation_error" | "error" | "aborted";
+}
+
+/** Dispatch one session-authorized tool through the core validation and hook path. */
+export async function runToolCall<TParameters extends TSchema = TSchema>(
+	options: RunToolCallOptions<TParameters>,
+): Promise<AgentToolCallOutcome> {
+	const { toolCall, assistantMessage, context, signal, parentToolCallId } = options;
+	const emit = options.emit ?? (() => {});
+	const tool = options.tools.find((candidate) => candidate.name === toolCall.name);
+	const emitEnd = async (outcome: AgentToolCallOutcome): Promise<AgentToolCallOutcome> => {
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			result: outcome.result,
+			isError: outcome.isError,
+			...(parentToolCallId === undefined ? {} : { parentToolCallId }),
+		});
+		return outcome;
+	};
+	await emit({
+		type: "tool_execution_start",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		args: toolCall.arguments,
+		...(parentToolCallId === undefined ? {} : { parentToolCallId }),
+	});
+	if (!tool) {
+		return emitEnd({
+			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			isError: true,
+			status: "validation_error",
+		});
+	}
+
+	let args: unknown;
+	try {
+		args = validateToolArguments(tool, prepareToolCallArguments(tool, toolCall));
+	} catch (error) {
+		return emitEnd({
+			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			isError: true,
+			status: "validation_error",
+		});
+	}
+	if (signal?.aborted) {
+		return emitEnd({ result: createErrorToolResult("Operation aborted"), isError: true, status: "aborted" });
+	}
+
+	const hooks = options.hooks ?? {};
+	if (hooks.beforeToolCall) {
+		try {
+			const before = await hooks.beforeToolCall({ assistantMessage, toolCall, args, context }, signal);
+			if (signal?.aborted) {
+				return emitEnd({ result: createErrorToolResult("Operation aborted"), isError: true, status: "aborted" });
+			}
+			if (before?.block) {
+				const result = createErrorToolResult(before.reason || "Tool execution was blocked");
+				if (before.terminate === true) result.terminate = true;
+				return emitEnd({ result, isError: true, status: "blocked" });
+			}
+		} catch (error) {
+			return emitEnd({
+				result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+				isError: true,
+				status: signal?.aborted ? "aborted" : "error",
+			});
+		}
+	}
+	const prepared: PreparedToolCall = { kind: "prepared", toolCall, tool, args };
+	const executed = await executePreparedToolCall(prepared, signal, async (event) => {
+		if (event.type === "tool_execution_update") {
+			await emit({ ...event, ...(parentToolCallId === undefined ? {} : { parentToolCallId }) });
+		}
+	});
+	const finalized = await finalizeExecutedToolCall(context, assistantMessage, prepared, executed, hooks, signal);
+	return emitEnd({
+		result: finalized.result,
+		isError: finalized.isError,
+		status: signal?.aborted ? "aborted" : finalized.isError ? "error" : "success",
+	});
 }
 
 export async function runAgentLoopContinue(
@@ -735,7 +835,7 @@ async function executePreparedToolCall(
 		);
 		acceptingUpdates = false;
 		await Promise.all(updateEvents);
-		return { result, isError: false };
+		return { result, isError: result.isError === true };
 	} catch (error) {
 		acceptingUpdates = false;
 		await Promise.all(updateEvents);
@@ -753,11 +853,11 @@ async function finalizeExecutedToolCall(
 	assistantMessage: AssistantMessage,
 	prepared: PreparedToolCall,
 	executed: ExecutedToolCallOutcome,
-	config: AgentLoopConfig,
+	config: Pick<AgentLoopConfig, "afterToolCall">,
 	signal: AbortSignal | undefined,
 ): Promise<FinalizedToolCallOutcome> {
 	let result = executed.result;
-	let isError = executed.isError;
+	let isError = executed.isError || result.isError === true;
 
 	if (config.afterToolCall) {
 		try {
@@ -773,6 +873,12 @@ async function finalizeExecutedToolCall(
 				signal,
 			);
 			if (afterResult) {
+				const structuredContent =
+					afterResult.structuredContent !== undefined
+						? afterResult.structuredContent
+						: afterResult.content
+							? undefined
+							: result.structuredContent;
 				result = {
 					...result,
 					content: afterResult.content ?? result.content,
@@ -780,7 +886,12 @@ async function finalizeExecutedToolCall(
 					usage: afterResult.usage ?? result.usage,
 					terminate: afterResult.terminate ?? result.terminate,
 				};
-				isError = afterResult.isError ?? isError;
+				if (structuredContent === undefined) delete result.structuredContent;
+				else result.structuredContent = structuredContent;
+				if (afterResult.isError !== undefined) {
+					result.isError = afterResult.isError;
+					isError = afterResult.isError;
+				}
 			}
 		} catch (error) {
 			result = createErrorToolResult(error instanceof Error ? error.message : String(error));

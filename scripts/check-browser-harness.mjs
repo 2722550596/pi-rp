@@ -113,9 +113,8 @@ const AI_SDK_ALLOWLIST = ["@anthropic-ai/sdk", "openai", "@google/genai", "@mist
 const AI_SDK_FORBIDDEN = ["@aws-sdk/", "@smithy/"];
 const CATALOG_ALLOWLIST = ["anthropic.json", "openai.json", "google.json", "mistral.json", "openrouter.json"];
 
-// A4 体积硬上限；session collaboration executor + shared protocol 后完整主入口实测 2,201,309 B。
-// §5.7 回写预算并保留约 48.7KB 余量，避免该功能把产品入口推过硬上限。
-const MAX_BUNDLE_BYTES = 2_250_000;
+// A4 product bundle ceiling: 2500 KB / 2,500,000 bytes (user-approved; increased from 2,250,000 bytes).
+const MAX_BUNDLE_BYTES = 2_500_000;
 
 // A5 stub 完整性的静态扫描范围：core/tools 全部 + 工具文件直连的记账内模块。
 const STUB_SCAN_FILES = [
@@ -464,9 +463,9 @@ async function runBundleAssertions() {
 		if (entry.kind === "tools") assertToolCoverage(entry.id, metafile);
 		if (entry.kind === "product") {
 			if (outputBytes > MAX_BUNDLE_BYTES) {
-				fail(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB 超过硬上限 2.25 MB（§5.7 当前 bundle 预算）`);
+				fail(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB 超过用户批准的 2.5 MB 上限（2,500,000 bytes）`);
 			} else {
-				pass(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB ≤ 2.25 MB`);
+				pass(`${entry.id}: 体积 ${(outputBytes / 1024).toFixed(1)} KB ≤ 2.5 MB`);
 			}
 		}
 	}

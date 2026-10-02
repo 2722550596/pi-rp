@@ -33,6 +33,11 @@ const DEFAULT_TOOL_SEARCH_SETTINGS: Required<ToolSearchSettings> = {
 	reservedTools: [],
 };
 
+export interface CodemodeSettings {
+	mode?: "on" | "only";
+	inlineBudget?: number;
+}
+
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
@@ -136,6 +141,7 @@ export interface Settings {
 	compaction?: CompactionSettings;
 	toolSearch?: ToolSearchSettings;
 	branchSummary?: BranchSummarySettings;
+	codemode?: CodemodeSettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
 	showCacheMissNotices?: boolean; // default: false - show transcript notices for significant prompt-cache misses

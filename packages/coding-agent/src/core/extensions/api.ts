@@ -18,6 +18,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import type { EventBus } from "../event-bus.ts";
 import { createMemoryEventBus } from "../event-bus-memory.ts";
 import type { ExecOptions } from "../exec.ts";
+import { McpServerRegistry, type RegisteredMcpServer } from "../mcp-servers.ts";
 import { type CustomTypePolicy, DEFAULT_CUSTOM_TYPE_POLICY } from "../messages.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
@@ -65,6 +66,7 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 	};
 
 	const runtime: ExtensionRuntime = {
+		mcpServers: new McpServerRegistry(),
 		sendMessage: notInitialized,
 		emitActivity: notInitialized,
 		sendUserMessage: notInitialized,
@@ -104,6 +106,10 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 		assertActive,
 		invalidate: (message) => {
 			if (state.staleMessage) return;
+			for (const server of runtime.mcpServers.list()) {
+				runtime.mcpServers.unregister(server.name, server.extensionPath);
+			}
+			runtime.mcpServers.setChangeListener(undefined);
 			state.staleMessage =
 				message ??
 				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
@@ -195,6 +201,26 @@ export function createExtensionAPI(
 				sourceInfo: extension.sourceInfo,
 			});
 			runtime.refreshTools();
+		},
+
+		registerMcpServer(name: string, config: RegisteredMcpServer["config"]): void {
+			runtime.assertActive();
+			if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Invalid MCP server name "${name}"`);
+			const existing = runtime.mcpServers.get(name);
+			if (existing && existing.extensionPath !== extension.path) {
+				throw new Error(`MCP server "${name}" is already registered by extension "${existing.extensionPath}"`);
+			}
+			runtime.mcpServers.register({ name, config, extensionPath: extension.path });
+		},
+
+		unregisterMcpServer(name: string): void {
+			runtime.assertActive();
+			runtime.mcpServers.unregister(name, extension.path);
+		},
+
+		getMcpServers() {
+			runtime.assertActive();
+			return runtime.mcpServers.list();
 		},
 
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {

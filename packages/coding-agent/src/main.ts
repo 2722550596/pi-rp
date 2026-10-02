@@ -5,6 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { isAbsolute, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
@@ -29,6 +30,7 @@ import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
+import { type McpCommand, McpCommandError, parseMcpCommand, runMcpCommand } from "./cli/mcp-command.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
@@ -40,6 +42,7 @@ import {
 	expandTildePath,
 	getAgentDir,
 	getPackageDir,
+	getProjectConfigDirFor,
 	VERSION,
 } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
@@ -73,6 +76,7 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { openBrowser } from "./utils/open-browser.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -576,6 +580,20 @@ function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | u
 	return paths?.map((value) => (isLocalPath(value) ? resolvePath(value, cwd) : value));
 }
 
+function getMcpProjectResourcePaths(cwd: string, configDir?: string, settingsFile?: string): string[] {
+	const paths = [getProjectConfigDirFor(cwd, configDir, "mcp.json")];
+	if (!settingsFile) return paths;
+	const settingsPath = resolvePath(settingsFile, cwd);
+	const relativePath = relative(resolvePath(cwd), settingsPath);
+	if (
+		relativePath === "" ||
+		(relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
+	) {
+		paths.push(settingsPath);
+	}
+	return paths;
+}
+
 async function promptForMissingSessionCwd(
 	issue: SessionCwdIssue,
 	settingsManager: SettingsManager,
@@ -609,11 +627,66 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
-	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
-	configureHttpDispatcher();
-
-	if (await handlePackageCommand(args, { extensionFactories })) {
+	let mcpCommand: McpCommand | undefined;
+	try {
+		mcpCommand = parseMcpCommand(args);
+	} catch (error) {
+		console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+		process.exitCode = 1;
+		return;
+	}
+	if (mcpCommand) {
+		const configDir = process.env[ENV_PROJECT_CONFIG_DIR];
+		const settingsFile = process.env[ENV_SETTINGS_FILE];
+		const projectPaths = getMcpProjectResourcePaths(cwd, configDir, settingsFile);
+		const hasProjectResources = hasTrustRequiringProjectResources(cwd, undefined, projectPaths);
+		const projectTrusted = !hasProjectResources || new ProjectTrustStore(agentDir).get(cwd) === true;
+		try {
+			const prompt =
+				mcpCommand.action === "login"
+					? {
+							showAuthorizationUrl: (url: URL) => {
+								console.log(`Open this MCP sign-in URL: ${url.href}`);
+								openBrowser(url.href);
+							},
+							promptForRedirectUrl: async () => {
+								const terminal = createInterface({ input: process.stdin, output: process.stdout });
+								try {
+									return await new Promise<string | undefined>((resolve) =>
+										terminal.question("Paste the full redirect URL: ", resolve),
+									);
+								} finally {
+									terminal.close();
+								}
+							},
+						}
+					: undefined;
+			await runMcpCommand(mcpCommand, {
+				agentDir,
+				configDir,
+				cwd,
+				projectTrusted,
+				settingsFile,
+				prompt,
+			});
+		} catch (error) {
+			console.error(
+				chalk.red(
+					error instanceof McpCommandError
+						? error.message
+						: `MCP command failed: ${error instanceof Error ? error.message : String(error)}`,
+				),
+			);
+			process.exitCode = 1;
+		}
+		return;
+	}
+	const earlyMcpProjectPaths = getMcpProjectResourcePaths(
+		cwd,
+		process.env[ENV_PROJECT_CONFIG_DIR],
+		process.env[ENV_SETTINGS_FILE],
+	);
+	if (await handlePackageCommand(args, { extensionFactories, additionalProjectResourcePaths: earlyMcpProjectPaths })) {
 		const exitCode = process.exitCode ?? 0;
 		if (process.platform === "win32" && exitCode === 0 && args[0] === "update") {
 			// We normally prefer process.exit(0) for package commands so bad extensions cannot keep
@@ -626,7 +699,7 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	if (await handleConfigCommand(args, { extensionFactories })) {
+	if (await handleConfigCommand(args, { extensionFactories, additionalProjectResourcePaths: earlyMcpProjectPaths })) {
 		return;
 	}
 
@@ -744,12 +817,16 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const trustStore = new ProjectTrustStore(agentDir);
 	const sessionCwd = sessionManager.getCwd();
+	const configDir = parsed.configDir ?? process.env[ENV_PROJECT_CONFIG_DIR];
+	const settingsFile = parsed.settingsFile ?? process.env[ENV_SETTINGS_FILE];
+	const initialMcpProjectPaths = getMcpProjectResourcePaths(sessionCwd, configDir, settingsFile);
 	const autoTrustOnReloadCwd =
-		parsed.projectTrustOverride === undefined && !hasTrustRequiringProjectResources(sessionCwd)
+		parsed.projectTrustOverride === undefined &&
+		!hasTrustRequiringProjectResources(sessionCwd, undefined, initialMcpProjectPaths)
 			? sessionCwd
 			: undefined;
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
-	const projectTrustByCwd = new Map<string, boolean>();
+	const projectTrustByScope = new Map<string, boolean>();
 
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
@@ -764,8 +841,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
-		const cachedProjectTrust = projectTrustByCwd.get(cwd);
-		const hasTrustRequiringResources = hasTrustRequiringProjectResources(cwd);
+		const projectResourcePaths = getMcpProjectResourcePaths(cwd, configDir, settingsFile);
+		const projectTrustKey = JSON.stringify([resolvePath(cwd), ...projectResourcePaths]);
+		const cachedProjectTrust = projectTrustByScope.get(projectTrustKey);
+		const hasTrustRequiringResources = hasTrustRequiringProjectResources(cwd, undefined, projectResourcePaths);
 		const shouldResolveProjectTrust =
 			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustRequiringResources;
 		const projectTrusted = shouldResolveProjectTrust
@@ -798,8 +877,9 @@ export async function main(args: string[], options?: MainOptions) {
 										hasUI: isInitialRuntime && trustPromptMode === "interactive",
 									}),
 								onExtensionError: (message) => projectTrustDiagnostics.push({ type: "warning", message }),
+								additionalProjectResourcePaths: projectResourcePaths,
 							});
-							projectTrustByCwd.set(cwd, trusted);
+							projectTrustByScope.set(projectTrustKey, trusted);
 							return trusted;
 						},
 					}

@@ -161,6 +161,7 @@ function withTrustFileLock<T>(path: string, stores: HarnessStores, fn: () => T):
 export function hasTrustRequiringProjectResources(
 	cwd: string,
 	storage: StorageBackend = NodeStorageBackend.shared,
+	additionalProjectResourcePaths: readonly string[] = [],
 ): boolean {
 	// HOME resolution is a node-entry concern (the browser profile is trusted-by-default per the frozen decision, so
 	// this probe is never assembled there); the workspace/config existence probes below run through the storage seam.
@@ -170,6 +171,9 @@ export function hasTrustRequiringProjectResources(
 
 	const configDir = join(currentDir, getProjectConfigDirName());
 	if (TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.some((entry) => storage.existsSync(join(configDir, entry)))) {
+		return true;
+	}
+	if (additionalProjectResourcePaths.some((path) => storage.existsSync(resolvePath(path, cwd)))) {
 		return true;
 	}
 

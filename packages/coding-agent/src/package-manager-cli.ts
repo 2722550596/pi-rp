@@ -537,6 +537,7 @@ function prepareWindowsNpmSelfUpdate(): void {
 
 export interface PackageCommandRuntimeOptions {
 	extensionFactories?: InlineExtension[];
+	additionalProjectResourcePaths?: readonly string[];
 }
 
 interface CommandSettingsResult {
@@ -560,6 +561,7 @@ async function createCommandSettingsManager(options: {
 	projectTrustOverride?: boolean;
 	useSavedProjectTrustOnly?: boolean;
 	extensionFactories?: InlineExtension[];
+	additionalProjectResourcePaths?: readonly string[];
 }): Promise<CommandSettingsResult> {
 	const settingsManager = SettingsManager.create(options.cwd, options.agentDir, { projectTrusted: false });
 	const projectTrustWarnings: string[] = [];
@@ -572,7 +574,8 @@ async function createCommandSettingsManager(options: {
 
 	const appMode = getCommandAppMode();
 	const extensionsResult =
-		options.projectTrustOverride === undefined && hasTrustRequiringProjectResources(options.cwd)
+		options.projectTrustOverride === undefined &&
+		hasTrustRequiringProjectResources(options.cwd, undefined, options.additionalProjectResourcePaths)
 			? await new DefaultResourceLoader({
 					cwd: options.cwd,
 					agentDir: options.agentDir,
@@ -597,6 +600,7 @@ async function createCommandSettingsManager(options: {
 			hasUI: appMode === "interactive",
 		}),
 		onExtensionError: (message) => projectTrustWarnings.push(message),
+		additionalProjectResourcePaths: options.additionalProjectResourcePaths,
 	});
 	settingsManager.setProjectTrusted(projectTrusted);
 	return { settingsManager, projectTrustWarnings };
@@ -645,6 +649,7 @@ export async function handleConfigCommand(
 		agentDir,
 		projectTrustOverride,
 		extensionFactories: runtimeOptions.extensionFactories,
+		additionalProjectResourcePaths: runtimeOptions.additionalProjectResourcePaths,
 	});
 	reportProjectTrustWarnings(projectTrustWarnings);
 	if (local && !settingsManager.isProjectTrusted()) {
@@ -745,6 +750,7 @@ export async function handlePackageCommand(
 		projectTrustOverride: options.projectTrustOverride,
 		useSavedProjectTrustOnly: options.command === "update",
 		extensionFactories: runtimeOptions.extensionFactories,
+		additionalProjectResourcePaths: runtimeOptions.additionalProjectResourcePaths,
 	});
 	reportProjectTrustWarnings(projectTrustWarnings);
 	if (!settingsManager.isProjectTrusted() && writesProjectPackageConfig) {

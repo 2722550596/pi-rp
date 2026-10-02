@@ -2,6 +2,7 @@
  * Extension system for lifecycle events and custom tools.
  */
 
+export type { McpExposure, McpServerConfig, RegisteredMcpServer } from "../mcp-servers.ts";
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
 export type { SourceInfo } from "../source-info.ts";
 export {
@@ -58,6 +59,7 @@ export type {
 	ExecImpl,
 	ExecOptions,
 	ExecResult,
+	ExecuteToolOptions,
 	Extension,
 	ExtensionActions,
 	// API
@@ -77,6 +79,7 @@ export type {
 	ExtensionRuntime,
 	ExtensionRuntimeOptions,
 	ExtensionShortcut,
+	ExtensionToolContext,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -100,6 +103,8 @@ export type {
 	LsToolResultEvent,
 	MarkdownTransformContext,
 	MarkdownTransformer,
+	// Events - Resources
+	McpServersChangeEvent,
 	MessageContentTransformContext,
 	MessageContentTransformer,
 	// Events - Message
@@ -125,7 +130,6 @@ export type {
 	RegisteredTool,
 	ReplacedSessionContext,
 	ResolvedCommand,
-	// Events - Resources
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	SendMessageHandler,
@@ -163,7 +167,11 @@ export type {
 	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	ToolExposure,
 	ToolInfo,
+	ToolLoadout,
+	ToolLoadoutChanges,
+	ToolNamespace,
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	ToolResultEventResult,
