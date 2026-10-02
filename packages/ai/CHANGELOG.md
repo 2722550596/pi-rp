@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed OpenAI Codex SSE request body typing for Node-only TypeScript builds.
+
 ## [0.84.2] - 2026-08-14
 
 ### Added

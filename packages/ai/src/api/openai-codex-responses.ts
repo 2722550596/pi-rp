@@ -374,7 +374,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			if (compressedBody) {
 				sseHeaders.set("content-encoding", "zstd");
 			}
-			const sseBody: Uint8Array | string = compressedBody ?? bodyJson;
+			const sseBody: Buffer | string = compressedBody ? Buffer.from(compressedBody) : bodyJson;
 
 			// Fetch with retry logic for rate limits and transient errors
 			let response: Response | undefined;
@@ -391,12 +391,13 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
 					const combinedSignal = combineAbortSignals([options?.signal, headerTimeoutSignal]);
 					try {
-						response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
+						const requestInit = {
 							method: "POST",
 							headers: sseHeaders,
-							body: sseBody as BodyInit,
+							body: sseBody,
 							signal: combinedSignal.signal,
-						});
+						} as RequestInit;
+						response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), requestInit);
 					} catch (error) {
 						if (headerTimeoutSignal?.aborted && !options?.signal?.aborted) {
 							throw new Error(`Codex SSE response headers timed out after ${httpTimeoutMs}ms`);
