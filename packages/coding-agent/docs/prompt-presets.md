@@ -88,7 +88,7 @@ Each item is either a **block** (static text) or a **slot** (dynamic content ren
  | `enabled` | boolean | no | Set to `false` to skip. Default `true`. |
  | `role` | string | no | Message role: `"system"`, `"user"`, `"assistant"`, `"custom"`. Default `"system"` (when omitted). |
  | `content` | string | yes | Prompt text. Supports `{{macro}}` expansion. |
- | `heading` | string | no | Text inserted before the rendered content. Supports `{{macro}}` expansion. An item with a heading but empty content still renders (the heading alone). |
+ | `heading` | string | no | Text inserted before the rendered content. Supports `{{macro}}` expansion. An item whose rendered content is empty is skipped entirely: its heading, ending, and wrap are not rendered. |
  | `ending` | string | no | Text appended after the rendered content. Supports `{{macro}}` expansion. |
  | `wrap` | string or object | no | Wrap the rendered content in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
 
