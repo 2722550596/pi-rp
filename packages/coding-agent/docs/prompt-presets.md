@@ -194,8 +194,8 @@ renders as:
 Rules:
 
 - `heading` and `ending` support `{{macro}}` expansion, just like block `content`.
-- An item with a `heading` but empty content still renders (the heading alone),
-  so a declared heading is never silently dropped by an empty slot.
+- If the content renders empty or is absent, the entire item is skipped;
+  `heading`, `ending`, and `wrap` are not rendered.
 - When `wrap` is set, only the rendered content is wrapped; `heading` and
   `ending` remain outside the tag:
 

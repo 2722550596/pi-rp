@@ -280,12 +280,13 @@ describe("item heading and ending", () => {
 		expect(messageText(compiled[0])).toBe("## Tools\nslot body\n---");
 	});
 
-	it("renders heading alone when slot output is empty", async () => {
+	it("skips heading and ending when slot output is empty", async () => {
 		registerSlot({ name: "he-empty-slot", description: "test", render: () => "" });
-		const preset = presetWithItems([{ kind: "slot", id: "s", slot: "he-empty-slot", heading: "## Empty" }]);
+		const preset = presetWithItems([
+			{ kind: "slot", id: "s", slot: "he-empty-slot", heading: "## Empty", ending: "---", wrap: "ctx" },
+		]);
 		const compiled = (await compileMessages(preset, runtime([]))).messages;
-		expect(compiled).toHaveLength(1);
-		expect(messageText(compiled[0])).toBe("## Empty");
+		expect(compiled).toHaveLength(0);
 	});
 
 	it("expands macros in heading and ending", async () => {

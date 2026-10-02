@@ -411,6 +411,7 @@ function finalizeItemText(
 	runtime: PromptRuntime,
 	diagnostics: PromptPresetDiagnostic[],
 ): string {
+	if (!raw) return "";
 	const expand = (part: string | undefined): string => {
 		if (!part) return "";
 		return runtime.skipMacroExpansion
