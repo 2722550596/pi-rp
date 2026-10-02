@@ -264,7 +264,11 @@ describe("SchemaValidator.validate — double-encoded value unwrap retry", () =>
 
 	it("unwraps a JSON-encoded object string and surfaces it via correctedValue", () => {
 		const v = new SchemaValidator();
-		v.loadSchema("s", "character", Type.Object({ name: Type.String(), mood: Type.Optional(Type.Object({ text: Type.String() })) }));
+		v.loadSchema(
+			"s",
+			"character",
+			Type.Object({ name: Type.String(), mood: Type.Optional(Type.Object({ text: Type.String() })) }),
+		);
 
 		const res = v.validate("character.mood", "replace", '{"text": "冷"}', state);
 
@@ -274,7 +278,11 @@ describe("SchemaValidator.validate — double-encoded value unwrap retry", () =>
 
 	it("unwraps a JSON-encoded merge value", () => {
 		const v = new SchemaValidator();
-		v.loadSchema("s", "character", Type.Object({ name: Type.String(), mood: Type.Optional(Type.Object({ text: Type.String() })) }));
+		v.loadSchema(
+			"s",
+			"character",
+			Type.Object({ name: Type.String(), mood: Type.Optional(Type.Object({ text: Type.String() })) }),
+		);
 
 		const res = v.validate("", "merge", '{"character": {"mood": {"text": "冷"}}}', state);
 

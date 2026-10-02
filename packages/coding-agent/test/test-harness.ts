@@ -26,12 +26,12 @@ import type {
 	ToolCall,
 	Usage,
 } from "@earendil-works/pi-ai";
-import type { AgentSessionScope } from "../src/core/session-scope.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import type { AgentSessionScope } from "../src/core/session-scope.ts";
 import type { Settings } from "../src/core/settings-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { InlineExtension, ResourceLoader } from "../src/index.ts";

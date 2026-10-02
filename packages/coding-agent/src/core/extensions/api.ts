@@ -134,8 +134,7 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 				(registration) => registration.name !== name || registration.extensionPath !== extensionPath,
 			);
 			runtime.pendingNativeProviderRegistrations = runtime.pendingNativeProviderRegistrations.filter(
-				(registration) =>
-					registration.provider.id !== name || registration.extensionPath !== extensionPath,
+				(registration) => registration.provider.id !== name || registration.extensionPath !== extensionPath,
 			);
 		},
 	};

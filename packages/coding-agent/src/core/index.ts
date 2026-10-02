@@ -25,12 +25,6 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
-export {
-	AgentSessionScope,
-	AgentSessionScopeError,
-	createAgentSessionScope,
-	type AgentSessionScopeErrorCode,
-} from "./session-scope.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
@@ -126,4 +120,10 @@ export {
 	type RequestGatewayConfig,
 	type RequestIdentity,
 } from "./request-gateway.ts";
+export {
+	AgentSessionScope,
+	AgentSessionScopeError,
+	type AgentSessionScopeErrorCode,
+	createAgentSessionScope,
+} from "./session-scope.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
