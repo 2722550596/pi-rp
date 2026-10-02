@@ -45,6 +45,8 @@
 - SessionManager context builders now build the current branch once instead of copying the full append log first; full-history APIs remain unchanged.
 
 ### Fixed
+
+- Fixed prompt preset `wrap` tags enclosing per-item headings and endings; wrapping now applies only to the rendered content.
 - Fixed the memory browser's search view rendering a literal `null` when a result has no disclosure: `discBadge()` returns `null` for an empty value and DOM `append(null)` stringifies it, so the guard is now applied at the call site.
 - Fixed schema migration for existing memory databases: opening a v2 database now migrates it in place to v3 (adds the disclosure columns, rebuilds `node_fts` with the new column, re-indexes every node) behind a `VACUUM INTO` backup. Idempotency is decided by column existence rather than the stored version string, and `import()` no longer writes the snapshot's `schema_version` back, which could silently downgrade a migrated database.
 - Fixed `INSERT OR REPLACE` in several store paths silently resetting unlisted columns (notably `disclosure`) to NULL; these now use `ON CONFLICT DO UPDATE` with explicit three-state semantics (key absent = keep, explicit null = clear, value = write).

@@ -196,8 +196,14 @@ Rules:
 - `heading` and `ending` support `{{macro}}` expansion, just like block `content`.
 - An item with a `heading` but empty content still renders (the heading alone),
   so a declared heading is never silently dropped by an empty slot.
-- `wrap` applies to the combined text (heading + content + ending), so the
-  XML tag encloses everything.
+- When `wrap` is set, only the rendered content is wrapped; `heading` and
+  `ending` remain outside the tag:
+
+  ```xml
+  ## Character Charter
+  <charter>…slot output…</charter>
+  ---
+  ```
 
 ## Built-in Slots
 

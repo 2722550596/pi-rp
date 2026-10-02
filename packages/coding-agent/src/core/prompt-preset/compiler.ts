@@ -411,24 +411,21 @@ function finalizeItemText(
 	runtime: PromptRuntime,
 	diagnostics: PromptPresetDiagnostic[],
 ): string {
-	// heading/ending are explicit user text; keep them even when the content
-	// itself renders empty (e.g. a slot with no output), so a declared heading
-	// is never silently dropped.
-	const parts: string[] = [];
-	if (item.heading) parts.push(item.heading);
-	if (raw) parts.push(raw);
-	if (item.ending) parts.push(item.ending);
-	const text = parts.join("\n");
-	if (!text) return "";
-
-	let rendered: string;
-	if (runtime.skipMacroExpansion) {
-		rendered = text;
-	} else {
-		const policy = preset.defaults?.unresolvedMacroPolicy;
-		rendered = expandMacros(text, runtime, { unresolvedPolicy: policy, diagnostics });
-	}
-	return applyItemWrap(rendered, item, diagnostics);
+	const expand = (part: string | undefined): string => {
+		if (!part) return "";
+		return runtime.skipMacroExpansion
+			? part
+			: expandMacros(part, runtime, {
+					unresolvedPolicy: preset.defaults?.unresolvedMacroPolicy,
+					diagnostics,
+				});
+	};
+	const heading = expand(item.heading);
+	const content = expand(raw);
+	const ending = expand(item.ending);
+	if (!heading && !content && !ending) return "";
+	const wrappedContent = content ? applyItemWrap(content, item, diagnostics) : "";
+	return [heading, wrappedContent, ending].filter(Boolean).join("\n");
 }
 
 // =========================================================================

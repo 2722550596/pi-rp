@@ -298,13 +298,13 @@ describe("item heading and ending", () => {
 		expect(messageText(compiled[0])).toBe("expanded:\nbody\nexpanded");
 	});
 
-	it("wrap applies to heading + content + ending combined", async () => {
+	it("keeps heading and ending outside the wrapped content", async () => {
 		const preset = presetWithItems([
 			{ kind: "block", id: "b", content: "body", heading: "## H", ending: "---", wrap: "ctx" },
 		]);
 		const compiled = (await compileMessages(preset, runtime([]))).messages;
 		expect(compiled).toHaveLength(1);
-		expect(messageText(compiled[0])).toBe("<ctx>## H\nbody\n---</ctx>");
+		expect(messageText(compiled[0])).toBe("## H\n<ctx>body</ctx>\n---");
 	});
 
 	it("renders nothing when both heading and ending are empty and slot renders empty", async () => {
