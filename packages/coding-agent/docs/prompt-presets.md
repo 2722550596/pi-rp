@@ -103,7 +103,7 @@ Each item is either a **block** (static text) or a **slot** (dynamic content ren
  | `name` | string | no | Display name for diagnostics. |
  | `enabled` | boolean | no | Default `true`. |
  | `role` | string | no | Slot output role. Default `"system"`. |
- | `heading` | string | no | Text inserted before the slot's rendered output. Supports `{{macro}}` expansion. An item with a heading but empty slot output still renders (the heading alone). |
+ | `heading` | string | no | Text inserted before the slot's rendered output. Supports `{{macro}}` expansion. If the rendered slot output is empty, the entire slot item is skipped, including its heading, ending, and wrap. |
  | `ending` | string | no | Text appended after the slot's rendered output. Supports `{{macro}}` expansion. |
  | `options` | object | no | Slot-specific options (see per-slot docs below). |
  | `wrap` | string or object | no | Wrap the slot's rendered output in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
