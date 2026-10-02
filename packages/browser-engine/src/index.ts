@@ -72,4 +72,7 @@ export type {
 	ToolName,
 } from "./reexports.ts";
 // —— 状态装配面（Impl-B 定稿类型，经 pi-agent-core storage-backend 转出）——
+
+// —— browser-safe generic state merge helper ——
+export { mergeStateDefaults } from "../../coding-agent/src/state/merge.ts";
 export type { HarnessStores, StateLocks, StatePaths, StateStores, StorageBackend } from "./state-stores.ts";

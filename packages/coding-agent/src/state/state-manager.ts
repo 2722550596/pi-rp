@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
+import { deepMerge, isObject, type JsonValue } from "./merge.ts";
 import type { StateStore } from "./state-store.ts";
 
-export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+export { deepMerge, isObject, type JsonValue } from "./merge.ts";
 
 export type StateOp = "add" | "remove" | "replace" | "merge";
 /** Internal store-seeding op (schema defaults, fillMissing semantics). Never user-facing. */
@@ -53,10 +54,6 @@ function resolvePath(
 	return { parent: current, key, current: current[key] };
 }
 
-export function isObject(val: JsonValue | undefined): val is Record<string, JsonValue> {
-	return typeof val === "object" && val !== null && !Array.isArray(val);
-}
-
 /**
  * If `value` is a JSON string encoding an object/array, parse and return it;
  * otherwise return the value unchanged.
@@ -79,23 +76,6 @@ export function unwrapJsonStringValue(value: unknown): unknown {
 		// Not JSON → keep as-is
 	}
 	return value;
-}
-
-/**
- * Deep merge `src` into `target` (RFC 7396). If a value in `src` is null, the
- * key is deleted from `target`.
- */
-export function deepMerge(target: Record<string, JsonValue>, src: Record<string, JsonValue>): void {
-	for (const key of Object.keys(src)) {
-		const sv = src[key];
-		if (sv === null) {
-			delete target[key];
-		} else if (isObject(sv) && isObject(target[key])) {
-			deepMerge(target[key] as Record<string, JsonValue>, sv);
-		} else {
-			target[key] = sv;
-		}
-	}
 }
 
 /**
