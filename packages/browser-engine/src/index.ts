@@ -9,6 +9,8 @@
  * Harness 装配主体位于 assemble.ts，执行者驱动位于 executor.ts。
  */
 
+/// <reference path="./deps.d.ts" />
+
 // —— 上游重出口（15-F §3.3；InMemorySessionRepo/streamProxy 已在上游 browser-smoke 守护内，浏览器可打包）——
 export type { ExecutionEnv, FileSystem, Shell } from "@earendil-works/pi-agent-core";
 export { InMemorySessionRepo, streamProxy } from "@earendil-works/pi-agent-core";

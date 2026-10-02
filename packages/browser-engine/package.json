@@ -24,6 +24,8 @@
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
+    "rollup": "4.63.6",
+    "rollup-plugin-dts": "6.5.1",
     "vitest": "4.1.9"
   },
   "keywords": [
@@ -50,8 +52,8 @@
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "^0.84.2",
     "@earendil-works/pi-ai": "^0.84.2",
-    "@earendil-works/pi-coding-agent": "^0.84.2",
     "@earendil-works/pi-client": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
     "@earendil-works/pi-protocol": "^0.84.2",
     "@earendil-works/pi-session-protocol": "^0.84.2"
   }

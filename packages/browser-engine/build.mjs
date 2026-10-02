@@ -11,6 +11,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { rollup } from "rollup";
+import dts from "rollup-plugin-dts";
 
 export const packageRoot = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = resolve(packageRoot, "../..");
@@ -299,5 +301,16 @@ if (invokedDirectly) {
 			write: true,
 		}),
 	);
-	console.log("browser-engine: built dist/index.js");
+	// dist/index.d.ts：bundle-only 构建缺类型产物（package.json types 指向空文件的 PRF 已修）。
+	// 本包 src 大量跨包相对导入，普通 tsc emit 无法产出可消费的 d.ts 树，用 rollup-plugin-dts
+	// 把全图类型打为单文件。rollup 只处理声明，不做 js 转译；js 仍由上方 esbuild bundle。
+	const dtsBundle = await rollup({
+		input: resolve(packageRoot, "src/index.ts"),
+		plugins: [dts({ tsconfig: resolve(packageRoot, "tsconfig.json") })],
+		external: (id) =>
+			/^(react|react-dom|zod|undici-types|highlight\.js|@sqlite\.org\/|@silvia-odwyer\/)/.test(id) ||
+			id.startsWith("node:"),
+	});
+	await dtsBundle.write({ file: join(packageRoot, "dist/index.d.ts"), format: "es" });
+	console.log("browser-engine: built dist/index.js + dist/index.d.ts");
 }

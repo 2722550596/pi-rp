@@ -461,7 +461,13 @@ function addCustomHeadersMiddleware(client: BedrockRuntimeClient, headers: Recor
 		}
 		return next(args);
 	};
-	client.middlewareStack.add(middleware, { step: "build", name: "pi-ai-custom-headers", priority: "low" });
+	// @aws-sdk 类型族在 add() 重载上对 BuildMiddleware<object, MetadataBearer> 的既有摩擦
+	//（Deserialize/Build 泛型协变不一致，多个 step 重载互斥）；运行时形状正确，never 收口。
+	client.middlewareStack.add(middleware as never, {
+		step: "build",
+		name: "pi-ai-custom-headers",
+		priority: "low",
+	});
 }
 
 export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStreamOptions> = (
