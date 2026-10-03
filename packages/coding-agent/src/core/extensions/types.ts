@@ -1451,6 +1451,13 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
  * ExtensionAPI passed to extension factory functions.
  */
 export interface ExtensionAPI {
+	harness: {
+		extensions: {
+			setFactories(entries: FactoryEntry[]): void;
+			refreshExtensions(): Promise<RefreshResult>;
+			getFactoryEntries(): FactoryEntry[];
+		};
+	};
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
@@ -1896,6 +1903,18 @@ export interface ProviderModelConfig {
 /** Extension factory function type. Supports both sync and async initialization. */
 export type ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>;
 
+export interface FactoryEntry {
+	id: string;
+	factory: ExtensionFactory;
+	/** Omission means disabled. */
+	enabled?: boolean;
+}
+
+export interface RefreshResult {
+	ok: boolean;
+	errors: Array<{ id: string; message: string }>;
+}
+
 export type InlineExtension =
 	| ExtensionFactory
 	| {
@@ -2069,6 +2088,11 @@ export interface ExtensionRuntimeState {
 	registerCustomType: (customType: string, policy: CustomTypePolicy) => void;
 	/** Effective policy for a custom type (declared or default). */
 	getCustomTypePolicy: (customType: string) => CustomTypePolicy;
+	factoryEventBus?: EventBus;
+	factoryEntries: FactoryEntry[];
+	refreshExtensions: () => Promise<RefreshResult>;
+	getFactoryEntries: () => FactoryEntry[];
+	setFactories: (entries: FactoryEntry[]) => void;
 	refreshTools: RefreshToolsHandler;
 	getCommands: GetCommandsHandler;
 	setModel: SetModelHandler;

@@ -80,6 +80,17 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 		setActiveTools: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
+		refreshExtensions: () => Promise.reject(new Error("Extension runner not initialized")),
+		factoryEntries: [],
+		getFactoryEntries: () => runtime.factoryEntries.map((entry) => ({ ...entry })),
+		setFactories: (entries) => {
+			const ids = new Set<string>();
+			for (const entry of entries) {
+				if (ids.has(entry.id)) throw new Error(`Duplicate extension factory id "${entry.id}"`);
+				ids.add(entry.id);
+			}
+			runtime.factoryEntries = entries.map((entry) => ({ ...entry }));
+		},
 		getCommands: notInitialized,
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
@@ -425,6 +436,13 @@ export function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
+		harness: {
+			extensions: {
+				setFactories: (entries) => runtime.setFactories(entries),
+				refreshExtensions: () => runtime.refreshExtensions(),
+				getFactoryEntries: () => runtime.getFactoryEntries(),
+			},
+		},
 		events: {
 			emit(channel, data) {
 				runtime.assertActive();
@@ -476,6 +494,7 @@ export async function loadExtensionFromFactory(
 	runtime: ExtensionRuntime,
 	extensionPath = "<inline>",
 ): Promise<Extension> {
+	runtime.factoryEventBus = eventBus;
 	const extension = createExtension(extensionPath, extensionPath);
 	const api = createExtensionAPI(extension, runtime, cwd, eventBus);
 	await factory(api);

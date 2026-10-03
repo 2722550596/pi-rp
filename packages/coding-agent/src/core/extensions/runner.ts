@@ -7,6 +7,7 @@ import type { AssistantMessage, ImageContent, Model, Provider, ProviderHeaders }
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import { createMemoryEventBus } from "../event-bus-memory.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
@@ -19,6 +20,7 @@ import type { SessionManager } from "../session-manager.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { loadExtensionFromFactory } from "./api.ts";
 
 import type {
 	BeforeAgentStartEvent,
@@ -62,6 +64,7 @@ import type {
 	PromptPresetDiagnostic,
 	PromptRuntime,
 	ProviderConfig,
+	RefreshResult,
 	RegisteredCommand,
 	RegisteredTool,
 	ReplacedSessionContext,
@@ -294,6 +297,7 @@ const noOpUIContext: ExtensionUIContext = {
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
+	private factoryExtensions: Extension[] = [];
 	private inputEventSequence = 0;
 	private uiContext: ExtensionUIContext;
 	private mode: ExtensionMode = "print";
@@ -370,6 +374,7 @@ export class ExtensionRunner {
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
+		this.runtime.refreshExtensions = () => this.refreshExtensions();
 		this.uiContext = noOpUIContext;
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
@@ -694,6 +699,38 @@ export class ExtensionRunner {
 	/** Expose the shared runtime for engine-side registrations (memory module). */
 	getExtensionRuntime(): ExtensionRuntime {
 		return this.runtime;
+	}
+
+	async refreshExtensions(): Promise<RefreshResult> {
+		const staged: Extension[] = [];
+		const errors: RefreshResult["errors"] = [];
+		const stagingRuntime: ExtensionRuntime = { ...this.runtime, refreshTools: () => {} };
+		for (const entry of this.runtime.getFactoryEntries()) {
+			if (entry.enabled !== true) continue;
+			try {
+				staged.push(
+					await loadExtensionFromFactory(
+						entry.factory,
+						this.cwd,
+						this.runtime.factoryEventBus ?? createMemoryEventBus(),
+						stagingRuntime,
+						`<harness:${entry.id}>`,
+					),
+				);
+			} catch (error) {
+				errors.push({
+					id: entry.id,
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		if (errors.length > 0) return { ok: false, errors };
+
+		const unmanagedExtensions = this.extensions.filter((extension) => !this.factoryExtensions.includes(extension));
+		this.factoryExtensions = staged;
+		this.extensions = [...unmanagedExtensions, ...staged];
+		this.runtime.refreshTools();
+		return { ok: true, errors: [] };
 	}
 
 	/**

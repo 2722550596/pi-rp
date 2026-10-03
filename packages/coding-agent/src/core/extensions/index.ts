@@ -83,6 +83,7 @@ export type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	FactoryEntry,
 	FindToolCallEvent,
 	FindToolResultEvent,
 	GetActiveToolsHandler,
@@ -125,6 +126,7 @@ export type {
 	ProviderModelConfig,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
+	RefreshResult,
 	// Commands
 	RegisteredCommand,
 	RegisteredTool,

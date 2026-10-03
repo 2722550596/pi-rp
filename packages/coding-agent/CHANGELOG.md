@@ -7,6 +7,8 @@
 - Removed the tool-definition `deferrable` option. Tool-search fold eligibility is now derived from exposure: `direct` tools fold only when token-threshold activation requires it, while `deferred` tools remain undeclared, callable, and searchable. Custom tools that were implicitly foldable before may now be declared directly when the threshold is not reached.
 
 ### Added
+
+- Added the extension factory registry: `pi.harness.extensions.setFactories(entries)` / `refreshExtensions()` / `getFactoryEntries()` stage all enabled extension factories, then only on full success atomically swap the managed extension set and refresh tools; any factory failure keeps the previous runner set untouched and returns per-entry errors. Entries are `{ id, factory, enabled? }` (default disabled); duplicate ids are rejected before replacing the registry.
 - Session tree moves now preflight the target branch's state and schemas before changing the leaf; navigation mutations are serialized, and failed preflight leaves the active branch and state untouched.
 
 - Added MCP client support for stdio and Streamable HTTP servers, OAuth login/logout, trust-gated project configuration, and per-tool exposure control. Added codemode's QuickJS/WASM script tool with authorized nested tool dispatch. See [MCP servers](docs/mcp.md) and [Codemode](docs/codemode.md).
