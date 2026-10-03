@@ -316,6 +316,12 @@ The RPC layer's `get_state` command is separate from the LLM tool: it accepts an
 
 `state_update` paths support both dot notation (`character.hp`) and JSON Pointer (`/character/hp`). Both are equivalent — use whichever is more natural. The `/state` command accepts the same paths for viewing.
 
+Paths traverse arrays with decimal indices (`party.0.hp` or `/party/0/hp`). Semantics:
+
+- Reaching an array element's fields (replace/add/remove) works for any in-range index.
+- Out-of-range indices, holes, and non-numeric segments on arrays are dropped as no-ops — the operation never creates sparse holes and never overwrites an existing array with an object.
+- Append to an array via `add` on the array's own path (push semantics) or an index equal to its length.
+
 ## Extension Integration
 
 Extensions can read and subscribe to state changes via the ExtensionAPI:

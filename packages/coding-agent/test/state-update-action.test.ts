@@ -34,7 +34,7 @@ describe("pi.updateState", () => {
 	it("replace persists a state entry and updates the live snapshot", async () => {
 		const { harness, pi } = await setup();
 
-		const res = pi.updateState("stat_data.当前日期", "replace", "2020年09月03日 星期四");
+		const res = await pi.updateState("stat_data.当前日期", "replace", "2020年09月03日 星期四");
 
 		expect(res).toMatchObject({ ok: true, path: "stat_data.当前日期" });
 		expect(harness.session.stateManager.get("stat_data.当前日期")).toBe("2020年09月03日 星期四");
@@ -44,7 +44,7 @@ describe("pi.updateState", () => {
 	it("accepts JSON Pointer paths", async () => {
 		const { harness, pi } = await setup();
 
-		const res = pi.updateState("/stat_data/当前时间", "replace", "上午 10:35");
+		const res = await pi.updateState("/stat_data/当前时间", "replace", "上午 10:35");
 
 		expect(res).toMatchObject({ ok: true, path: "/stat_data/当前时间" });
 		expect(harness.session.stateManager.get("/stat_data/当前时间")).toBe("上午 10:35");
@@ -54,10 +54,10 @@ describe("pi.updateState", () => {
 
 	it("remove deletes the path and appends a new state entry", async () => {
 		const { harness, pi } = await setup();
-		pi.updateState("stat_data.当前时间", "replace", "上午 10:35");
+		await pi.updateState("stat_data.当前时间", "replace", "上午 10:35");
 		const entriesBefore = harness.sessionManager.getBranch().filter((e) => e.type === "state").length;
 
-		const res = pi.updateState("stat_data.当前时间", "remove");
+		const res = await pi.updateState("stat_data.当前时间", "remove");
 
 		expect(res).toEqual({ ok: true, path: "stat_data.当前时间" });
 		expect(harness.session.stateManager.get("stat_data.当前时间")).toBeUndefined();
@@ -69,7 +69,7 @@ describe("pi.updateState", () => {
 		const { harness, pi } = await setup();
 		harness.session.schemaValidator.loadSchema("t", "stat_data", Type.Object({ hp: Type.Number({ minimum: 0 }) }));
 
-		const rejected = pi.updateState("stat_data.hp", "replace", -5);
+		const rejected = await pi.updateState("stat_data.hp", "replace", -5);
 
 		expect(rejected.ok).toBe(false);
 		if (!rejected.ok) {
@@ -77,7 +77,7 @@ describe("pi.updateState", () => {
 		}
 		expect(harness.session.stateManager.get("stat_data.hp")).toBeUndefined();
 
-		const accepted = pi.updateState("stat_data.hp", "replace", 42);
+		const accepted = await pi.updateState("stat_data.hp", "replace", 42);
 		expect(accepted).toMatchObject({ ok: true, path: "stat_data.hp" });
 		expect(harness.session.stateManager.get("stat_data.hp")).toBe(42);
 	});
@@ -86,10 +86,10 @@ describe("pi.updateState", () => {
 		const { harness, pi } = await setup();
 		harness.session.schemaValidator.loadSchema("t", "stat_data", Type.Object({ name: Type.String() }));
 
-		pi.updateState("stat_data.name", "replace", "x");
+		await pi.updateState("stat_data.name", "replace", "x");
 		expect(harness.session.stateManager.get("stat_data.name")).toBe("x");
 
-		const res = pi.updateState("stat_data.name", "remove");
+		const res = await pi.updateState("stat_data.name", "remove");
 
 		expect(res.ok).toBe(false);
 		expect(harness.session.stateManager.get("stat_data.name")).toBe("x");

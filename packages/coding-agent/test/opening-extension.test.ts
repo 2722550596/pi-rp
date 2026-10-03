@@ -123,7 +123,7 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("opening extension", () => {
-	it("auto-applies on session_start when PI_OPENING is set", () => {
+	it("auto-applies on session_start when PI_OPENING is set", async () => {
 		const { cwd } = fixture("writer");
 		writePreset(cwd, "test", PRESET);
 		process.env.PI_OPENING = "test";
@@ -132,7 +132,7 @@ describe("opening extension", () => {
 		const handler = handlers.get("session_start");
 		expect(handler).toBeDefined();
 
-		handler!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
+		await handler!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 
 		const appendedMessages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
 		expect(appendedMessages.map((c) => c.args[1])).toEqual([
@@ -156,49 +156,49 @@ describe("opening extension", () => {
 		expect(audit[0].args[1]).toMatchObject({ name: "test" });
 	});
 
-	it("ignores consumer-owned opening env vars (only PI_OPENING is read)", () => {
+	it("ignores consumer-owned opening env vars (only PI_OPENING is read)", async () => {
 		const { cwd } = fixture("foreign-env");
 		writePreset(cwd, "test", { name: "T", messages: [] });
 		process.env.CONSUMER_OPENING = "test";
 		const { pi, calls, handlers } = createStub();
 		openingExtension(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 		expect(calls).toHaveLength(0);
 	});
 
-	it("skips when the session already has messages (resume/reload)", () => {
+	it("skips when the session already has messages (resume/reload)", async () => {
 		const { cwd } = fixture("seeded");
 		writePreset(cwd, "test", PRESET);
 		process.env.PI_OPENING = "test";
 		const { pi, calls, handlers } = createStub();
 		openingExtension(pi);
-		handlers.get("session_start")!(sessionStart("reload"), sessionCtx(cwd, [{ type: "message" }]));
+		await handlers.get("session_start")!(sessionStart("reload"), sessionCtx(cwd, [{ type: "message" }]));
 		expect(calls).toHaveLength(0);
 	});
 
-	it("does nothing without the env (zero overhead)", () => {
+	it("does nothing without the env (zero overhead)", async () => {
 		const { cwd } = fixture("noenv");
 		const { pi, calls, handlers } = createStub();
 		openingExtension(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, []));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, []));
 		expect(calls).toHaveLength(0);
 	});
 
-	it("warns and skips messages without role or customType", () => {
+	it("warns and skips messages without role or customType", async () => {
 		const { cwd } = fixture("malformed");
 		writePreset(cwd, "test", { messages: [{ content: "orphan" }] });
 		process.env.PI_OPENING = "test";
 		const { pi, calls, handlers } = createStub();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		openingExtension(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 
 		expect(calls.filter((c) => c.args[0] === "message" || c.op === "sendMessage")).toHaveLength(0);
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("without role or customType"));
 		warn.mockRestore();
 	});
 
-	it("skips schema-rejected state leaves with a warning, applies the rest", () => {
+	it("skips schema-rejected state leaves with a warning, applies the rest", async () => {
 		const { cwd } = fixture("badstate");
 		writePreset(cwd, "test", {
 			messages: [],
@@ -208,7 +208,7 @@ describe("opening extension", () => {
 		const { pi, calls, handlers } = createStub();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		openingExtension(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 
 		const stateOps = calls.filter((c) => c.op === "updateState");
 		expect(stateOps.map((c) => c.args[0])).toEqual(["world.scene", "bad.x"]);
@@ -243,7 +243,7 @@ describe("opening extension", () => {
 		expect(notifications.some((n) => n.includes('Opening preset "missing" not found'))).toBe(true);
 	});
 
-	it("resolves presets from PI_OPENINGS_DIR when set", () => {
+	it("resolves presets from PI_OPENINGS_DIR when set", async () => {
 		const { root } = fixture("customdir");
 		const customDir = join(root, "custom");
 		mkdirSync(customDir, { recursive: true });
@@ -254,17 +254,17 @@ describe("opening extension", () => {
 
 		const { pi, calls, handlers } = createStub();
 		openingExtension(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx(join(root, "elsewhere"), [{ type: "session" }]));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(join(root, "elsewhere"), [{ type: "session" }]));
 		expect(calls.some((c) => c.op === "appendEntry" && c.args[0] === "opening")).toBe(true);
 	});
 
-	it("warns when the preset file is missing or malformed", () => {
+	it("warns when the preset file is missing or malformed", async () => {
 		const { cwd } = fixture("missing");
 		process.env.PI_OPENING = "nope";
 		const { pi, calls, handlers } = createStub();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		openingExtension(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 		expect(calls).toHaveLength(0);
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining('"nope" not found'));
 		warn.mockRestore();

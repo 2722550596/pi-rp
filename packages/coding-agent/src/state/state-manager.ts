@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import type { TreeEdit } from "../core/objects/tree/index.ts";
+import { stateOpToTreeEdits } from "../core/objects/tree/state-op-diff.ts";
 import { deepMerge, isObject, type JsonValue } from "./merge.ts";
 import type { StateStore } from "./state-store.ts";
 
@@ -32,6 +34,13 @@ interface StoreOp {
  * Resolve a path against root, returning the parent object and leaf key.
  * Supports dot notation ("character.hp") and JSON Pointer ("/character/hp").
  */
+/** 解析规范数组下标：十进制、无前导零、非负安全整数；其余（含 "01"、"-1"、"1.5"）不可作索引。 */
+function asArrayIndex(part: string): number | undefined {
+	if (!/^(0|[1-9][0-9]*)$/.test(part)) return undefined;
+	const index = Number(part);
+	return Number.isSafeInteger(index) ? index : undefined;
+}
+
 function resolvePath(
 	root: Record<string, JsonValue>,
 	path: string,
@@ -43,10 +52,17 @@ function resolvePath(
 
 	for (let i = 0; i < parts.length - 1; i++) {
 		const part = parts[i];
-		const val = current[part];
-		if (!val || typeof val !== "object" || Array.isArray(val)) {
-			return undefined;
+		let val: JsonValue | undefined;
+		if (Array.isArray(current)) {
+			// 数组容器：仅接受界内规范索引；越界/非索引段视为路径不可达（与旧 no-op 语义一致）
+			const index = asArrayIndex(part);
+			if (index === undefined || index >= current.length) return undefined;
+			val = current[index] as JsonValue | undefined;
+		} else {
+			val = current[part];
 		}
+		// 洞/标量元素不可继续穿越（避免把中间段静默覆盖或误读）
+		if (!val || typeof val !== "object") return undefined;
 		current = val as Record<string, JsonValue>;
 	}
 
@@ -101,11 +117,12 @@ function replaceAllKeys(target: Record<string, JsonValue>, src: Record<string, J
 	for (const [k, v] of Object.entries(src)) target[k] = v;
 }
 
-/** Set a value at `path` inside `root` (creates intermediate objects). */
-function setDeep(root: Record<string, JsonValue>, path: string, value: JsonValue | undefined): void {
+/** Set a value at `path` inside `root` (creates intermediate objects).
+ * Returns false when the path is unreachable and the op was dropped (array traversal guards). */
+function setDeep(root: Record<string, JsonValue>, path: string, value: JsonValue | undefined): boolean {
 	if (path === "") {
 		if (isObject(value)) replaceAllKeys(root, value);
-		return;
+		return true;
 	}
 
 	const parts = path.startsWith("/") ? path.split("/").slice(1) : path.split(".");
@@ -113,18 +130,37 @@ function setDeep(root: Record<string, JsonValue>, path: string, value: JsonValue
 
 	for (let i = 0; i < parts.length - 1; i++) {
 		const part = parts[i];
-		if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
-			current[part] = {} as JsonValue;
+		let val: JsonValue | undefined;
+		if (Array.isArray(current)) {
+			// 数组容器：仅接受界内规范索引；越界/非索引段视为路径不可达——绝不覆盖既有数组（旧实现会把数组静默替换为 {}，属数据破坏）
+			const index = asArrayIndex(part);
+			if (index === undefined || index >= current.length) return false;
+			val = current[index] as JsonValue | undefined;
+			// 数组元素为洞/标量：放弃，不把元素覆盖成对象
+			if (!val || typeof val !== "object") return false;
+		} else {
+			// 对象容器：缺失/标量键创建中间对象（既有语义）
+			val = current[part];
+			if (!val || typeof val !== "object") {
+				current[part] = {} as JsonValue;
+				val = current[part];
+			}
 		}
-		current = current[part] as Record<string, JsonValue>;
+		current = val as Record<string, JsonValue>;
 	}
 
 	const key = parts[parts.length - 1];
+	// 数组容器末段：越界 replace 会造稀疏洞——放弃（append 语义走对数组键的 add/push，不走 setDeep）
+	if (Array.isArray(current)) {
+		const index = asArrayIndex(key);
+		if (index === undefined || index >= current.length) return false;
+	}
 	if (value === undefined) {
 		delete current[key];
 	} else {
 		(current as Record<string, JsonValue>)[key] = value;
 	}
+	return true;
 }
 
 function getPath(root: Record<string, JsonValue>, path: string): JsonValue | undefined {
@@ -162,6 +198,14 @@ export function applyOp(
 				return { op, path, oldValue: old, newValue: root };
 			}
 
+			// 数组 parent：越界 add 会造稀疏洞——禁止 index > length（== length 是无洞尾部追加，允许）
+			if (Array.isArray(parent)) {
+				const index = asArrayIndex(key);
+				if (index === undefined || index > parent.length) {
+					return { op, path, oldValue: undefined, newValue: undefined };
+				}
+			}
+
 			if (!(key in parent)) {
 				parent[key] = value as JsonValue;
 				return { op, path, oldValue: undefined, newValue: value };
@@ -193,8 +237,9 @@ export function applyOp(
 		}
 
 		case "replace": {
-			setDeep(root, path, value);
-			return { op, path, oldValue, newValue: value };
+			// setDeep 返回 false = 路径不可达被放弃（数组越界/非索引穿越）——与放弃语义一致的返回值
+			const ok = setDeep(root, path, value);
+			return ok ? { op, path, oldValue, newValue: value } : { op, path, oldValue: undefined, newValue: undefined };
 		}
 
 		case "merge": {
@@ -230,6 +275,7 @@ export class StateManager {
 	private _subscribers = new Set<(snapshot: Record<string, unknown>) => void>();
 	private _dirty = false;
 	private _revision = 0;
+	private _revisionEdits = new Map<number, TreeEdit[]>();
 
 	// Cross-process shared state store (see state-store.ts). All `_store*`
 	// fields are inert until attachStore() is called (settings opt-in).
@@ -256,24 +302,24 @@ export class StateManager {
 	/** Sugar: apply({op, path, value}) or apply({op: "merge", value}) */
 	apply(input: ApplyCallArg): StateDiffResult;
 	apply(pathOrOp: string | ApplyCallArg, op?: StateOp, val?: JsonValue): StateDiffResult {
-		let result: StateDiffResult;
 		let raw: StoreOp;
 		if (typeof pathOrOp === "object") {
 			const input = pathOrOp;
-			if (input.op === "merge") {
-				result = this._applyMerge(input.value);
-				raw = { op: "merge", path: "", value: input.value };
-			} else {
-				result = this._applyOp(input.op, input.path ?? "", input.value);
-				raw = { op: input.op, path: input.path ?? "", value: input.value };
-			}
+			raw =
+				input.op === "merge"
+					? { op: "merge", path: "", value: input.value }
+					: { op: input.op, path: input.path ?? "", value: input.value };
 		} else {
-			result = this._applyOp(op as StateOp, pathOrOp, val);
 			raw = { op: op as StateOp, path: pathOrOp, value: val };
 		}
+		// apply 契约保证 op ∈ StateOp（"seed" 仅存在于 StoreOp 持久化层，见既有 op as StateOp 信任）
+		const edits = stateOpToTreeEdits(this._data, raw.op as StateOp, raw.path, raw.value);
+		const result =
+			raw.op === "merge" ? this._applyMerge(raw.value) : this._applyOp(raw.op as StateOp, raw.path, raw.value);
 		this._notify();
 		this._dirty = true;
 		this._revision++;
+		this._revisionEdits.set(this._revision, edits);
 		this._queueStoreOps(raw);
 		return result;
 	}
@@ -294,15 +340,43 @@ export class StateManager {
 	snapshot(): Record<string, unknown> {
 		return structuredClone(this._data);
 	}
+	snapshotWithRevision(baseRevision: number): {
+		snapshot: Record<string, unknown>;
+		revision: number;
+		edits: TreeEdit[];
+	} {
+		if (!Number.isSafeInteger(baseRevision) || baseRevision < 0 || baseRevision > this._revision)
+			throw new Error(`Invalid state base revision ${baseRevision}`);
+		const edits: TreeEdit[] = [];
+		for (let revision = baseRevision + 1; revision <= this._revision; revision++) {
+			const revisionEdits = this._revisionEdits.get(revision);
+			if (!revisionEdits) throw new Error(`Missing state operations for revision ${revision}`);
+			edits.push(...revisionEdits);
+		}
+		return { snapshot: structuredClone(this._data), revision: this._revision, edits };
+	}
 
 	/** Whether state has been mutated since the last snapshot was persisted. */
 	get dirty(): boolean {
 		return this._dirty;
 	}
 
-	/** Mark state as clean (persisted). Called after appending a snapshot to the session. */
-	clearDirty(): void {
-		this._dirty = false;
+	/** Mark state clean only if the persisted snapshot is still current. */
+	clearDirty(revision?: number): void {
+		if (revision === undefined || revision === this._revision) this._dirty = false;
+	}
+	loadAtRevision(data: Record<string, unknown>, revision: number, replaceRoot: boolean): void {
+		if (!Number.isSafeInteger(revision) || revision < 0) throw new Error(`Invalid state revision ${revision}`);
+		this._data = structuredClone(data) as Record<string, JsonValue>;
+		this._revision = revision;
+		this._revisionEdits.clear();
+		if (replaceRoot) {
+			this._revisionEdits.set(revision, [{ op: "replaceRoot", value: structuredClone(this._data) }]);
+		}
+		this._notify();
+	}
+	load(data: Record<string, unknown>): void {
+		this.loadAtRevision(data, this._revision + 1, true);
 	}
 
 	/** Subscribe to state changes. Returns unsubscribe function. */
@@ -321,17 +395,12 @@ export class StateManager {
 		}
 	}
 
-	load(data: Record<string, unknown>): void {
-		this._data = structuredClone(data) as Record<string, JsonValue>;
-		this._notify();
-		this._revision++;
-	}
-
 	/** Fill missing keys from `defaults` (existing values win, recursively). */
 	applyDefaults(defaults: Record<string, JsonValue>): void {
 		fillMissing(this._data, defaults);
 		this._notify();
 		this._revision++;
+		this._revisionEdits.set(this._revision, [{ op: "replaceRoot", value: structuredClone(this._data) }]);
 	}
 
 	// ── Cross-process shared store ─────────────────────────────────────────
@@ -422,6 +491,7 @@ export class StateManager {
 		}
 		this._notify();
 		this._revision++;
+		this._revisionEdits.set(this._revision, [{ op: "replaceRoot", value: structuredClone(this._data) }]);
 	}
 
 	/** Immediately commit all pending ops for every namespace. */

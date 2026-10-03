@@ -216,7 +216,13 @@ export class AgentSessionRuntime {
 		}
 
 		const previousSessionFile = this.session.sessionFile;
-		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
+		const sessionManager = SessionManager.open(
+			sessionPath,
+			undefined,
+			options?.cwdOverride,
+			this.session.sessionManager.getStorageBackend(),
+			this.session.sessionManager.getStoreDeps(),
+		);
 		assertSessionCwdExists(sessionManager, this.cwd);
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
 		this.apply(
@@ -245,9 +251,10 @@ export class AgentSessionRuntime {
 
 		const previousSessionFile = this.session.sessionFile;
 		const sessionDir = this.session.sessionManager.getSessionDir();
-		const sessionManager = this.session.sessionManager.isPersisted()
-			? SessionManager.create(this.cwd, sessionDir)
-			: SessionManager.inMemory(this.cwd);
+		const current = this.session.sessionManager;
+		const sessionManager = current.isPersisted()
+			? SessionManager.create(this.cwd, sessionDir, undefined, current.getStorageBackend(), current.getStoreDeps())
+			: SessionManager.inMemory(this.cwd, undefined, current.getStoreDeps(), current.getStorageBackend());
 		if (options?.parentSession) {
 			sessionManager.newSession({ parentSession: options.parentSession });
 		}
@@ -305,7 +312,14 @@ export class AgentSessionRuntime {
 			}
 			const sessionDir = this.session.sessionManager.getSessionDir();
 			if (!targetLeafId) {
-				const sessionManager = SessionManager.create(this.cwd, sessionDir);
+				const current = this.session.sessionManager;
+				const sessionManager = SessionManager.create(
+					this.cwd,
+					sessionDir,
+					undefined,
+					current.getStorageBackend(),
+					current.getStoreDeps(),
+				);
 				sessionManager.newSession({ parentSession: currentSessionFile });
 				await this.teardownCurrent("fork", sessionManager.getSessionFile());
 				this.apply(
@@ -325,7 +339,14 @@ export class AgentSessionRuntime {
 					"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
 				);
 			}
-			const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
+			const current = this.session.sessionManager;
+			const sessionManager = SessionManager.open(
+				currentSessionFile,
+				sessionDir,
+				undefined,
+				current.getStorageBackend(),
+				current.getStoreDeps(),
+			);
 			const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
 			if (!forkedSessionPath) {
 				throw new Error("Failed to create forked session");
@@ -392,7 +413,14 @@ export class AgentSessionRuntime {
 			copyFileSync(resolvedPath, destinationPath);
 		}
 
-		const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
+		const current = this.session.sessionManager;
+		const sessionManager = SessionManager.open(
+			destinationPath,
+			sessionDir,
+			cwdOverride,
+			current.getStorageBackend(),
+			current.getStoreDeps(),
+		);
 		assertSessionCwdExists(sessionManager, this.cwd);
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
 		this.apply(

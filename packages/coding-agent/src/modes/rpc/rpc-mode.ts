@@ -686,8 +686,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// Persist immediately when idle (mirrors AgentSession extension updateState),
 				// so a peer can read the new state from the session file without waiting for turn_end.
 				if (session.isIdle) {
-					session.sessionManager.appendState(session.stateManager.snapshot());
-					session.stateManager.clearDirty();
+					const sample = session.stateManager.snapshotWithRevision(session.sessionManager.getStateRootRevision());
+					await session.sessionManager.appendState(sample.snapshot, sample.revision, sample.edits);
+					session.stateManager.clearDirty(sample.revision);
 				}
 				return success(id, "update_state", { path: result.path, newValue: result.newValue });
 			}

@@ -5,8 +5,9 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { isAbsolute, relative, sep } from "node:path";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
+import { createNodeObjectStore } from "@earendil-works/pi-agent-core/node";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
@@ -67,7 +68,7 @@ import {
 	MissingSessionCwdError,
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
-import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { assertValidSessionId, getDefaultSessionDir, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager, type ToolSearchSettings } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
@@ -350,9 +351,13 @@ function validateSessionIdFlags(parsed: Args): void {
 	}
 }
 
+function cliStoreDeps(sessionStoreRoot: string) {
+	return { objectStore: createNodeObjectStore(sessionStoreRoot) };
+}
+
 function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
 	try {
-		return SessionManager.open(path, sessionDir);
+		return SessionManager.open(path, sessionDir, undefined, undefined, cliStoreDeps(sessionDir ?? dirname(path)));
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -362,7 +367,14 @@ function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
 
 function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string, sessionId?: string): SessionManager {
 	try {
-		return SessionManager.forkFrom(sourcePath, cwd, sessionDir, { id: sessionId });
+		return SessionManager.forkFrom(
+			sourcePath,
+			cwd,
+			sessionDir,
+			{ id: sessionId },
+			undefined,
+			cliStoreDeps(sessionDir ?? getDefaultSessionDir(cwd)),
+		);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -376,8 +388,13 @@ async function createSessionManager(
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
+	const storeDeps = cliStoreDeps(sessionDir ?? getDefaultSessionDir(cwd));
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
-		return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
+		return SessionManager.inMemory(
+			cwd,
+			parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined,
+			storeDeps,
+		);
 	}
 
 	if (parsed.fork) {
@@ -438,20 +455,20 @@ async function createSessionManager(
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return SessionManager.open(selectedPath, sessionDir);
+			return SessionManager.open(selectedPath, sessionDir, undefined, undefined, storeDeps);
 		} finally {
 			stopThemeWatcher();
 		}
 	}
 
 	if (parsed.continue) {
-		return SessionManager.continueRecent(cwd, sessionDir);
+		return SessionManager.continueRecent(cwd, sessionDir, undefined, storeDeps);
 	}
 
 	if (parsed.sessionId) {
 		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
-			return SessionManager.open(existingSession.path, sessionDir);
+			return SessionManager.open(existingSession.path, sessionDir, undefined, undefined, storeDeps);
 		}
 		console.error(
 			chalk.yellow(
@@ -460,7 +477,7 @@ async function createSessionManager(
 		);
 	}
 
-	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
+	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId }, undefined, storeDeps);
 }
 
 function buildSessionOptions(
@@ -799,7 +816,13 @@ export async function main(args: string[], options?: MainOptions) {
 			if (!selectedCwd) {
 				process.exit(0);
 			}
-			sessionManager = SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
+			sessionManager = SessionManager.open(
+				missingSessionCwdIssue.sessionFile!,
+				sessionDir,
+				selectedCwd,
+				sessionManager.getStorageBackend(),
+				sessionManager.getStoreDeps(),
+			);
 		} else {
 			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
 			process.exit(1);

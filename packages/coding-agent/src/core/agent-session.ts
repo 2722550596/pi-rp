@@ -197,7 +197,22 @@ import { isChatHistoryPosition } from "./prompt-preset/slot-renderers.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { RequestGateway, RequestIdentity } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
+import type {
+	BranchSummaryEntry,
+	CompactionEntry,
+	SessionEntry,
+	SessionManager,
+	StatePayload,
+} from "./session-manager.ts";
+
+/** state-root.v1 payload 守卫：h 的 64hex 与 s 范围由调用方业务校验，这里只保证形状可访问。 */
+function isStateRootPayload(
+	payload: StatePayload,
+): payload is { tg: "state-root.v1"; h: string; s: number; rev: number } {
+	if (typeof payload !== "object" || payload === null || !("tg" in payload)) return false;
+	return payload.tg === "state-root.v1";
+}
+
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
@@ -1266,8 +1281,9 @@ export class AgentSession {
 		// persisted, so state and transcript stay aligned. Aborted turns never emit
 		// turn_end, so state stays at the last completed turn — also consistent.
 		if (event.type === "turn_end" && this._stateManager.dirty) {
-			this.sessionManager.appendState(this._stateManager.snapshot());
-			this._stateManager.clearDirty();
+			const sample = this._stateManager.snapshotWithRevision(this.sessionManager.getStateRootRevision());
+			await this.sessionManager.appendState(sample.snapshot, sample.revision, sample.edits);
+			this._stateManager.clearDirty(sample.revision);
 			// Files must not lag the session snapshot: if the process exits
 			// inside the debounce window, restart would restore stale file
 			// values over the fresher session snapshot.
@@ -2160,15 +2176,47 @@ export class AgentSession {
 	): Promise<{
 		entries: SessionEntry[];
 		state: Record<string, unknown> | undefined;
+		stateRevision: number;
+		stateNeedsReplacement: boolean;
 		messages: AgentMessage[];
 	}> {
 		let state: Record<string, unknown> | undefined;
+		let stateRevision = 0;
+		let stateNeedsReplacement = false;
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];
-			if (entry.type === "state") {
-				state = structuredClone(entry.state) as Record<string, unknown>;
-				break;
+			if (entry.type !== "state") continue;
+			const payload = entry.state;
+			if (isStateRootPayload(payload)) {
+				if (
+					!Number.isSafeInteger(payload.s) ||
+					payload.s <= 64 * 1024 ||
+					!Number.isSafeInteger(payload.rev) ||
+					payload.rev < 0
+				) {
+					throw new Error("Invalid state-root.v1 metadata in session entry");
+				}
+				state = (await this.sessionManager.resolveStateRoot(payload)) as Record<string, unknown>;
+				stateRevision = payload.rev;
+			} else {
+				if (payload === null || typeof payload !== "object" || Array.isArray(payload))
+					throw new Error("Invalid inline state payload in session entry");
+				state = structuredClone(payload) as Record<string, unknown>;
+				stateNeedsReplacement = true;
+				for (let j = i - 1; j >= 0; j--) {
+					const previous = entries[j];
+					if (previous.type !== "state") continue;
+					const priorPayload = previous.state;
+					if (isStateRootPayload(priorPayload)) {
+						if (!Number.isSafeInteger(priorPayload.rev) || priorPayload.rev < 0)
+							throw new Error("Invalid ancestor state-root.v1 metadata in session entry");
+						stateRevision = priorPayload.rev;
+						break;
+					}
+				}
+				stateRevision++;
 			}
+			break;
 		}
 
 		// Compile the selected schemas during preflight; malformed schema data
@@ -2190,14 +2238,23 @@ export class AgentSession {
 			const definition = this._loadedSchemaDefs.find((schema) => schema.schemaId === action.schemaId);
 			if (definition) validator.loadSchema(definition.schemaId, definition.namespace, definition.schema);
 		}
-		return { entries, state, messages: this.sessionManager.buildSessionContext(targetLeafId).messages };
+		return {
+			entries,
+			state,
+			stateRevision,
+			stateNeedsReplacement,
+			messages: this.sessionManager.buildSessionContext(targetLeafId).messages,
+		};
 	}
 
 	private _installBranchState(computed: {
 		entries: SessionEntry[];
 		state: Record<string, unknown> | undefined;
+		stateRevision: number;
+		stateNeedsReplacement: boolean;
 	}): void {
-		if (computed.state !== undefined) this._stateManager.load(computed.state);
+		if (computed.state !== undefined)
+			this._stateManager.loadAtRevision(computed.state, computed.stateRevision, computed.stateNeedsReplacement);
 		this._restoreSchemasFromEntries(computed.entries);
 	}
 
@@ -4887,7 +4944,7 @@ export class AgentSession {
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
 				getState: () => this._stateManager.snapshot(),
 				subscribeState: (handler) => this._stateManager.subscribe(handler),
-				updateState: (path, op, value) => {
+				updateState: async (path, op, value) => {
 					const validation = this._schemaValidator.validate(
 						path,
 						op,
@@ -4902,8 +4959,9 @@ export class AgentSession {
 					// Persist immediately when idle (outside a turn); otherwise defer to turn_end
 					// so a single turn with multiple writes produces one snapshot, not N.
 					if (this.isIdle) {
-						this.sessionManager.appendState(this._stateManager.snapshot());
-						this._stateManager.clearDirty();
+						const sample = this._stateManager.snapshotWithRevision(this.sessionManager.getStateRootRevision());
+						await this.sessionManager.appendState(sample.snapshot, sample.revision, sample.edits);
+						this._stateManager.clearDirty(sample.revision);
 					}
 					return { ok: true, path: result.path, newValue: result.newValue };
 				},

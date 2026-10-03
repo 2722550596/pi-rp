@@ -43,6 +43,10 @@ export {
 export * from "./agent.ts";
 // Loop functions
 export * from "./agent-loop.ts";
+export * from "./core/objects/bundle/index.ts";
+export * from "./core/objects/gc.ts";
+export type { ObjectHash, ObjectStore, ObjectStoreAdmin, ObjectStoreErrorCode } from "./core/objects/object-store.ts";
+export { ObjectStoreError } from "./core/objects/object-store.ts";
 export * from "./harness/agent-harness.ts";
 export * from "./harness/capabilities.ts";
 export {

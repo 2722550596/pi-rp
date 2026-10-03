@@ -5,6 +5,7 @@ import {
 	type AgentTool,
 	type Capabilities,
 	type HarnessStores,
+	type ObjectStore,
 	type SqliteDatabaseFactory,
 	setDefaultStreamFn,
 	type ThinkingLevel,
@@ -139,11 +140,10 @@ export interface CreateAgentSessionOptions {
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
 	settingsManager?: SettingsManager;
-	/**
-	 * Storage seams for pi state (11-B). When omitted, the node defaults apply (node:fs storage backend +
-	 * proper-lockfile + live getAgentDir resolution). Browser/hosted assembly injects the OPFS or host stores.
-	 */
+	/** Storage seams for pi state (11-B). */
 	stores?: HarnessStores;
+	/** ObjectStore injected by the host; required for snapshots above 64 KiB. */
+	objectStore?: ObjectStore;
 	/**
 	 * Browser/hosted assemblies replace the base built-in tool set with Operations-injected
 	 * variants (13-E: six OPFS-backed file tools; bash negotiated off on shell-less profiles).
@@ -287,11 +287,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const sessionManager =
 		options.sessionManager ??
 		SessionManager.create(
-			cwd, // storage 显式透传：缺省参数 NodeStorageBackend.shared 是 getter（browser stub 构造即抛），
-			// stores.storage 注入的装配（browser/hosted）下不得求值；node 无 stores 时缺省不变。
+			cwd,
 			getDefaultSessionDir(cwd, agentDir, options.stores?.storage),
 			undefined,
 			options.stores?.storage,
+			{ objectStore: options.objectStore },
 		);
 
 	if (!resourceLoader) {
@@ -544,9 +544,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Restore messages if session has existing data
 	if (hasExistingSession) {
 		agent.state.messages = existingSession.messages;
-		if (!hasThinkingEntry) {
-			sessionManager.appendThinkingLevelChange(thinkingLevel);
-		}
 	} else {
 		// Save initial model, thinking level, and preset for new sessions
 		if (model) {
@@ -607,6 +604,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Wait for the async construction work (schema/validator loading,
 	// extension runner wiring) before exposing the session.
 	await session._buildRuntimePromise;
+	if (hasExistingSession && !hasThinkingEntry) {
+		sessionManager.appendThinkingLevelChange(thinkingLevel);
+	}
 	sessionRef.current = session;
 	const sessionDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	if (options.initialMessages) {

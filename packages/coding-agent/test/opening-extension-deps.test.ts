@@ -143,7 +143,7 @@ async function opfsStorageWithOpenings(files: Record<string, string>): Promise<O
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("opening extension deps injection (B3)", () => {
-	it("injected getOpeningId wins and env is never read (either/or, no fallback stacking)", () => {
+	it("injected getOpeningId wins and env is never read (either/or, no fallback stacking)", async () => {
 		const { cwd } = fixture("injected");
 		process.env.PI_OPENING = "ghost"; // 注入后必须被无视（env 通道仅 node）
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -154,7 +154,7 @@ describe("opening extension deps injection (B3)", () => {
 		});
 		extension(pi);
 
-		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, []));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, []));
 
 		const messages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
 		expect(messages.map((c) => c.args[1])).toEqual([{ role: "user", content: "inline cold open" }]);
@@ -165,14 +165,14 @@ describe("opening extension deps injection (B3)", () => {
 		warn.mockRestore();
 	});
 
-	it("without getOpeningId the env trigger stays active (node default)", () => {
+	it("without getOpeningId the env trigger stays active (node default)", async () => {
 		const { cwd } = fixture("env-default");
 		writeFileSync(join(cwd, ".pi", "openings", "envid.json"), JSON.stringify({ messages: [] }));
 		process.env.PI_OPENING = "envid";
 		const { pi, calls, handlers } = createStub();
 		openingFactory()(pi);
 
-		handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, []));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, []));
 
 		expect(calls.some((c) => c.op === "appendEntry" && c.args[0] === "opening")).toBe(true);
 	});
@@ -188,7 +188,7 @@ describe("opening extension deps injection (B3)", () => {
 		const opening = openingDefinition({ getOpeningId: () => "b", storage });
 		expect(opening).toMatchObject({ name: "opening", hidden: true });
 		opening.factory(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
 
 		const messages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
 		expect(messages.map((c) => c.args[1])).toEqual([{ role: "assistant", content: "opfs seeded" }]);
@@ -210,24 +210,24 @@ describe("opening extension deps injection (B3)", () => {
 
 		const { pi, calls, handlers } = createStub();
 		openingFactory({ configDir: "world", getOpeningId: () => "b", storage })(pi);
-		handlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
 		const messages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
 		expect(messages.map((c) => c.args[1])).toEqual([{ role: "user", content: "configured root" }]);
 
 		// With configDir explicitly supplied but no getOpeningId, PI_OPENING is not a trigger source.
 		const { pi: noTriggerPi, calls: noTriggerCalls, handlers: noTriggerHandlers } = createStub();
 		openingFactory({ configDir: "world", storage })(noTriggerPi);
-		noTriggerHandlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
+		await noTriggerHandlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
 		expect(noTriggerCalls).toHaveLength(0);
 	});
 
-	it("T7: skipIfSeeded guard holds with injected deps (resume/reload no-op)", () => {
+	it("T7: skipIfSeeded guard holds with injected deps (resume/reload no-op)", async () => {
 		const { cwd } = fixture("seeded-deps");
 		const { pi, calls, handlers } = createStub();
 		const extension = openingFactory({ getOpeningId: () => "a", inline: [INLINE_A] });
 		extension(pi);
 
-		handlers.get("session_start")!(sessionStart("reload"), sessionCtx(cwd, [{ type: "message" }]));
+		await handlers.get("session_start")!(sessionStart("reload"), sessionCtx(cwd, [{ type: "message" }]));
 
 		expect(calls).toHaveLength(0);
 	});
@@ -249,7 +249,7 @@ describe("opening extension deps injection (B3)", () => {
 		extension(pi);
 
 		// session_start：同 id 内联胜出（seeds 内联内容，不读扫描副本）。
-		handlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
+		await handlers.get("session_start")!(sessionStart(), sessionCtx("/workspace/default", []));
 		const messages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
 		expect(messages.map((c) => c.args[1])).toEqual([{ role: "user", content: "inline cold open" }]);
 
@@ -292,7 +292,7 @@ describe("opening extension deps injection (B3)", () => {
 });
 
 describe("T12: parameterless factory equals the legacy default export", () => {
-	it("createOpeningExtension() env path seeds from disk exactly like openingExtension", () => {
+	it("createOpeningExtension() env path seeds from disk exactly like openingExtension", async () => {
 		const { cwd } = fixture("t12");
 		writeFileSync(
 			join(cwd, ".pi", "openings", "legacy.json"),
@@ -303,7 +303,7 @@ describe("T12: parameterless factory equals the legacy default export", () => {
 		for (const extension of [openingExtension, openingFactory()]) {
 			const { pi, calls, handlers } = createStub();
 			extension(pi);
-			handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
+			await handlers.get("session_start")!(sessionStart(), sessionCtx(cwd, [{ type: "session" }]));
 			const messages = calls.filter((c) => c.op === "appendEntry" && c.args[0] === "message");
 			expect(messages.map((c) => c.args[1])).toEqual([{ role: "user", content: "legacy open" }]);
 			expect(calls.some((c) => c.op === "appendEntry" && c.args[0] === "opening")).toBe(true);

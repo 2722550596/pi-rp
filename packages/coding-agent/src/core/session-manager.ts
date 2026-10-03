@@ -1,7 +1,8 @@
-import type { AgentMessage, StorageBackend } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ObjectStore, StorageBackend } from "@earendil-works/pi-agent-core";
 import { NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
 import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
 import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
+import type { JsonValue } from "../state/merge.ts";
 import { join, randomUUID, resolve } from "../utils/node-globals.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import {
@@ -11,6 +12,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { canonicalJsonBytes, JsonTree, type TreeEdit } from "./objects/tree/index.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -26,6 +28,11 @@ export interface SessionHeader {
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+}
+
+export interface SessionManagerStoreDeps {
+	objectStore?: ObjectStore;
+	jsonTree?: JsonTree;
 }
 
 export interface SessionEntryBase {
@@ -56,9 +63,11 @@ export interface PresetChangeEntry extends SessionEntryBase {
 	presetId: string;
 }
 
+export type StatePayload = Record<string, unknown> | { tg: "state-root.v1"; h: string; s: number; rev: number };
+
 export interface StateEntry extends SessionEntryBase {
 	type: "state";
-	state: Record<string, unknown>;
+	state: StatePayload;
 }
 
 export interface SchemaChangeEntry extends SessionEntryBase {
@@ -860,7 +869,10 @@ export class SessionManager {
 	/** Storage seam for session persistence (11-B); the node default keeps node:fs behavior byte-identical. */
 	private readonly storage: StorageBackend;
 
-	private constructor(
+	private readonly objectStore?: ObjectStore;
+	private readonly jsonTree?: JsonTree;
+	private rootWrite: Promise<void>;
+	constructor(
 		cwd: string,
 		sessionDir: string,
 		sessionFile: string | undefined,
@@ -868,20 +880,19 @@ export class SessionManager {
 		newSessionOptions?: NewSessionOptions,
 		preloadedFileEntries?: FileEntry[],
 		storage: StorageBackend = NodeStorageBackend.shared,
+		storeDeps?: SessionManagerStoreDeps,
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
 		this.storage = storage;
-		if (persist && this.sessionDir && !this.storage.existsSync(this.sessionDir)) {
+		this.objectStore = storeDeps?.objectStore;
+		this.jsonTree = storeDeps?.jsonTree ?? (storeDeps?.objectStore ? new JsonTree(storeDeps.objectStore) : undefined);
+		this.rootWrite = Promise.resolve();
+		if (persist && this.sessionDir && !this.storage.existsSync(this.sessionDir))
 			this.storage.mkdirSync(this.sessionDir, { recursive: true });
-		}
-
-		if (sessionFile) {
-			this._setSessionFile(sessionFile, preloadedFileEntries);
-		} else {
-			this.newSession(newSessionOptions);
-		}
+		if (sessionFile) this._setSessionFile(sessionFile, preloadedFileEntries);
+		else this.newSession(newSessionOptions);
 	}
 
 	/** Switch to a different session file (used for resume and branching) */
@@ -981,6 +992,13 @@ export class SessionManager {
 
 	isPersisted(): boolean {
 		return this.persist;
+	}
+
+	getStoreDeps(): SessionManagerStoreDeps {
+		return { objectStore: this.objectStore, jsonTree: this.jsonTree };
+	}
+	getStorageBackend(): StorageBackend {
+		return this.storage;
 	}
 
 	getCwd(): string {
@@ -1091,17 +1109,88 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** Append a state snapshot as child of current leaf, then advance leaf. Returns entry id. */
-	appendState(state: Record<string, unknown>, ts?: string): string {
-		const entry: StateEntry = {
-			type: "state",
-			id: generateId(this.byId),
-			parentId: this.leafId,
-			timestamp: ts ?? new Date().toISOString(),
-			state,
+	appendState(
+		state: Record<string, unknown>,
+		revision = 0,
+		edits: readonly TreeEdit[] = [],
+		ts?: string,
+	): Promise<string> {
+		const commit = async (): Promise<string> => {
+			const bytes = canonicalJsonBytes(state as JsonValue);
+			let payload: StatePayload = structuredClone(state);
+			if (bytes.byteLength > 64 * 1024) {
+				if (!this.jsonTree) throw new Error("Large state snapshots require an ObjectStore and JsonTree");
+				const prior = this._getCommittedStateRoot();
+				if (prior && revision <= prior.rev) throw new Error(`Stale state revision ${revision}`);
+				if (prior && revision !== prior.rev + 1 && edits.length === 0)
+					throw new Error(`Missing state operations between revisions ${prior.rev} and ${revision}`);
+				const tree = await this.jsonTree.update(
+					prior?.h,
+					prior ? edits : [{ op: "replaceRoot", value: state as JsonValue }],
+				);
+				payload = { tg: "state-root.v1", h: tree.root, s: bytes.byteLength, rev: revision };
+			}
+			const entry: StateEntry = {
+				type: "state",
+				id: generateId(this.byId),
+				parentId: this.leafId,
+				timestamp: ts ?? new Date().toISOString(),
+				state: payload,
+			};
+			this._appendEntry(entry);
+			return entry.id;
 		};
-		this._appendEntry(entry);
-		return entry.id;
+		const result = this.rootWrite.then(commit);
+		this.rootWrite = result.then(
+			() => {},
+			() => {},
+		);
+		return result;
+	}
+	getStateRootRevision(): number {
+		return this._getCommittedStateRoot()?.rev ?? 0;
+	}
+
+	private _getCommittedStateRoot(): { h: string; rev: number } | undefined {
+		const branch = this.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (
+				entry.type !== "state" ||
+				entry.state === null ||
+				typeof entry.state !== "object" ||
+				!("tg" in entry.state)
+			)
+				continue;
+			const root = entry.state;
+			if (
+				root.tg !== "state-root.v1" ||
+				typeof root.h !== "string" ||
+				!/^[0-9a-f]{64}$/.test(root.h) ||
+				typeof root.s !== "number" ||
+				!Number.isSafeInteger(root.s) ||
+				root.s <= 64 * 1024 ||
+				typeof root.rev !== "number" ||
+				!Number.isSafeInteger(root.rev) ||
+				root.rev < 0
+			)
+				throw new Error("Invalid state-root.v1 metadata in active session ancestry");
+			return { h: root.h, rev: root.rev };
+		}
+		return undefined;
+	}
+
+	async resolveStateRoot(root: { tg: "state-root.v1"; h: string; s: number; rev: number }): Promise<JsonValue> {
+		if (!this.jsonTree)
+			throw new Error(`Cannot resolve state root ${root.h}: ObjectStore and JsonTree are not configured`);
+		const value = await this.jsonTree.read(root.h, []);
+		if (value === undefined) throw new Error(`Missing state root object ${root.h}`);
+		if (value === null || typeof value !== "object" || Array.isArray(value))
+			throw new Error(`Invalid state root content ${root.h}: expected an object`);
+		const size = canonicalJsonBytes(value).byteLength;
+		if (size !== root.s || size <= 64 * 1024)
+			throw new Error(`Invalid state root size for ${root.h}: expected ${root.s}, got ${size}`);
+		return value as JsonValue;
 	}
 
 	/** Append a schema change (load/unload) as child of current leaf, then advance leaf. Returns entry id. */
@@ -1585,9 +1674,10 @@ export class SessionManager {
 		sessionDir?: string,
 		options?: NewSessionOptions,
 		storage: StorageBackend = NodeStorageBackend.shared,
+		storeDeps?: SessionManagerStoreDeps,
 	): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd, undefined, storage);
-		return new SessionManager(cwd, dir, undefined, true, options, undefined, storage);
+		return new SessionManager(cwd, dir, undefined, true, options, undefined, storage, storeDeps);
 	}
 
 	/**
@@ -1601,6 +1691,7 @@ export class SessionManager {
 		sessionDir?: string,
 		cwdOverride?: string,
 		storage: StorageBackend = NodeStorageBackend.shared,
+		storeDeps?: SessionManagerStoreDeps,
 	): SessionManager {
 		const resolvedPath = resolvePath(path);
 		let header: SessionHeader | null = null;
@@ -1610,17 +1701,14 @@ export class SessionManager {
 				header = readSessionHeader(resolvedPath, storage);
 			} catch (error) {
 				if (!(error instanceof SessionHeaderScanLimitError)) throw error;
-				// The bounded scan is only a discovery optimization. A full load remains
-				// authoritative for legacy files with very large headers or prefixes.
 				preloadedFileEntries = loadEntriesFromFile(resolvedPath, storage);
 				const firstEntry = preloadedFileEntries[0];
 				header = firstEntry?.type === "session" ? firstEntry : null;
 			}
 		}
 		const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
-		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries, storage);
+		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries, storage, storeDeps);
 	}
 
 	/**
@@ -1632,19 +1720,24 @@ export class SessionManager {
 		cwd: string,
 		sessionDir?: string,
 		storage: StorageBackend = NodeStorageBackend.shared,
+		storeDeps?: SessionManagerStoreDeps,
 	): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd, undefined, storage);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined, storage);
 		if (mostRecent) {
-			return new SessionManager(cwd, dir, mostRecent, true, undefined, undefined, storage);
+			return new SessionManager(cwd, dir, mostRecent, true, undefined, undefined, storage, storeDeps);
 		}
-		return new SessionManager(cwd, dir, undefined, true, undefined, undefined, storage);
+		return new SessionManager(cwd, dir, undefined, true, undefined, undefined, storage, storeDeps);
 	}
 
-	/** Create an in-memory session (no file persistence) */
-	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions): SessionManager {
-		return new SessionManager(cwd, "", undefined, false, options);
+	static inMemory(
+		cwd: string = process.cwd(),
+		options?: NewSessionOptions,
+		storeDeps?: SessionManagerStoreDeps,
+		storage: StorageBackend = NodeStorageBackend.shared,
+	): SessionManager {
+		return new SessionManager(cwd, "", undefined, false, options, undefined, storage, storeDeps);
 	}
 
 	/**
@@ -1660,6 +1753,7 @@ export class SessionManager {
 		sessionDir?: string,
 		options?: NewSessionOptions,
 		storage: StorageBackend = NodeStorageBackend.shared,
+		storeDeps?: SessionManagerStoreDeps,
 	): SessionManager {
 		const resolvedSourcePath = resolvePath(sourcePath);
 		const resolvedTargetCwd = resolvePath(targetCwd);
@@ -1705,7 +1799,7 @@ export class SessionManager {
 			}
 		}
 
-		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true, undefined, undefined, storage);
+		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true, undefined, undefined, storage, storeDeps);
 	}
 
 	/**

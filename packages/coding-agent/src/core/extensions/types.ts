@@ -1706,7 +1706,7 @@ export interface ExtensionAPI {
 	 * Returns ok:false with a reason when validation rejects the write.
 	 * `add` appends a single element to an array or increments a number; `replace` sets a value; `remove` deletes a path.
 	 */
-	updateState(path: string, op: "add" | "remove" | "replace", value?: unknown): UpdateStateResult;
+	updateState(path: string, op: "add" | "remove" | "replace", value?: unknown): Promise<UpdateStateResult>;
 
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
@@ -2030,7 +2030,11 @@ export type SubscribeStateHandler = (handler: (snapshot: Record<string, unknown>
 
 export type UpdateStateResult = { ok: true; path: string; newValue?: unknown } | { ok: false; reason: string };
 
-export type UpdateStateHandler = (path: string, op: "add" | "remove" | "replace", value?: unknown) => UpdateStateResult;
+export type UpdateStateHandler = (
+	path: string,
+	op: "add" | "remove" | "replace",
+	value?: unknown,
+) => Promise<UpdateStateResult>;
 
 /**
  * Implementation backing the extension `pi.exec` command channel.

@@ -72,7 +72,7 @@ function createOpeningExtensionFactory(deps?: OpeningExtensionDeps): ExtensionFa
 			? { storage: deps?.storage, inline: deps?.inline }
 			: { storage: deps?.storage, inline: deps?.inline, configDir };
 	const factory: ExtensionFactory = (pi: ExtensionAPI): void => {
-		pi.on("session_start", (event: SessionStartEvent, ctx: ExtensionContext) => {
+		pi.on("session_start", async (event: SessionStartEvent, ctx: ExtensionContext) => {
 			const id = deps?.getOpeningId
 				? deps.getOpeningId()
 				: configDir === undefined
@@ -86,7 +86,7 @@ function createOpeningExtensionFactory(deps?: OpeningExtensionDeps): ExtensionFa
 					console.warn(`[opening] preset "${id}" not found`);
 					return;
 				}
-				const result = applyOpeningPreset(pi, ctx, preset, { skipIfSeeded: true });
+				const result = await applyOpeningPreset(pi, ctx, preset, { skipIfSeeded: true });
 				if (!result.ok) {
 					if (result.reason !== "session already has messages") {
 						console.warn(`[opening] ${result.reason}`);
@@ -139,7 +139,7 @@ function createOpeningExtensionFactory(deps?: OpeningExtensionDeps): ExtensionFa
 						ctx.ui.notify(`Opening preset "${id}" not found.`, "error");
 						return;
 					}
-					const result = applyOpeningPreset(pi, ctx, preset, { skipIfSeeded: false });
+					const result = await applyOpeningPreset(pi, ctx, preset, { skipIfSeeded: false });
 					if (!result.ok) {
 						ctx.ui.notify(result.reason ?? `Opening preset "${id}" not found.`, "error");
 						return;

@@ -142,15 +142,18 @@ export async function runSubagent(
 	// 剥出会让末尾退回 compileMessages 的原末尾，而 chat-history slot 渲染的继承
 	// 历史常以 assistant 结尾，会触发 "Initial messages must end with a user message"。
 	const initialMessages = preparation.messages;
-
-	// In-memory session manager: no disk I/O, nothing to clean up.
-	const sessionManager = SessionManager.inMemory(preparation.cwd);
-
-	// Resource supply inheritance (contract §3.7): the subagent session resolves presets/schemas from
-	// the parent's storage seam + inline sets. Node parents carry node defaults (byte-identical);
-	// browser parents carry the OPFS stores (without this, SettingsManager/state creation would hit
-	// the node-fs stub).
 	const parentSession = preparation.session ?? options.parentSession;
+
+	// In-memory sessions inherit the parent's blob store so large state snapshots
+	// remain writable in browser/hosted and Node runs alike.
+	const sessionManager = SessionManager.inMemory(
+		preparation.cwd,
+		undefined,
+		parentSession?.sessionManager.getStoreDeps(),
+		parentSession?.sessionManager.getStorageBackend(),
+	);
+
+	// Resource supply inheritance (contract §3.7): the child resolves presets/schemas through the parent runtime.
 	const supply = parentSession?.getResourceSupply();
 	// A child always gets its own scope. A scoped parent propagates its fixed-session policy;
 	// unscoped parents still get isolation rather than an undefined scope.

@@ -190,12 +190,12 @@ function collectLeaves(prefix: string, value: unknown, out: Leaf[]): void {
  * untouched (resume/reload/respawn guard) — pass false for explicit user
  * commands. Does not write an audit entry; callers append their own.
  */
-export function applyOpeningPreset(
+export async function applyOpeningPreset(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	preset: OpeningPreset,
 	options?: { skipIfSeeded?: boolean },
-): ApplyOpeningResult {
+): Promise<ApplyOpeningResult> {
 	if (options?.skipIfSeeded && ctx.sessionManager.getEntries().some((e) => e.type === "message")) {
 		return { ok: false, reason: "session already has messages", seededMessages: 0, statePaths: 0 };
 	}
@@ -224,7 +224,7 @@ export function applyOpeningPreset(
 		const leaves: Leaf[] = [];
 		collectLeaves(ns, subtree, leaves);
 		for (const { path, value } of leaves) {
-			const res = pi.updateState(path, "replace", value);
+			const res = await pi.updateState(path, "replace", value);
 			if (res.ok) {
 				statePaths++;
 			} else {

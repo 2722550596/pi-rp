@@ -9,6 +9,7 @@
 ### Added
 
 - Added the extension factory registry: `pi.harness.extensions.setFactories(entries)` / `refreshExtensions()` / `getFactoryEntries()` stage all enabled extension factories, then only on full success atomically swap the managed extension set and refresh tools; any factory failure keeps the previous runner set untouched and returns per-entry errors. Entries are `{ id, factory, enabled? }` (default disabled); duplicate ids are rejected before replacing the registry.
+- Added the canonical JSON and `json-tree-v1` object layer with hash-verified reads, immutable path-copy updates, `ref.v1`/`rope.v1`/`chunk.v1` handling, StateManager operation diffing, and golden serialization vectors.
 - Session tree moves now preflight the target branch's state and schemas before changing the leaf; navigation mutations are serialized, and failed preflight leaves the active branch and state untouched.
 
 - Added MCP client support for stdio and Streamable HTTP servers, OAuth login/logout, trust-gated project configuration, and per-tool exposure control. Added codemode's QuickJS/WASM script tool with authorized nested tool dispatch. See [MCP servers](docs/mcp.md) and [Codemode](docs/codemode.md).
@@ -58,6 +59,7 @@
 
 ### Fixed
 
+- Fixed `state_update` paths never traversing arrays: intermediate array segments made any nested operation (`party/0/hp`) a silent no-op, and the `setDeep` fallback for `add`/`replace` overwrote the entire array with a plain object (silent data loss). Paths now traverse arrays with in-range decimal indices; unreachable array paths are dropped safely without corrupting data, and the tree differ stays consistent via the shared `applyOp`.
 - Fixed prompt preset `wrap` tags enclosing per-item headings and endings; wrapping now applies only to the rendered content.
 - Fixed prompt preset items with empty or absent content rendering decorations; heading, ending, and wrap are now skipped with the item.
 - Fixed the memory browser's search view rendering a literal `null` when a result has no disclosure: `discBadge()` returns `null` for an empty value and DOM `append(null)` stringifies it, so the guard is now applied at the call site.

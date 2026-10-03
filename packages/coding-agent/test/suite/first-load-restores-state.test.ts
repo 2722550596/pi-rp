@@ -44,7 +44,7 @@ describe("first load restores session state with presets on disk", () => {
 		expect(model).toBeTruthy();
 		const sessionManager = SessionManager.inMemory(tempDir);
 		sessionManager.appendMessage({ role: "user", content: "hi" } as never);
-		sessionManager.appendState({ ns: { v: 42 } });
+		await sessionManager.appendState({ ns: { v: 42 } });
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir: tempDir,

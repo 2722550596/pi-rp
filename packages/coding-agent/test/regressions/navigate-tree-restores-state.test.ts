@@ -24,12 +24,12 @@ describe("navigateTree restores state to the target branch", () => {
 			// mirroring the turn_end appendState of a state_update during turn 1.
 			await session.prompt("first turn");
 			await session.agent.waitForIdle();
-			const turn1StateId = sessionManager.appendState({ ns: { v: 1 } });
+			const turn1StateId = await sessionManager.appendState({ ns: { v: 1 } });
 
 			// Turn 2: u2 parents onto the state entry, then a2. Persist turn-2 state.
 			await session.prompt("second turn");
 			await session.agent.waitForIdle();
-			const turn2StateId = sessionManager.appendState({ ns: 2 });
+			const turn2StateId = await sessionManager.appendState({ ns: 2 });
 
 			// Live state matches the turn-2 snapshot (what state_update produced).
 			session.stateManager.apply("ns", "replace", 2);
@@ -69,10 +69,10 @@ describe("navigateTree restores state to the target branch", () => {
 			harness.setResponses([fauxAssistantMessage("first reply"), fauxAssistantMessage("second reply")]);
 			await session.prompt("first turn");
 			await session.agent.waitForIdle();
-			sessionManager.appendState({ ns: { v: 1 } });
+			await sessionManager.appendState({ ns: { v: 1 } });
 			await session.prompt("second turn");
 			await session.agent.waitForIdle();
-			sessionManager.appendState({ ns: { v: 2 } });
+			await sessionManager.appendState({ ns: { v: 2 } });
 			session.stateManager.load({ ns: { v: 2 } });
 
 			const userMessages = sessionManager
