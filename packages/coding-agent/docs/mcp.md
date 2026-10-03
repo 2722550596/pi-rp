@@ -4,7 +4,7 @@ Pi can connect to Model Context Protocol (MCP) servers over stdio or Streamable 
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "local-tools": {
       "command": "node",
       "args": ["./server.mjs"],

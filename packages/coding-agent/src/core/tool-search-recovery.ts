@@ -296,15 +296,8 @@ export function formatToolSearchCategorySection(categories: readonly ToolSearchC
 	].join("\n");
 }
 
-/**
- * Build the manager catalog input from the allow/deny-filtered registry
- * definitions plus the D8-normalized deferrable flags. Tools missing from the
- * map default to `deferrable: false` (eager).
- */
-export function toToolSearchEntries(
-	definitions: Iterable<{ definition: ToolDefinition }>,
-	deferrableByName: ReadonlyMap<string, boolean>,
-): ToolSearchEntry[] {
+/** Build searchable catalog entries from the allow/deny-filtered definitions. */
+export function toToolSearchEntries(definitions: Iterable<{ definition: ToolDefinition }>): ToolSearchEntry[] {
 	const entries: ToolSearchEntry[] = [];
 	for (const { definition } of definitions) {
 		entries.push({
@@ -312,7 +305,8 @@ export function toToolSearchEntries(
 			description: definition.description,
 			promptSnippet: definition.promptSnippet,
 			parameters: definition.parameters,
-			deferrable: deferrableByName.get(definition.name) ?? false,
+			exposure: definition.exposure ?? "direct",
+			namespace: definition.namespace,
 		});
 	}
 	return entries;

@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { ExtensionFactory, ToolDefinition } from "../../../src/core/extensions/types.ts";
@@ -7,9 +9,7 @@ const emptyParameters = Type.Object({});
 
 function registeredTool(
 	name: string,
-	fields: Partial<
-		Pick<ToolDefinition, "exposure" | "defaultActive" | "deferrable" | "namespace" | "annotations">
-	> = {},
+	fields: Partial<Pick<ToolDefinition, "exposure" | "defaultActive" | "namespace" | "annotations">> = {},
 ): ToolDefinition {
 	return {
 		name,
@@ -36,16 +36,16 @@ describe("extension tool loadout integration", () => {
 
 			harness.session.setActiveToolsByName(["inactive", "deferred"]);
 			expect(harness.session.getActiveToolNames()).toEqual(["inactive", "deferred"]);
-			expect(harness.session.agent.state.tools.map((tool) => tool.name)).toEqual(["inactive", "deferred"]);
+			expect(harness.session.agent.state.tools.map((tool) => tool.name)).toEqual(["inactive"]);
 		} finally {
 			harness.cleanup();
 		}
 	});
 
-	it("activates tool search for deferrable direct tools without exposing hidden tools", async () => {
+	it("activates tool search for direct tools without exposing hidden tools", async () => {
 		const extension: ExtensionFactory = (pi) => {
-			pi.registerTool(registeredTool("searchable", { deferrable: true }));
-			pi.registerTool(registeredTool("private", { exposure: "hidden", deferrable: true }));
+			pi.registerTool(registeredTool("searchable"));
+			pi.registerTool(registeredTool("private", { exposure: "hidden" }));
 		};
 		const harness = await createHarnessWithExtensions({
 			extensionFactories: [extension],
@@ -57,6 +57,132 @@ describe("extension tool loadout integration", () => {
 			expect(harness.session.getActiveToolNames()).not.toContain("searchable");
 			expect(harness.session.getActiveToolNames()).not.toContain("private");
 			expect(harness.session.getAllTools().find((tool) => tool.name === "private")?.exposure).toBe("hidden");
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("keeps defaultActive:false tools registered but not declared without preset policy", async () => {
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerTool(registeredTool("manual-only", { defaultActive: false }));
+		};
+		const harness = await createHarnessWithExtensions({ extensionFactories: [extension] });
+		try {
+			expect(harness.session.getToolDefinition("manual-only")).toBeDefined();
+			expect(harness.session.agent.state.tools.map((tool) => tool.name)).not.toContain("manual-only");
+			harness.session.setActiveToolsByName(["manual-only"]);
+			expect(harness.session.getActiveToolNames()).toContain("manual-only");
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("preset allow activates default-inactive exact and wildcard tool names", async () => {
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerTool(registeredTool("exact_tool", { defaultActive: false }));
+			pi.registerTool(registeredTool("lotm:recall", { defaultActive: false }));
+			pi.registerTool(registeredTool("other_tool", { defaultActive: false }));
+		};
+		const harness = await createHarnessWithExtensions({ extensionFactories: [extension] });
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "allow-tools.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "allow-tools",
+					tools: { allow: ["exact_tool", "lotm:*"] },
+					items: [],
+				}),
+			);
+			harness.session.reloadPresets();
+			expect((await harness.session.setActivePreset("allow-tools")).ok).toBe(true);
+			const declaredNames = harness.session.agent.state.tools.map((tool) => tool.name);
+			expect(declaredNames).toContain("exact_tool");
+			expect(declaredNames).toContain("lotm:recall");
+			expect(declaredNames).not.toContain("other_tool");
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("preset deny overrides allow for declarations and nested callable tools", async () => {
+		let deniedToolExecuted = false;
+		let nestedStatus: string | undefined;
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerTool({
+				...registeredTool("lotm:blocked", { defaultActive: false }),
+				execute: async () => {
+					deniedToolExecuted = true;
+					return { content: [{ type: "text", text: "should not run" }], details: {} };
+				},
+			});
+			pi.registerTool({
+				...registeredTool("orchestrator"),
+				execute: async (_id, _args, _signal, _onUpdate, ctx) => {
+					const result = await ctx.executeTool("lotm:blocked", {});
+					nestedStatus = result.status;
+					return { content: [{ type: "text", text: result.status }], details: {} };
+				},
+			});
+		};
+		const harness = await createHarnessWithExtensions({
+			extensionFactories: [extension],
+			responses: [{ toolCalls: [{ id: "policy-parent", name: "orchestrator", args: {} }] }, "done"],
+		});
+		try {
+			const presetDir = join(harness.tempDir, ".pi", "prompt-presets");
+			mkdirSync(presetDir, { recursive: true });
+			writeFileSync(
+				join(presetDir, "deny-tools.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					id: "deny-tools",
+					tools: { allow: ["orchestrator", "lotm:*"], deny: ["lotm:blocked"] },
+					items: [],
+				}),
+			);
+			harness.session.reloadPresets();
+			expect((await harness.session.setActivePreset("deny-tools")).ok).toBe(true);
+			expect(harness.session.agent.state.tools.map((tool) => tool.name)).not.toContain("lotm:blocked");
+			await harness.session.prompt("exercise denied nested tool", { expandPromptTemplates: false });
+			expect(nestedStatus).toBe("validation_error");
+			expect(deniedToolExecuted).toBe(false);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("keeps deferred tools callable and searchable without declaring them", async () => {
+		let deferredExecuted = false;
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerTool({
+				...registeredTool("deferred_target", { exposure: "deferred", defaultActive: false }),
+				execute: async () => {
+					deferredExecuted = true;
+					return { content: [{ type: "text", text: "deferred" }], details: {} };
+				},
+			});
+			pi.registerTool({
+				...registeredTool("deferred_parent", { exposure: "model-only", defaultActive: true }),
+				execute: async (_id, _args, _signal, _onUpdate, ctx) => {
+					const result = await ctx.executeTool("deferred_target", {});
+					return { content: result.result.content, details: {} };
+				},
+			});
+		};
+		const harness = await createHarnessWithExtensions({
+			extensionFactories: [extension],
+			settings: { toolSearch: { mode: "off" } },
+			responses: [{ toolCalls: [{ id: "deferred-parent-call", name: "deferred_parent", args: {} }] }, "done"],
+		});
+		try {
+			expect(harness.session.agent.state.tools.map((tool) => tool.name)).not.toContain("deferred_target");
+			await harness.session.prompt("call deferred tool", { expandPromptTemplates: false });
+			expect(deferredExecuted).toBe(true);
+			expect(harness.session.getActiveToolNames()).toContain("tool_search");
+			expect(harness.session.agent.state.tools.map((tool) => tool.name)).not.toContain("deferred_target");
 		} finally {
 			harness.cleanup();
 		}

@@ -5,15 +5,18 @@ import { join } from "../../utils/node-globals.ts";
 import { validateRegexConfig } from "./regex-engine.ts";
 import { SUPPORTED_SLOTS } from "./slot-registry.ts";
 import type {
+	HistoryOp,
 	LoadedPromptPreset,
 	LoadedPromptPresetSource,
 	PromptPreset,
 	PromptPresetDiagnostic,
 	PromptPresetHiddenOverrides,
+	PromptPresetHistoryItem,
 	PromptPresetItem,
 	PromptPresetRegexConfig,
 	PromptPresetRole,
 	PromptPresetSlot,
+	PromptPresetSlotOptions,
 	PromptResourcePolicy,
 } from "./types.ts";
 
@@ -355,9 +358,22 @@ function normalizeItems(raw: unknown, diagnostics: PromptPresetDiagnostic[]): Pr
 	}
 
 	const items: PromptPresetItem[] = [];
+	let historyFound = false;
 	for (let i = 0; i < raw.length; i++) {
 		const item = normalizeItem(raw[i], i, diagnostics);
-		if (item) items.push(item);
+		if (!item) continue;
+		if (item.kind === "history") {
+			if (historyFound) {
+				diagnostics.push({
+					level: "error",
+					itemId: item.id,
+					message: `Duplicate history item "${item.id}"; only the first history item is used.`,
+				});
+				continue;
+			}
+			historyFound = true;
+		}
+		items.push(item);
 	}
 	return items;
 }
@@ -375,6 +391,7 @@ function normalizeItem(
 	const obj = raw as Record<string, unknown>;
 	const kind = obj.kind;
 
+	if (kind === "history") return normalizeHistoryItem(obj, index, diagnostics);
 	if (kind !== "block" && kind !== "slot") {
 		diagnostics.push({ level: "error", message: `Item at index ${index} has invalid kind "${String(kind)}".` });
 		return undefined;
@@ -415,7 +432,6 @@ function normalizeItem(
 		return { ...base, kind: "block", content: obj.content };
 	}
 
-	// slot
 	const slot = String(obj.slot ?? "");
 	if (!slot) {
 		diagnostics.push({
@@ -425,7 +441,6 @@ function normalizeItem(
 		});
 		return undefined;
 	}
-
 	const isBuiltIn = SUPPORTED_SLOTS.has(slot as PromptPresetSlot);
 	if (!isBuiltIn) {
 		diagnostics.push({
@@ -434,7 +449,6 @@ function normalizeItem(
 			itemId: base.id,
 		});
 	}
-
 	const options = isPlainObject(obj.options) ? (obj.options as Record<string, unknown>) : undefined;
 	return {
 		...base,
@@ -442,6 +456,120 @@ function normalizeItem(
 		slot,
 		options: options ? normalizeSlotOptions(options) : undefined,
 	};
+}
+
+function normalizeHistoryItem(
+	obj: Record<string, unknown>,
+	index: number,
+	diagnostics: PromptPresetDiagnostic[],
+): PromptPresetHistoryItem {
+	const id = normalizeId(obj.id, `item[${index}]`);
+	const options = isPlainObject(obj.options) ? (obj.options as PromptPresetSlotOptions) : undefined;
+	const ops: HistoryOp[] = [];
+	let keepFound = false;
+	let reduceFound = false;
+	const ids = new Set<string>();
+	if (Array.isArray(obj.ops)) {
+		for (const rawOp of obj.ops) {
+			if (!isPlainObject(rawOp) || typeof rawOp.op !== "string") {
+				diagnostics.push({
+					level: "error",
+					itemId: id,
+					message: `History item "${id}" contains an invalid operation.`,
+				});
+				continue;
+			}
+			const opId = typeof rawOp.id === "string" && rawOp.id.length > 0 ? rawOp.id : `op[${ops.length}]`;
+			if (rawOp.op === "insert") {
+				if (ids.has(opId)) {
+					diagnostics.push({
+						level: "error",
+						itemId: id,
+						message: `Duplicate history op id "${opId}" in item "${id}".`,
+					});
+					continue;
+				}
+				const depth = rawOp.depth;
+				if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 0) {
+					diagnostics.push({ level: "error", itemId: id, message: `Invalid depth for history insert "${opId}".` });
+					continue;
+				}
+				if (typeof rawOp.content !== "string") {
+					diagnostics.push({
+						level: "error",
+						itemId: id,
+						message: `History insert "${opId}" requires a string content field.`,
+					});
+					continue;
+				}
+				ids.add(opId);
+				ops.push({ op: "insert", id: opId, depth, content: rawOp.content });
+				continue;
+			}
+			if (rawOp.op === "keep") {
+				if (keepFound) {
+					diagnostics.push({
+						level: "error",
+						itemId: id,
+						message: `History item "${id}" may contain only one keep operation; later keep operations are ignored.`,
+					});
+					continue;
+				}
+				const tokens = rawOp.tokens;
+				const traces = rawOp.traces;
+				const hasTokens = tokens !== undefined;
+				const hasTraces = traces !== undefined;
+				const validUnit = hasTokens !== hasTraces;
+				const value = hasTokens ? tokens : traces;
+				if (!validUnit || typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+					diagnostics.push({
+						level: "error",
+						itemId: id,
+						message: `History keep in "${id}" must specify exactly one non-negative finite tokens or traces value.`,
+					});
+					continue;
+				}
+				keepFound = true;
+				if (hasTraces && traces === 0)
+					diagnostics.push({
+						level: "warning",
+						itemId: id,
+						message: `History keep in "${id}" uses traces: 0; all traces will be outside the retained window.`,
+					});
+				ops.push(hasTokens ? { op: "keep", tokens: value } : { op: "keep", traces: value });
+				continue;
+			}
+			if (rawOp.op === "reduce") {
+				if (reduceFound) {
+					diagnostics.push({
+						level: "error",
+						itemId: id,
+						message: `History item "${id}" may contain only one reduce operation; later reduce operations are ignored.`,
+					});
+					continue;
+				}
+				if (rawOp.as !== "summary" && rawOp.as !== "hide") {
+					diagnostics.push({
+						level: "error",
+						itemId: id,
+						message: `History reduce in "${id}" must use "summary" or "hide".`,
+					});
+					continue;
+				}
+				reduceFound = true;
+				ops.push({ op: "reduce", as: rawOp.as });
+				continue;
+			}
+			diagnostics.push({
+				level: "error",
+				itemId: id,
+				message: `Unknown history operation "${rawOp.op}" in item "${id}".`,
+			});
+		}
+	} else if (obj.ops !== undefined) {
+		diagnostics.push({ level: "error", itemId: id, message: `History item "${id}" ops must be an array.` });
+	}
+	return { kind: "history", id, enabled: obj.enabled === false ? false : undefined, options, ops };
 }
 
 function normalizeSlotOptions(options: Record<string, unknown>): Record<string, unknown> {
@@ -584,13 +712,10 @@ function normalizeResourcePolicy(
 	const objValue = value as Record<string, unknown>;
 	const allow = normalizePolicyPatterns(objValue.allow, `${label}.allow`, diagnostics);
 	const deny = normalizePolicyPatterns(objValue.deny, `${label}.deny`, diagnostics);
-	if (allow && deny) {
-		diagnostics.push({ level: "error", message: `${label} policy must use either allow or deny, not both.` });
-		return { allow };
-	}
-	if (allow) return { allow };
-	if (deny) return { deny };
-	return {};
+	const policy: PromptResourcePolicy = {};
+	if (allow !== undefined) policy.allow = allow;
+	if (deny !== undefined) policy.deny = deny;
+	return policy;
 }
 
 function normalizePolicyPatterns(

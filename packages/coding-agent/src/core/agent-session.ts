@@ -163,12 +163,16 @@ import {
 	compileMessagesSync,
 	compileSystemPrompt,
 	deriveSystemPrompt,
+	presetHasAsyncHistoryOps,
 	presetHasAsyncSlots,
 } from "./prompt-preset/compiler.ts";
+import { HistoryOpRegistry } from "./prompt-preset/history-ops.ts";
 import type {
+	HistoryHostDataProvider,
 	LoadedPromptPreset,
 	PromptPreset,
 	PromptPresetDiagnostic,
+	PromptPresetHistoryItem,
 	PromptPresetSlotItem,
 	PromptRuntime,
 } from "./prompt-preset/index.ts";
@@ -180,7 +184,12 @@ import {
 	loadPromptPresets,
 } from "./prompt-preset/loader.ts";
 import { expandMacros } from "./prompt-preset/macro-engine.ts";
-import { applyResourcePolicy, hasResourcePolicy } from "./prompt-preset/policy.ts";
+import {
+	applyResourcePolicy,
+	hasResourcePolicy,
+	isResourceAllowed,
+	matchesAnyPattern,
+} from "./prompt-preset/policy.ts";
 import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./prompt-preset/regex-engine.ts";
 import type { PromptRegistryScope } from "./prompt-preset/registry-scope.ts";
 import { registerSlot } from "./prompt-preset/slot-registry.ts";
@@ -203,7 +212,7 @@ import { createSubagentProfilesToolDefinition, createSubagentToolDefinition } fr
 import { spawnAgent } from "./subagent/spawn.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { ToolSearchManager } from "./tool-search/manager.ts";
-import { normalizeDeferrable, shouldActivateToolSearch } from "./tool-search-policy.ts";
+import { shouldActivateToolSearch } from "./tool-search-policy.ts";
 import {
 	buildToolSearchCategories,
 	collectRestoredToolNames,
@@ -399,6 +408,8 @@ export interface AgentSessionConfig {
 	 * Omitted on node ⇒ unchanged behavior.
 	 */
 	inlinePresets?: readonly LoadedPromptPresetSource[];
+	/** Host-owned providers for explicit HistoryOp dependencies. */
+	historyHostData?: readonly HistoryHostDataProvider[];
 	/** Inline state-schema definitions (bundled-resource channel). Merged over every schema load. */
 	inlineSchemas?: readonly SchemaDefSource[];
 	/**
@@ -701,7 +712,8 @@ export class AgentSession {
 	private _stores: HarnessStores;
 	/** Inline prompt presets (bundled-resource channel); merged into every preset load. */
 	private _inlinePresets: readonly LoadedPromptPresetSource[];
-	/** Inline state-schema definitions (bundled-resource channel); merged into every schema load. */
+	private _historyHostData: readonly HistoryHostDataProvider[];
+	private readonly _historyOpRegistry = new HistoryOpRegistry();
 	private _inlineSchemas: readonly SchemaDefSource[];
 	/** Memory sqlite factory seam (13-D); undefined ⇒ memory driver's runtime default. */
 	private _sqliteFactory: SqliteDatabaseFactory | undefined;
@@ -788,8 +800,7 @@ export class AgentSession {
 	private _toolPolicyBaseline?: string[];
 
 	// --- Tool search wiring (plan/tool-search: R4-R10, D1/D4-D8/D11-D13) ---
-	/** D8-normalized deferrable flags for the allow/deny-visible registry, rebuilt by _refreshToolRegistry. */
-	private _toolSearchDeferrable: ReadonlyMap<string, boolean> = new Map();
+
 	/** Set once the transcript restore has run for this runtime; gates syncToolSearchState(). */
 	private _toolSearchRestored = false;
 	/** D11: restore failed or was aborted — session continues with tool search deactivated. */
@@ -876,6 +887,7 @@ export class AgentSession {
 		this._stores = config.stores ?? nodeHarnessStores();
 		this._configDir = config.configDir;
 		this._inlinePresets = config.inlinePresets ?? [];
+		this._historyHostData = config.historyHostData ?? [];
 		this._inlineSchemas = config.inlineSchemas ?? [];
 		this._sqliteFactory = config.sqliteFactory;
 		this._modelRuntime = config.modelRuntime;
@@ -1584,15 +1596,18 @@ export class AgentSession {
 		const exposureFor = (name: string): ToolExposure =>
 			this._toolDefinitions.get(name)?.definition.exposure ?? "direct";
 		const activeNames = new Set(activeTools.map((tool) => tool.name));
+		const policy = this._activePreset.tools;
 		const callable = registered.filter((tool) => {
+			if (!isResourceAllowed(tool.name, policy)) return false;
 			const exposure = exposureFor(tool.name);
 			return (
 				exposure === "codemode" || exposure === "deferred" || (exposure === "direct" && activeNames.has(tool.name))
 			);
 		});
 		const declared = activeTools.filter((tool) => {
+			if (!isResourceAllowed(tool.name, policy)) return false;
 			const exposure = exposureFor(tool.name);
-			return exposure === "direct" || exposure === "deferred" || exposure === "model-only";
+			return exposure === "direct" || exposure === "model-only";
 		});
 		const namespaces = new Map<string, ToolNamespace>();
 		for (const tool of registered) {
@@ -1744,21 +1759,27 @@ export class AgentSession {
 		// Refresh the R9 category rows before the prompt rebuild below.
 		this._toolSearchCategories = buildToolSearchCategories(manager.getSearchableTools());
 		this._applyToolSearchActiveSet(result.activated);
-		this._queueToolCatalogDelta(manager, result.activated);
+		this._queueToolCatalogDelta(manager, result.activated || manager.getSearchableTools().length > 0);
 	}
 
 	/** Build the manager input (catalog view + activation judgment) and recompute. */
 	private _recomputeToolSearch(): { activated: boolean; changed: boolean } {
 		const manager = this._toolSearchManager;
-		const entries = toToolSearchEntries(this._toolDefinitions.values(), this._toolSearchDeferrable);
+		const presetPolicy = this._activePreset.tools;
+		const entries = toToolSearchEntries(this._toolDefinitions.values()).filter((entry) =>
+			isResourceAllowed(entry.name, presetPolicy),
+		);
 		const settings = this._getToolSearchSettings();
-		// R5: `tools.allow` whitelist names are user-mandated eager tools. They
-		// merge into reservedTools (single eager path), and the activation
-		// estimate only sees the potential folding set — entries minus the
-		// allow names (Main's ruling: shouldActivateToolSearch subtracts
-		// reservedTools internally; native 7 already normalize to non-deferrable).
-		const reservedTools = [...settings.reservedTools, ...(this._allowedToolNames ?? [])];
+		const presetAllow = presetPolicy?.allow;
+		const hasPresetAllow =
+			Array.isArray(presetAllow) && (presetAllow.length === 0 || presetAllow.some((pattern) => pattern !== "*"));
 		const allowNames = new Set(this._allowedToolNames ?? []);
+		if (hasPresetAllow && presetAllow) {
+			for (const entry of entries) {
+				if (matchesAnyPattern(entry.name, presetAllow)) allowNames.add(entry.name);
+			}
+		}
+		const reservedTools = [...settings.reservedTools, ...allowNames];
 		const activationTools = entries.filter((entry) => !allowNames.has(entry.name));
 		const active = this._toolSearchActivationBlocked
 			? false
@@ -1795,13 +1816,10 @@ export class AgentSession {
 	}
 
 	/**
-	 * Apply folding as a delta on the CURRENT active set (R7 per D23): remove
-	 * only deferrable ∧ undiscovered names, re-add discovered ∧ available ∧
-	 * deferrable names that are missing, and append the synthetic tool_search
-	 * definition while undiscovered foldable tools exist. The active set is
-	 * never rebuilt from the registry-wide catalog — extension `setActiveTools`
-	 * subsets and CLI/`--tools` selections must survive every sync. This is
-	 * also the synthetic tool_search definition's only registration point (D13).
+	 * Apply folding as a delta on the current active set (D23): only remove
+	 * undiscovered direct tools and only re-add discovered direct tools. Deferred
+	 * tools remain callable but never enter declarations; they keep tool_search
+	 * available regardless of direct-tool folding activation.
 	 */
 	private _applyToolSearchActiveSet(activated: boolean): void {
 		const manager = this._toolSearchManager;
@@ -1814,25 +1832,21 @@ export class AgentSession {
 				if (
 					name !== TOOL_SEARCH_TOOL_NAME &&
 					!finalNames.includes(name) &&
-					(this._toolSearchDeferrable.get(name) ?? false) &&
+					this._toolDefinitions.get(name)?.definition.exposure === "direct" &&
 					this._toolRegistry.has(name)
 				) {
 					finalNames.push(name);
 				}
 			}
-			if (searchableCount > 0 && !finalNames.includes(TOOL_SEARCH_TOOL_NAME)) {
-				finalNames.push(TOOL_SEARCH_TOOL_NAME);
-			}
 		} else {
 			finalNames = current.filter((name) => name !== TOOL_SEARCH_TOOL_NAME);
 		}
-
-		if (activated && searchableCount > 0) {
+		if (searchableCount > 0 && !finalNames.includes(TOOL_SEARCH_TOOL_NAME)) {
+			finalNames.push(TOOL_SEARCH_TOOL_NAME);
+		}
+		if (searchableCount > 0) {
 			if (!this._toolRegistry.has(TOOL_SEARCH_TOOL_NAME)) {
 				const definition = manager.getToolSearchDefinition();
-				// The synthetic tool is a builtin-equivalent: it never passes
-				// through the extension wrapper (M1 §8) — M3 writes its
-				// addedToolNames manually into the execute result.
 				this._toolDefinitions.set(TOOL_SEARCH_TOOL_NAME, {
 					definition,
 					sourceInfo: createSyntheticSourceInfo(`<builtin:${TOOL_SEARCH_TOOL_NAME}>`, { source: "builtin" }),
@@ -1840,6 +1854,7 @@ export class AgentSession {
 				this._toolRegistry.set(TOOL_SEARCH_TOOL_NAME, definition as AgentTool);
 			}
 		} else {
+			finalNames = finalNames.filter((name) => name !== TOOL_SEARCH_TOOL_NAME);
 			this._toolRegistry.delete(TOOL_SEARCH_TOOL_NAME);
 			this._toolDefinitions.delete(TOOL_SEARCH_TOOL_NAME);
 		}
@@ -2136,29 +2151,60 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 	/**
-	 * Restore StateManager state + SchemaValidator schemas/strict mode from the
-	 * session's active leaf path. Walks entries backward from the current leaf,
-	 * applying the latest state snapshot, the latest schema_change per namespace,
-	 * and the latest strict_change entry.
-	 * Shared by first-time session load (_rebuildSystemPrompt) and navigateTree
-	 * (rollback), which must also rewind state to the target branch.
+	 * Compute the state/schema snapshot for one branch without mutating runtime
+	 * state. Kept async so future durable state sources can be read before commit.
 	 */
-	private _restoreStateFromSessionEntries(): void {
-		// Leaf-path entry list: tree traversal from current leaf to root,
-		// compaction-aware (state entries included). SessionManager.buildContextEntries()
-		// passes this.byId internally, so this is exactly the active branch.
-		const entries = this.sessionManager.buildContextEntries();
-
-		// Restore state from session entries: latest state entry on the active path
+	private async _computeBranchState(
+		entries: SessionEntry[],
+		targetLeafId?: string | null,
+	): Promise<{
+		entries: SessionEntry[];
+		state: Record<string, unknown> | undefined;
+		messages: AgentMessage[];
+	}> {
+		let state: Record<string, unknown> | undefined;
 		for (let i = entries.length - 1; i >= 0; i--) {
-			const e = entries[i];
-			if (e.type === "state") {
-				this._stateManager.load(e.state);
+			const entry = entries[i];
+			if (entry.type === "state") {
+				state = structuredClone(entry.state) as Record<string, unknown>;
 				break;
 			}
 		}
 
-		this._restoreSchemasFromEntries(entries);
+		// Compile the selected schemas during preflight; malformed schema data
+		// must fail before the active leaf or installed state is changed.
+		const validator = new SchemaValidator();
+		const schemaActions: Array<{ action: "load" | "unload"; schemaId: string; namespace: string }> = [];
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "schema_change" && !schemaActions.some((a) => a.namespace === entry.namespace)) {
+				schemaActions.push({
+					action: entry.action,
+					schemaId: entry.schemaId,
+					namespace: entry.namespace,
+				});
+			}
+		}
+		for (const action of schemaActions) {
+			if (action.action !== "load") continue;
+			const definition = this._loadedSchemaDefs.find((schema) => schema.schemaId === action.schemaId);
+			if (definition) validator.loadSchema(definition.schemaId, definition.namespace, definition.schema);
+		}
+		return { entries, state, messages: this.sessionManager.buildSessionContext(targetLeafId).messages };
+	}
+
+	private _installBranchState(computed: {
+		entries: SessionEntry[];
+		state: Record<string, unknown> | undefined;
+	}): void {
+		if (computed.state !== undefined) this._stateManager.load(computed.state);
+		this._restoreSchemasFromEntries(computed.entries);
+	}
+
+	/** Restore the active branch state during initial session loading. */
+	private async _restoreStateFromSessionEntries(): Promise<void> {
+		const computed = await this._computeBranchState(this.sessionManager.buildContextEntries());
+		this._installBranchState(computed);
 	}
 
 	/**
@@ -2237,17 +2283,8 @@ export class AgentSession {
 	private _rebuildSystemPrompt(toolNames: string[], toolSearchCategories?: readonly ToolSearchCategory[]): string {
 		this._ensureActivePresetRestored();
 
-		if (!this._firstLoadRestored) {
-			this._firstLoadRestored = true;
-			// No initial write needed — sdk.ts handles that for new sessions
-
-			// Restore StateManager state + SchemaValidator schemas from the
-			// session's active leaf path (shared with navigateTree rollback)
-			this._restoreStateFromSessionEntries();
-
-			// Mount cross-process state store; files override session values
-			this._initStateStore();
-		}
+		// Initial state restoration is awaited in _buildRuntimeCore before
+		// prompt construction can expose the runtime.
 
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
@@ -2286,7 +2323,18 @@ export class AgentSession {
 		// agent.state.systemPrompt = "" (content lives in the compiled messages
 		// array), so this sync path must not attempt to await async slot
 		// renderers. The result feeds only extension-visible systemPrompt values.
-		if (presetHasAsyncSlots(this._activePreset, this._agentSessionScope?.promptRegistry)) {
+		const historyOps = this._historyOpRegistry.snapshot();
+		if (
+			presetHasAsyncSlots(this._activePreset, this._agentSessionScope?.promptRegistry) ||
+			presetHasAsyncHistoryOps(this._activePreset, {
+				options: this._baseSystemPromptOptions,
+				messages: [],
+				now: new Date(),
+				variables: {},
+				skills: [],
+				historyOps,
+			})
+		) {
 			return "";
 		}
 
@@ -2336,7 +2384,8 @@ export class AgentSession {
 			skills: loadedSkills,
 			model,
 			thinkingLevel,
-			promptRegistry: this._agentSessionScope?.promptRegistry,
+			historyOps,
+			historyHostData: this._historyHostData,
 		};
 		const compiled = compileMessagesSync(this._activePreset, staticRuntime);
 		const derived = deriveSystemPrompt(compiled, this._activePreset, "");
@@ -2678,6 +2727,8 @@ export class AgentSession {
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
 			promptRegistry: this._agentSessionScope?.promptRegistry,
+			historyOps: this._historyOpRegistry.snapshot(),
+			historyHostData: this._historyHostData,
 		};
 		return (await compileMessages(this._activePreset, runtime)).messages;
 	}
@@ -2698,6 +2749,8 @@ export class AgentSession {
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
 			promptRegistry: this._agentSessionScope?.promptRegistry,
+			historyOps: this._historyOpRegistry.snapshot(),
+			historyHostData: this._historyHostData,
 		};
 		const result = await compileSystemPrompt(this._activePreset, runtime, "");
 		return result.systemPrompt;
@@ -3448,7 +3501,7 @@ export class AgentSession {
 				// Branch to the user message itself: the regenerated response
 				// appends as a sibling of the old response, and the active path
 				// (and the state restored from it) still includes the message.
-				this._moveLeafAndRestoreState(entry.id);
+				await this._moveLeafAndRestoreState(entry.id);
 				this._emitSessionEvent({
 					type: "leaf_changed",
 					newLeafId: this.sessionManager.getLeafId(),
@@ -3464,7 +3517,7 @@ export class AgentSession {
 				const policy = this._extensionRunner.getCustomTypePolicy(entry.customType);
 				if (policy.llmRole === "user") {
 					const oldLeafId = this.sessionManager.getLeafId();
-					this._moveLeafAndRestoreState(entry.id);
+					await this._moveLeafAndRestoreState(entry.id);
 					this._emitSessionEvent({
 						type: "leaf_changed",
 						newLeafId: this.sessionManager.getLeafId(),
@@ -3487,6 +3540,8 @@ export class AgentSession {
 	 *   (navigateTree summarization) instead of a bare branch.
 	 * @returns The branch summary entry id when a summary was attached.
 	 */
+	private _leafMoveQueue: Promise<void> = Promise.resolve();
+
 	private _moveLeafAndRestoreState(
 		targetLeafId: string | null,
 		options?: {
@@ -3495,7 +3550,31 @@ export class AgentSession {
 			fromExtension?: boolean;
 			summaryUsage?: Usage;
 		},
-	): string | undefined {
+	): Promise<string | undefined> {
+		const move = this._leafMoveQueue.then(() => this._moveLeafAndRestoreStateNow(targetLeafId, options));
+		this._leafMoveQueue = move.then(
+			() => undefined,
+			() => undefined,
+		);
+		return move;
+	}
+
+	private async _moveLeafAndRestoreStateNow(
+		targetLeafId: string | null,
+		options?: {
+			summaryText?: string;
+			summaryDetails?: unknown;
+			fromExtension?: boolean;
+			summaryUsage?: Usage;
+		},
+	): Promise<string | undefined> {
+		// Preflight reads and compiles the target branch before mutation. A summary
+		// entry has no state effects, so this base path is the correct snapshot.
+		const computed = await this._computeBranchState(
+			this.sessionManager.buildContextEntries(targetLeafId),
+			targetLeafId,
+		);
+
 		let summaryId: string | undefined;
 		if (options?.summaryText) {
 			summaryId = this.sessionManager.branchWithSummary(
@@ -3511,30 +3590,20 @@ export class AgentSession {
 			this.sessionManager.branch(targetLeafId);
 		}
 
-		// Update agent state
-		this._syncAgentStateFromSession();
+		this.agent.state.messages = summaryId ? this.sessionManager.buildSessionContext().messages : computed.messages;
+		this._replayToolSearchRestore();
 		this._restoreCurrentUserInputIdFromBranch();
+		this._installBranchState(computed);
 
-		// Restore StateManager state + schemas to the target branch (rollback)
-		this._restoreStateFromSessionEntries();
-
-		// Rolled-back memory is older than the shared files: commit owned
-		// namespaces so the next apply replays onto the rolled-back baseline
-		// instead of the stale (ahead) file revision.
+		// Rolled-back memory is older than the shared files; commit owned
+		// namespaces so the next apply replays onto the rolled-back baseline.
 		this._stateManager.commitOwnedToStore();
 
-		// Memory rollback coupling (§8): recompute auto-node anchor visibility and
-		// reconcile raw_log against the new active path. Drop seen-marks for
-		// entries that left the active path so switching back re-collects them.
-		// Fire-and-forget — the module never throws and must not break the flow.
 		const activeIds = new Set(this.sessionManager.getBranch().map((entry) => entry.id));
 		for (const id of this._memorySeenEntryIds) {
-			if (!activeIds.has(id)) {
-				this._memorySeenEntryIds.delete(id);
-			}
+			if (!activeIds.has(id)) this._memorySeenEntryIds.delete(id);
 		}
 		void this._memoryModule?.onLeafChange();
-
 		return summaryId;
 	}
 
@@ -4203,11 +4272,15 @@ export class AgentSession {
 		turnPrefixMessages = applyRegexRulesToMessages(preset, turnPrefixMessages, "compiled", "outgoing", diags);
 
 		// Check for stripAssistantThinking on the chat-history position slot
-		const chatHistoryItem = preset.items.find((item): item is PromptPresetSlotItem => isChatHistoryPosition(item));
-		// "previous-traces" also strips everything here: the summarized messages
-		// are replaced by the summary regardless, and the current trace's retained
-		// tail keeps its thinking verbatim.
-		const stripThinkingMode = chatHistoryItem?.options?.stripAssistantThinking;
+		const historyItem = preset.items.find(
+			(item): item is PromptPresetHistoryItem => item.kind === "history" && item.enabled !== false,
+		);
+		const legacyHistoryItem = historyItem
+			? undefined
+			: preset.items.find(
+					(item): item is PromptPresetSlotItem => item.kind === "slot" && isChatHistoryPosition(item),
+				);
+		const stripThinkingMode = (historyItem?.options ?? legacyHistoryItem?.options)?.stripAssistantThinking;
 		if (stripThinkingMode === true || stripThinkingMode === "previous-traces") {
 			const stripThinking = (msg: AgentMessage): AgentMessage => {
 				if (typeof msg !== "object" || msg === null || !("content" in msg)) return msg;
@@ -4928,6 +5001,8 @@ export class AgentSession {
 					const messages = await compileMessages(loaded.preset, {
 						...runtime,
 						promptRegistry: this._agentSessionScope?.promptRegistry ?? runtime.promptRegistry,
+						historyOps: this._historyOpRegistry.snapshot(),
+						historyHostData: this._historyHostData,
 					});
 					const system = deriveSystemPrompt(messages, loaded.preset, "");
 					return {
@@ -4996,20 +5071,7 @@ export class AgentSession {
 		}
 		this._toolDefinitions = definitionRegistry;
 
-		// D8: normalize `deferrable` exactly once per registry rebuild, after
-		// the same-name override merge has settled and before wrapping. The
-		// boolean result is what ToolSearchManager consumes (it never reads
-		// sourceInfo).
-		const deferrableByName = new Map<string, boolean>();
-		for (const [name, entry] of definitionRegistry) {
-			const exposure = entry.definition.exposure ?? "direct";
-			deferrableByName.set(
-				name,
-				exposure === "deferred" ||
-					(exposure === "direct" && normalizeDeferrable(entry.definition, entry.sourceInfo)),
-			);
-		}
-		this._toolSearchDeferrable = deferrableByName;
+		// Exposure is the sole declaration of the channel a tool participates in.
 
 		this._toolPromptSnippets = new Map(
 			Array.from(definitionRegistry.values())
@@ -5133,10 +5195,13 @@ export class AgentSession {
 		this._loadedSchemaDefs = schemaResult.schemas;
 		this._loadedCustomValidators = await loadCustomValidators(this._cwd, this._agentDir);
 		this._schemaValidator.setCustomValidators(this._loadedCustomValidators);
-		// Re-apply loaded schemas and strict mode from session entries so
-		// /reload picks up file changes (clears stale, replays schema_change
-		// + strict_change entries with the freshly loaded schema defs).
-		this._restoreSchemasFromEntries(this.sessionManager.buildContextEntries());
+		if (!this._firstLoadRestored) {
+			await this._restoreStateFromSessionEntries();
+			this._initStateStore();
+			this._firstLoadRestored = true;
+		} else {
+			this._restoreSchemasFromEntries(this.sessionManager.buildContextEntries());
+		}
 
 		// Add state_update and get_state tools
 		this._baseToolDefinitions.set(
@@ -5161,6 +5226,7 @@ export class AgentSession {
 			new ModelRegistry(this._modelRuntime),
 			this.settingsManager,
 			this._agentSessionScope?.promptRegistry,
+			(extensionPath, op) => this._historyOpRegistry.register(extensionPath, op),
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
@@ -6021,7 +6087,7 @@ export class AgentSession {
 			// StateManager state, and schemas to the target branch.
 			// Summary is attached at the navigation target position (newLeafId), not the old branch.
 			let summaryEntry: BranchSummaryEntry | undefined;
-			const summaryId = this._moveLeafAndRestoreState(newLeafId, {
+			const summaryId = await this._moveLeafAndRestoreState(newLeafId, {
 				...(summaryText ? { summaryText, summaryDetails, fromExtension, summaryUsage } : {}),
 			});
 			if (summaryId) {

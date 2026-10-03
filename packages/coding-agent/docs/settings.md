@@ -115,10 +115,11 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 |---------|------|---------|-------------|
 | `compaction.enabled` | boolean | `true` | Enable auto-compaction |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
-| `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
+| `compaction.keepRecentTokens` | number | `20000` | Recent estimated tokens to keep (not summarized); mutually exclusive with `keepTraces` |
+| `compaction.keepTraces` | number | - | Recent traces to keep (trace boundaries follow agent turn starts); mutually exclusive with `keepRecentTokens`; must be a positive safe integer |
 | `compaction.summaryMaxTokens` | number | - | Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation |
 | `compaction.thresholdTokens` | number | - | Absolute auto-compaction trigger; replaces the `contextWindow - reserveTokens` derivation |
-| `compaction.modelOverrides` | object | - | Per-model `reserveTokens`, `keepRecentTokens`, `summaryMaxTokens`, and `thresholdTokens` overrides keyed by exact `"provider/modelId"` |
+| `compaction.modelOverrides` | object | - | Per-model `reserveTokens`, `keepRecentTokens`, `keepTraces`, `summaryMaxTokens`, and `thresholdTokens` overrides keyed by exact `"provider/modelId"` |
 
 ```json
 {
@@ -157,6 +158,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 Keys match exact, case-sensitive `provider/modelId` values, not names or glob patterns. Model IDs may contain slashes (for example, `openrouter/anthropic/claude-sonnet-4`).
 
 Each token setting resolves independently: matching model override → ordinary `compaction` setting → built-in default. In the example, `some-provider/big-model` keeps the ordinary 20000 recent tokens. Token values must be non-negative safe integers. Invalid values in the matching model override produce an error when read; only omitted fields fall back to the ordinary setting. Model override entries must be objects. Invalid ordinary token settings produce an error when read, even if the active model has a valid override. Only omitted ordinary values use built-in defaults. Zero is accepted, but `reserveTokens: 0` leaves no response margin and also sets the summarization output budget to zero.
+Set either `keepRecentTokens` or `keepTraces`, not both. `keepTraces` keeps the newest complete traces at cut points aligned with the existing agent turn-start boundary; it affects physical compaction only and does not change the context-window trigger. If omitted, `keepRecentTokens: 20000` remains the default. Model-specific keep units are subject to the same mutual exclusion.
 
 Global and project settings merge recursively **before** model lookup. A project can override one field for a model without replacing its other fields or other models. A global model-specific value takes precedence over a project-wide fallback; override the same model entry in the project to change it.
 
@@ -173,12 +175,12 @@ See [compaction.md](compaction.md) for trigger and summarization behavior.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `toolSearch.enabled` | boolean | `true` | Master switch for client-side tool folding |
-| `toolSearch.mode` | string | `"auto"` | `"on"` forces folding regardless of size, `"off"` disables it, `"auto"` uses `toolSearch.thresholdPercent` |
+| `toolSearch.enabled` | boolean | `true` | Master switch for automatic folding of direct tools; explicit `deferred` tools remain searchable |
+| `toolSearch.mode` | string | `"auto"` | `"on"` forces folding of eligible direct tools regardless of size, `"off"` disables direct-tool folding, `"auto"` uses `toolSearch.thresholdPercent` |
 | `toolSearch.thresholdPercent` | number | `10` | Auto mode folds when the estimated potential folding set (tools that would actually fold) reaches this percent of the current model's context window (comparison is `>=`) |
 | `toolSearch.reservedTools` | string[] | `[]` | Extra tool names kept always available; they are never folded and are excluded from the auto-mode threshold estimate |
 
-When folding is active, rarely-used tools are removed from the request and replaced by a synthetic `tool_search` tool the model can query to load them on demand. The auto-mode threshold estimates only the potential folding set — tools that would actually fold; built-in `read`/`bash`/`edit`/`write`/`grep`/`find`/`ls`, `tool_search` itself, tools listed in `tools.allow` or `toolSearch.reservedTools`, and tools whose author declares them non-deferrable are always available and never counted toward the threshold. An invalid model context window (`<= 0` or missing) keeps auto mode conservatively inactive. CLI flags `--tool-search on|off|auto`, `--tool-search-threshold <n>`, `--reserve-tools <name,...>` (replaces the configured list for this session), and `--no-tool-search` override these keys for one session without writing settings files.
+When folding is active, direct tools are removed from the request and replaced by a synthetic `tool_search` tool. The auto-mode threshold estimates only direct tools that will fold; built-in `read`/`bash`/`edit`/`write`/`grep`/`find`/`ls`, tools listed in `tools.allow` or `toolSearch.reservedTools`, and all non-direct exposures are excluded. Deferred-exposure tools stay undeclared and searchable even when no direct tools are folded. An invalid model context window (`<= 0` or missing) keeps auto mode conservatively inactive. CLI flags `--tool-search on|off|auto`, `--tool-search-threshold <n>`, `--reserve-tools <name,...>` (replaces the configured list for this session), and `--no-tool-search` are available.
 
 ```json
 {

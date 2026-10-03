@@ -41,6 +41,7 @@ import {
 	type LoadedPromptPresetSource,
 	loadPromptPresets,
 } from "../../coding-agent/src/core/prompt-preset/loader.ts";
+import type { HistoryHostDataProvider } from "../../coding-agent/src/core/prompt-preset/types.ts";
 import { DefaultResourceLoader } from "../../coding-agent/src/core/resource-loader.ts";
 import type { RuntimeCredentials } from "../../coding-agent/src/core/runtime-credentials.ts";
 import type { CreateAgentSessionOptions } from "../../coding-agent/src/core/sdk.ts";
@@ -156,8 +157,9 @@ export interface CreatePiHarnessOptions {
 	 *  显式 ID 未命中 ⇒ createPiHarness 组装期 reject（E5 口径；reject 机制与错误格式归 A 的
 	 *  资源 reject 块，与 preset/schemas reject 同一通道；本字段只持触发源与消费端工厂）。 */
 	readonly opening?: string;
-	/** 打包 skills 注入；引擎包不内置任何 skill 内容，缺省空集（15-F §3.3）。
-	 *  与 OPFS 扫描源（/workspace/<p>/.pi/skills，经 stores.storage 缝）合并。 */
+	/** Host-owned namespaced data providers for history operations; passed through by reference. */
+	readonly historyHostData?: readonly HistoryHostDataProvider[];
+	/** Packed skills injection; the engine package does not embed skill content (15-F §3.3). */
 	readonly skills?: readonly Skill[];
 
 	// ── 资源装载缝（18 号模块 A；契约 §3.2/§3.4；与上方 ui?/opening? 字段段相邻不相交）──
@@ -514,6 +516,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		schemas: options.schemas,
 		inlinePresets: options.presets,
 		inlineSchemas: options.inlineSchemas,
+		historyHostData: options.historyHostData,
 	};
 	if (llmAssembly.kind === "gateway") {
 		sessionOptions.requestGateway = llmAssembly.gateway;

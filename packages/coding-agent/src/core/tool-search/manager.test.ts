@@ -9,8 +9,12 @@ const NATIVE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"
 
 const emptyParams = Type.Object({});
 
-function entry(name: string, deferrable: boolean, overrides: Partial<ToolSearchEntry> = {}): ToolSearchEntry {
-	return { name, description: `${name} description`, parameters: emptyParams, deferrable, ...overrides };
+function entry(
+	name: string,
+	exposure: ToolSearchEntry["exposure"] = "direct",
+	overrides: Partial<ToolSearchEntry> = {},
+): ToolSearchEntry {
+	return { name, description: `${name} description`, parameters: emptyParams, exposure, ...overrides };
 }
 
 function build(tools: ToolSearchEntry[], active: boolean, reserved?: readonly string[]) {
@@ -20,27 +24,23 @@ function build(tools: ToolSearchEntry[], active: boolean, reserved?: readonly st
 }
 
 describe("ToolSearchManager folding sets", () => {
-	it("keeps misdeclared native tools eager (R5 code-level backstop)", () => {
-		const tools = [
-			...NATIVE_TOOL_NAMES.map((name) => entry(name, true)),
-			entry("ext-A", true),
-			entry("ext-B", false),
-		];
+	it("keeps native direct tools eager and folds other direct tools", () => {
+		const tools = [...NATIVE_TOOL_NAMES.map((name) => entry(name)), entry("ext-A"), entry("ext-B", "codemode")];
 		const { manager, result } = build(tools, true);
 		expect(result.activated).toBe(true);
 		expect(result.activeToolNames).toEqual([...NATIVE_TOOL_NAMES, "ext-B", TOOL_SEARCH_TOOL_NAME]);
 		expect(manager.getSearchableTools().map((tool) => tool.name)).toEqual(["ext-A"]);
 	});
 
-	it("honors normalized deferrable booleans from the registry build point", () => {
-		const tools = [entry("ext-on", true), entry("ext-off", false), entry("read", true)];
+	it("keeps non-direct tools eager while direct tools fold", () => {
+		const tools = [entry("ext-on"), entry("ext-off", "codemode"), entry("read")];
 		const { manager, result } = build(tools, true);
 		expect(result.activeToolNames).toEqual(["ext-off", "read", TOOL_SEARCH_TOOL_NAME]);
 		expect(manager.getSearchableTools().map((tool) => tool.name)).toEqual(["ext-on"]);
 	});
 
 	it("never activates or advertises tool_search without foldable tools", () => {
-		const tools = [entry("read", false), entry("custom", false)];
+		const tools = [entry("read"), entry("custom", "codemode")];
 		const { result } = build(tools, true);
 		expect(result.activated).toBe(false);
 		expect(result.activeToolNames).toEqual(["read", "custom"]);
@@ -48,7 +48,7 @@ describe("ToolSearchManager folding sets", () => {
 	});
 
 	it("appends tool_search last only while undiscovered foldable tools exist", () => {
-		const tools = [entry("read", false), entry("ext-1", true), entry("ext-2", true)];
+		const tools = [entry("read"), entry("ext-1"), entry("ext-2")];
 		const { manager } = build(tools, true);
 		expect(manager.getActiveToolNames()).toEqual(["read", TOOL_SEARCH_TOOL_NAME]);
 		manager.discover(["ext-1"]);
@@ -59,7 +59,7 @@ describe("ToolSearchManager folding sets", () => {
 	});
 
 	it("deactivating keeps discovered tools loaded and only unloads tool_search", () => {
-		const tools = [entry("read", false), entry("ext-1", true), entry("ext-2", true)];
+		const tools = [entry("read"), entry("ext-1"), entry("ext-2")];
 		const { manager } = build(tools, true);
 		manager.discover(["ext-1"]);
 		const deactivated = manager.recompute({ tools, active: false });
@@ -73,7 +73,7 @@ describe("ToolSearchManager folding sets", () => {
 	});
 
 	it("forces reservedTools eager (R5 eager union)", () => {
-		const tools = [entry("mcp-a", true), entry("mcp-b", true)];
+		const tools = [entry("mcp-a"), entry("mcp-b")];
 		const { manager, result } = build(tools, true, ["mcp-a"]);
 		expect(result.activeToolNames).toEqual(["mcp-a", TOOL_SEARCH_TOOL_NAME]);
 		expect(manager.getSearchableTools().map((tool) => tool.name)).toEqual(["mcp-b"]);
@@ -82,7 +82,7 @@ describe("ToolSearchManager folding sets", () => {
 
 describe("ToolSearchManager discovery and recovery", () => {
 	it("discover ignores duplicates, unknown, eager and deny-invisible names", () => {
-		const tools = [entry("read", false), entry("ext-1", true), entry("ext-2", true)];
+		const tools = [entry("read"), entry("ext-1"), entry("ext-2")];
 		const { manager } = build(tools, true);
 		const first = manager.discover(["ext-1", "ext-1", "unknown", "read", "ext-2"]);
 		expect(first).toEqual({ newNames: ["ext-1", "ext-2"], alreadyDiscovered: [], changed: true });
@@ -90,7 +90,7 @@ describe("ToolSearchManager discovery and recovery", () => {
 	});
 
 	it("discover reports duplicates as alreadyDiscovered without state changes", () => {
-		const tools = [entry("ext-1", true)];
+		const tools = [entry("ext-1")];
 		const { manager } = build(tools, true);
 		manager.discover(["ext-1"]);
 		const activeBefore = manager.getActiveToolNames();
@@ -100,7 +100,7 @@ describe("ToolSearchManager discovery and recovery", () => {
 	});
 
 	it("filterNewNames returns each folded name once without mutating state", () => {
-		const tools = [entry("read", false), entry("ext-1", true), entry("ext-2", true)];
+		const tools = [entry("read"), entry("ext-1"), entry("ext-2")];
 		const { manager } = build(tools, true);
 		const before = manager.discoveredSnapshot();
 		expect(manager.filterNewNames(["ext-1", "ext-1", "read", "unknown", "ext-2"])).toEqual(["ext-1", "ext-2"]);
@@ -109,7 +109,7 @@ describe("ToolSearchManager discovery and recovery", () => {
 	});
 
 	it("restore accepts the transcript superset and never leaks unavailable names", () => {
-		const tools = [entry("read", false), entry("ext-1", true), entry("ext-2", true)];
+		const tools = [entry("read"), entry("ext-1"), entry("ext-2")];
 		const { manager } = build(tools, true);
 		manager.restore(["ghost", "ext-1", ""]);
 		expect(manager.discoveredSnapshot()).toEqual(["ghost", "ext-1"]);
@@ -121,14 +121,14 @@ describe("ToolSearchManager discovery and recovery", () => {
 
 		// Hot reload: the registry re-adds a formerly discovered name and it
 		// becomes active again without a new search.
-		const reloaded = manager.recompute({ tools: [...tools, entry("ghost", true)], active: true });
+		const reloaded = manager.recompute({ tools: [...tools, entry("ghost")], active: true });
 		expect(reloaded.activeToolNames).toEqual(["read", "ext-1", "ghost", TOOL_SEARCH_TOOL_NAME]);
 		expect(manager.getSearchableTools().map((tool) => tool.name)).toEqual(["ext-2"]);
 	});
 
 	it("recompute is idempotent for identical input (changed only on transitions)", () => {
 		const manager = new ToolSearchManager();
-		const tools = [entry("read", false), entry("ext-a", true), entry("ext-b", true)];
+		const tools = [entry("read"), entry("ext-a"), entry("ext-b")];
 		const first = manager.recompute({ tools, active: true });
 		expect(first.changed).toBe(true);
 		const second = manager.recompute({ tools, active: true });
@@ -154,14 +154,14 @@ describe("ToolSearchManager discovery and recovery", () => {
 
 describe("ToolSearchManager snapshots and boundaries", () => {
 	it("returned snapshots never alias internal state", () => {
-		const tools = [entry("read", false), entry("ext-1", true)];
+		const tools = [entry("read"), entry("ext-1")];
 		const { manager } = build(tools, true);
 		const active = manager.getActiveToolNames();
 		(active as string[]).push("ghost-active");
 		const discovered = manager.discoveredSnapshot();
 		(discovered as string[]).push("ghost-discovered");
 		const searchable = manager.getSearchableTools() as SearchableTool[];
-		searchable.push({ name: "ghost-searchable", description: "", parameters: [], deferrable: true });
+		searchable.push({ name: "ghost-searchable", description: "", parameters: [] });
 		const mutableParams = searchable[0]?.parameters as { name: string }[];
 		mutableParams.push({ name: "ghost-param" });
 
@@ -173,7 +173,7 @@ describe("ToolSearchManager snapshots and boundaries", () => {
 
 	it("exposes guidance only for folded-and-undiscovered tools (R8)", () => {
 		const trickyName = `we"ird\\name'x`;
-		const { manager } = build([entry(trickyName, true), entry("read", false)], true);
+		const { manager } = build([entry(trickyName), entry("read")], true);
 		expect(manager.getGuidance("read")).toBeUndefined();
 		expect(manager.getGuidance("unknown-name")).toBeUndefined();
 		expect(manager.getGuidance(trickyName)).toBe(
@@ -184,7 +184,7 @@ describe("ToolSearchManager snapshots and boundaries", () => {
 	});
 
 	it("never exposes names outside the provided catalog (deny closure)", () => {
-		const { manager } = build([entry("read", false), entry("ext", true)], true);
+		const { manager } = build([entry("read"), entry("ext")], true);
 		manager.discover(["deny-target", "ext"]);
 		manager.restore(["deny-target"]);
 		expect(manager.hasDiscovered("deny-target")).toBe(true); // fact superset
@@ -194,7 +194,7 @@ describe("ToolSearchManager snapshots and boundaries", () => {
 	});
 
 	it("stores the advertised catalog baseline as copies (D5)", () => {
-		const { manager } = build([entry("read", false)], false);
+		const { manager } = build([entry("read")], false);
 		expect(manager.lastAdvertisedCatalog()).toEqual([]);
 		manager.markCatalogAdvertised(["read", "read", "other"]);
 		expect(manager.lastAdvertisedCatalog()).toEqual(["read", "other"]);
@@ -204,7 +204,7 @@ describe("ToolSearchManager snapshots and boundaries", () => {
 	});
 
 	it("reset drops all in-memory state for branch-switch re-recovery (M4 §3.5)", () => {
-		const tools = [entry("read", false), entry("ext-1", true), entry("ext-2", true)];
+		const tools = [entry("read"), entry("ext-1"), entry("ext-2")];
 		const { manager } = build(tools, true);
 		manager.discover(["ext-1"]);
 		manager.markCatalogAdvertised(["read", "ext-1", TOOL_SEARCH_TOOL_NAME]);

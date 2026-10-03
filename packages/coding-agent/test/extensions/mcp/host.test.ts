@@ -401,4 +401,57 @@ describe("MCP connection lifecycle", () => {
 		expect(registeredTools).toContain("mcp__docs__search");
 		await handlers.get("session_shutdown")?.({} as never, context as never);
 	});
+
+	it("warns when configured indirect MCP tools lack active discovery entries", async () => {
+		const root = tempDir();
+		const handlers = new Map<string, (...args: never[]) => unknown>();
+		const registered = Promise.withResolvers<void>();
+		const notifications: string[] = [];
+		const api = {
+			on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler),
+			registerTool: (tool: { name: string }) => {
+				if (tool.name.startsWith("mcp__")) registered.resolve();
+			},
+			registerCommand: () => {},
+			getMcpServers: () => [],
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			setActiveTools: () => {},
+		};
+		createMcpExtension({
+			agentDir: root,
+			loadConfig: () => ({
+				servers: [
+					{
+						name: "docs",
+						source: "test",
+						scope: "global",
+						config: { type: "http", url: "https://docs.test/mcp", exposure: "deferred" },
+					},
+					{
+						name: "agent",
+						source: "test",
+						scope: "global",
+						config: { type: "http", url: "https://agent.test/mcp", exposure: "codemode" },
+					},
+				],
+				errors: [],
+			}),
+			createTransport: () => new FakeTransport(),
+		})(api as unknown as ExtensionAPI);
+		const context = {
+			cwd: root,
+			isProjectTrusted: () => true,
+			ui: { notify: (message: string) => notifications.push(message) },
+		} as unknown as ExtensionContext;
+		await handlers.get("session_start")?.({} as never, context as never);
+		await registered.promise;
+		expect(notifications).toContain(
+			'MCP tools configured for deferred exposure are not reachable: required discovery tool "tool_search" is missing or inactive.',
+		);
+		expect(notifications).toContain(
+			'MCP tools configured for codemode exposure are not reachable: required discovery tool "codemode" is missing or inactive.',
+		);
+		await handlers.get("session_shutdown")?.({} as never, context as never);
+	});
 });

@@ -189,6 +189,31 @@ describe("compaction model overrides", () => {
 		});
 		expect(manager.getCompactionSettings(model)).toEqual({ enabled: true, reserveTokens: 0, keepRecentTokens: 0 });
 	});
+	it("uses keepTraces instead of the default token budget", () => {
+		const manager = SettingsManager.inMemory({ compaction: { keepTraces: 3 } });
+		expect(manager.getCompactionSettings()).toEqual({ enabled: true, reserveTokens: 16384, keepTraces: 3 });
+	});
+
+	it.each([0, -1, 1.5, "3", Number.MAX_SAFE_INTEGER + 1])("rejects invalid keepTraces: %j", (keepTraces) => {
+		const manager = SettingsManager.inMemory({ compaction: { keepTraces } });
+		expect(() => manager.getCompactionSettings()).toThrow("Invalid compaction.keepTraces setting");
+	});
+
+	it("rejects keepTraces together with keepRecentTokens", () => {
+		const manager = SettingsManager.inMemory({ compaction: { keepRecentTokens: 1000, keepTraces: 3 } });
+		expect(() => manager.getCompactionSettings()).toThrow(
+			"compaction.keepTraces and compaction.keepRecentTokens are mutually exclusive.",
+		);
+	});
+
+	it("rejects mutually exclusive model-specific keep settings", () => {
+		const manager = SettingsManager.inMemory({
+			compaction: { modelOverrides: { [modelKey]: { keepRecentTokens: 1000, keepTraces: 3 } } },
+		});
+		expect(() => manager.getCompactionSettings(model)).toThrow(
+			`compaction.modelOverrides["${modelKey}"].keepTraces and keepRecentTokens are mutually exclusive.`,
+		);
+	});
 
 	describe("summaryMaxTokens", () => {
 		it("defaults to undefined so the summary cap stays derived", () => {

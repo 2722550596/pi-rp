@@ -1,6 +1,6 @@
 # Tool Search
 
-Pi registers every non-disabled tool — built-in, extension, and SDK — into the model's function list. With large registries (many extensions, MCP servers, SDK integrations) this floods the context and degrades tool selection. Tool search fixes this: low-frequency tools are **folded** out of the request and replaced by a synthetic `tool_search` tool the model can query to load them on demand.
+Pi registers non-disabled tools — built-in, extension, and SDK — into the model's function list. Large registries can flood the context and degrade tool selection. Tool search folds eligible `direct` tools out of the request when needed and exposes a synthetic `tool_search` for discovering them.
 
 The mechanism is entirely client-side. No provider protocol is required — it works on Anthropic, OpenAI, Google, and every other provider. On providers with native deferred-loading support the fold rides the existing deferred-tools channel (see [Provider behavior](#provider-behavior)).
 
@@ -10,25 +10,27 @@ The mechanism is entirely client-side. No provider protocol is required — it w
 |---|---|
 | `"auto"` (default) | Folds when the estimated potential folding set reaches `toolSearch.thresholdPercent` (default 10) percent of the model's context window |
 | `"on"` | Always folds, regardless of size |
-| `"off"` | Never folds; requests are byte-identical to pre-feature behavior |
+| `"off"` | Never auto-folds direct tools; explicit `deferred` tools remain discoverable |
 
-Small setups pay nothing: if nothing folds, no `tool_search` tool is injected and behavior is unchanged. An invalid context window keeps auto mode conservatively inactive.
+When no direct tools fold and no `deferred` tools exist, no `tool_search` tool is injected. An invalid context window keeps auto mode conservatively inactive.
 
-## What folds
+## Exposure and folding
 
-By default, tools registered by extensions and SDK integrations are foldable. Tool authors can opt out with `deferrable: false` on the definition (see [Extensions](extensions.md)).
+`exposure` declares the tool's channel, while the active preset's `tools.allow`/`tools.deny` policy grants or revokes user authorization. Tool authors do not configure fold eligibility separately.
 
-Never folded, regardless of declaration:
+- `direct` tools are declared while active; auto-folding can remove them from the request when the token threshold is reached.
+- `deferred` tools are never declared directly, remain callable by other tools, and stay discoverable through `tool_search`.
+- `codemode` tools are reached through codemode rather than direct model declarations.
+- `model-only` tools are declared to the model but are not available to nested calls.
+- `hidden` tools are not declared, callable, or searchable.
 
-- Built-in tools: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`
-- `tool_search` itself
-- Tools listed in `tools.allow` (a preset allow-list means "always available") or `toolSearch.reservedTools`
+The built-in tools `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, tools listed in `tools.allow`, `toolSearch.reservedTools`, and non-`direct` tools are excluded from the auto-fold estimate.
 
 ## How the model discovers tools
 
-While folding is active the system prompt carries a category section listing every searchable tool with a one-line description, so the model knows what to look for. `tool_search` accepts a regex `pattern`, `keywords`, and a `limit` (1–100), and matches against tool names, descriptions, prompt snippets, and parameter descriptions.
+While tool search is available the system prompt carries a category section listing searchable tools with a one-line description. `tool_search` accepts a regex `pattern`, `keywords`, and a `limit` (1–100), and matches tool and namespace names, descriptions and instructions, prompt snippets, and recursively flattened parameter names and descriptions.
 
-Discovery is sticky for the session: once a tool is discovered its full schema is available in subsequent turns, and repeated searches for it are idempotent. When every foldable tool has been discovered, `tool_search` drops out of the function list (but stays callable if the model hallucinates it). If the tool set changes mid-session — an MCP server connects, an extension reloads — the model receives a delta notice on its next turn.
+Direct tools folded by the token threshold become declared after discovery. Deferred tools remain undeclared even after they are found; other tools can still call them.
 
 Discovery survives compaction and resume: the state is recovered by replaying the session transcript (search calls plus deferred-tool markers) and the compaction boundary records the discovered set as a fallback. Switching branches resets discovery to what the new branch's transcript actually shows.
 
@@ -48,9 +50,6 @@ CLI flags (see `pi --help`): `--tool-search on|off|auto`, `--tool-search-thresho
 
 ## For extension authors
 
-Two things make your tools discoverable:
+1. **Exposure** — use `exposure: "deferred"` for tools that should remain searchable and callable by other tools without becoming a model-declared function. `direct` tools participate in token-threshold auto-folding.
+2. **Description quality** — search includes tool and namespace metadata, prompt snippets, and nested parameter names/descriptions. Write these fields the way a model would search for the capability.
 
-1. **`deferrable`** — set `false` on the tool definition if the tool must always be in the function list (default is foldable for extensions).
-2. **Description quality** — the search matches your tool's name, description, and parameter descriptions, and the system-prompt section shows a one-line summary. Write them the way a model would search for the capability.
-
-Design notes and the full behavioral contract live in `plan/tool-search/` in the repository.

@@ -14,6 +14,7 @@ import { resolveConfigValue } from "./resolve-config-value.ts";
 export interface CompactionModelOverride {
 	reserveTokens?: number;
 	keepRecentTokens?: number;
+	keepTraces?: number;
 	/** Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation. */
 	summaryMaxTokens?: number;
 	/** Absolute auto-compaction trigger in tokens; replaces the `contextWindow - reserveTokens` derivation. */
@@ -42,7 +43,8 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
-	summaryMaxTokens?: number; // default: undefined - derived from reserveTokens
+	keepTraces?: number; // mutually exclusive with keepRecentTokens
+	summaryMaxTokens?: number;
 	thresholdTokens?: number; // default: undefined - derived from contextWindow - reserveTokens
 	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
 }
@@ -968,11 +970,18 @@ export class SettingsManager {
 		model?: Pick<Model<string>, "provider" | "id">,
 	): number {
 		const compaction = this.settings.compaction;
+		const traces = compaction?.keepTraces;
+		if (traces !== undefined && (typeof traces !== "number" || !Number.isSafeInteger(traces) || traces <= 0)) {
+			throw new Error(`Invalid compaction.keepTraces setting: ${String(traces)}. Expected a positive safe integer.`);
+		}
 		const ordinary = compaction?.[field];
 		if (ordinary !== undefined && (typeof ordinary !== "number" || !Number.isSafeInteger(ordinary) || ordinary < 0)) {
 			throw new Error(
 				`Invalid compaction.${field} setting: ${String(ordinary)}. Expected a non-negative safe integer.`,
 			);
+		}
+		if (field === "keepRecentTokens" && traces !== undefined && ordinary !== undefined) {
+			throw new Error("compaction.keepTraces and compaction.keepRecentTokens are mutually exclusive.");
 		}
 
 		const modelKey = model ? `${model.provider}/${model.id}` : undefined;
@@ -988,6 +997,22 @@ export class SettingsManager {
 				`Invalid compaction.modelOverrides["${modelKey}"].${field} setting: ${String(override)}. Expected a non-negative safe integer.`,
 			);
 		}
+		const keepTracesOverride = entry?.keepTraces;
+		if (
+			keepTracesOverride !== undefined &&
+			(typeof keepTracesOverride !== "number" ||
+				!Number.isSafeInteger(keepTracesOverride) ||
+				keepTracesOverride <= 0)
+		) {
+			throw new Error(
+				`Invalid compaction.modelOverrides["${modelKey}"].keepTraces setting: ${String(keepTracesOverride)}. Expected a positive safe integer.`,
+			);
+		}
+		if (field === "keepRecentTokens" && keepTracesOverride !== undefined && override !== undefined) {
+			throw new Error(
+				`compaction.modelOverrides["${modelKey}"].keepTraces and keepRecentTokens are mutually exclusive.`,
+			);
+		}
 		return override ?? ordinary ?? DEFAULT_COMPACTION_TOKEN_SETTINGS[field];
 	}
 
@@ -997,6 +1022,45 @@ export class SettingsManager {
 
 	getCompactionKeepRecentTokens(model?: Pick<Model<string>, "provider" | "id">): number {
 		return this.getCompactionTokenSetting("keepRecentTokens", model);
+	}
+	getCompactionKeepTraces(model?: Pick<Model<string>, "provider" | "id">): number | undefined {
+		const compaction = this.settings.compaction;
+		const ordinary = compaction?.keepTraces;
+		if (
+			ordinary !== undefined &&
+			(typeof ordinary !== "number" || !Number.isSafeInteger(ordinary) || ordinary <= 0)
+		) {
+			throw new Error(
+				`Invalid compaction.keepTraces setting: ${String(ordinary)}. Expected a positive safe integer.`,
+			);
+		}
+
+		const modelKey = model ? `${model.provider}/${model.id}` : undefined;
+		const entry = modelKey !== undefined ? compaction?.modelOverrides?.[modelKey] : undefined;
+		if (entry !== undefined && !isMergeableObject(entry)) {
+			throw new Error(
+				`Invalid compaction.modelOverrides["${modelKey}"] setting: ${String(entry)}. Expected an object.`,
+			);
+		}
+		const override = entry?.keepTraces;
+		if (
+			override !== undefined &&
+			(typeof override !== "number" || !Number.isSafeInteger(override) || override <= 0)
+		) {
+			throw new Error(
+				`Invalid compaction.modelOverrides["${modelKey}"].keepTraces setting: ${String(override)}. Expected a positive safe integer.`,
+			);
+		}
+		const effectiveKeepTraces = override ?? ordinary;
+		const effectiveKeepRecentTokens = entry?.keepRecentTokens ?? compaction?.keepRecentTokens;
+		if (effectiveKeepTraces !== undefined && effectiveKeepRecentTokens !== undefined) {
+			throw new Error(
+				modelKey
+					? `compaction.modelOverrides["${modelKey}"].keepTraces and keepRecentTokens are mutually exclusive.`
+					: "compaction.keepTraces and compaction.keepRecentTokens are mutually exclusive.",
+			);
+		}
+		return override ?? ordinary;
 	}
 
 	/**
@@ -1055,14 +1119,18 @@ export class SettingsManager {
 	getCompactionSettings(model?: Pick<Model<string>, "provider" | "id">): {
 		enabled: boolean;
 		reserveTokens: number;
-		keepRecentTokens: number;
+		keepRecentTokens?: number;
+		keepTraces?: number;
 		summaryMaxTokens?: number;
 		thresholdTokens?: number;
 	} {
+		const keepTraces = this.getCompactionKeepTraces(model);
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(model),
-			keepRecentTokens: this.getCompactionKeepRecentTokens(model),
+			...(keepTraces === undefined
+				? { keepRecentTokens: this.getCompactionKeepRecentTokens(model) }
+				: { keepTraces }),
 			summaryMaxTokens: this.getCompactionSummaryMaxTokens(model),
 			thresholdTokens: this.getCompactionThresholdTokens(model),
 		};

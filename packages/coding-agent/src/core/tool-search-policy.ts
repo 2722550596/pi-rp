@@ -1,42 +1,12 @@
 import { estimateToolsTokens } from "@earendil-works/pi-ai";
-import type { ToolDefinition } from "./extensions/types.ts";
-import type { SourceInfo } from "./source-info.ts";
 import type { ToolSearchEntry } from "./tool-search/manager.ts";
 import { allToolNames, type ToolName } from "./tools/index.ts";
 
-/** Fallback auto-mode threshold when the configured thresholdPercent is not a finite non-negative number. */
+/** Fallback auto-mode threshold when the configured thresholdPercent is invalid. */
 export const DEFAULT_TOOL_SEARCH_THRESHOLD_PERCENT = 10;
-
 /**
- * Collapse a tool's `deferrable` declaration to a boolean (R5/D8).
- *
- * Must run once per tool name at registry build time, after the final
- * built-in/extension/SDK override merge and before `wrapRegisteredTools`.
- * Native tools never fold, even when the author declares `deferrable: true`
- * (code-level backstop required by R5). Extension and SDK custom tools default
- * to foldable; an explicit `deferrable` declaration on the definition always wins.
- *
- * NOTE (2026-09-26, D23 follow-up): the R5 forced-eager list is the native-7
- * NAME set (+ tool_search itself + reservedTools + allow), NOT the synthetic
- * `builtin` source marker — engine-synthesized extensions like `<memory>` reuse
- * that marker for their 12 low-frequency tools and MUST stay foldable. The
- * name-set check below is the only native guard; `tool_search` itself is
- * backstopped by the manager's eager union.
- */
-export function normalizeDeferrable(definition: ToolDefinition, _sourceInfo: SourceInfo): boolean {
-	if (allToolNames.has(definition.name as ToolName)) {
-		return false;
-	}
-	return definition.deferrable ?? true;
-}
-
-/**
- * M5 activation-judgment input. The estimation target is the POTENTIAL FOLDING
- * SET: tools whose normalized `deferrable` is true that would actually fold.
- * Forced-eager members never fold and save nothing, so they are excluded:
- * `reservedTools` are subtracted here by name, and the caller must exclude
- * allow-whitelist names from `tools` as well (allow names are not part of this
- * frozen input; native tools are already excluded by `deferrable: false`).
+ * Auto-mode estimates only direct-exposure tools that remain eligible for
+ * folding after reserved and allow-list exclusions.
  */
 export interface ToolSearchActivationInput {
 	enabled: boolean;
@@ -79,11 +49,14 @@ export function shouldActivateToolSearch(
 			? input.thresholdPercent
 			: DEFAULT_TOOL_SEARCH_THRESHOLD_PERCENT;
 	const reserved = new Set(input.reservedTools);
-	// Map to the wire `Tool` shape (name/description/parameters): non-request fields such as
-	// promptSnippet/deferrable are not part of the token burden.
+	// Map to wire `Tool` shape (name/description/parameters); namespace metadata
+	// is search-only and does not affect the token estimate.
 	const estimatedTokens = estimateToolsTokens(
 		input.tools
-			.filter((tool) => tool.deferrable && !reserved.has(tool.name))
+			.filter(
+				(tool) =>
+					tool.exposure === "direct" && !allToolNames.has(tool.name as ToolName) && !reserved.has(tool.name),
+			)
 			.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
 	);
 	return estimatedTokens >= (thresholdPercent / 100) * input.contextWindow;

@@ -14,6 +14,7 @@ import type { ScopedModel } from "../model-resolver.ts";
 import { registerMacro as registerCustomMacro } from "../prompt-preset/macro-engine.ts";
 import type { PromptRegistryScope } from "../prompt-preset/registry-scope.ts";
 import { registerSlot as registerCustomSlot } from "../prompt-preset/slot-registry.ts";
+import type { HistoryOp } from "../prompt-preset/types.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
@@ -355,6 +356,7 @@ export class ExtensionRunner {
 	private staleMessage: string | undefined;
 	/** Captured messages after context event processing, for /prompt inspection. */
 	lastContextMessages: readonly AgentMessage[] = [];
+	private historyOpDisposers: Array<() => void> = [];
 
 	constructor(
 		extensions: Extension[],
@@ -364,6 +366,7 @@ export class ExtensionRunner {
 		modelRegistry: ModelRegistry,
 		settingsManager: SettingsManager,
 		promptRegistry?: PromptRegistryScope,
+		registerHistoryOp?: (extensionPath: string, op: HistoryOp) => () => void,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -372,6 +375,17 @@ export class ExtensionRunner {
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
 		this.settingsManager = settingsManager;
+		for (const pending of this.runtime.pendingHistoryOpRegistrations) {
+			if (pending.active)
+				this.historyOpDisposers.push(registerHistoryOp?.(pending.extensionPath, pending.op) ?? (() => {}));
+			pending.active = false;
+		}
+		this.runtime.pendingHistoryOpRegistrations = [];
+		this.runtime.registerHistoryOp = (op, extensionPath) => {
+			const dispose = registerHistoryOp?.(extensionPath, op) ?? (() => {});
+			this.historyOpDisposers.push(dispose);
+			return dispose;
+		};
 		for (const definition of this.runtime.pendingSlotRegistrations) {
 			registerCustomSlot(definition, false, promptRegistry);
 		}
@@ -666,6 +680,7 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			for (const dispose of this.historyOpDisposers.splice(0)) dispose();
 			this.runtime.invalidate(message);
 		}
 	}
@@ -795,6 +810,7 @@ export class ExtensionRunner {
 	 * The actual shutdown behavior is provided by the mode via bindExtensions().
 	 */
 	shutdown(): void {
+		for (const dispose of this.historyOpDisposers.splice(0)) dispose();
 		this.shutdownHandler();
 	}
 

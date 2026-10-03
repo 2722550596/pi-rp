@@ -106,7 +106,6 @@ function createDiscoveryGlobals(tools: readonly AgentTool[], options: CodemodeTo
 						description: tool.description,
 						...(tool.promptSnippet ? { promptSnippet: tool.promptSnippet } : {}),
 						parameters: [],
-						deferrable: true,
 					}));
 				const result = rankTools(snapshot, { keywords: query.trim().split(/\s+/).filter(Boolean), limit });
 				return result.status === "ok"

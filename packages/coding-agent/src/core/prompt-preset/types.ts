@@ -33,7 +33,7 @@ export type PromptPresetSlot =
 // Resource Policy (tools/skills allow/deny)
 // =========================================================================
 
-export type PromptResourcePolicy = { allow?: string[]; deny?: never } | { allow?: never; deny?: string[] };
+export type PromptResourcePolicy = { allow?: string[]; deny?: string[] };
 
 export type PromptPresetSlotFormat = "xml" | "json" | "plain" | "yaml";
 
@@ -55,18 +55,14 @@ export interface PromptPresetBaseItem {
 	 * Optional text inserted before the rendered item content (block `content`
 	 * or slot output). Supports {{macro}} expansion like block content. Applies
 	 * to both block and slot items. An item that renders empty content but has
-	 * a heading is still rendered (the heading alone), so a declared heading
-	 * is never silently dropped.
+	 * a heading is still rendered (the heading alone), so a declared heading is
+	 * never silently dropped.
 	 */
 	heading?: string;
 	/** Optional text appended after the rendered item content. Also supports
 	 * {{macro}} expansion. */
 	ending?: string;
-	/**
-	 * Wrap the rendered item text in a custom XML tag — a shorthand for
-	 * `<tag>…</tag>` (with optional `attrs`) around a block or slot. Applied
-	 * after macro expansion; skipped when the item renders empty.
-	 */
+	/** Wrap the rendered item text in a custom XML tag. */
 	wrap?: string | PromptPresetWrap;
 }
 
@@ -81,7 +77,62 @@ export interface PromptPresetSlotItem extends PromptPresetBaseItem {
 	options?: PromptPresetSlotOptions;
 }
 
-export type PromptPresetItem = PromptPresetBlockItem | PromptPresetSlotItem;
+export interface PromptPresetHistoryItem {
+	kind: "history";
+	id: string;
+	enabled?: boolean;
+	/** Legacy chat-history filtering options, retained without normalization loss. */
+	options?: PromptPresetSlotOptions;
+	ops: HistoryOp[];
+}
+
+export type PromptPresetItem = PromptPresetBlockItem | PromptPresetSlotItem | PromptPresetHistoryItem;
+
+export type HistoryOpOrigin =
+	| { kind: "preset"; presetId: string; itemId: string; opIndex: number }
+	| { kind: "extension"; extensionId: string; opId: string };
+
+export interface HistoryOpContext {
+	/** Immutable windowed history snapshot; never includes insert output. */
+	readonly messages: readonly AgentMessage[];
+	readonly runtime: PromptRuntime;
+	/** Host data grouped by explicit provider namespace and key. */
+	readonly hostData: Readonly<Record<string, Readonly<Record<string, HistoryHostDataValue>>>>;
+	readonly signal: AbortSignal;
+}
+
+export interface HistoryHostDataValue {
+	readonly value: unknown;
+	readonly version?: string | number;
+}
+
+export interface HistoryInsertOp {
+	readonly op: "insert";
+	readonly id: string;
+	readonly depth: number;
+	/** Preset JSON inserts use content; runtime-registered inserts use render. */
+	readonly content?: string;
+	readonly async?: boolean;
+	render?: (context: HistoryOpContext) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+	readonly hostData?: readonly { readonly namespace: string; readonly key: string }[];
+}
+
+export type HistoryRegisteredOp = {
+	readonly op: HistoryOp;
+	readonly origin: HistoryOpOrigin;
+	readonly order: number;
+};
+
+export interface HistoryHostDataProvider {
+	readonly namespace: string;
+	readonly get: (key: string, context: PromptRuntime) => unknown | Promise<unknown>;
+	readonly version?: (key: string) => string | number | undefined;
+}
+
+export type HistoryOp =
+	| HistoryInsertOp
+	| { readonly op: "keep"; readonly tokens?: number; readonly traces?: number }
+	| { readonly op: "reduce"; readonly as: "summary" | "hide" };
 
 export interface VariablesSlotOptions {
 	includeStatic?: boolean;
@@ -314,6 +365,12 @@ export interface PromptRuntime {
 	skipMacroExpansion?: boolean;
 	/** Session-owned slot/macro definitions; omitted for legacy process-global behavior. */
 	promptRegistry?: PromptRegistryReader;
+	/** Session-scoped dynamic history ops, snapshotted at compile start. */
+	historyOps?: readonly HistoryRegisteredOp[];
+	/** Host-owned, namespaced history data providers. */
+	historyHostData?: readonly HistoryHostDataProvider[];
+	/** Cancellation for a live compile / dynamic operation render. */
+	signal?: AbortSignal;
 }
 
 // =========================================================================
@@ -326,6 +383,8 @@ export interface PromptPresetDiagnostic {
 	level: PromptPresetDiagnosticLevel;
 	message: string;
 	itemId?: string;
+	code?: string;
+	origin?: HistoryOpOrigin;
 }
 
 export interface CompileSystemPromptResult {
@@ -333,13 +392,15 @@ export interface CompileSystemPromptResult {
 	diagnostics: PromptPresetDiagnostic[];
 }
 
-export type CompileMessageSourceKind = "preset-item" | "chat-history" | "implicit-history";
+export type CompileMessageSourceKind = "preset-item" | "chat-history" | "implicit-history" | "history-op";
 
 export interface CompileMessageSource {
 	kind: CompileMessageSourceKind;
 	itemId?: string;
 	itemName?: string;
 	slot?: string;
+	opId?: string;
+	origin?: HistoryOpOrigin;
 }
 
 export interface CompileMessagesResult {

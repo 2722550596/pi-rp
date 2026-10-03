@@ -102,11 +102,10 @@ export const defaultPreset: PromptPreset = {
 			slot: "date-cwd",
 		},
 		{
-			kind: "slot",
+			kind: "history",
 			id: "chat-history",
-			name: "Chat History",
 			enabled: true,
-			slot: "chat-history",
+			ops: [],
 		},
 	],
 };

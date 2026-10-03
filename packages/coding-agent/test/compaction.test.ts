@@ -387,6 +387,35 @@ describe("findCutPoint", () => {
 		expect(customFitsBudget.isSplitTurn).toBe(false);
 		expect(customFitsBudget.turnStartIndex).toBe(-1);
 	});
+	it("keeps the requested number of traces and preserves adjacent metadata cut behavior", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("old trace")),
+			createMessageEntry(createAssistantMessage("old answer")),
+			createThinkingLevelEntry("high"),
+			createMessageEntry(createUserMessage("middle trace")),
+			createMessageEntry(createAssistantMessage("middle answer")),
+			createMessageEntry(createUserMessage("new trace")),
+			createMessageEntry(createAssistantMessage("new answer")),
+		];
+
+		const result = findCutPoint(entries, 0, entries.length, 20000, 2);
+		expect(result.firstKeptEntryIndex).toBe(2);
+		expect(result.isSplitTurn).toBe(true);
+		expect(result.turnStartIndex).toBe(0);
+	});
+
+	it("keeps trace-mode cuts at trace starts rather than splitting assistant entries", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("old trace")),
+			createMessageEntry(createAssistantMessage("old answer")),
+			createMessageEntry(createUserMessage("latest trace")),
+			createMessageEntry(createAssistantMessage("first response")),
+			createMessageEntry(createAssistantMessage("second response")),
+		];
+		const result = findCutPoint(entries, 0, entries.length, 20000, 1);
+		expect(result.firstKeptEntryIndex).toBe(2);
+		expect(result.isSplitTurn).toBe(false);
+	});
 });
 
 describe("buildSessionContext", () => {
@@ -516,6 +545,24 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(summarizedText).toContain("user msg 3 - kept by compaction1");
 		expect(summarizedText).not.toContain("First summary");
 		expect(preparation!.previousSummary).toBe("First summary");
+	});
+});
+describe("prepareCompaction with trace settings", () => {
+	it("prepares physical compaction at a complete trace boundary", () => {
+		const oldUser = createMessageEntry(createUserMessage("old trace"));
+		const oldAssistant = createMessageEntry(createAssistantMessage("old answer"));
+		const keptUser = createMessageEntry(createUserMessage("kept trace"));
+		const keptAssistant = createMessageEntry(createAssistantMessage("kept answer"));
+		const preparation = prepareCompaction([oldUser, oldAssistant, keptUser, keptAssistant], {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: undefined,
+			keepTraces: 1,
+		});
+
+		expect(preparation?.firstKeptEntryId).toBe(keptUser.id);
+		expect(extractText(preparation!.messagesToSummarize)).toContain("old trace");
+		expect(extractText(preparation!.messagesToSummarize)).not.toContain("kept trace");
+		expect(preparation?.isSplitTurn).toBe(false);
 	});
 });
 

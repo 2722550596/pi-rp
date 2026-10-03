@@ -88,6 +88,13 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 		subscribeState: notInitialized,
 		updateState: notInitialized,
 		registerSlot: (definition) => runtime.pendingSlotRegistrations.push(definition),
+		registerHistoryOp: (op, extensionPath) => {
+			const pending = { op, extensionPath, active: true };
+			runtime.pendingHistoryOpRegistrations.push(pending);
+			return () => {
+				pending.active = false;
+			};
+		},
 		registerMacro: (definition) => runtime.pendingMacroRegistrations.push(definition),
 		registerCustomType: (customType, policy) => {
 			if (!customTypePolicies.has(customType)) {
@@ -101,6 +108,7 @@ export function createExtensionRuntime(options?: ExtensionRuntimeOptions): Exten
 		pendingRegistrationWarnings: [],
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],
+		pendingHistoryOpRegistrations: [],
 		pendingSlotRegistrations: [],
 		pendingMacroRegistrations: [],
 		assertActive,
@@ -366,6 +374,10 @@ export function createExtensionAPI(
 		registerSlot(definition) {
 			runtime.assertActive();
 			runtime.registerSlot(definition);
+		},
+		registerHistoryOp(op) {
+			runtime.assertActive();
+			return runtime.registerHistoryOp(op, extension.path);
 		},
 
 		registerMacro(definition) {

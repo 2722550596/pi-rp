@@ -5,6 +5,7 @@ export type {
 } from "./types.ts";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { executeHistoryOps, executeHistoryOpsSync } from "./history-ops.ts";
 import { expandMacros } from "./macro-engine.ts";
 import { applyRegexRulesToMessages, applyRegexRulesToString } from "./regex-engine.ts";
 import type { PromptRegistryReader } from "./registry-scope.ts";
@@ -87,9 +88,11 @@ export function deriveSystemPromptString(
  * in parallel when no side-effecting macros (`{{setvar}}`/`{{addvar}}`) are
  * present. Presets without async slots complete synchronously inside this
  * call — no extra await tick or restructuring cost.
+ * Async entry point. Presets containing async slots or registered async history
+ * operations go through the async path; all other presets preserve the sync fast path.
  */
 export function compileMessages(preset: PromptPreset, runtime: PromptRuntime): Promise<CompileMessagesResult> {
-	if (!presetHasAsyncSlots(preset, runtime.promptRegistry)) {
+	if (!presetHasAsyncSlots(preset, runtime.promptRegistry) && !presetHasAsyncHistoryOps(preset, runtime)) {
 		return Promise.resolve(compileMessagesSync(preset, runtime));
 	}
 	return compileMessagesAsync(preset, runtime);
@@ -112,10 +115,31 @@ export function compileMessagesSync(preset: PromptPreset, runtime: PromptRuntime
 	// The chat-history position is a slot-registry property, not a name match:
 	// any slot registered with position "chat-history" (built-in or custom)
 	// is the conversation insertion point.
-	const chatHistoryIndex = items.findIndex((item) => isChatHistoryPosition(item, runtime.promptRegistry));
-
-	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
-	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
+	const historyItemIndex = items.findIndex((item) => item.kind === "history");
+	const legacyHistoryIndex = items.findIndex((item) => isChatHistoryPosition(item, runtime.promptRegistry));
+	const chatHistoryIndex = historyItemIndex >= 0 ? historyItemIndex : legacyHistoryIndex;
+	const historyItem = historyItemIndex >= 0 ? items[historyItemIndex] : undefined;
+	if (historyItemIndex >= 0 && legacyHistoryIndex >= 0) {
+		diagnostics.push({
+			level: "warning",
+			itemId: items[legacyHistoryIndex].id,
+			message: `Legacy chat-history position is ignored because preset "${preset.id}" declares a history item.`,
+		});
+	}
+	const beforeItems =
+		chatHistoryIndex === -1
+			? items.filter(isTextPresetItem)
+			: items
+					.slice(0, chatHistoryIndex)
+					.filter(isTextPresetItem)
+					.filter((item) => !(item.kind === "slot" && isChatHistoryPosition(item, runtime.promptRegistry)));
+	const afterItems =
+		chatHistoryIndex === -1
+			? []
+			: items
+					.slice(chatHistoryIndex + 1)
+					.filter(isTextPresetItem)
+					.filter((item) => !(item.kind === "slot" && isChatHistoryPosition(item, runtime.promptRegistry)));
 
 	// {{lastUserMessage}} resolves from the last real user-role message when
 	// PromptRuntime.latestUserMessage is unset. All construction sites pass
@@ -127,7 +151,23 @@ export function compileMessagesSync(preset: PromptPreset, runtime: PromptRuntime
 		addSyntheticMessage(result, item, text, sources);
 	}
 
-	addChatHistory(result, sources, preset, runtime, items, chatHistoryIndex, diagnostics);
+	const historyMessages: AgentMessage[] = [];
+	const historySources: CompileMessageSource[] = [];
+	addChatHistory(historyMessages, historySources, preset, runtime, items, chatHistoryIndex, diagnostics);
+	if (historyItem || runtime.historyOps?.length) {
+		const historyResult = executeHistoryOpsSync(
+			historyMessages,
+			historyItem?.kind === "history" ? historyItem : undefined,
+			preset.id,
+			runtime,
+		);
+		result.push(...historyResult.messages);
+		sources.push(...historyResult.sources);
+		diagnostics.push(...historyResult.diagnostics);
+	} else {
+		result.push(...historyMessages);
+		sources.push(...historySources);
+	}
 
 	for (const item of afterItems) {
 		const text = renderItemTextSync(item, preset, effectiveRuntime, diagnostics);
@@ -135,6 +175,10 @@ export function compileMessagesSync(preset: PromptPreset, runtime: PromptRuntime
 	}
 
 	// Squash consecutive same-role messages: merge adjacent messages with the same role
+	// NOTE: `sources` is NOT squashed in lockstep — after this call, sources indexes no
+	// longer align 1:1 with messages (merged runs collapse to one message but keep N
+	// source entries). No consumer reads sources by index today; if one appears, fix
+	// the alignment here first.
 	result = squashMessages(result);
 
 	// Apply compiled-stage regex to the full message array (outgoing + display effects)
@@ -156,9 +200,31 @@ async function compileMessagesAsync(preset: PromptPreset, runtime: PromptRuntime
 	let result: AgentMessage[] = [];
 	const items = enabledItems(preset);
 
-	const chatHistoryIndex = items.findIndex((item) => isChatHistoryPosition(item, runtime.promptRegistry));
-	const beforeItems = chatHistoryIndex === -1 ? items : items.slice(0, chatHistoryIndex);
-	const afterItems = chatHistoryIndex === -1 ? [] : items.slice(chatHistoryIndex + 1);
+	const historyItemIndex = items.findIndex((item) => item.kind === "history");
+	const legacyHistoryIndex = items.findIndex((item) => isChatHistoryPosition(item, runtime.promptRegistry));
+	const chatHistoryIndex = historyItemIndex >= 0 ? historyItemIndex : legacyHistoryIndex;
+	const historyItem = historyItemIndex >= 0 ? items[historyItemIndex] : undefined;
+	if (historyItemIndex >= 0 && legacyHistoryIndex >= 0) {
+		diagnostics.push({
+			level: "warning",
+			itemId: items[legacyHistoryIndex].id,
+			message: `Legacy chat-history position is ignored because preset "${preset.id}" declares a history item.`,
+		});
+	}
+	const beforeItems =
+		chatHistoryIndex === -1
+			? items.filter(isTextPresetItem)
+			: items
+					.slice(0, chatHistoryIndex)
+					.filter(isTextPresetItem)
+					.filter((item) => !(item.kind === "slot" && isChatHistoryPosition(item, runtime.promptRegistry)));
+	const afterItems =
+		chatHistoryIndex === -1
+			? []
+			: items
+					.slice(chatHistoryIndex + 1)
+					.filter(isTextPresetItem)
+					.filter((item) => !(item.kind === "slot" && isChatHistoryPosition(item, runtime.promptRegistry)));
 
 	const effectiveRuntime = withDerivedLatestUserMessage(runtime);
 
@@ -179,7 +245,23 @@ async function compileMessagesAsync(preset: PromptPreset, runtime: PromptRuntime
 		}
 	}
 
-	addChatHistory(result, sources, preset, runtime, items, chatHistoryIndex, diagnostics);
+	const historyMessages: AgentMessage[] = [];
+	const historySources: CompileMessageSource[] = [];
+	addChatHistory(historyMessages, historySources, preset, runtime, items, chatHistoryIndex, diagnostics);
+	if (historyItem || runtime.historyOps?.length) {
+		const historyResult = await executeHistoryOps(
+			historyMessages,
+			historyItem?.kind === "history" ? historyItem : undefined,
+			preset.id,
+			runtime,
+		);
+		result.push(...historyResult.messages);
+		sources.push(...historyResult.sources);
+		diagnostics.push(...historyResult.diagnostics);
+	} else {
+		result.push(...historyMessages);
+		sources.push(...historySources);
+	}
 
 	if (serial) {
 		for (const item of afterItems) {
@@ -195,6 +277,7 @@ async function compileMessagesAsync(preset: PromptPreset, runtime: PromptRuntime
 		}
 	}
 
+	// Same NOTE as the sync path: sources do not squash in lockstep with messages.
 	result = squashMessages(result);
 	result = applyRegexRulesToMessages(preset, result, "compiled", "outgoing", diagnostics);
 
@@ -218,7 +301,8 @@ function addChatHistory(
 ): void {
 	if (chatHistoryIndex !== -1) {
 		const chatHistoryMessages = runtime.messages;
-		const options = (items[chatHistoryIndex] as PromptPresetSlotItem).options;
+		const historyItem = items[chatHistoryIndex];
+		const options = historyItem.kind === "block" ? undefined : historyItem.options;
 		let shouldRepairToolPairs = false;
 
 		// Apply role filter
@@ -302,6 +386,18 @@ export function presetHasAsyncSlots(preset: PromptPreset, scope?: PromptRegistry
 	return enabledItems(preset).some((item) => item.kind === "slot" && getSlot(item.slot, scope)?.async === true);
 }
 
+export function presetHasAsyncHistoryOps(preset: PromptPreset, runtime: PromptRuntime): boolean {
+	if (
+		(runtime.historyOps ?? []).some(
+			(entry) => entry.op.op === "insert" && (entry.op.async === true || (entry.op.hostData?.length ?? 0) > 0),
+		)
+	)
+		return true;
+	return enabledItems(preset).some(
+		(item) => item.kind === "history" && item.ops.some((op) => op.op === "insert" && op.async === true),
+	);
+}
+
 /** Side-effecting macro names: their render writes to the shared variables. */
 const SIDE_EFFECT_MACRO_PATTERN = /\{\{\s*(?:setvar|addvar)\b/;
 
@@ -369,9 +465,12 @@ function squashMessages(messages: AgentMessage[]): AgentMessage[] {
 function enabledItems(preset: PromptPreset): PromptPresetItem[] {
 	return preset.items.filter((item) => item.enabled !== false);
 }
+function isTextPresetItem(item: PromptPresetItem): item is PromptPresetBlockItem | PromptPresetSlotItem {
+	return item.kind === "block" || item.kind === "slot";
+}
 
 function renderItemTextSync(
-	item: PromptPresetItem,
+	item: PromptPresetBlockItem | PromptPresetSlotItem,
 	preset: PromptPreset,
 	runtime: PromptRuntime,
 	diagnostics: PromptPresetDiagnostic[],
@@ -386,7 +485,7 @@ function renderItemTextSync(
 }
 
 async function renderItemTextAsync(
-	item: PromptPresetItem,
+	item: PromptPresetBlockItem | PromptPresetSlotItem,
 	preset: PromptPreset,
 	runtime: PromptRuntime,
 	diagnostics: PromptPresetDiagnostic[],
@@ -406,7 +505,7 @@ async function renderItemTextAsync(
  */
 function finalizeItemText(
 	raw: string,
-	item: PromptPresetItem,
+	item: PromptPresetBlockItem | PromptPresetSlotItem,
 	preset: PromptPreset,
 	runtime: PromptRuntime,
 	diagnostics: PromptPresetDiagnostic[],
@@ -443,7 +542,11 @@ const XML_TAG_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.:-]*$/;
  * empty text stays empty (the item is skipped as usual). Invalid tag names
  * push a warning diagnostic and leave the text unwrapped.
  */
-function applyItemWrap(text: string, item: PromptPresetItem, diagnostics: PromptPresetDiagnostic[]): string {
+function applyItemWrap(
+	text: string,
+	item: PromptPresetBlockItem | PromptPresetSlotItem,
+	diagnostics: PromptPresetDiagnostic[],
+): string {
 	const wrap = item.wrap;
 	if (!wrap || !text) return text;
 
@@ -474,7 +577,7 @@ function escapeXmlAttribute(value: string): string {
 
 function addSyntheticMessage(
 	messages: AgentMessage[],
-	item: PromptPresetItem,
+	item: PromptPresetBlockItem | PromptPresetSlotItem,
 	text: string,
 	sources: CompileMessageSource[],
 ): void {

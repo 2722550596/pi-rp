@@ -111,7 +111,7 @@ MCP 配置的 exposure 是 `direct | deferred | codemode | hidden`；`codemode-d
 | MCP Exposure | 模型声明 | codemode 可见 | Pi-RP 映射/约束 |
 |---|---:|---:|---|
 | `direct` | 立即 | 是 | 普通当前工具；受 preset allow/deny 及 `tool_call` hook 管控。 |
-| `deferred` | 搜索/加载后 | 是 | 进入现有 deferrable/tool-search 目录；加载之后直接调用仍走同一分派器。 |
+| `deferred` | 不进入模型声明 | 是 | 始终可被 tool_search 发现；发现不会把它变成模型声明。 |
 | `codemode` | 否 | 是 | 只进入 codemode capability catalog；模型不可直接拼出调用。 |
 | `hidden` | 否 | 否 | 不进入 direct、searchable 或 codemode catalog；分派器拒绝。 |
 

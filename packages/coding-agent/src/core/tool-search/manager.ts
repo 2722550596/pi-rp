@@ -1,5 +1,5 @@
 import type { TSchema } from "typebox";
-import type { ToolDefinition } from "../extensions/types.ts";
+import type { ToolDefinition, ToolExposure, ToolNamespace } from "../extensions/types.ts";
 import type { SearchableTool, SearchableToolParameter } from "./search.ts";
 import { createToolSearchDefinition, TOOL_SEARCH_TOOL_NAME } from "./tool-search-definition.ts";
 
@@ -22,8 +22,8 @@ export interface ToolSearchEntry {
 	description: string;
 	promptSnippet?: string;
 	parameters: TSchema;
-	/** Already normalized by the registry build point (M5 `normalizeDeferrable`); the manager never reads sourceInfo. */
-	deferrable: boolean;
+	exposure: ToolExposure;
+	namespace?: ToolNamespace;
 }
 
 export interface ToolSearchManagerInput {
@@ -57,10 +57,7 @@ export interface ToolSearchCompactionDetails {
 	deferred: { version: 1; addedToolNames: string[] };
 }
 
-/**
- * Native tools that are always eager, even when misdeclared `deferrable: true`
- * (R5 code-level backstop — the manager must not rely on author types alone).
- */
+/** Native tools are never auto-folded; their registration is an eager backstop. */
 const NATIVE_EAGER_TOOL_NAMES: Record<string, true> = {
 	read: true,
 	bash: true,
@@ -92,14 +89,28 @@ function sameNameList(a: readonly string[], b: readonly string[]): boolean {
 	return true;
 }
 
-/** Flatten a TypeBox object schema into searchable parameter descriptors (M3 §2). */
-function extractSearchableParameters(schema: TSchema): SearchableToolParameter[] {
-	const properties = (schema as { properties?: unknown }).properties;
-	if (properties === undefined || typeof properties !== "object") return [];
+/** Flatten nested TypeBox properties and container schemas into searchable descriptors. */
+function extractSearchableParameters(schema: unknown, parent = ""): SearchableToolParameter[] {
+	if (schema === null || typeof schema !== "object") return [];
 	const result: SearchableToolParameter[] = [];
-	for (const [name, value] of Object.entries(properties as Record<string, unknown>)) {
-		const description = (value as { description?: unknown } | undefined)?.description;
-		result.push({ name, description: typeof description === "string" ? description : undefined });
+	const properties = Reflect.get(schema, "properties");
+	if (properties !== null && typeof properties === "object" && !Array.isArray(properties)) {
+		for (const [name, value] of Object.entries(properties)) {
+			if (value === null || typeof value !== "object") continue;
+			const fullName = parent ? `${parent}.${name}` : name;
+			const description = Reflect.get(value, "description");
+			result.push({ name: fullName, description: typeof description === "string" ? description : undefined });
+			result.push(...extractSearchableParameters(value, fullName));
+		}
+	}
+	const items = Reflect.get(schema, "items");
+	if (items !== null && typeof items === "object") {
+		result.push(...extractSearchableParameters(items, parent ? `${parent}[]` : ""));
+	}
+	for (const key of ["anyOf", "oneOf", "allOf"]) {
+		const variants = Reflect.get(schema, key);
+		if (!Array.isArray(variants)) continue;
+		for (const variant of variants) result.push(...extractSearchableParameters(variant, parent));
 	}
 	return result;
 }
@@ -108,7 +119,7 @@ export class ToolSearchManager {
 	/** Current allow/deny-filtered catalog in registry order. */
 	private catalog = new Map<string, ToolSearchEntry>();
 	private searchableParameters = new Map<string, SearchableToolParameter[]>();
-	/** Fold-eligible: deferrable ∧ not native-eager ∧ not tool_search ∧ not reserved (R5). */
+	/** Direct-exposure tools eligible for automatic token-based folding. */
 	private foldableNames = new Set<string>();
 	/**
 	 * Advertised/searchable set: foldable ∧ undiscovered; empty whenever tool
@@ -148,7 +159,7 @@ export class ToolSearchManager {
 		const reserved = new Set(input.reservedTools ?? []);
 		this.foldableNames = new Set();
 		for (const [name, tool] of this.catalog) {
-			if (!tool.deferrable) continue;
+			if (tool.exposure !== "direct") continue;
 			if (NATIVE_EAGER_TOOL_NAMES[name]) continue;
 			if (name === TOOL_SEARCH_TOOL_NAME) continue;
 			if (reserved.has(name)) continue;
@@ -261,20 +272,20 @@ export class ToolSearchManager {
 	}
 
 	/**
-	 * Immutable snapshot of searchable tools: folded ∧ undiscovered catalog
-	 * entries in registry order (M3 §2 seam). Deny tools cannot appear — they
-	 * never entered the catalog (deny closure, 00 §5 invariant 3).
+	 * Immutable snapshot of direct tools currently folded plus every deferred
+	 * tool, in registry order. Deferred tools remain callable without ever
+	 * entering the model declaration set.
 	 */
 	getSearchableTools(): readonly SearchableTool[] {
 		const result: SearchableTool[] = [];
 		for (const [name, entry] of this.catalog) {
-			if (!this.foldedNames.has(name)) continue;
+			if (!this.foldedNames.has(name) && entry.exposure !== "deferred") continue;
 			result.push({
 				name: entry.name,
 				description: entry.description,
 				promptSnippet: entry.promptSnippet,
+				namespace: entry.namespace,
 				parameters: (this.searchableParameters.get(name) ?? []).map((parameter) => ({ ...parameter })),
-				deferrable: entry.deferrable,
 			});
 		}
 		return result;

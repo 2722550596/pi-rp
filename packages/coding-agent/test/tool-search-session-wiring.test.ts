@@ -13,7 +13,7 @@ import { getSlot } from "../src/core/prompt-preset/slot-registry.ts";
 import type { SlotRenderContext } from "../src/core/prompt-preset/slot-renderers.ts";
 import { type SessionEntry, SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { ToolSearchManager } from "../src/core/tool-search/manager.ts";
+import { type ToolSearchEntry, ToolSearchManager } from "../src/core/tool-search/manager.ts";
 import type { SearchableTool } from "../src/core/tool-search/search.ts";
 import { TOOL_SEARCH_TOOL_NAME, toolSearchParameters } from "../src/core/tool-search/tool-search-definition.ts";
 import {
@@ -31,13 +31,14 @@ type ToolResultAgentMessage = Extract<Message, { role: "toolResult" }>;
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function deferrableTool(name: string, description = `${name} does things. Second sentence.`): ToolDefinition {
+function directTool(name: string, description = `${name} does things. Second sentence.`): ToolDefinition {
 	return {
 		name,
 		label: name,
 		description,
 		promptSnippet: `Run ${name}`,
 		parameters: Type.Object({}),
+		exposure: "direct",
 		execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 	};
 }
@@ -55,7 +56,7 @@ function toolResultMessage(toolName: string, toolCallId: string, addedToolNames?
 }
 
 function searchable(name: string, description = `${name} searches things. More text.`): SearchableTool {
-	return { name, description, parameters: [], deferrable: true };
+	return { name, description, parameters: [] };
 }
 
 function entry(id: string, parentId: string | null, message: Message): SessionEntry {
@@ -76,22 +77,22 @@ class FakeToolSearchManager implements ToolSearchManagerContract {
 	restoreError: Error | undefined;
 	failResolver = false;
 
-	private lastTools: readonly { name: string; deferrable: boolean }[] = [];
+	private lastTools: readonly ToolSearchEntry[] = [];
 	private lastActive = false;
 	private lastActiveToolNames: readonly string[] = [];
 
-	private computeActiveNames(active: boolean, tools: readonly { name: string; deferrable: boolean }[]): string[] {
+	private computeActiveNames(active: boolean, tools: readonly ToolSearchEntry[]): string[] {
 		if (!active) return tools.map((tool) => tool.name);
 		const names = tools.map((tool) => tool.name);
-		const anyFolded = tools.some((tool) => tool.deferrable && !this.discovered.has(tool.name));
+		const anyFolded = tools.some((tool) => tool.exposure === "direct" && !this.discovered.has(tool.name));
 		return anyFolded ? [...names, TOOL_SEARCH_TOOL_NAME] : names;
 	}
 
-	recompute(input: {
-		tools: readonly { name: string; deferrable: boolean }[];
-		active: boolean;
-		reservedTools?: readonly string[];
-	}): { activeToolNames: readonly string[]; activated: boolean; changed: boolean } {
+	recompute(input: { tools: readonly ToolSearchEntry[]; active: boolean; reservedTools?: readonly string[] }): {
+		activeToolNames: readonly string[];
+		activated: boolean;
+		changed: boolean;
+	} {
 		this.recomputeCalls.push({
 			active: input.active,
 			tools: input.tools.map((tool) => tool.name),
@@ -275,7 +276,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: manager,
 			mode: "on",
-			customTools: [deferrableTool("ext_alpha"), deferrableTool("ext_beta")],
+			customTools: [directTool("ext_alpha"), directTool("ext_beta")],
 			seed: (sessionManager) => {
 				sessionManager.appendMessage({ role: "user", content: "hi", timestamp: 1 });
 				sessionManager.appendMessage(toolResultMessage("ext_alpha", "call-1", ["ext_alpha", "ghost_from_history"]));
@@ -299,13 +300,13 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: manager,
 			mode: "on",
-			customTools: [deferrableTool("ext_alpha"), deferrableTool("ext_beta")],
+			customTools: [directTool("ext_alpha"), directTool("ext_beta")],
 			seed: (sessionManager) => {
 				sessionManager.appendMessage(toolResultMessage("ext_alpha", "call-1", ["ext_alpha"]));
 			},
 		});
 
-		// Baseline = post-restore searchable catalog (deferrable − restored):
+		// Baseline = post-restore searchable catalog (direct-folded − restored):
 		// ext_alpha is known to the model, ext_beta is still searchable. Engine
 		// synthetic <memory> tools are foldable too (D23 follow-up), so the
 		// catalog is larger than the fixture's ext tools — assert on the
@@ -356,7 +357,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: manager,
 			mode: "on",
-			customTools: [deferrableTool("ext_alpha"), deferrableTool("ext_beta")],
+			customTools: [directTool("ext_alpha"), directTool("ext_beta")],
 		});
 
 		let activeNames = session.agent.state.tools.map((tool) => tool.name);
@@ -392,7 +393,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: fake,
 			mode: "on",
-			customTools: [deferrableTool("ext_alpha")],
+			customTools: [directTool("ext_alpha")],
 			seed: (sessionManager) => {
 				sessionManager.appendMessage(toolResultMessage("ext_alpha", "call-1", ["part_a"]));
 			},
@@ -404,7 +405,7 @@ describe("tool-search session wiring", () => {
 		// Deactivated: every recompute after the failure runs with active=false.
 		expect(fake.recomputeCalls.length).toBeGreaterThan(0);
 		expect(fake.recomputeCalls.every((call) => call.active === false)).toBe(true);
-		// Session stays functional: the eager set (incl. the deferrable tool) is active.
+		// Session stays functional: the eager direct tool remains active.
 		const activeNames = session.agent.state.tools.map((tool) => tool.name);
 		expect(activeNames).toContain("ext_alpha");
 		expect(activeNames).not.toContain(TOOL_SEARCH_TOOL_NAME);
@@ -416,7 +417,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: fake,
 			mode: "on",
-			customTools: [deferrableTool("ext_alpha")],
+			customTools: [directTool("ext_alpha")],
 			seed: (sessionManager) => {
 				sessionManager.appendMessage(toolResultMessage("ext_alpha", "call-1", ["part_a"]));
 			},
@@ -439,7 +440,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: fake,
 			mode: "on",
-			customTools: [deferrableTool("ext_alpha")],
+			customTools: [directTool("ext_alpha")],
 			seed: (sessionManager) => {
 				sessionManager.appendMessage(toolResultMessage("ext_alpha", "call-1", ["ext_scan"]));
 			},
@@ -470,7 +471,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: fake,
 			mode: "on",
-			customTools: [deferrableTool("ext_gamma"), deferrableTool("ext_delta")],
+			customTools: [directTool("ext_gamma"), directTool("ext_delta")],
 		});
 		// Restore initialized the baseline with the current searchable catalog.
 		expect(fake.advertised).toEqual(["ext_gamma", "ext_delta"]);
@@ -499,7 +500,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: fake,
 			mode: "on",
-			customTools: [deferrableTool("ext_gamma")],
+			customTools: [directTool("ext_gamma")],
 		});
 
 		expect(session.systemPromptOptions.toolSearchCategories).toEqual([
@@ -517,7 +518,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: fake,
 			mode: "on",
-			customTools: [deferrableTool("ext_gamma")],
+			customTools: [directTool("ext_gamma")],
 			systemPrompt: "Custom system prompt.",
 		});
 
@@ -537,7 +538,7 @@ describe("tool-search session wiring", () => {
 		const session = await buildSession({
 			toolSearchManager: fake,
 			mode: "on",
-			customTools: [deferrableTool("ext_gamma")],
+			customTools: [directTool("ext_gamma")],
 		});
 
 		expect(session.resolveToolSearchGuidance("ext_gamma")).toBe(
@@ -620,7 +621,7 @@ describe("tool-search session wiring", () => {
 		let branchALeafId = "";
 		const session = await buildSession({
 			mode: "on",
-			customTools: [deferrableTool("ext_x"), deferrableTool("ext_y")],
+			customTools: [directTool("ext_x"), directTool("ext_y")],
 			seed: (sessionManager) => {
 				// Branch A: user -> tool result discovering ext_x.
 				_branchAUserId = sessionManager.appendMessage({ role: "user", content: "on branch A", timestamp: 1 });
@@ -696,7 +697,7 @@ describe("tool-search session wiring", () => {
 	it("mode=off keeps the legacy path: no tool_search, no folding, no notifications", async () => {
 		const session = await buildSession({
 			mode: "off",
-			customTools: [deferrableTool("ext_alpha")],
+			customTools: [directTool("ext_alpha")],
 		});
 		const activeNames = session.agent.state.tools.map((tool) => tool.name);
 		expect(activeNames).toContain("ext_alpha");

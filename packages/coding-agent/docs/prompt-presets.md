@@ -72,7 +72,7 @@ Extensions read only the currently effective preset through `ctx.getActivePreset
 
 ### Items
 
-Each item is either a **block** (static text) or a **slot** (dynamic content rendered at compile time).
+Each item is a **block** (static text), **slot** (dynamic content rendered at compile time), or **history** item (a dedicated conversation-history assembly point).
 
 #### Block Item
 
@@ -96,44 +96,83 @@ Each item is either a **block** (static text) or a **slot** (dynamic content ren
 
 ```json
 { "kind": "slot", "id": "tools", "slot": "tools", "options": { "onlyWithSnippets": true } }
- | Field | Type | Required | Description |
- |---|---|---|---|
- | `kind` | `"slot"` | yes | Must be `"slot"`. |
- | `slot` | string | yes | One of the [built-in slots](#built-in-slots) or a custom extension slot. |
- | `name` | string | no | Display name for diagnostics. |
- | `enabled` | boolean | no | Default `true`. |
- | `role` | string | no | Slot output role. Default `"system"`. |
- | `heading` | string | no | Text inserted before the slot's rendered output. Supports `{{macro}}` expansion. If the rendered slot output is empty, the entire slot item is skipped, including its heading, ending, and wrap. |
- | `ending` | string | no | Text appended after the slot's rendered output. Supports `{{macro}}` expansion. |
- | `options` | object | no | Slot-specific options (see per-slot docs below). |
- | `wrap` | string or object | no | Wrap the slot's rendered output in a custom XML tag (see [Wrapping Items](#wrapping-items)). |
+```
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"slot"` | yes | Must be `"slot"`. |
+| `slot` | string | yes | A [built-in slot](#built-in-slots) or custom extension slot. |
+| `name` | string | no | Display name for diagnostics. |
+| `enabled` | boolean | no | Default `true`. |
+| `role` | string | no | Slot output role. Default `"system"`. |
+| `heading` | string | no | Text before the rendered output. |
+| `ending` | string | no | Text after the rendered output. |
+| `options` | object | no | Slot-specific options. |
+| `wrap` | string or object | no | Wrap the rendered output in a custom XML tag. |
+
+#### History Item
+```json
+{
+  "kind": "history",
+  "id": "history",
+  "ops": [
+    { "op": "keep", "traces": 8 },
+    { "op": "reduce", "as": "hide" },
+    { "op": "insert", "id": "lore", "depth": 1, "content": "Current world lore..." }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"history"` | yes | Declares the conversation-history assembly point. |
+| `id` | string | yes | Item identity. |
+| `enabled` | boolean | no | Default `true`. |
+| `ops` | array | no | Static history operations: `insert`, `keep`, and `reduce` (see [Compilation Model](#compilation-model)). An insert contains its fixed `content`; extensions may register dynamic renderers with `pi.registerHistoryOp()`. |
+| `options` | object | no | Legacy chat-history filters (`roles`, `maxMessages`, `maxChars`, `omitLatestUser`, `stripAssistantThinking`, `toolMode`, `dropToolNames`, `includeSummaries`), preserved when moved from an old chat-history slot. |
 
 ### Compilation Model
 
-All items are compiled into a **single flat message array**, in order:
+Items compile into one flat message array, in order. A `history` item expands conversation history at its position; without one, the legacy `chat-history` slot position is used, and if neither is present the existing implicit fallback applies. For stateless one-shot presets that re-insert `{{lastUserMessage}}`, implicit history remains omitted to avoid duplication.
 
-- `block` items produce one message with the item's role and content
-- `slot` items render dynamic text at the item's position
-- `chat-history` slot injects the real conversation at its position
-- Consecutive messages with the same role are automatically merged into one (e.g. adjacent `[system]` blocks become one `[system]` with `\n\n` separation)
+- `block` items produce a message with the item's role and content.
+- `slot` items render dynamic text at the item's position.
+- A legacy `chat-history` slot injects conversation history at its position only when no enabled `history` item is present.
+- Consecutive messages with the same role are automatically merged (for example, adjacent system blocks are joined with `\n\n`).
 
-This message array is sent to the model. System-role messages are extracted by the provider adapter into the API-specific system field (e.g. Anthropic `system`, Google `systemInstruction`) where needed; on OpenAI they are passed as-is.
+If an enabled `history` item exists, legacy `chat-history` position slots no longer insert history. Existing history-filter options on that slot are retained on the `history` item when migrating a preset.
+
+This message array is sent to the model. System-role messages are extracted by the provider adapter into the API-specific system field where needed; on OpenAI they are passed as-is.
+
+History operations use three terms:
+
+- `insert` adds virtual messages at a depth in the history stream. Depth `0` is the end; depth `N` is before the Nth message counted backward. Depth is clamped to the beginning if it exceeds the stream. Multiple inserts at the same depth have stable order: extension-registered operations first, then preset operations, each in registration/declaration order.
+- `keep` selects a recent history window by either estimated tokens or traces. A trace is one agent start-to-settle sequence, including its user, assistant, and tool messages. Choose one unit; do not combine `tokens` and `traces`.
+- `reduce` selects what happens outside that window: `hide` omits it, while `summary` uses an already available compaction or branch summary as its replacement. History assembly does not generate a new summary. Without a keep operation there is no window to reduce.
+
+There may be at most one `keep` and one `reduce` per history item; it can contain any number of inserts. Operations affect the compiled request only: inserts are virtual and do not write session history. System compaction has its own keep setting and physical behavior; a preset's virtual keep/reduce does not change compaction settings.
 
 Examples:
 
+```json
+{ "kind": "history", "id": "history", "ops": [
+  { "op": "keep", "traces": 8 },
+  { "op": "reduce", "as": "hide" },
+  { "op": "insert", "id": "lore", "depth": 1, "content": "Current world lore..." }
+] }
+```
 ```
 items: [system, system, user, assistant, system]
 output: [system(merged), user, assistant, system]
 ```
 
 ```
-items: [system, chat-history, user/assistant({{lastUserMessage}})]
-output: [system, <real conversation>, latest-user-message]
+items: [system, history, user/assistant({{lastUserMessage}})]
+output: [system, <assembled conversation>, latest-user-message]
 ```
 
 ## Wrapping Items
 
-Both `block` and `slot` items accept a `wrap` field that wraps the rendered text in a custom XML tag — a shorthand for adding structured context markers without hand-writing the tags around every item.
+Both `block` and `slot` items accept a `wrap` field that wraps rendered text in a custom XML tag.
 
 ```json
 { "kind": "block", "id": "role", "content": "You are the world referee.", "wrap": "context" }
@@ -164,10 +203,11 @@ renders as:
 
 Rules:
 
-- The wrap is applied **after** `{{macro}}` expansion, so macros inside the item expand normally.
-- Items that render empty are skipped entirely — no empty tag pair is emitted.
+- The wrap is applied after `{{macro}}` expansion.
+- Empty items are skipped without emitting an empty tag pair.
 - Attribute values are XML-escaped (`&`, `<`, `>`, `"`).
-- An invalid tag name (not an XML name) produces a warning diagnostic and leaves the text unwrapped.
+- Invalid tag names produce a warning and leave the text unwrapped.
+
 
 ## Per-Item Heading and Ending
 
@@ -268,9 +308,11 @@ The currently selected model as `provider/id` (e.g. `anthropic/claude-sonnet-4-5
 
 ### `chat-history`
 
-The conversation insertion point. This slot determines where in the message array the real conversation appears — it does not render text itself. Place it explicitly to control position and filtering.
+The legacy conversation insertion point. It injects history at this slot only when the preset has no enabled `history` item. Otherwise, the history item takes precedence and this slot does not insert history.
 
-**Fallback:** if a preset declares no `chat-history` position slot, the real conversation is appended to the end of the compiled message array instead of being dropped. The exception is a stateless one-shot preset that re-inserts the latest user message with `{{lastUserMessage}}` and has no history slot: history stays omitted to avoid duplicating that user message. Declare the slot when you need a specific position or per-slot filtering options.
+When neither an enabled `history` item nor a `chat-history` position slot is present, the real conversation is appended implicitly. Stateless one-shot presets that re-insert the latest user message with `{{lastUserMessage}}` continue to omit implicit history to avoid duplication.
+
+The following filtering options remain available on legacy `chat-history` slots and migrate to the `history` item when changing to the new form:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -536,11 +578,11 @@ The `tools` and `skills` top-level fields filter visibility using glob patterns:
 }
 ```
 
-- `allow` — only matching resources are visible.
-- `deny` — matching resources are hidden.
+- `allow` — only matching resources are visible; an empty allow list hides all resources.
+- `deny` — matching resources are hidden. When both fields are present, deny takes precedence over allow.
 - Values are glob patterns: `"bash*"`, `"*"`, `"read"`.
 
-**Applies to actual tool registration, not just prompt text.** When a preset with a tools policy is active, denied tools are removed from `agent.state.tools` — the model cannot call them. This applies to all tools: built-in (`edit`, `write`, `bash`), extension-registered (`quick_edit`, `code-search`, `github`), and custom tools from the SDK. The policy is re-applied after every tool registry refresh (including `/reload` and extension reloads).
+**Applies to actual tool authorization, not just prompt text.** When a preset with a tools policy is active, denied tools are removed from `agent.state.tools`, from nested callable tools, and from tool-search discovery. This applies to built-in, extension-registered, and SDK custom tools. The policy is re-applied after every tool registry refresh (including `/reload` and extension reloads).
 
 ## Defaults
 

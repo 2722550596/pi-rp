@@ -133,7 +133,8 @@ function combineUsage(first: Usage, second: Usage): Usage {
 export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
-	keepRecentTokens: number;
+	keepRecentTokens?: number;
+	keepTraces?: number;
 	/** Explicit summarization output cap; replaces the `0.8 * reserveTokens` derivation. */
 	summaryMaxTokens?: number;
 	/** Absolute trigger threshold in tokens; replaces the `contextWindow - reserveTokens` derivation. */
@@ -333,7 +334,7 @@ function isCutPointMessage(message: AgentMessage): boolean {
 	return false;
 }
 
-function isTurnStartMessage(message: AgentMessage): boolean {
+export function isTurnStartMessage(message: AgentMessage): boolean {
 	switch (message.role) {
 		case "user":
 		case "bashExecution":
@@ -418,6 +419,7 @@ export function findCutPoint(
 	startIndex: number,
 	endIndex: number,
 	keepRecentTokens: number,
+	keepTraces?: number,
 ): CutPointResult {
 	const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
 
@@ -425,47 +427,58 @@ export function findCutPoint(
 		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
 	}
 
-	// Walk backwards from newest, accumulating estimated message sizes
-	let accumulatedTokens = 0;
-	let cutIndex = cutPoints[0]; // Default: keep from first message (not header)
-
-	for (let i = endIndex - 1; i >= startIndex; i--) {
-		const entry = entries[i];
-		const messageTokens = sessionEntryToContextMessages(entry).reduce(
-			(sum, message) => sum + estimateTokens(message),
-			0,
-		);
-		if (messageTokens === 0) continue;
-		accumulatedTokens += messageTokens;
-
-		// Check if we've exceeded the budget
-		if (accumulatedTokens >= keepRecentTokens) {
-			// Find the closest valid cut point at or after this entry
-			for (let c = 0; c < cutPoints.length; c++) {
-				if (cutPoints[c] >= i) {
-					cutIndex = cutPoints[c];
-					break;
-				}
+	if (keepTraces !== undefined && (!Number.isSafeInteger(keepTraces) || keepTraces <= 0)) {
+		throw new Error("keepTraces must be a positive safe integer.");
+	}
+	let cutIndex = cutPoints[0];
+	if (keepTraces !== undefined) {
+		let traces = 0;
+		let traceStart = -1;
+		for (let i = endIndex - 1; i >= startIndex; i--) {
+			if (isTurnStartEntry(entries[i])) {
+				traces++;
+				traceStart = i;
+				if (traces === keepTraces) break;
 			}
-			break;
+		}
+		cutIndex = traces < keepTraces ? startIndex : traceStart;
+	} else {
+		// Walk backwards from newest, accumulating estimated message sizes
+		let accumulatedTokens = 0;
+		for (let i = endIndex - 1; i >= startIndex; i--) {
+			const entry = entries[i];
+			const messageTokens = sessionEntryToContextMessages(entry).reduce(
+				(sum, message) => sum + estimateTokens(message),
+				0,
+			);
+			if (messageTokens === 0) continue;
+			accumulatedTokens += messageTokens;
+
+			if (accumulatedTokens >= keepRecentTokens) {
+				for (let c = 0; c < cutPoints.length; c++) {
+					if (cutPoints[c] >= i) {
+						cutIndex = cutPoints[c];
+						break;
+					}
+				}
+				break;
+			}
 		}
 	}
 
-	// Scan backwards from cutIndex to include adjacent metadata entries that do not affect context.
+	// Match token-mode metadata handling: adjacent non-context entries travel
+	// with the kept boundary, except compaction entries which are boundaries.
 	while (cutIndex > startIndex) {
 		const prevEntry = entries[cutIndex - 1];
-		// Stop at compaction boundaries or context-visible entries.
 		if (prevEntry.type === "compaction" || sessionEntryToContextMessages(prevEntry).length > 0) {
 			break;
 		}
 		cutIndex--;
 	}
 
-	// Determine if this is a split turn
 	const cutEntry = entries[cutIndex];
 	const startsTurn = isTurnStartEntry(cutEntry);
 	const turnStartIndex = startsTurn ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
-
 	return {
 		firstKeptEntryIndex: cutIndex,
 		turnStartIndex,
@@ -798,7 +811,13 @@ export function prepareCompaction(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+	const cutPoint = findCutPoint(
+		pathEntries,
+		boundaryStart,
+		boundaryEnd,
+		settings.keepRecentTokens ?? DEFAULT_COMPACTION_SETTINGS.keepRecentTokens ?? 20000,
+		settings.keepTraces,
+	);
 
 	// Get UUID of first kept entry
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];

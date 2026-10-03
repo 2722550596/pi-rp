@@ -1378,7 +1378,7 @@ Use `pi.setActiveTools()` to enable or disable tools (including dynamically adde
 
 Use `promptSnippet` to opt a custom tool into a one-line entry in `Available tools`, and `promptGuidelines` to append tool-specific bullets to the default `Guidelines` section when the tool is active.
 
-**Tool search:** extension tools are foldable by default — when tool search is active they are removed from the function list and the model loads them on demand via the `tool_search` tool (see [Tool Search](tool-search.md)). Set `deferrable: false` on the definition to keep a tool always available. Search matches your tool's name, description, prompt snippet, and parameter descriptions, so write them the way a model would search for the capability.
+**Tool search:** `direct` tools participate in token-threshold auto-folding; `exposure: "deferred"` tools remain searchable and callable by other tools without appearing as model-declared functions. The active preset's `tools.allow` and `tools.deny` policy controls user authorization independently. Search includes tool/namespace descriptions and instructions, prompt snippets, and nested parameter names/descriptions (see [Tool Search](tool-search.md)).
 
 **Important:** `promptGuidelines` bullets are appended flat to the `Guidelines` section with no tool name prefix. Each guideline must name the tool it refers to — avoid "Use this tool when..." because the LLM cannot tell which tool "this" means. Write "Use my_tool when..." instead.
 
@@ -1699,6 +1699,32 @@ pi.registerSlot({
 ```
 
 Unknown options in the preset JSON are passed through to `ctx.item.options` — no changes to pi's core are needed to support new slot-specific options.
+
+### pi.registerHistoryOp(op)
+
+Register a session-scoped dynamic operation for prompt history assembly. Operations are evaluated when the active preset is compiled; use `insert` to provide virtual messages at a history depth. The active preset can also declare static `keep` and `reduce` operations in a `history` item. See [History Items](prompt-presets.md#history-item).
+
+```typescript
+const unregister = pi.registerHistoryOp({
+  op: "insert",
+  id: "example.lore",
+  depth: 1,
+  async: true,
+  render: async (ctx) => {
+    // ctx.messages is the read-only, windowed history snapshot.
+    // Return AgentMessage[]; inserted messages are not persisted to session history.
+    return await loadLore(ctx);
+  },
+});
+
+// When no longer needed:
+unregister();
+```
+
+History operations support `insert`, `keep`, and `reduce`. Insert renderers can be asynchronous when declared with `async: true`. At a shared depth, dynamic operations run before preset operations; order within each source is stable registration/declaration order. Each insert sees the same windowed history, not the output of other inserts. A failed insert is discarded without discarding independent inserts. Cancellation aborts the compile.
+
+`keep` chooses a recent window by `tokens` or `traces`; `reduce` chooses `hide` or an already available `summary` for history outside that window. They may each appear at most once in a preset history item. Summary reduction does not request a new summary. Preset windowing changes the compiled request, not persisted session history or system compaction settings.
+
 
 ### pi.registerMacro(definition)
 

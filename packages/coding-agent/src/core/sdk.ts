@@ -28,6 +28,7 @@ import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { chooseDefaultPreset, type LoadedPromptPresetSource, loadPromptPresets } from "./prompt-preset/loader.ts";
+import type { HistoryHostDataProvider } from "./prompt-preset/types.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { RequestIdentity } from "./request-gateway.ts";
 import { RequestGateway } from "./request-gateway.ts";
@@ -172,6 +173,8 @@ export interface CreateAgentSessionOptions {
 	 * Omitted on node ⇒ unchanged behavior.
 	 */
 	inlinePresets?: readonly LoadedPromptPresetSource[];
+	/** Host-owned providers for explicitly declared history operation dependencies. */
+	historyHostData?: readonly HistoryHostDataProvider[];
 	/** Inline state-schema definitions (bundled-resource channel). See inlinePresets. */
 	inlineSchemas?: readonly SchemaDefSource[];
 	/** Enable state schema strict mode: reject state writes to paths not covered by a loaded schema. */
@@ -583,7 +586,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		agentDir,
 		configDir: options.configDir,
 		stores: options.stores,
-		inlinePresets: options.inlinePresets,
+		historyHostData: options.historyHostData,
 		inlineSchemas: options.inlineSchemas,
 		scopedModels: options.scopedModels,
 		resourceLoader,

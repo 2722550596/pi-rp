@@ -9,7 +9,8 @@
  */
 
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { SessionEntry } from "../../src/core/session-manager.ts";
 import { createHarness } from "../suite/harness.ts";
 
 describe("navigateTree restores state to the target branch", () => {
@@ -57,6 +58,44 @@ describe("navigateTree restores state to the target branch", () => {
 
 			// State is restored to the target branch's last state snapshot
 			expect(session.stateManager.get("ns")).toEqual({ v: 1 });
+		} finally {
+			harness.cleanup();
+		}
+	});
+	it("leaves leaf and state unchanged when branch preflight fails, then permits later navigation", async () => {
+		const harness = await createHarness();
+		try {
+			const { session, sessionManager } = harness;
+			harness.setResponses([fauxAssistantMessage("first reply"), fauxAssistantMessage("second reply")]);
+			await session.prompt("first turn");
+			await session.agent.waitForIdle();
+			sessionManager.appendState({ ns: { v: 1 } });
+			await session.prompt("second turn");
+			await session.agent.waitForIdle();
+			sessionManager.appendState({ ns: { v: 2 } });
+			session.stateManager.load({ ns: { v: 2 } });
+
+			const userMessages = sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "message" && entry.message.role === "user");
+			const originalLeaf = sessionManager.getLeafId();
+			const originalState = session.stateManager.snapshot();
+			const compute = vi.spyOn(
+				session as unknown as { _computeBranchState: (entries: SessionEntry[]) => Promise<unknown> },
+				"_computeBranchState",
+			);
+			compute.mockRejectedValueOnce(new Error("preflight failed"));
+			await expect(session.navigateTree(userMessages[0]!.id, { summarize: false })).rejects.toThrow(
+				"preflight failed",
+			);
+			expect(sessionManager.getLeafId()).toBe(originalLeaf);
+			expect(session.stateManager.snapshot()).toEqual(originalState);
+
+			compute.mockRestore();
+			await expect(session.navigateTree(userMessages[0]!.id, { summarize: false })).resolves.toMatchObject({
+				cancelled: false,
+			});
+			expect(sessionManager.getLeafId()).not.toBe(originalLeaf);
 		} finally {
 			harness.cleanup();
 		}

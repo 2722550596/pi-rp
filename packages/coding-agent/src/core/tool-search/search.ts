@@ -10,19 +10,21 @@
  * happen exclusively in the D1 `onToolBatchCompleted` callback).
  */
 
+import type { ToolNamespace } from "../extensions/types.ts";
+
 /** A single parameter of a searchable tool, flattened for matching (M3 §2). */
 export interface SearchableToolParameter {
 	name: string;
 	description?: string;
 }
 
-/** Immutable per-search view of a foldable, not-yet-discovered tool (M3 §2). */
+/** Immutable per-search view of a foldable or deferred tool. */
 export interface SearchableTool {
 	name: string;
 	description: string;
 	promptSnippet?: string;
+	namespace?: ToolNamespace;
 	parameters: readonly SearchableToolParameter[];
-	deferrable: boolean;
 }
 
 /** Parameters of a `tool_search` call (schema frozen in M1 §3.4). */
@@ -94,14 +96,29 @@ const SENTENCE_TERMINATORS: Record<string, true> = {
 	"？": true,
 };
 
-interface NormalizedFields {
+export interface SearchableToolRankingFields {
 	tool: SearchableTool;
 	name: string;
 	description: string;
 	promptSnippet: string | undefined;
+	namespaceName: string | undefined;
+	namespaceDescription: string | undefined;
+	namespaceInstructions: string | undefined;
 	paramNames: string[];
 	paramDescriptions: string[];
 }
+
+/** Scoring strategy seam; returning undefined excludes a tool from the result set. */
+export interface ToolSearchRanker {
+	score(
+		fields: SearchableToolRankingFields,
+		keywords: readonly string[],
+		pattern: string | undefined,
+		regexMatches: boolean,
+	): number | undefined;
+}
+
+type NormalizedFields = SearchableToolRankingFields;
 
 function normalizeText(value: string): string {
 	return value.toLocaleLowerCase("en-US");
@@ -113,6 +130,11 @@ function normalizeFields(tool: SearchableTool): NormalizedFields {
 		name: normalizeText(tool.name),
 		description: normalizeText(tool.description),
 		promptSnippet: tool.promptSnippet === undefined ? undefined : normalizeText(tool.promptSnippet),
+		namespaceName: tool.namespace?.name === undefined ? undefined : normalizeText(tool.namespace.name),
+		namespaceDescription:
+			tool.namespace?.description === undefined ? undefined : normalizeText(tool.namespace.description),
+		namespaceInstructions:
+			tool.namespace?.instructions === undefined ? undefined : normalizeText(tool.namespace.instructions),
 		paramNames: tool.parameters.map((parameter) => normalizeText(parameter.name)),
 		paramDescriptions: tool.parameters
 			.map((parameter) => parameter.description)
@@ -131,8 +153,14 @@ function literalFieldScore(fields: NormalizedFields, token: string): number {
 	if (fields.name === token) return FIELD_SCORE_NAME_EXACT;
 	if (fields.name.startsWith(token)) return FIELD_SCORE_NAME_PREFIX;
 	if (fields.name.includes(token)) return FIELD_SCORE_NAME_SUBSTRING;
-	if (fields.description.includes(token)) return FIELD_SCORE_DESCRIPTION;
-	if (fields.promptSnippet?.includes(token)) return FIELD_SCORE_DESCRIPTION;
+	if (
+		fields.description.includes(token) ||
+		fields.promptSnippet?.includes(token) ||
+		fields.namespaceName?.includes(token) ||
+		fields.namespaceDescription?.includes(token) ||
+		fields.namespaceInstructions?.includes(token)
+	)
+		return FIELD_SCORE_DESCRIPTION;
 	if (fields.paramNames.some((name) => name.includes(token))) return FIELD_SCORE_PARAM_NAME;
 	if (fields.paramDescriptions.some((description) => description.includes(token)))
 		return FIELD_SCORE_PARAM_DESCRIPTION;
@@ -144,12 +172,33 @@ function regexHitsFields(regex: RegExp, fields: NormalizedFields): boolean {
 		regex.test(fields.tool.name) ||
 		regex.test(fields.tool.description) ||
 		(fields.tool.promptSnippet !== undefined && regex.test(fields.tool.promptSnippet)) ||
+		(fields.tool.namespace !== undefined &&
+			[fields.tool.namespace.name, fields.tool.namespace.description, fields.tool.namespace.instructions].some(
+				(value) => value !== undefined && regex.test(value),
+			)) ||
 		fields.tool.parameters.some(
 			(parameter) =>
 				regex.test(parameter.name) || (parameter.description !== undefined && regex.test(parameter.description)),
 		)
 	);
 }
+
+/** Existing explainable field scorer, exported as the injectable default. */
+export const defaultToolSearchRanker: ToolSearchRanker = {
+	score(fields, keywords, pattern, regexMatches) {
+		if (!regexMatches) return undefined;
+		let score = 0;
+		for (const keyword of keywords) {
+			const keywordScore = literalFieldScore(fields, keyword);
+			if (keywordScore === 0) return undefined;
+			score += keywordScore;
+		}
+		if (pattern !== undefined) {
+			score += literalFieldScore(fields, normalizeText(pattern)) + REGEX_BONUS;
+		}
+		return score;
+	},
+};
 
 /**
  * First non-empty prefix before the first sentence terminator (`.?!。！？`),
@@ -230,7 +279,11 @@ function clampLimit(limit: number | undefined): number {
  * Run one search over a fixed, already allow/deny-filtered snapshot (M3 §3).
  * Sorts by explainable score before applying `limit`; never mutates the snapshot.
  */
-export function searchTools(snapshot: readonly SearchableTool[], request: ToolSearchRequest): SearchToolsOutcome {
+export function searchTools(
+	snapshot: readonly SearchableTool[],
+	request: ToolSearchRequest,
+	ranker: ToolSearchRanker = defaultToolSearchRanker,
+): SearchToolsOutcome {
 	if (snapshot.length === 0) {
 		return { status: "all-loaded", text: TOOL_SEARCH_ALL_LOADED_MESSAGE };
 	}
@@ -279,25 +332,9 @@ export function searchTools(snapshot: readonly SearchableTool[], request: ToolSe
 
 	for (let index = 0; index < fields.length; index++) {
 		const field = fields[index];
-		if (regex !== undefined && !regexHitsFields(regex, field)) continue;
-
-		let score = 0;
-		let allKeywordsMatched = true;
-		for (const keyword of keywords) {
-			const keywordScore = literalFieldScore(field, keyword);
-			if (keywordScore === 0) {
-				allKeywordsMatched = false;
-				break;
-			}
-			score += keywordScore;
-		}
-		if (!allKeywordsMatched) continue;
-
-		if (hasPattern && pattern !== undefined) {
-			// The pattern also contributes its highest literal field score; the
-			// regex channel itself adds a flat bonus exactly once (M3 §3 step 8).
-			score += literalFieldScore(field, normalizeText(pattern)) + REGEX_BONUS;
-		}
+		const regexMatches = regex === undefined || regexHitsFields(regex, field);
+		const score = ranker.score(field, keywords, hasPattern ? pattern : undefined, regexMatches);
+		if (score === undefined) continue;
 		scored.push({ index, score });
 
 		if (Date.now() - startedAt > TOOL_SEARCH_HARD_BUDGET_MS) {

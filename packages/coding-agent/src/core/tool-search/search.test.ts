@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ExtensionToolContext } from "../extensions/types.ts";
 import { ToolSearchManager } from "./manager.ts";
 import {
+	defaultToolSearchRanker,
 	firstSentence,
 	type SearchableTool,
 	searchTools,
@@ -11,6 +12,7 @@ import {
 	TOOL_SEARCH_NO_MATCH_MESSAGE,
 	TOOL_SEARCH_PATTERN_MAX_LENGTH,
 	type ToolSearchDetails,
+	type ToolSearchRanker,
 } from "./search.ts";
 import { TOOL_SEARCH_TOOL_NAME } from "./tool-search-definition.ts";
 
@@ -19,7 +21,6 @@ function tool(name: string, overrides: Partial<SearchableTool> = {}): Searchable
 		name,
 		description: `${name} tool`,
 		parameters: [],
-		deferrable: true,
 		...overrides,
 	};
 }
@@ -48,6 +49,61 @@ describe("searchTools field coverage", () => {
 		expect(matchedNames(searchTools(snapshot, { keywords: ["alpha"] }))).toEqual(["alpha-runner"]);
 		expect(matchedNames(searchTools(snapshot, { keywords: ["kubernetes"] }))).toEqual(["gamma", "zeta"]);
 		expect(matchedNames(searchTools(snapshot, { keywords: ["region"] }))).toEqual(["delta", "epsilon"]);
+	});
+
+	it("searches namespace metadata and nested schema properties", () => {
+		const manager = new ToolSearchManager();
+		manager.recompute({
+			tools: [
+				{
+					name: "tenant_lookup",
+					description: "Lookup a tenant.",
+					exposure: "direct",
+					namespace: {
+						name: "lotm",
+						description: "World knowledge",
+						instructions: "Use for regional lore",
+					},
+					parameters: Type.Object({
+						options: Type.Object({
+							region: Type.String({ description: "Select the celestial archive" }),
+						}),
+					}),
+				},
+			],
+			active: true,
+		});
+		const [catalogEntry] = manager.getSearchableTools();
+		expect(catalogEntry?.parameters).toEqual([
+			{ name: "options", description: undefined },
+			{ name: "options.region", description: "Select the celestial archive" },
+		]);
+		expect(matchedNames(searchTools(manager.getSearchableTools(), { keywords: ["regional"] }))).toEqual([
+			"tenant_lookup",
+		]);
+		expect(matchedNames(searchTools(manager.getSearchableTools(), { keywords: ["celestial"] }))).toEqual([
+			"tenant_lookup",
+		]);
+	});
+
+	it("accepts a ranker seam while retaining the default score ordering", () => {
+		const snapshot = [
+			tool("alpha", { description: "shared capability" }),
+			tool("zeta", { description: "shared capability" }),
+		];
+		const ranker: ToolSearchRanker = {
+			score(fields, keywords, _pattern, regexMatches) {
+				return regexMatches && keywords.every((keyword) => fields.description.includes(keyword))
+					? fields.name === "zeta"
+						? 2
+						: 1
+					: undefined;
+			},
+		};
+		expect(matchedNames(searchTools(snapshot, { keywords: ["shared"] }))).toEqual(
+			matchedNames(searchTools(snapshot, { keywords: ["shared"] }, defaultToolSearchRanker)),
+		);
+		expect(matchedNames(searchTools(snapshot, { keywords: ["shared"] }, ranker))).toEqual(["zeta", "alpha"]);
 	});
 
 	it("matches case-insensitively but returns original-case names", () => {
@@ -211,24 +267,24 @@ describe("tool_search execute adapter (R3/D3/D15)", () => {
 		const manager = new ToolSearchManager();
 		manager.recompute({
 			tools: [
-				{ name: "read", description: "native read tool", parameters: Type.Object({}), deferrable: false },
+				{ name: "read", description: "native read tool", parameters: Type.Object({}), exposure: "direct" },
 				{
 					name: "alpha-tool",
 					description: "Alpha tool for alpha things",
 					parameters: Type.Object({}),
-					deferrable: true,
+					exposure: "direct",
 				},
 				{
 					name: "beta-tool",
 					description: "Beta tool for beta things",
 					parameters: Type.Object({}),
-					deferrable: true,
+					exposure: "direct",
 				},
 				{
 					name: "gamma-tool",
 					description: "Gamma tool for gamma things",
 					parameters: Type.Object({}),
-					deferrable: true,
+					exposure: "direct",
 				},
 			],
 			active: true,
@@ -333,7 +389,6 @@ describe("searchTools performance budget (M3 §9)", () => {
 					name: `param_${param}_${index}`,
 					description: `Parameter ${param} description covering region handling for tool ${index}`,
 				})),
-				deferrable: true,
 			});
 		}
 		const request = { pattern: "data.*base", keywords: ["kubernetes", "region"], limit: 20 };

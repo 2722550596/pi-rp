@@ -59,6 +59,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		let startupWaited = false;
 		let autoEnableCodemode = true;
 		let resourceToolsExposure: McpExposure | undefined;
+		let sessionContext: ExtensionContext | undefined;
+		const warnedUnavailable = new Set<McpExposure>();
 		let syncResourceTools: () => void = () => {};
 		const hideServerTools = (name: string) => {
 			for (const toolName of toolsByServer.get(name) ?? []) {
@@ -101,8 +103,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					pi.registerTool(hidden);
 				}
 			}
-			toolsByServer.set(connection.name, current);
-			syncResourceTools();
+			activateIndirectTools();
 		};
 		const effectiveEntries = (configured: McpServerEntry[], registered: RegisteredMcpServer[]) => {
 			const names = new Set(configured.map((entry) => entry.name));
@@ -112,24 +113,45 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const enabledEntries = effectiveEntries(entries, pi.getMcpServers()).filter(
 				(entry) => entry.config.enabled !== false,
 			);
-			const hasCodemode = enabledEntries.some((entry) =>
-				[entry.config.exposure ?? "codemode", ...Object.values(entry.config.toolExposure ?? {})].includes(
-					"codemode",
-				),
+			const exposures = new Set(
+				enabledEntries.flatMap((entry) => [
+					entry.config.exposure ?? "codemode",
+					...Object.values(entry.config.toolExposure ?? {}),
+				]),
 			);
-			const hasDeferred = enabledEntries.some((entry) =>
-				[entry.config.exposure ?? "codemode", ...Object.values(entry.config.toolExposure ?? {})].includes(
-					"deferred",
-				),
-			);
+			const needsCodemode = exposures.has("codemode");
+			const needsToolSearch = exposures.has("deferred");
 			const available = new Set(pi.getAllTools().map((tool) => tool.name));
 			const additions = [
-				...(autoEnableCodemode && hasCodemode ? ["codemode"] : []),
-				...(hasDeferred ? [TOOL_SEARCH_TOOL_NAME] : []),
+				...(autoEnableCodemode && needsCodemode ? ["codemode"] : []),
+				...(needsToolSearch ? [TOOL_SEARCH_TOOL_NAME] : []),
 			].filter((name) => available.has(name));
 			const activeTools = new Set(pi.getActiveTools());
 			const next = [...activeTools, ...additions.filter((name) => !activeTools.has(name))];
 			if (next.length !== activeTools.size) pi.setActiveTools(next);
+
+			const active = new Set(next);
+			const unavailable: Array<[McpExposure, string]> = [];
+			if (needsCodemode && (!available.has("codemode") || !active.has("codemode"))) {
+				unavailable.push(["codemode", autoEnableCodemode ? "codemode" : "codemode (autoEnableCodemode is false)"]);
+			}
+			if (needsToolSearch && (!available.has(TOOL_SEARCH_TOOL_NAME) || !active.has(TOOL_SEARCH_TOOL_NAME))) {
+				unavailable.push(["deferred", TOOL_SEARCH_TOOL_NAME]);
+			}
+			if (![...servers.values()].some((server) => server.state === "connected")) return;
+			for (const [exposure, toolName] of unavailable) {
+				if (warnedUnavailable.has(exposure)) continue;
+				warnedUnavailable.add(exposure);
+				sessionContext?.ui.notify(
+					`MCP tools configured for ${exposure} exposure are not reachable: required discovery tool "${toolName}" is missing or inactive.`,
+					"warning",
+				);
+			}
+			for (const exposure of exposures) {
+				if (exposure === "codemode" || exposure === "deferred") {
+					if (!unavailable.some(([missing]) => missing === exposure)) warnedUnavailable.delete(exposure);
+				}
+			}
 		};
 		const reconnectEntry = async (entry: McpServerEntry) => {
 			if (entry.config.enabled === false) return;
@@ -203,6 +225,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		};
 		const start = async (ctx: ExtensionContext) => {
 			active = true;
+			sessionContext = ctx;
+			warnedUnavailable.clear();
 			const trusted = trustedForSession(ctx);
 			cwd = ctx.cwd;
 			agentDir = options.agentDir ?? getAgentDir();
@@ -244,6 +268,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		});
 		pi.on("session_shutdown", async () => {
 			active = false;
+			sessionContext = undefined;
+			warnedUnavailable.clear();
 			await startup?.catch(() => undefined);
 			for (const [name, connection] of servers) {
 				hideServerTools(name);

@@ -1332,19 +1332,21 @@ export class SessionManager {
 	}
 
 	/**
-	 * Build the active, compaction-aware entry list for context/rendering.
-	 * Walks the current branch without enumerating entries from other branches.
+	 * Build compaction-aware entries for a selected branch without moving the
+	 * active leaf. Passing null selects the empty root path.
 	 */
-	buildContextEntries(): SessionEntry[] {
-		return buildContextEntriesFromPath(this.getBranch());
+	buildContextEntries(leafId?: string | null): SessionEntry[] {
+		if (leafId === null) return [];
+		return buildContextEntriesFromPath(leafId === undefined ? this.getBranch() : this.getBranch(leafId));
 	}
 
 	/**
-	 * Build the session context (what gets sent to the LLM) from the current branch.
-	 * The branch path is built once; the full append log remains available via getEntries().
+	 * Build the session context for the current or selected branch. The branch
+	 * path is built once; the full append log remains available via getEntries().
 	 */
-	buildSessionContext(): SessionContext {
-		return buildSessionContextFromPath(this.getBranch());
+	buildSessionContext(leafId?: string | null): SessionContext {
+		const path = leafId === null ? [] : leafId === undefined ? this.getBranch() : this.getBranch(leafId);
+		return buildSessionContextFromPath(path);
 	}
 
 	/**

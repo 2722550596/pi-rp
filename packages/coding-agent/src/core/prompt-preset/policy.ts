@@ -5,14 +5,13 @@ export function hasResourcePolicy(policy: PromptResourcePolicy | undefined): boo
 }
 
 export function applyResourcePolicy(names: string[], policy: PromptResourcePolicy | undefined): string[] {
-	if (!hasResourcePolicy(policy)) return names;
-	if (hasEffectiveAllowPolicy(policy?.allow)) {
-		return names.filter((name) => matchesAnyPattern(name, policy.allow!));
-	}
-	if (hasPatterns(policy?.deny)) {
-		return names.filter((name) => !matchesAnyPattern(name, policy.deny!));
-	}
-	return names;
+	return names.filter((name) => isResourceAllowed(name, policy));
+}
+
+export function isResourceAllowed(name: string, policy: PromptResourcePolicy | undefined): boolean {
+	if (!policy) return true;
+	if (hasEffectiveAllowPolicy(policy.allow) && !matchesAnyPattern(name, policy.allow)) return false;
+	return !hasPatterns(policy.deny) || !matchesAnyPattern(name, policy.deny);
 }
 
 export function matchesAnyPattern(name: string, patterns: string[]): boolean {

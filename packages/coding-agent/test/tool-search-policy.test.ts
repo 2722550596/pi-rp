@@ -1,32 +1,11 @@
 import { estimateToolsTokens } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import type { ToolDefinition } from "../src/core/extensions/types.ts";
-import { createSyntheticSourceInfo, type SourceInfo } from "../src/core/source-info.ts";
 import type { ToolSearchEntry } from "../src/core/tool-search/manager.ts";
-import {
-	normalizeDeferrable,
-	shouldActivateToolSearch,
-	type ToolSearchActivationInput,
-} from "../src/core/tool-search-policy.ts";
+import { shouldActivateToolSearch, type ToolSearchActivationInput } from "../src/core/tool-search-policy.ts";
 
-function definition(name: string, overrides: Partial<ToolDefinition> = {}): ToolDefinition {
-	return {
-		name,
-		label: name,
-		description: "test tool",
-		parameters: Type.Object({}),
-		execute: async () => ({ content: [], details: undefined }),
-		...overrides,
-	};
-}
-
-function source(source: string): SourceInfo {
-	return createSyntheticSourceInfo(`<${source}:x>`, { source });
-}
-
-function entry(name: string, description: string, deferrable: boolean): ToolSearchEntry {
-	return { name, description, parameters: Type.Object({}), deferrable };
+function entry(name: string, description: string, exposure: ToolSearchEntry["exposure"] = "direct"): ToolSearchEntry {
+	return { name, description, parameters: Type.Object({}), exposure };
 }
 
 function autoInput(overrides: Partial<ToolSearchActivationInput>): ToolSearchActivationInput {
@@ -40,40 +19,6 @@ function autoInput(overrides: Partial<ToolSearchActivationInput>): ToolSearchAct
 		...overrides,
 	};
 }
-
-describe("normalizeDeferrable", () => {
-	it("returns false for native tools regardless of declaration", () => {
-		// Native 7 never fold, even when the author mis-declares deferrable: true (R5 backstop).
-		for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls"]) {
-			expect(normalizeDeferrable(definition(name, { deferrable: true }), source("builtin"))).toBe(false);
-			// Name-based backstop even if the source marker were not "builtin".
-			expect(normalizeDeferrable(definition(name), source("package"))).toBe(false);
-		}
-	});
-
-	it("defaults extension tools to foldable", () => {
-		expect(normalizeDeferrable(definition("my_tool"), source("package"))).toBe(true);
-		expect(normalizeDeferrable(definition("my_tool"), source("top-level"))).toBe(true);
-	});
-
-	it("folds engine-synthesized builtin-source tools that are not native-7 (D23 follow-up: <memory> tools)", () => {
-		// The <memory> synthetic extension reuses source "builtin" for 12
-		// low-frequency tools; only the native-7 NAME set is forced eager (R5).
-		expect(normalizeDeferrable(definition("recall", { deferrable: true }), source("builtin"))).toBe(true);
-		expect(normalizeDeferrable(definition("awaken"), source("builtin"))).toBe(true);
-		expect(normalizeDeferrable(definition("recall", { deferrable: false }), source("builtin"))).toBe(false);
-	});
-
-	it("defaults SDK custom tools to foldable", () => {
-		expect(normalizeDeferrable(definition("sdk_tool"), source("sdk"))).toBe(true);
-	});
-
-	it("explicit declaration wins for non-native tools", () => {
-		expect(normalizeDeferrable(definition("my_tool", { deferrable: false }), source("package"))).toBe(false);
-		expect(normalizeDeferrable(definition("my_tool", { deferrable: true }), source("sdk"))).toBe(true);
-		expect(normalizeDeferrable(definition("my_tool", { deferrable: false }), source("sdk"))).toBe(false);
-	});
-});
 
 /** Mirrors the wire-tool mapping used inside shouldActivateToolSearch (name/description/parameters only). */
 function wireEstimate(tools: ToolSearchEntry[]): number {
@@ -96,7 +41,7 @@ describe("shouldActivateToolSearch", () => {
 	});
 
 	it("auto applies the >= boundary: estimate below, equal to, and above the threshold", () => {
-		const tools = [entry("big_tool", "x".repeat(4000), true)];
+		const tools = [entry("big_tool", "x".repeat(4000))];
 		const estimated = wireEstimate(tools);
 		// thresholdPercent=50 keeps the math exact: the threshold amount is 0.5 * contextWindow.
 		// estimate < threshold -> false
@@ -113,7 +58,7 @@ describe("shouldActivateToolSearch", () => {
 
 	it("auto stays inactive when the context window is invalid and reports a diagnostic", () => {
 		const diagnostics: string[] = [];
-		const tools = [entry("big_tool", "x".repeat(8000), true)];
+		const tools = [entry("big_tool", "x".repeat(8000))];
 		for (const contextWindow of [0, -5, Number.NaN]) {
 			expect(
 				shouldActivateToolSearch(autoInput({ contextWindow, tools }), (message) => diagnostics.push(message)),
@@ -126,7 +71,7 @@ describe("shouldActivateToolSearch", () => {
 	it("auto falls back to the default threshold when thresholdPercent is invalid", () => {
 		// Fallback threshold 10%: inactive when contextWindow > 10 * estimated, while a raw
 		// threshold of -5 would produce a negative boundary and (wrongly) activate.
-		const tools = [entry("tool", "y".repeat(2000), true)];
+		const tools = [entry("tool", "y".repeat(2000))];
 		const estimated = wireEstimate(tools);
 		for (const thresholdPercent of [Number.NaN, -5]) {
 			expect(
@@ -138,14 +83,14 @@ describe("shouldActivateToolSearch", () => {
 		);
 	});
 
-	it("counts non-deferrable tools as zero foldable burden", () => {
-		const tools = [entry("forced_tool", "x".repeat(8000), false)];
+	it("counts non-direct tools as zero foldable burden", () => {
+		const tools = [entry("forced_tool", "x".repeat(8000), "codemode")];
 		expect(shouldActivateToolSearch(autoInput({ contextWindow: 10_000, tools }))).toBe(false);
 	});
 
 	it("reserved tools are excluded from the estimation set (potential folding set semantics)", () => {
-		const reserved = entry("reserved_tool", "x".repeat(4000), true);
-		const small = entry("small_tool", "tiny", true);
+		const reserved = entry("reserved_tool", "x".repeat(4000));
+		const small = entry("small_tool", "tiny");
 		const withReserved = wireEstimate([reserved, small]);
 		const withoutReserved = wireEstimate([small]);
 		expect(withReserved).toBeGreaterThan(withoutReserved);

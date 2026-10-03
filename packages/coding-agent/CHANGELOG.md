@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the tool-definition `deferrable` option. Tool-search fold eligibility is now derived from exposure: `direct` tools fold only when token-threshold activation requires it, while `deferred` tools remain undeclared, callable, and searchable. Custom tools that were implicitly foldable before may now be declared directly when the threshold is not reached.
+
 ### Added
+- Session tree moves now preflight the target branch's state and schemas before changing the leaf; navigation mutations are serialized, and failed preflight leaves the active branch and state untouched.
 
 - Added MCP client support for stdio and Streamable HTTP servers, OAuth login/logout, trust-gated project configuration, and per-tool exposure control. Added codemode's QuickJS/WASM script tool with authorized nested tool dispatch. See [MCP servers](docs/mcp.md) and [Codemode](docs/codemode.md).
 - Added the Node.js `@earendil-works/pi-coding-agent/server` entry point with `createCodingAgentPiServer()` for hosting coding-agent sessions through `@earendil-works/pi-server` and its existing PiClient protocol. The host uses a dedicated session store/root, binds each protocol ID to one durable session, enforces a configured active-runtime limit, and documents the default local-filesystem lock and trusted-extension boundary.
@@ -39,7 +44,10 @@
 
 - Added browser/hosted resource supply: preset, opening, JSON-schema, and prompt-template loaders accept StorageBackend-backed scans; inline resources merge above scans with provenance/diagnostics, explicit missing IDs reject during harness assembly, and subagents inherit the parent supply seam. A per-harness `configDir` (default `.pi`) isolates project resources, settings, and the default state-store root without process-environment mutation; Node callers retain existing defaults. Browser extension UI notifications now emit the same `extension_ui_request` wire event as RPC mode through the required host `fire` callback.
 
+- Added prompt history assembly operations: presets can define a `history` item with `insert`, `keep` (estimated tokens or traces), and `reduce` (hide or reuse an existing summary); extensions can register session-scoped dynamic inserts with `pi.registerHistoryOp()`. Legacy `chat-history` positions and their filtering options remain supported when no enabled history item is present. Preset windowing affects the compiled request, not stored session history or physical compaction. See [Prompt Presets](docs/prompt-presets.md#compilation-model) and [Extensions](docs/extensions.md#piregisterhistoryopop).
+
 ### Changed
+- Changed prompt history compatibility: an enabled `history` item now takes precedence over legacy `chat-history` positions; presets without one retain the legacy position or implicit fallback. Physical compaction settings now accept mutually exclusive `keepTraces` or `keepRecentTokens` (default 20000 tokens).
 - `GET /api/meta` without a `?db=` parameter still reports the process DB's `db_path`, so the `/memories web` reuse probe keeps its existing meaning. The launcher is unchanged: it passes only `--db`/`--port` and borrows nothing but the DB path.
 - `memorize` tool results now confirm with `已记下：<uri>` only; the body is carried by the tool-call arguments and shown streaming in the TUI, so it is no longer echoed back into the model's context a second time.
 - The memory tools' TUI headers now show the tool names themselves (`memorize`/`revise`) instead of the localized `铭刻记忆`/`修订记忆`, matching how `write`/`edit` render.

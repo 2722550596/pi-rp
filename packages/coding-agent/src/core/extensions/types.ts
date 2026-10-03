@@ -63,11 +63,15 @@ import type { McpServerRegistry, RegisteredMcpServer } from "../mcp-servers.ts";
 import type { CustomMessage, CustomTypePolicy } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
-import type { MacroDefinition, PromptPresetDiagnostic, PromptRuntime, SlotDefinition } from "../prompt-preset/types.ts";
-import type { Settings } from "../settings-manager.ts";
-import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
+import type {
+	HistoryOp,
+	MacroDefinition,
+	PromptPresetDiagnostic,
+	PromptRuntime,
+	SlotDefinition,
+} from "../prompt-preset/types.ts";
 
-export type { PromptPresetDiagnostic, PromptRuntime } from "../prompt-preset/types.ts";
+export type { HistoryOp, PromptPresetDiagnostic, PromptRuntime } from "../prompt-preset/types.ts";
 
 import type {
 	BranchSummaryEntry,
@@ -77,8 +81,10 @@ import type {
 	SessionEntry,
 	SessionManager,
 } from "../session-manager.ts";
+import type { Settings } from "../settings-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
+import type { SpawnAgentOptions, SpawnAgentResult } from "../subagent/spawn.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
@@ -619,9 +625,6 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 * If omitted, the default execution mode applies.
 	 */
 	executionMode?: ToolExecutionMode;
-
-	/** Whether this tool may be omitted until discovered. Defaults to false at this type boundary. */
-	deferrable?: boolean;
 
 	/**
 	 * Capabilities this tool needs to function. Checked at the extension registration boundary against the runtime's
@@ -1800,9 +1803,10 @@ export interface ExtensionAPI {
 	 */
 	unregisterProvider(name: string): void;
 
-	/** Register a custom slot for prompt prompt rendering. */
+	/** Register a custom slot for prompt rendering. */
 	registerSlot(definition: SlotDefinition): void;
-
+	/** Register a session-scoped history operation. Returns a disposer. */
+	registerHistoryOp(op: HistoryOp): () => void;
 	/** Register a custom macro for prompt text expansion. */
 	registerMacro(definition: MacroDefinition): void;
 
@@ -2049,18 +2053,13 @@ export interface ExtensionRuntimeState {
 	/** Registrations queued during extension loading, preserving source ownership until the runner binds. */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
 	pendingNativeProviderRegistrations: Array<{ provider: Provider; extensionPath: string }>;
+	pendingHistoryOpRegistrations: Array<{ op: HistoryOp; extensionPath: string; active: boolean }>;
+	registerHistoryOp: (op: HistoryOp, extensionPath: string) => () => void;
 	pendingSlotRegistrations: SlotDefinition[];
 	pendingMacroRegistrations: MacroDefinition[];
-	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
-	/** Marks this extension instance as stale after runtime replacement or reload. */
 	invalidate: (message?: string) => void;
-	/** Retain an event-bus subscription until this runtime is invalidated. */
 	trackEventBusSubscription: (unsubscribe: () => void) => () => void;
-	/**
-	 * Before bindCore(): queues registrations and their extension owner.
-	 * After bindCore(): forwards registrations to the owner-aware host callback.
-	 */
 	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
 	registerNativeProvider: (provider: Provider, extensionPath?: string) => void;
 	unregisterProvider: (name: string, extensionPath?: string) => void;

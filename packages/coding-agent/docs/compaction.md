@@ -40,7 +40,7 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
 
 ### How It Works
 
-1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
+1. **Find cut point**: Walk backward from the newest message, keeping either the configured recent token budget (`keepRecentTokens`, default 20k) or `keepTraces` complete traces at agent turn-start boundaries. Configure exactly one keep unit in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`.
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
 3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
@@ -398,11 +398,13 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 |---------|---------|-------------|
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
-| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized); mutually exclusive with `keepTraces` |
+| `keepTraces` | - | Recent complete traces to keep; mutually exclusive with `keepRecentTokens` |
 | `summaryMaxTokens` | - | Explicit summarization output cap (defaults to `0.8 * reserveTokens`) |
 | `thresholdTokens` | - | Absolute auto-compaction trigger; replaces the `contextWindow - reserveTokens` derivation |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
+`keepTraces` must be a positive safe integer. It changes the physical cut-point selection only; the `contextWindow - reserveTokens` (or `thresholdTokens`) trigger remains unchanged. If omitted, the default `keepRecentTokens: 20000` behavior remains.
 
 ### Per-model overrides
 
