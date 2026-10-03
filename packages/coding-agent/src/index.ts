@@ -222,6 +222,8 @@ export {
 	ModelRuntime,
 	type ModelRuntimeAuthOverrides,
 } from "./core/model-runtime.ts";
+// Object-store tree helpers for hosts persisting structured bulk data
+export { JsonTree } from "./core/objects/tree/index.ts";
 export type {
 	PackageManager,
 	PathMetadata,

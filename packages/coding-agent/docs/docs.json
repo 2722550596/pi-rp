@@ -127,6 +127,10 @@
           "path": "sdk.md"
         },
         {
+          "title": "Object Store",
+          "path": "object-store.md"
+        },
+        {
           "title": "RPC Mode",
           "path": "rpc.md"
         },
