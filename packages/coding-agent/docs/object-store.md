@@ -83,7 +83,14 @@ Import is a two-phase contract:
 
 The optional `createImportPin` callback registers a temporary pin during import so a concurrent sweep cannot reclaim objects that are verified but not yet registered.
 
-## Garbage collection
+## Space maintenance (optional)
+
+Most archives never need explicit reclamation. Two zero-mechanism options cover the common cases first:
+
+- **Deleting an archive deletes its object directory.** Object storage is save-scoped, so the objects' lifetime follows the archive's lifetime — no marking required.
+- **Export → import compresses naturally.** A bundle carries only objects reachable from its roots; re-importing leaves orphans behind. One round-trip is a full cleanup.
+
+What remains is a rare maintenance path for a single long-lived archive: reclaiming the objects orphaned by rollbacks and overwrites. Orphans accumulate slowly (deduplicated old tree nodes, typically megabytes against gigabyte quotas), so treat GC as an occasional tool, not a running concern.
 
 GC is mark-and-sweep over the object store. Roots are: active branch heads, retained checkpoints, in-progress import pins, and explicit user pins. Everything unreachable from those is a candidate.
 
@@ -111,7 +118,7 @@ await gc.collectGarbage({
 
 The sweep re-verifies its preconditions (window open, barrier active, roots snapshot fresh, candidate set unchanged). If anything moved between dry run and sweep, it throws instead of guessing.
 
-**Constraints to know about:** GC is single-writer by design — only one GC runs at a time, inside the window, and cross-tab coordination is not provided (browser deployments should run GC from the tab that owns the save). Import buffers the archive in memory before verification; hosts distributing very large bundles should chunk at the bundle level rather than streaming through this API.
+**Constraints to know about:** GC is single-writer **by design, not provisionally**: cross-writer reclamation is a permanently rejected design, because two writers with independent root views cannot safely sweep each other's objects. Multi-open is solved by export → import as a fork (isolated roots, zero coordination). If a deployment ever needs in-place multi-tab access, gate GC on an exclusive ownership lock (Web Locks / file lock — "skip this round if anyone else is alive") rather than coordinating root views. Import buffers the archive in memory before verification; hosts distributing very large bundles should chunk at the bundle level rather than streaming through this API.
 
 ## Where pi uses this today
 

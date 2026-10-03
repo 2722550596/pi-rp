@@ -74,6 +74,8 @@ interface ObjectStore {
 
 ### 2.6 GC 与 bundle（P5，M4 细化）
 
+> **定位（v2.2，2026-10-04）**：GC 是低频的存档内维护路径，不是常规流程。回收需求的主要覆盖：删存档=删 save-scoped 对象目录（宿主直接操作，零机制）；导出导入一轮=天然压缩（bundle 只含 closure）。跨写者回收是**永久否决的设计**（各写者 roots 视图独立，无法安全 sweep 对方对象）——多开的正确形态是导出/导入 fork；若未来出现就地多 tab 需求，用独占所有权锁（Web Locks/文件锁，"有其他存活者则跳过本轮"）门控 GC，而非协调 roots 视图。
+
 - GC = mark/sweep；roots（冻结）：活跃分支头 state_root + 用户保留 checkpoint + 导入暂存根 + 显式 pin。beyond-roots 不可达对象可删（仅经 §2.3 管理面）。
 - SaveBundle = manifest + closure（manifest 引用的全部对象）；wire format 冻结为**tar 流**（manifest 在头部，对象字节按流式携带，浏览器下载友好）。
 - **跨系统事务边界（v2 新增，结案评审阻断 5）**：导入分两段归属——①pi 段：staging 校验（manifest/哈希/closure 完整）→ 对象逐个 put（幂等，天然原子）；②sefirot 段：存档记录（manifest 元数据、save 索引）在 **sefirot 侧 IndexedDB 单事务内原子登记**——IndexedDB 事务天然原子，跨系统不存在联合事务。失败语义：①段失败=无任何可见变化；②段失败=对象已落库但未登记（孤儿，由 GC 按 unreachable 回收），存档状态不变。digest 编码与 closure 遍历器（codec-aware visitor，按 schema 注册，拒绝全局 hash 扫描）由 M4 冻结。
