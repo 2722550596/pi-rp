@@ -47,3 +47,7 @@ plans/
 collect.sh
 
 **/.pi/
+
+# smoke/runtime artifacts
+auth.json
+models-store.json
