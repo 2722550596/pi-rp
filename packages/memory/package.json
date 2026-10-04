@@ -10,6 +10,10 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
+		"./driver-browser": {
+			"types": "./dist/driver-browser.d.ts",
+			"import": "./dist/driver-browser.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"bin": {
