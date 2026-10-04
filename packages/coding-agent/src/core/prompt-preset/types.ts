@@ -316,6 +316,12 @@ export interface PromptPreset {
 	thinkingLevel?: string;
 	/** Number of parent conversation messages to seed as chat history when this preset is delegated. */
 	inheritHistory?: number;
+	/**
+	 * Tool-only agent: drop assistant text/thinking content (loop emits no text
+	 * deltas; finalized messages keep only toolCall blocks). For two-pass
+	 * orchestration where user-visible prose comes from side requests.
+	 */
+	suppressAssistantText?: boolean;
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;

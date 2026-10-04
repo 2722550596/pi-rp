@@ -446,6 +446,16 @@ async function streamAssistantResponse(
 				if (partialMessage) {
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
+					// Tool-only agent: no prose leaves the loop, so text/thinking
+					// deltas never reach the UI.
+					if (
+						config.suppressAssistantText &&
+						event.type !== "toolcall_start" &&
+						event.type !== "toolcall_delta" &&
+						event.type !== "toolcall_end"
+					) {
+						break;
+					}
 					await emit({
 						type: "message_update",
 						assistantMessageEvent: event,
@@ -457,6 +467,12 @@ async function streamAssistantResponse(
 			case "done":
 			case "error": {
 				const finalMessage = await response.result();
+				if (config.suppressAssistantText) {
+					finalMessage.content = finalMessage.content.filter((c) => c.type === "toolCall");
+					if (partialMessage) {
+						context.messages[context.messages.length - 1] = finalMessage;
+					}
+				}
 				if (addedPartial) {
 					context.messages[context.messages.length - 1] = finalMessage;
 				} else {
@@ -472,6 +488,10 @@ async function streamAssistantResponse(
 	}
 
 	const finalMessage = await response.result();
+	if (config.suppressAssistantText) {
+		finalMessage.content = finalMessage.content.filter((c) => c.type === "toolCall");
+		if (addedPartial) context.messages[context.messages.length - 1] = finalMessage;
+	}
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = finalMessage;
 	} else {

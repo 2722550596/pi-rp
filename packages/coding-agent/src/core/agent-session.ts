@@ -1044,6 +1044,9 @@ export class AgentSession {
 					toolCallId: toolCall.id,
 					parentToolCallId: this._toolCallContexts.get(toolCall.id)?.parentToolCallId,
 					input: args as Record<string, unknown>,
+					batchToolCalls: assistantMessage.content
+						.filter((c) => c.type === "toolCall")
+						.map((c) => ({ id: c.id, name: c.name })),
 				});
 			} catch (err) {
 				if (err instanceof Error) throw err;
@@ -2632,6 +2635,7 @@ export class AgentSession {
 		if (isDisabledPromptPresetId(id)) {
 			this._activePreset = defaultPreset;
 			this._presetExplicitlyActivated = true;
+			this.agent.suppressAssistantText = false;
 			this._restoreToolPolicy();
 			if (options?.record !== false) this.sessionManager.appendPresetChange(id);
 			if (options?.persistSettings !== false) this.settingsManager.setDefaultPreset(id);
@@ -2721,6 +2725,7 @@ export class AgentSession {
 	}
 
 	private _syncActiveToolPolicy(): void {
+		this.agent.suppressAssistantText = this._activePreset?.suppressAssistantText === true;
 		const policy = this._activePreset.tools;
 		if (!hasResourcePolicy(policy)) {
 			this._restoreToolPolicy();

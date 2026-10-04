@@ -101,6 +101,13 @@ export interface AgentOptions {
 	initialState?: Partial<Omit<AgentState, "pendingToolCalls" | "isStreaming" | "streamingMessage" | "errorMessage">>;
 	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+	/**
+	 * Drop all text/thinking content from assistant messages: the loop emits no
+	 * text deltas to the UI and keeps only toolCall blocks in the finalized
+	 * message. For tool-only agents (e.g. two-pass orchestration where the only
+	 * user-visible prose comes from a side request).
+	 */
+	suppressAssistantText?: boolean;
 	streamFn: StreamFn;
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 	onPayload?: SimpleStreamOptions["onPayload"];
@@ -182,6 +189,8 @@ export class Agent {
 
 	public convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	public transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+	/** When true, assistant text/thinking content is dropped (tool-only agent). Mutable at runtime. */
+	public suppressAssistantText = false;
 	public streamFunction: StreamFn;
 	public getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 	public onPayload?: SimpleStreamOptions["onPayload"];
@@ -225,6 +234,7 @@ export class Agent {
 		this._state = createMutableAgentState(runtimeOptions.initialState);
 		this.convertToLlm = runtimeOptions.convertToLlm ?? defaultConvertToLlm;
 		this.transformContext = runtimeOptions.transformContext;
+		this.suppressAssistantText = runtimeOptions.suppressAssistantText ?? false;
 		this.streamFunction = runtimeOptions.streamFn ?? getDefaultStreamFn();
 		this.getApiKey = runtimeOptions.getApiKey;
 		this.onPayload = runtimeOptions.onPayload;
@@ -481,6 +491,7 @@ export class Agent {
 					: undefined,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
+			suppressAssistantText: this.suppressAssistantText,
 			getApiKey: this.getApiKey,
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {
