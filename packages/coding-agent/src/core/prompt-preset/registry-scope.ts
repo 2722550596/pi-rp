@@ -6,6 +6,7 @@ export interface PromptRegistryReader {
 	getAllSlots(): SlotDefinition[];
 	getMacro(name: string): MacroDefinition | undefined;
 	getAllMacros(): MacroDefinition[];
+	getContextSlotContent?(slotId: string): string | undefined;
 }
 export class PromptRegistryScope implements PromptRegistryReader {
 	private live = {
@@ -13,6 +14,7 @@ export class PromptRegistryScope implements PromptRegistryReader {
 		builtInSlots: new Map<string, SlotDefinition>(),
 		macros: new Map<string, MacroDefinition>(),
 	};
+	private contextSlotContents = new Map<string, string>();
 	private staged?: {
 		slots: Map<string, SlotDefinition>;
 		builtInSlots: Map<string, SlotDefinition>;
@@ -50,6 +52,20 @@ export class PromptRegistryScope implements PromptRegistryReader {
 		(isBuiltIn ? this.current.builtInSlots : this.current.slots).set(definition.name, definition);
 	}
 
+	replaceContextSlots(replacements: readonly { readonly slotId: string; readonly content: string }[]): void {
+		this.assertActive();
+		if (replacements.length === 0) return;
+		const next = new Map(this.contextSlotContents);
+		for (const replacement of replacements) {
+			next.set(replacement.slotId, replacement.content);
+		}
+		this.contextSlotContents = next;
+	}
+
+	getContextSlotContent(slotId: string): string | undefined {
+		return this.contextSlotContents.get(slotId);
+	}
+
 	getBuiltInSlot(name: string): SlotDefinition | undefined {
 		return this.current.builtInSlots.get(name);
 	}
@@ -82,5 +98,6 @@ export class PromptRegistryScope implements PromptRegistryReader {
 		this.live.slots.clear();
 		this.live.builtInSlots.clear();
 		this.live.macros.clear();
+		this.contextSlotContents.clear();
 	}
 }

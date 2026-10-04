@@ -145,6 +145,7 @@ export type {
 	SessionBeforeTreeEvent,
 	SessionBeforeTreeResult,
 	SessionCompactEvent,
+	SessionCompactResult,
 	SessionEvent,
 	SessionInfoChangedEvent,
 	SessionShutdownEvent,

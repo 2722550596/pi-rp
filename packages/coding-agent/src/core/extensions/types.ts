@@ -438,6 +438,15 @@ export interface ExtensionToolContext extends ExtensionContext {
 	/** Tools callable through executeTool under this caller's authorization snapshot. */
 	readonly tools: readonly AgentTool[];
 	executeTool(name: string, args: unknown, options?: ExecuteToolOptions): Promise<AgentToolCallOutcome>;
+	/**
+	 * Append a custom message to the active tool loop. It is added after tool results
+	 * and before the next provider request, without starting another turn.
+	 */
+	appendMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "display" | "details"> & {
+			content: string | CustomMessage<T>["content"];
+		},
+	): void;
 }
 
 /**

@@ -8,17 +8,13 @@ const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const RAW_ASSET_DIR = "packages/coding-agent/src/core/export-html";
 
 // 与 build.mjs rawContentPlugin 同语义（raw:<file> 相对仓级资产目录；<x>?raw 相对 importer）。
-// vitest 不经过 build.mjs 的 esbuild 管线，node 测试经 src 入口导入含 raw: 的模块时需等价解析。
+// vitest 不经过 build.mjs raw 资源管线，Node 单测需等价解析。
 function rawContentPlugin() {
 	return {
 		name: "raw-content",
 		resolveId(id: string, importer?: string) {
-			if (id.startsWith("raw:")) {
-				return `\0raw-content:${resolve(repoRoot, RAW_ASSET_DIR, id.slice(4))}`;
-			}
-			if (id.endsWith("?raw") && importer) {
-				return `\0raw-content:${resolve(dirname(importer), id.slice(0, -4))}`;
-			}
+			if (id.startsWith("raw:")) return `\0raw-content:${resolve(repoRoot, RAW_ASSET_DIR, id.slice(4))}`;
+			if (id.endsWith("?raw") && importer) return `\0raw-content:${resolve(dirname(importer), id.slice(0, -4))}`;
 			return null;
 		},
 		load(id: string) {
@@ -41,6 +37,10 @@ export default mergeConfig(
 		},
 		resolve: {
 			alias: [
+				{
+					find: /^@earendil-works\/pi-agent-core\/web$/,
+					replacement: fileURLToPath(new URL("../agent/src/web.ts", import.meta.url)),
+				},
 				{
 					find: /^@earendil-works\/pi-protocol$/,
 					replacement: fileURLToPath(new URL("../protocol/src/index.ts", import.meta.url)),

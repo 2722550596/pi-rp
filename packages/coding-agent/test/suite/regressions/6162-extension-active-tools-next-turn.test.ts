@@ -1,6 +1,7 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { convertToLlm } from "../../../src/core/messages.ts";
 import type { ExtensionFactory } from "../../../src/index.ts";
 import { createHarness } from "../harness.ts";
 
@@ -186,6 +187,89 @@ describe("extension active tools next-turn refresh", () => {
 			expect(providerSystemPrompts[0]).toContain("keep this run override");
 			expect(providerSystemPrompts[1]).toContain("keep this run override");
 		} finally {
+			harness.cleanup();
+		}
+	});
+	it("makes tool-appended messages visible to the next request once without starting another turn", async () => {
+		const appendEntered = Promise.withResolvers<void>();
+		const allowToolFinish = Promise.withResolvers<void>();
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCustomType("pool.visible", {
+						context: "include",
+						llmRole: "user",
+						compaction: "exclude",
+					});
+					pi.registerCustomType("pool.hidden", {
+						context: "exclude",
+						llmRole: "user",
+						compaction: "exclude",
+					});
+					pi.registerTool({
+						name: "load_context",
+						label: "Load Context",
+						description: "Load context into the current tool loop",
+						parameters: Type.Object({}),
+						execute: async (_toolCallId, _params, _signal, _onUpdate, extension) => {
+							extension.appendMessage({
+								customType: "pool.visible",
+								content: "loaded full pool text",
+								display: false,
+							});
+							extension.appendMessage({
+								customType: "pool.hidden",
+								content: "excluded pool text",
+								display: false,
+							});
+							appendEntered.resolve();
+							await allowToolFinish.promise;
+							return { content: [{ type: "text", text: "loaded" }], details: undefined };
+						},
+					});
+				},
+			],
+		});
+
+		let run: Promise<void> | undefined;
+		try {
+			const providerContexts: string[] = [];
+			harness.setResponses([
+				(context) => {
+					providerContexts.push(JSON.stringify(context.messages));
+					return fauxAssistantMessage(fauxToolCall("load_context", {}), { stopReason: "toolUse" });
+				},
+				(context) => {
+					providerContexts.push(JSON.stringify(context.messages));
+					return fauxAssistantMessage("done");
+				},
+			]);
+
+			run = harness.session.prompt("start");
+			await appendEntered.promise;
+			expect(providerContexts).toHaveLength(1);
+			allowToolFinish.resolve();
+			await run;
+
+			const nextRequest = providerContexts[1]!;
+			expect(nextRequest).toContain("loaded full pool text");
+			expect(nextRequest.indexOf('"role":"toolResult"')).toBeLessThan(nextRequest.indexOf("loaded full pool text"));
+			const llmMessages = convertToLlm(harness.session.messages, (customType) =>
+				harness.session.extensionRunner.getCustomTypePolicy(customType),
+			);
+			const llmPrompt = JSON.stringify(llmMessages);
+			expect(llmPrompt).toContain("loaded full pool text");
+			expect(llmPrompt).not.toContain("excluded pool text");
+			expect(nextRequest.split("loaded full pool text").length - 1).toBe(1);
+			expect(
+				harness.session.messages.filter(
+					(message) => message.role === "custom" && message.customType === "pool.visible",
+				),
+			).toHaveLength(1);
+			expect(harness.faux.state.callCount).toBe(2);
+		} finally {
+			allowToolFinish.resolve();
+			await run?.catch(() => {});
 			harness.cleanup();
 		}
 	});

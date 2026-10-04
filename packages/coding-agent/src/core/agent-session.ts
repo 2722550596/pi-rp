@@ -631,6 +631,8 @@ export class AgentSession {
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
 	private _pendingCustomMessages: CustomMessage[] = [];
+	/** Messages appended by an extension tool for the immediately following provider request. */
+	private _pendingToolContextMessages: CustomMessage[] = [];
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -1117,6 +1119,7 @@ export class AgentSession {
 			// Threshold compaction must run between tool execution and the next provider
 			// request, so an oversized tool result never reaches the provider first.
 			const context = await this._compactBeforeNextAssistantResponse(turn.context);
+			this._flushPendingToolContextMessages(context);
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.({ ...turn, context }, signal);
 			const nextContext = previousSnapshot?.context ?? context;
 
@@ -1360,6 +1363,7 @@ export class AgentSession {
 					: {}),
 			};
 			await this._extensionRunner.emit(extensionEvent);
+			this._flushPendingToolContextMessages();
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {
 				type: "turn_start",
@@ -1661,6 +1665,11 @@ export class AgentSession {
 	): {
 		tools: readonly AgentTool[];
 		executeTool: (name: string, args: unknown, options?: ExecuteToolOptions) => Promise<AgentToolCallOutcome>;
+		appendMessage: <T = unknown>(
+			message: Pick<CustomMessage<T>, "customType" | "display" | "details"> & {
+				content: string | CustomMessage<T>["content"];
+			},
+		) => void;
 	} {
 		const caller = this._toolCallContexts.get(callerToolCallId);
 		if (!caller) {
@@ -1674,10 +1683,14 @@ export class AgentSession {
 					isError: true,
 					status: "validation_error",
 				}),
+				appendMessage: () => {
+					throw new Error("Tool context is unavailable");
+				},
 			};
 		}
 		let childSequence = 0;
 		return {
+			appendMessage: (message) => this._queueToolContextMessage(message),
 			tools: caller.loadout.callable,
 			executeTool: async (name, args, options) => {
 				if (typeof args !== "object" || args === null || Array.isArray(args)) {
@@ -1943,7 +1956,8 @@ export class AgentSession {
 	 * into the loop). Runs after the batch's results are in the context and
 	 * before the next request, so new schemas ride the next turn (R3).
 	 */
-	async onToolBatchCompleted(toolResults: ToolResultAgentMessage[], _context?: AgentContext): Promise<void> {
+	async onToolBatchCompleted(toolResults: ToolResultAgentMessage[], context?: AgentContext): Promise<void> {
+		this._flushPendingToolContextMessages(context);
 		const manager = this._toolSearchManager;
 		if (!manager || !this._toolSearchRestored) return;
 		const addedNames = toolResults.flatMap((result) => result.addedToolNames ?? []);
@@ -3382,6 +3396,31 @@ export class AgentSession {
 		this._pendingCustomMessages = [];
 		for (const appMessage of pending) {
 			this._appendCustomMessage(appMessage);
+		}
+	}
+	private _queueToolContextMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "display" | "details"> & {
+			content: string | CustomMessage<T>["content"];
+		},
+	): void {
+		this._pendingToolContextMessages.push({
+			role: "custom",
+			customType: message.customType,
+			content:
+				typeof message.content === "string" ? [{ type: "text", text: message.content }] : (message.content ?? []),
+			display: message.display,
+			details: message.details,
+			timestamp: Date.now(),
+		});
+	}
+
+	private _flushPendingToolContextMessages(context?: AgentContext): void {
+		if (this._pendingToolContextMessages.length === 0) return;
+		const pending = this._pendingToolContextMessages;
+		this._pendingToolContextMessages = [];
+		for (const appMessage of pending) {
+			this._appendCustomMessage(appMessage);
+			if (context && !context.messages.includes(appMessage)) context.messages.push(appMessage);
 		}
 	}
 

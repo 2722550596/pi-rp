@@ -6,7 +6,10 @@ import {
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
-import { createHarness, getUserTexts, type Harness } from "./harness.ts";
+import { defaultPreset } from "../../src/core/prompt-preset/index.ts";
+import type { PromptPreset } from "../../src/core/prompt-preset/types.ts";
+import { AgentSessionScope } from "../../src/core/session-scope.ts";
+import { createHarness, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
 	_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<boolean>;
@@ -83,6 +86,22 @@ function seedCompactableSession(harness: Harness): void {
 	assistant.content = [{ type: "text", text: "assistant response to compact" }];
 	harness.sessionManager.appendMessage(assistant);
 	harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+}
+function usePoolSlotPreset(harness: Harness): void {
+	const sessionWithScope = harness.session as unknown as { _agentSessionScope?: AgentSessionScope };
+	sessionWithScope._agentSessionScope ??= new AgentSessionScope();
+	const scope = harness.session.promptRegistryScope!;
+	scope.registerSlot({
+		name: "sefirot.pool",
+		description: "Ephemeral pool snapshot",
+		render: () => "renderer fallback",
+	});
+	const sessionWithPreset = harness.session as unknown as { _activePreset: PromptPreset };
+	sessionWithPreset._activePreset = {
+		...defaultPreset,
+		id: "compact-context-slot-test",
+		items: [{ kind: "slot", id: "pool", slot: "sefirot.pool" }],
+	};
 }
 
 describe("AgentSession compaction characterization", () => {
@@ -594,5 +613,107 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(belowThresholdSpy).not.toHaveBeenCalled();
 		expect(disabledSpy).not.toHaveBeenCalled();
+	});
+	it("applies compact slot replacements to the next compiled prompt without adding session entries", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact", async () => ({
+						replaceContextSlots: [{ slotId: "sefirot.pool", content: "pool snapshot after compact" }],
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		usePoolSlotPreset(harness);
+		seedCompactableSession(harness);
+		useSummaryStreamFn(harness, "compacted");
+		const entryCountBefore = harness.sessionManager.getEntries().length;
+
+		await harness.session.compact();
+
+		const entryCountAfterCompact = harness.sessionManager.getEntries().length;
+		expect(entryCountAfterCompact).toBe(entryCountBefore + 1);
+		const compiledMessages = await harness.session.getPresetInjectMessages();
+		expect(compiledMessages.map(getMessageText).join("\n")).toContain("pool snapshot after compact");
+		expect(compiledMessages.map(getMessageText).join("\n")).not.toContain("renderer fallback");
+		expect(harness.sessionManager.getEntries()).toHaveLength(entryCountAfterCompact);
+	});
+
+	it("replaces the same context slot on successive compactions instead of accumulating values", async () => {
+		let version = 0;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact", () => ({
+						replaceContextSlots: [{ slotId: "sefirot.pool", content: `snapshot ${++version}` }],
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		usePoolSlotPreset(harness);
+		useSummaryStreamFn(harness, "compacted");
+
+		seedCompactableSession(harness);
+		await harness.session.compact();
+		const firstMessages = await harness.session.getPresetInjectMessages();
+		expect(firstMessages.map(getMessageText).join("\n")).toContain("snapshot 1");
+
+		seedCompactableSession(harness);
+		await harness.session.compact();
+		const secondMessages = await harness.session.getPresetInjectMessages();
+		const secondPrompt = secondMessages.map(getMessageText).join("\n");
+		expect(secondPrompt).toContain("snapshot 2");
+		expect(secondPrompt).not.toContain("snapshot 1");
+	});
+
+	it("preserves the last successful slot value when a compact hook fails", async () => {
+		let fail = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact", () => {
+						if (fail) throw new Error("pool transaction failed");
+						return {
+							replaceContextSlots: [{ slotId: "sefirot.pool", content: "previous valid snapshot" }],
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		usePoolSlotPreset(harness);
+		useSummaryStreamFn(harness, "compacted");
+
+		seedCompactableSession(harness);
+		await harness.session.compact();
+		fail = true;
+		seedCompactableSession(harness);
+		await harness.session.compact();
+
+		const messages = await harness.session.getPresetInjectMessages();
+		const prompt = messages.map(getMessageText).join("\n");
+		expect(prompt).toContain("previous valid snapshot");
+		expect(prompt).not.toContain("renderer fallback");
+	});
+
+	it("leaves registered slot rendering unchanged when compact returns no replacement", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact", () => undefined);
+				},
+			],
+		});
+		harnesses.push(harness);
+		usePoolSlotPreset(harness);
+		seedCompactableSession(harness);
+		useSummaryStreamFn(harness, "compacted");
+
+		await harness.session.compact();
+
+		const messages = await harness.session.getPresetInjectMessages();
+		expect(messages.map(getMessageText).join("\n")).toContain("renderer fallback");
 	});
 });

@@ -479,7 +479,9 @@ function renderItemTextSync(
 	if (item.kind === "block") {
 		raw = (item as PromptPresetBlockItem).content;
 	} else {
-		raw = renderSlotSync(item as PromptPresetSlotItem, preset, runtime, diagnostics);
+		const slotItem = item as PromptPresetSlotItem;
+		const replacement = runtime.promptRegistry?.getContextSlotContent?.(String(slotItem.slot));
+		raw = replacement ?? renderSlotSync(slotItem, preset, runtime, diagnostics);
 	}
 	return finalizeItemText(raw, item, preset, runtime, diagnostics);
 }
@@ -494,7 +496,9 @@ async function renderItemTextAsync(
 	if (item.kind === "block") {
 		raw = (item as PromptPresetBlockItem).content;
 	} else {
-		raw = await renderSlotAsync(item as PromptPresetSlotItem, preset, runtime, diagnostics);
+		const slotItem = item as PromptPresetSlotItem;
+		const replacement = runtime.promptRegistry?.getContextSlotContent?.(String(slotItem.slot));
+		raw = replacement ?? (await renderSlotAsync(slotItem, preset, runtime, diagnostics));
 	}
 	return finalizeItemText(raw, item, preset, runtime, diagnostics);
 }

@@ -76,6 +76,7 @@ import type {
 	SessionBeforeRerollResult,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
+	SessionCompactResult,
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -175,17 +176,19 @@ type SessionBeforeEventResult =
 	| SessionBeforeCompactResult
 	| SessionBeforeTreeResult;
 
-type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_switch" }
-	? SessionBeforeSwitchResult | undefined
-	: TEvent extends { type: "session_before_fork" }
-		? SessionBeforeForkResult | undefined
-		: TEvent extends { type: "session_before_compact" }
-			? SessionBeforeCompactResult | undefined
-			: TEvent extends { type: "session_before_reroll" }
-				? SessionBeforeRerollResult | undefined
-				: TEvent extends { type: "session_before_tree" }
-					? SessionBeforeTreeResult | undefined
-					: undefined;
+type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_compact" }
+	? SessionCompactResult | undefined
+	: TEvent extends { type: "session_before_switch" }
+		? SessionBeforeSwitchResult | undefined
+		: TEvent extends { type: "session_before_fork" }
+			? SessionBeforeForkResult | undefined
+			: TEvent extends { type: "session_before_compact" }
+				? SessionBeforeCompactResult | undefined
+				: TEvent extends { type: "session_before_reroll" }
+					? SessionBeforeRerollResult | undefined
+					: TEvent extends { type: "session_before_tree" }
+						? SessionBeforeTreeResult | undefined
+						: undefined;
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
@@ -993,8 +996,8 @@ export class ExtensionRunner {
 	) => {
 		tools: readonly AgentTool[];
 		executeTool: (name: string, args: unknown, options?: ExecuteToolOptions) => Promise<AgentToolCallOutcome>;
+		appendMessage: ExtensionToolContext["appendMessage"];
 	};
-
 	setToolExecutionContextFactory(
 		factory: (
 			toolCallId: string,
@@ -1002,6 +1005,7 @@ export class ExtensionRunner {
 		) => {
 			tools: readonly AgentTool[];
 			executeTool: (name: string, args: unknown, options?: ExecuteToolOptions) => Promise<AgentToolCallOutcome>;
+			appendMessage: ExtensionToolContext["appendMessage"];
 		},
 	): void {
 		this.toolExecutionContextFactory = factory;
@@ -1018,6 +1022,11 @@ export class ExtensionRunner {
 				this.assertActive();
 				if (!execution) return Promise.reject(new Error("Nested tool execution is unavailable"));
 				return execution.executeTool(name, args, options);
+			},
+			appendMessage: (message: Parameters<ExtensionToolContext["appendMessage"]>[0]) => {
+				this.assertActive();
+				if (!execution) throw new Error("In-turn message append is unavailable");
+				execution.appendMessage(message);
 			},
 		}) as unknown as ExtensionToolContext;
 	}
@@ -1076,7 +1085,7 @@ export class ExtensionRunner {
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		const ctx = this.createContext();
-		let result: SessionBeforeEventResult | undefined;
+		let result: SessionBeforeEventResult | SessionCompactResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -1088,9 +1097,11 @@ export class ExtensionRunner {
 
 					if (this.isSessionBeforeEvent(event) && handlerResult) {
 						result = handlerResult as SessionBeforeEventResult;
-						if (result.cancel) {
+						if ("cancel" in result && result.cancel) {
 							return result as RunnerEmitResult<TEvent>;
 						}
+					} else if (event.type === "session_compact" && handlerResult) {
+						result = handlerResult as SessionCompactResult;
 					}
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
