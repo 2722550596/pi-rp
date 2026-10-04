@@ -4250,13 +4250,16 @@ export class AgentSession {
 				| undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
+				const compactHookResult = await this._extensionRunner.emit({
 					type: "session_compact",
 					compactionEntry: savedCompactionEntry,
 					fromExtension,
 					reason: "manual",
 					willRetry: false,
 				});
+				if (compactHookResult?.replaceContextSlots) {
+					this._agentSessionScope?.promptRegistry?.replaceContextSlots(compactHookResult.replaceContextSlots);
+				}
 			}
 
 			const compactionResult: CompactionResult = {
@@ -4619,13 +4622,16 @@ export class AgentSession {
 				| undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
+				const compactHookResult = await this._extensionRunner.emit({
 					type: "session_compact",
 					compactionEntry: savedCompactionEntry,
 					fromExtension,
 					reason,
 					willRetry,
 				});
+				if (compactHookResult?.replaceContextSlots) {
+					this._agentSessionScope?.promptRegistry?.replaceContextSlots(compactHookResult.replaceContextSlots);
+				}
 			}
 
 			const result: CompactionResult = {
@@ -5012,6 +5018,8 @@ export class AgentSession {
 					priority,
 					label,
 					timeoutMs,
+					onDelta,
+					onRestart,
 				}) => {
 					const m = model ?? this.model;
 					if (!m) throw new Error("completeSideRequest: no model available");
@@ -5021,7 +5029,7 @@ export class AgentSession {
 					// signal is forwarded so explicit cancellation still works.
 					const ctrl = this.registerSideRequest(signal);
 					try {
-						const streamFn: StreamFn | undefined = this._requestGateway
+						let streamFn: StreamFn | undefined = this._requestGateway
 							? (mm, cc, oo) =>
 									this._requestGateway!.streamSimple(
 										mm,
@@ -5031,6 +5039,28 @@ export class AgentSession {
 										ctrl.signal,
 									)
 							: undefined;
+						if (onDelta && streamFn) {
+							// Wrap so every attempt (first call and each retry) notifies the
+							// consumer before pumping its text deltas. The stream's result()
+							// resolves independently of iteration, so pumping here never
+							// competes with completeSummarization's .result() consumer.
+							const inner = streamFn;
+							streamFn = async (mm, cc, oo) => {
+								onRestart?.();
+								const stream = await inner(mm, cc, oo);
+								void (async () => {
+									for await (const evt of stream) {
+										if (evt.type === "text_delta" && typeof evt.delta === "string") {
+											onDelta(evt.delta);
+										}
+									}
+								})().catch(() => {
+									// Iteration failures surface via .result() (error stopReason);
+									// the pump must never reject into the caller's awaiting path.
+								});
+								return stream;
+							};
+						}
 						const options: SimpleStreamOptions = { maxTokens, signal: ctrl.signal, timeoutMs };
 						if (m.reasoning && thinkingLevel && thinkingLevel !== "off") {
 							options.reasoning = thinkingLevel;

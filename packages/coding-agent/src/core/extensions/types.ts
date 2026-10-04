@@ -775,7 +775,12 @@ export interface SessionBeforeCompactEvent {
 	signal: AbortSignal;
 }
 
-/** Fired after context compaction */
+/** Values returned by an awaited session_compact handler. */
+export interface SessionCompactResult {
+	readonly replaceContextSlots?: readonly { readonly slotId: string; readonly content: string }[];
+}
+
+/** Fired after context compaction; handler results apply after history rebuild. */
 export interface SessionCompactEvent {
 	type: "session_compact";
 	compactionEntry: CompactionEntry;
@@ -1476,7 +1481,7 @@ export interface ExtensionAPI {
 		event: "session_before_compact",
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
-	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent, SessionCompactResult>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(
 		event: "session_before_reroll",
@@ -2190,6 +2195,19 @@ export interface CompleteSideRequestOptions {
 	label?: string;
 	/** Passed through to SimpleStreamOptions */
 	timeoutMs?: number;
+	/**
+	 * Streaming callback: invoked for each text_delta of the response.
+	 * Only effective when a request gateway is available (the completeSimple
+	 * fallback path cannot stream). Deltas from a failed retry attempt are
+	 * still delivered — pair with `onRestart` to reset any accumulator.
+	 */
+	onDelta?: (delta: string) => void;
+	/**
+	 * Invoked whenever a (re)try attempt begins — including the first call.
+	 * Stream consumers must reset their accumulated text here: a retried
+	 * request regenerates the full response from scratch.
+	 */
+	onRestart?: () => void;
 }
 
 /**
