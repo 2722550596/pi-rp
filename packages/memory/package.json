@@ -14,6 +14,14 @@
 			"types": "./dist/driver-browser.d.ts",
 			"import": "./dist/driver-browser.js"
 		},
+		"./driver-browser-async": {
+			"types": "./dist/driver-browser-async.d.ts",
+			"import": "./dist/driver-browser-async.js"
+		},
+		"./driver-browser-worker": {
+			"types": "./dist/driver-browser-worker.d.ts",
+			"import": "./dist/driver-browser-worker.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"bin": {
