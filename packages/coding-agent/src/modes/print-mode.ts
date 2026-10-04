@@ -7,11 +7,50 @@
  */
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import { dispatchCommand } from "../commands/index.ts";
+import type { AgentSession } from "../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { renderPromptDisplay } from "../core/prompt-display.ts";
+import type { CommandView } from "../core/slash-commands.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
+
+/** print 模式的 headless CommandView：消息走 stdout，status/error 走 stderr，
+ * 选择器不支持（TUI 关切；RPC 适配器同样是 documented no-op）。 */
+function printCommandView(): CommandView {
+	return {
+		renderMessage: (content) => {
+			console.log(content);
+		},
+		showSelector: (kind) => {
+			console.error(`[print] selector "${kind}" is not available in print mode`);
+		},
+		showStatus: (message, severity) => {
+			if (severity === "error") console.error(message);
+			else console.log(message);
+		},
+		flash: () => {},
+		invalidateFooter: () => {},
+		updateEditorBorder: () => {},
+	};
+}
+
+/** 以 "/" 开头的 prompt 分发给命令注册表（builtin + 扩展命令，与 TUI 同一
+ * registry）。返回是否已作为命令消费（消费则不再作为用户消息发送）。 */
+async function tryDispatchCommand(session: AgentSession, text: string): Promise<boolean> {
+	if (!text.startsWith("/")) return false;
+	const spaceIndex = text.indexOf(" ");
+	const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
+	const args = argsString ? argsString.split(/\s+/).filter(Boolean) : [];
+	try {
+		return await dispatchCommand(name, args, session, printCommandView());
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		return true;
+	}
+}
 
 /**
  * Options for print mode.
@@ -131,10 +170,13 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		await rebindSession();
 
 		if (initialMessage) {
-			await session.prompt(initialMessage, { images: initialImages });
+			if (!(await tryDispatchCommand(session, initialMessage))) {
+				await session.prompt(initialMessage, { images: initialImages });
+			}
 		}
 
 		for (const message of messages) {
+			if (await tryDispatchCommand(session, message)) continue;
 			await session.prompt(message);
 		}
 

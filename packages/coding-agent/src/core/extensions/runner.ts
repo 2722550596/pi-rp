@@ -297,6 +297,26 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+/** print（单发文本）模式的默认 UI：notify 落 stdout（error 走 stderr），
+ * 交互对话框 headless 降级（select 无结果 / confirm 拒绝 / input 空）。
+ * 其余 UI 面（widget/footer/theme 等）沿用 no-op。 */
+const printUIContext: ExtensionUIContext = {
+	...noOpUIContext,
+	select: async (title, options) => {
+		console.error(`[print] select unavailable: ${title} (options: ${options.join(", ")})`);
+		return undefined;
+	},
+	confirm: async (title) => {
+		console.error(`[print] confirm unavailable: ${title} (declining)`);
+		return false;
+	},
+	input: async () => undefined,
+	notify: (message, type) => {
+		if (type === "error") console.error(message);
+		else console.log(message);
+	},
+};
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
@@ -544,7 +564,7 @@ export class ExtensionRunner {
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
-		this.uiContext = uiContext ?? noOpUIContext;
+		this.uiContext = uiContext ?? (mode === "print" ? printUIContext : noOpUIContext);
 		this.mode = mode;
 	}
 
