@@ -30,6 +30,11 @@ export {
 	ReadonlyOpenError,
 } from "./driver.ts";
 export {
+	type BrowserSqliteDatabaseFactoryOptions,
+	createBrowserSqliteDatabaseFactory,
+	OPFS_SAHPoolVfs,
+} from "./driver-browser.ts";
+export {
 	chunkText,
 	cosine,
 	DEFAULT_EMBEDDING_API_URL,
