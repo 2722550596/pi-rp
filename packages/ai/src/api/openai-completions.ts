@@ -141,7 +141,6 @@ function isEncryptedReasoningDetail(detail: unknown): detail is OpenAIEncryptedR
 }
 
 export interface OpenAICompletionsOptions extends StreamOptions {
-	toolChoice?: OpenAI.Chat.Completions.ChatCompletionToolChoiceOption;
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	/** Token budgets per thinking level. Only used when `compat.supportsThinkingTokenBudget` is set. */
 	thinkingBudgets?: ThinkingBudgets;
@@ -624,12 +623,10 @@ export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOpti
 	const base = buildBaseOptions(model, context, options, options?.apiKey);
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
-	const toolChoice = (options as OpenAICompletionsOptions | undefined)?.toolChoice;
 
 	return stream(model, context, {
 		...base,
 		reasoningEffort,
-		toolChoice,
 		thinkingBudgets: options?.thinkingBudgets,
 	} satisfies OpenAICompletionsOptions);
 };
@@ -743,7 +740,10 @@ function buildParams(
 	}
 
 	if (options?.toolChoice) {
-		params.tool_choice = options.toolChoice;
+		params.tool_choice =
+			typeof options.toolChoice === "string"
+				? options.toolChoice
+				: { type: "function", function: { name: options.toolChoice.name } };
 	}
 
 	if (compat.thinkingFormat === "zai" && model.reasoning) {

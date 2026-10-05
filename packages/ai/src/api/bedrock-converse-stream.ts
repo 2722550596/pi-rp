@@ -69,7 +69,6 @@ export type BedrockThinkingDisplay = "summarized" | "omitted";
 export interface BedrockOptions extends StreamOptions {
 	region?: string;
 	profile?: string;
-	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
 	/* See https://docs.aws.amazon.com/bedrock/latest/userguide/inference-reasoning.html for supported models. */
 	reasoning?: ThinkingLevel;
 	/* Custom token budgets per thinking level. Overrides default budgets. */
@@ -1008,7 +1007,7 @@ function convertMessages(
 
 function convertToolConfig(
 	tools: Tool[] | undefined,
-	toolChoice: BedrockOptions["toolChoice"],
+	toolChoice: StreamOptions["toolChoice"],
 	supportsStrictMode: boolean,
 ): ToolConfiguration | undefined {
 	if (!tools?.length) return undefined;
@@ -1031,7 +1030,7 @@ function convertToolConfig(
 		case "auto":
 			bedrockToolChoice = { auto: {} };
 			break;
-		case "any":
+		case "required":
 			bedrockToolChoice = { any: {} };
 			break;
 		default:

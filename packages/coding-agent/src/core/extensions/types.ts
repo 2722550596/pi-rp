@@ -36,6 +36,7 @@ import type {
 	RefreshModelsContext,
 	SimpleStreamOptions,
 	TextContent,
+	ToolChoice,
 	ToolResultMessage,
 	Usage,
 } from "@earendil-works/pi-ai";
@@ -2203,6 +2204,12 @@ export interface CompleteSideRequestOptions {
 	maxTokens?: number;
 	/** Defaults to ctx.thinkingLevel; mapped to options.reasoning when model.reasoning */
 	thinkingLevel?: ThinkingLevel;
+	/**
+	 * Force tool choice on this request (e.g. `"required"` for a tool-only
+	 * planner side request). Passed through to SimpleStreamOptions; adapters
+	 * without tool choice ignore it.
+	 */
+	toolChoice?: ToolChoice;
 	signal?: AbortSignal;
 	/** Default 0 (subagent-tier). Only enforced when the gateway has maxConcurrency configured. */
 	priority?: number;

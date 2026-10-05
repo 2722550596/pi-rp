@@ -190,10 +190,21 @@ describe("google-shared convertTools", () => {
 
 		expect(supportsGoogleStrictToolSampling("gemini-3.1-pro-preview")).toBe(true);
 		expect(supportsGoogleStrictToolSampling("gemini-2.5-pro")).toBe(false);
-		expect(resolveGoogleFunctionCallingMode([tool], undefined, true)).toBe("VALIDATED");
+		expect(resolveGoogleFunctionCallingMode([tool], undefined, true)).toEqual({ mode: "VALIDATED" });
 		expect(() => resolveGoogleFunctionCallingMode([tool], undefined, false)).toThrow(
 			'Tool "test_tool" requires JSON-schema constrained sampling',
 		);
+	});
+
+	it("maps neutral toolChoice onto Gemini function calling config", () => {
+		expect(resolveGoogleFunctionCallingMode([], "required", false)).toEqual({ mode: "ANY" });
+		expect(resolveGoogleFunctionCallingMode([], "none", false)).toEqual({ mode: "NONE" });
+		expect(resolveGoogleFunctionCallingMode([], "auto", false)).toEqual({ mode: "AUTO" });
+		expect(resolveGoogleFunctionCallingMode([], { type: "tool", name: "lookup" }, false)).toEqual({
+			mode: "ANY",
+			allowedFunctionNames: ["lookup"],
+		});
+		expect(resolveGoogleFunctionCallingMode([], undefined, false)).toBeUndefined();
 	});
 
 	it("returns undefined for empty tool list", () => {

@@ -73,7 +73,7 @@ describe("Mistral HTTP transport", () => {
 			maxTokens: 123,
 			promptMode: "reasoning",
 			reasoningEffort: "high",
-			toolChoice: { type: "function", function: { name: "lookup" } },
+			toolChoice: { type: "tool", name: "lookup" },
 			sessionId: "session-1",
 			onPayload: (payload) => {
 				callbackPayload = payload as Record<string, unknown>;

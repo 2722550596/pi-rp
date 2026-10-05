@@ -322,6 +322,12 @@ export interface PromptPreset {
 	 * orchestration where user-visible prose comes from side requests.
 	 */
 	suppressAssistantText?: boolean;
+	/**
+	 * Force tool choice on every LLM request while this preset is active (e.g.
+	 * `"required"` for a tool-only planner preset: the API rejects a turn that
+	 * produces no tool call, instead of relying on prompt discipline).
+	 */
+	toolChoice?: "auto" | "none" | "required" | { type: "tool"; name: string };
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;

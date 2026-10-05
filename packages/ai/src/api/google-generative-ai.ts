@@ -39,7 +39,6 @@ import { buildBaseOptions } from "./simple-options.ts";
 import { splitSystemMessages } from "./transform-messages.ts";
 
 export interface GoogleOptions extends StreamOptions {
-	toolChoice?: "auto" | "none" | "any";
 	thinking?: {
 		enabled: boolean;
 		budgetTokens?: number; // -1 for dynamic, 0 to disable
@@ -375,7 +374,7 @@ function buildParams(
 	}
 
 	const supportsStrictMode = supportsGoogleStrictToolSampling(model.id);
-	const functionCallingMode = context.tools?.length
+	const functionCallingConfig = context.tools?.length
 		? resolveGoogleFunctionCallingMode(context.tools, options.toolChoice, supportsStrictMode)
 		: undefined;
 	const config: GenerateContentConfig = {
@@ -385,8 +384,8 @@ function buildParams(
 			context.tools.length > 0 && {
 				tools: convertTools(context.tools, false, supportsStrictMode),
 			}),
-		...(functionCallingMode !== undefined && {
-			toolConfig: { functionCallingConfig: { mode: functionCallingMode } },
+		...(functionCallingConfig !== undefined && {
+			toolConfig: { functionCallingConfig },
 		}),
 	};
 

@@ -31,7 +31,6 @@ const MAX_MISTRAL_ERROR_BODY_CHARS = 4000;
 type MistralReasoningEffort = "none" | "high";
 
 export interface MistralOptions extends StreamOptions {
-	toolChoice?: "auto" | "none" | "any" | "required" | { type: "function"; function: { name: string } };
 	promptMode?: "reasoning";
 	reasoningEffort?: MistralReasoningEffort;
 }
@@ -75,7 +74,7 @@ type MistralChatPayload = {
 	tools?: MistralFunctionTool[];
 	temperature?: number;
 	maxTokens?: number;
-	toolChoice?: Exclude<MistralOptions["toolChoice"], undefined>;
+	toolChoice?: "auto" | "none" | "any" | "required" | { type: "function"; function: { name: string } };
 	promptMode?: "reasoning";
 	reasoningEffort?: MistralReasoningEffort;
 	promptCacheKey?: string;
@@ -912,15 +911,15 @@ function mapReasoningEffort(
 }
 
 function mapToolChoice(
-	choice: MistralOptions["toolChoice"],
+	choice: StreamOptions["toolChoice"],
 ): "auto" | "none" | "any" | "required" | { type: "function"; function: { name: string } } | undefined {
 	if (!choice) return undefined;
-	if (choice === "auto" || choice === "none" || choice === "any" || choice === "required") {
+	if (choice === "auto" || choice === "none" || choice === "required") {
 		return choice;
 	}
 	return {
 		type: "function",
-		function: { name: choice.function.name },
+		function: { name: choice.name },
 	};
 }
 
