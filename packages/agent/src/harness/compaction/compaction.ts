@@ -253,59 +253,65 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 
 const ESTIMATED_IMAGE_CHARS = 4800;
 
-function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
-	if (typeof content === "string") {
-		return content.length;
-	}
+// CJK text averages ~0.75 tokens per char across common tokenizers, while
+// ASCII averages ~4 chars per token. A plain chars/4 heuristic therefore
+// understates CJK-heavy conversations by 2x or more, which pushes compaction
+// cut points far too close to the start of the session.
+const CJK_TOKENS_PER_CHAR = 0.75;
+const CJK_CHAR_PATTERN = /[\u3000-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF]/g;
 
-	let chars = 0;
-	for (const block of content) {
-		if (block.type === "text" && block.text) {
-			chars += block.text.length;
-		} else if (block.type === "image") {
-			chars += ESTIMATED_IMAGE_CHARS;
-		}
-	}
-	return chars;
+function estimateTextTokens(text: string): number {
+	const cjkChars = text.match(CJK_CHAR_PATTERN)?.length ?? 0;
+	const otherChars = text.length - cjkChars;
+	return Math.ceil(cjkChars * CJK_TOKENS_PER_CHAR + otherChars / 4);
 }
 
-/** Estimate token count for one message using a conservative character heuristic. */
-export function estimateTokens(message: AgentMessage): number {
-	let chars = 0;
+function estimateTextAndImageContentTokens(content: string | Array<{ type: string; text?: string }>): number {
+	if (typeof content === "string") {
+		return estimateTextTokens(content);
+	}
 
+	let tokens = 0;
+	for (const block of content) {
+		if (block.type === "text" && block.text) {
+			tokens += estimateTextTokens(block.text);
+		} else if (block.type === "image") {
+			tokens += ESTIMATED_IMAGE_CHARS / 4;
+		}
+	}
+	return Math.ceil(tokens);
+}
+
+/** Estimate token count for one message using a CJK-aware character heuristic. */
+export function estimateTokens(message: AgentMessage): number {
 	switch (message.role) {
 		case "user": {
-			chars = estimateTextAndImageContentChars(
-				(message as { content: string | Array<{ type: string; text?: string }> }).content,
-			);
-			return Math.ceil(chars / 4);
+			return estimateTextAndImageContentTokens(message.content);
 		}
 		case "assistant": {
 			const assistant = message as AssistantMessage;
+			let tokens = 0;
 			for (const block of assistant.content) {
 				if (block.type === "text") {
-					chars += block.text.length;
+					tokens += estimateTextTokens(block.text);
 				} else if (block.type === "thinking") {
-					chars += block.thinking.length;
+					tokens += estimateTextTokens(block.thinking);
 				} else if (block.type === "toolCall") {
-					chars += block.name.length + safeJsonStringify(block.arguments).length;
+					tokens += estimateTextTokens(block.name + safeJsonStringify(block.arguments));
 				}
 			}
-			return Math.ceil(chars / 4);
+			return Math.ceil(tokens);
 		}
 		case "custom":
 		case "toolResult": {
-			chars = estimateTextAndImageContentChars(message.content);
-			return Math.ceil(chars / 4);
+			return estimateTextAndImageContentTokens(message.content);
 		}
 		case "bashExecution": {
-			chars = message.command.length + message.output.length;
-			return Math.ceil(chars / 4);
+			return estimateTextTokens(message.command + message.output);
 		}
 		case "branchSummary":
 		case "compactionSummary": {
-			chars = message.summary.length;
-			return Math.ceil(chars / 4);
+			return estimateTextTokens(message.summary);
 		}
 	}
 
@@ -691,6 +697,17 @@ export function prepareCompaction(
 	if (cutPoint.isSplitTurn) {
 		for (const msg of turnPrefixMessages) {
 			extractFileOpsFromMessage(msg, fileOps);
+		}
+	}
+
+	if (messagesToSummarize.length === 0) {
+		// The cut landed inside the first turn: there is no prior history to
+		// summarize, so the only thing compaction could do is replace the turn
+		// prefix with a summary. If that prefix is smaller than the keep budget,
+		// compaction would discard recent messages for no space savings.
+		const prefixTokens = turnPrefixMessages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
+		if (prefixTokens < settings.keepRecentTokens) {
+			return ok(undefined);
 		}
 	}
 

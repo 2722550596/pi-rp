@@ -6,6 +6,10 @@
 
 - Changed `prepareNextTurn` and `prepareNextTurnWithContext` to run only after `shouldStopAfterTurn` and queued-message checks determine that the agent loop will start another assistant turn. They no longer run after final or terminating turns; move end-of-run work to `agent_end` handling ([#6879](https://github.com/earendil-works/pi/issues/6879)).
 
+### Fixed
+
+- `estimateTokens` now weights CJK text at ~0.75 tokens per char instead of chars/4, so harness compaction cut points no longer land near the start of CJK-heavy sessions, and `prepareCompaction` returns `undefined` when the cut leaves no prior history to summarize and the turn prefix is smaller than the keep budget.
+
 ## [0.84.2] - 2026-08-14
 
 ### Fixed

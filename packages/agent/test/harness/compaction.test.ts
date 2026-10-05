@@ -367,15 +367,19 @@ describe("harness compaction", () => {
 	});
 
 	it("prepares compaction using the latest compaction summary as previousSummary", () => {
+		const retainedUser = createUserMessage("retained user");
+		const retainedAssistant = createAssistantMessage("retained assistant");
 		const u1 = createMessageEntry(createUserMessage("user msg 1"));
 		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"), u1.id);
 		const u2 = createMessageEntry(createUserMessage("user msg 2"), a1.id);
 		const a2 = createMessageEntry(createAssistantMessage("assistant msg 2", createMockUsage(5000, 1000)), u2.id);
-		const compaction1 = createCompactionEntry("First summary", a2.id);
+		const compaction1 = createCompactionEntry("First summary", a2.id, [retainedUser, retainedAssistant]);
 		const u3 = createMessageEntry(createUserMessage("user msg 3"), compaction1.id);
 		const a3 = createMessageEntry(createAssistantMessage("assistant msg 3", createMockUsage(8000, 2000)), u3.id);
 		const pathEntries = [u1, a1, u2, a2, compaction1, u3, a3];
-		const preparation = getOrThrow(prepareCompaction(pathEntries, DEFAULT_COMPACTION_SETTINGS));
+		const preparation = getOrThrow(
+			prepareCompaction(pathEntries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1 }),
+		);
 		expect(preparation).toBeDefined();
 		expect(preparation?.previousSummary).toBe("First summary");
 		expect(preparation?.retainedTail.length).toBeGreaterThan(0);
@@ -680,10 +684,15 @@ describe("harness compaction", () => {
 		const a1 = createMessageEntry(assistantMessage, u1.id);
 		const u2 = createMessageEntry(createUserMessage("continue"), a1.id);
 		const a2 = createMessageEntry(createAssistantMessage("done", createMockUsage(4000, 500)), u2.id);
-		const preparation = getOrThrow(prepareCompaction([u1, a1, u2, a2], DEFAULT_COMPACTION_SETTINGS));
+		const preparation = getOrThrow(
+			prepareCompaction([u1, a1, u2, a2], { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1 }),
+		);
 		expect(preparation).toBeDefined();
 		const { faux, model } = createFauxModel(false);
-		faux.setResponses([fauxAssistantMessage("## Goal\nTest summary")]);
+		faux.setResponses([
+			fauxAssistantMessage("## Goal\nTest summary"),
+			fauxAssistantMessage("## Original Request\nPrefix summary"),
+		]);
 		const result = getOrThrow(await compact(preparation!, models, model));
 		expect(result.summary.length).toBeGreaterThan(0);
 		expect(result.usage?.totalTokens).toBeGreaterThan(0);

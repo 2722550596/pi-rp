@@ -10,6 +10,7 @@ import {
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
+	estimateTokens,
 	findCutPoint,
 	getLastAssistantUsage,
 	prepareCompaction,
@@ -563,6 +564,52 @@ describe("prepareCompaction with trace settings", () => {
 		expect(extractText(preparation!.messagesToSummarize)).toContain("old trace");
 		expect(extractText(preparation!.messagesToSummarize)).not.toContain("kept trace");
 		expect(preparation?.isSplitTurn).toBe(false);
+	});
+});
+
+// ============================================================================
+// CJK token estimation (regression: chars/4 understated CJK-heavy sessions)
+// ============================================================================
+
+describe("estimateTokens CJK handling", () => {
+	it("counts CJK chars at ~0.75 tokens per char instead of chars/4", () => {
+		expect(estimateTokens(createUserMessage("一".repeat(100)))).toBe(75);
+	});
+
+	it("keeps ASCII text at chars/4", () => {
+		expect(estimateTokens(createUserMessage("a".repeat(100)))).toBe(25);
+	});
+});
+
+describe("prepareCompaction with CJK-heavy history", () => {
+	it("summarizes earlier turns instead of cutting inside the first turn", () => {
+		// Regression: chars/4 valued 400 CJK chars at ~100 tokens, so a
+		// CJK-heavy session barely exceeded the keep budget and the cut landed
+		// inside the first turn. The history side ended up empty and the summary
+		// degenerated to "No prior history." plus a tiny turn-prefix digest.
+		const entries: SessionEntry[] = [];
+		for (let turn = 0; turn < 4; turn++) {
+			entries.push(
+				createMessageEntry(createUserMessage(`这是第${turn}轮中文创作讨论，包含足够长的内容。`.repeat(20))),
+			);
+			entries.push(
+				createMessageEntry(createAssistantMessage(`这是第${turn}轮的中文回复，同样保持足够的长度。`.repeat(20))),
+			);
+		}
+		const settings: CompactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 800 };
+		const preparation = prepareCompaction(entries, settings);
+
+		expect(preparation).toBeDefined();
+		expect(preparation!.messagesToSummarize.length).toBeGreaterThan(0);
+	});
+
+	it("refuses to compact when the cut lands in the first turn and the prefix is below the keep budget", () => {
+		const u1 = createMessageEntry(createUserMessage("这是一个短的用户消息"));
+		const a1 = createMessageEntry(createAssistantMessage("这是一个短的助手回复"));
+		const settings: CompactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 500 };
+		const preparation = prepareCompaction([u1, a1], settings);
+
+		expect(preparation).toBeUndefined();
 	});
 });
 

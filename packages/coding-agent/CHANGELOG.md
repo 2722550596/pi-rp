@@ -59,6 +59,7 @@
 
 ### Fixed
 
+- Fixed CJK-heavy sessions producing degenerate manual compactions: token estimation valued CJK text at chars/4 (~0.25 tokens/char, a 2x+ understatement), which could push the cut point into the first turn, leave the history side empty, and summarize only a tiny turn prefix into a summary headed by "No prior history.". Estimation now weights CJK chars at ~0.75 tokens/char, and `prepareCompaction` refuses to compact when the cut leaves no prior history to summarize and the turn prefix is smaller than the keep budget.
 - Fixed `state_update` paths never traversing arrays: intermediate array segments made any nested operation (`party/0/hp`) a silent no-op, and the `setDeep` fallback for `add`/`replace` overwrote the entire array with a plain object (silent data loss). Paths now traverse arrays with in-range decimal indices; unreachable array paths are dropped safely without corrupting data, and the tree differ stays consistent via the shared `applyOp`.
 - Fixed prompt preset `wrap` tags enclosing per-item headings and endings; wrapping now applies only to the rendered content.
 - Fixed prompt preset items with empty or absent content rendering decorations; heading, ending, and wrap are now skipped with the item.
