@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { truncateHead, truncateTail } from "../../src/harness/utils/truncate.ts";
 
 const encoder = new TextEncoder();
@@ -70,6 +70,27 @@ describe("truncate utilities", () => {
 		expect(result.totalBytes).toBe(byteLength(content));
 		expect(result.outputBytes).toBe(byteLength(content));
 		expect(result.totalBytes).toBe(9);
+	});
+
+	it("truncates in a Browser runtime without the Node Buffer global", async () => {
+		vi.stubGlobal("Buffer", undefined);
+		try {
+			// A unique module instance proves Buffer is absent when the runtime captures its capability.
+			const { truncateHead: browserTruncateHead, truncateTail: browserTruncateTail } = await import(
+				"../../src/harness/utils/truncate.ts?bufferless-test"
+			);
+			const content = "aé🙂\nnext";
+			expect(browserTruncateHead(content, { maxBytes: 7, maxLines: 10 })).toMatchObject({
+				content: "aé🙂",
+				outputBytes: 7,
+			});
+			expect(browserTruncateTail(content, { maxBytes: 6, maxLines: 10 })).toMatchObject({
+				content: "next",
+				outputBytes: 4,
+			});
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("does not count a trailing newline as an extra line", () => {

@@ -219,7 +219,7 @@ import {
 	type SessionHeader,
 	sessionEntryToContextMessages,
 } from "./session-manager.ts";
-import { type AgentSessionScope, createAgentSessionScope } from "./session-scope.ts";
+import type { AgentSessionScope } from "./session-scope.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -870,9 +870,9 @@ export class AgentSession {
 		return this._agentSessionScope?.promptRegistry;
 	}
 
-	/** Create a fresh child scope without sharing session-bound memory slot closures. */
+	/** Create a fresh child scope, inheriting only the host-whitelisted prompt slots. */
 	createSubagentScope(): AgentSessionScope | undefined {
-		return this._agentSessionScope ? createAgentSessionScope({ rejectSessionReplacement: true }) : undefined;
+		return this._agentSessionScope?.createSubagentScope();
 	}
 
 	get stateManager(): StateManager {

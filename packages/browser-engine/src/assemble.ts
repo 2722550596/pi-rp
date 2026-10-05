@@ -503,8 +503,9 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	});
 	await resourceLoader.reload();
 
-	const promptScope = options.promptSlots?.length ? createAgentSessionScope() : undefined;
-	for (const slot of options.promptSlots ?? []) promptScope?.promptRegistry.registerSlot(slot);
+	const promptScope = options.promptSlots?.length
+		? createAgentSessionScope({ subagentPromptSlots: options.promptSlots })
+		: undefined;
 
 	// ---- S8: session 构造与就绪（createAgentSession 内部 await _buildRuntimePromise） ----
 	const sessionOptions: CreateAgentSessionOptions = {

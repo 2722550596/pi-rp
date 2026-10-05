@@ -2,6 +2,7 @@ import type { Provider } from "@earendil-works/pi-ai";
 import type { ProviderConfig } from "./extensions/types.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { PromptRegistryScope } from "./prompt-preset/registry-scope.ts";
+import type { SlotDefinition } from "./prompt-preset/types.ts";
 
 type ProviderRegistration =
 	| { kind: "config"; extensionPath: string; id: string; config: ProviderConfig }
@@ -224,22 +225,39 @@ function coordinatorFor(runtime: ModelRuntime): ProviderRegistrationCoordinator 
  * Raw `pi-ai/compat` registry calls and arbitrary extension module/process globals are not intercepted.
  * Host callers must use curated trusted extensions and dispose the scope after the AgentSession, including failed construction.
  */
+export interface AgentSessionScopeOptions {
+	readonly rejectSessionReplacement?: boolean;
+	/** Host-owned prompt slots explicitly safe and required in delegated subagent sessions. */
+	readonly subagentPromptSlots?: readonly SlotDefinition[];
+}
+
 export class AgentSessionScope {
 	readonly promptRegistry = new PromptRegistryScope();
 	private readonly id = Symbol("AgentSessionScope");
 	private readonly rejectReplacement: boolean;
+	private readonly subagentPromptSlots: readonly SlotDefinition[];
 	private runtime?: ModelRuntime;
 	private activeProviders = new Map<string, ProviderRegistration>();
 	private stagedProviders?: Map<string, ProviderRegistration>;
 	private stagedProviderError?: AgentSessionScopeError;
 	private disposed = false;
 
-	constructor(options: { rejectSessionReplacement?: boolean } = {}) {
+	constructor(options: AgentSessionScopeOptions = {}) {
 		this.rejectReplacement = options.rejectSessionReplacement ?? false;
+		this.subagentPromptSlots = options.subagentPromptSlots ?? [];
+		for (const slot of this.subagentPromptSlots) this.promptRegistry.registerSlot(slot);
 	}
 
 	get rejectSessionReplacement(): boolean {
 		return this.rejectReplacement;
+	}
+
+	/** Create an isolated child scope with only host-whitelisted prompt slots. */
+	createSubagentScope(): AgentSessionScope {
+		this.assertActive();
+		const child = createAgentSessionScope({ rejectSessionReplacement: true });
+		for (const slot of this.subagentPromptSlots) child.promptRegistry.registerSlot(slot);
+		return child;
 	}
 
 	bindModelRuntime(runtime: ModelRuntime): void {
@@ -264,6 +282,7 @@ export class AgentSessionScope {
 		this.assertActive();
 		if (this.stagedProviders) throw new Error("AgentSession scope update already in progress");
 		this.promptRegistry.beginUpdate();
+		for (const slot of this.subagentPromptSlots) this.promptRegistry.registerSlot(slot);
 		this.stagedProviders = new Map();
 		this.stagedProviderError = undefined;
 		let finished = false;
@@ -365,6 +384,6 @@ export class AgentSessionScope {
 	}
 }
 
-export function createAgentSessionScope(options: { rejectSessionReplacement?: boolean } = {}): AgentSessionScope {
+export function createAgentSessionScope(options: AgentSessionScopeOptions = {}): AgentSessionScope {
 	return new AgentSessionScope(options);
 }

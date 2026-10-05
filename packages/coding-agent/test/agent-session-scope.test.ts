@@ -20,11 +20,35 @@ afterEach(() => {
 	while (scopes.length) scopes.pop()!.dispose();
 });
 
-function createScope(options?: { rejectSessionReplacement?: boolean }): AgentSessionScope {
+function createScope(options?: Parameters<typeof createAgentSessionScope>[0]): AgentSessionScope {
 	const scope = createAgentSessionScope(options);
 	scopes.push(scope);
 	return scope;
 }
+
+it("inherits only host-whitelisted prompt slots into an isolated subagent scope", () => {
+	const hostSlot = {
+		name: "host-subagent-context",
+		description: "Host-owned context for delegated sessions.",
+		render: () => "host context",
+	};
+	const parent = createScope({ rejectSessionReplacement: true, subagentPromptSlots: [hostSlot] });
+	const update = parent.beginUpdate();
+	update.commit();
+	expect(parent.promptRegistry.getCustomSlot("host-subagent-context")).toBe(hostSlot);
+	parent.promptRegistry.registerSlot({
+		name: "private-session-slot",
+		description: "Session-bound data that must not leak into children.",
+		render: () => "private",
+	});
+
+	const child = parent.createSubagentScope();
+	scopes.push(child);
+	expect(child).not.toBe(parent);
+	expect(child.rejectSessionReplacement).toBe(true);
+	expect(child.promptRegistry.getCustomSlot("host-subagent-context")).toBe(hostSlot);
+	expect(child.promptRegistry.getCustomSlot("private-session-slot")).toBeUndefined();
+});
 
 function makeRuntime(scope: AgentSessionScope): PromptRuntime {
 	return {
