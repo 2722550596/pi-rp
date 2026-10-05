@@ -288,6 +288,7 @@ export {
 	createReadTool,
 	createWriteTool,
 	type PromptTemplate,
+	type RuntimeContextSlot,
 } from "./core/sdk.ts";
 export {
 	type BranchSummaryEntry,

@@ -3,9 +3,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import type { ExtensionContext } from "../../src/core/extensions/types.ts";
 import { applyResourcePolicy } from "../../src/core/prompt-preset/policy.ts";
+import { createAgentSessionScope } from "../../src/core/session-scope.ts";
 import {
 	createSubagentProfilesToolDefinition,
 	createSubagentToolDefinition,
@@ -39,25 +40,31 @@ describe("Subagent", () => {
 			harness.cleanup();
 		}
 	});
-
-	it("Phase 2: runSubagent correctly streams and truncates output", async () => {
+	it("Phase 2: runSubagent truncation is safe without the Node Buffer global", async () => {
 		const harness = await createHarness();
 		harness.faux.setResponses([fauxAssistantMessage("Task completed successfully. ".repeat(100))]);
 
 		try {
-			// Instead of a full preset which requires disk setup, we pass mock preparation
-			const result = await runSubagent(
-				{
-					messages: [{ role: "user", content: [{ type: "text", text: "task" }], timestamp: 0 }],
-					model: harness.session.model!,
-					thinkingLevel: "medium",
-					effectiveTools: [],
-					profile: { schemaVersion: 1, id: "test", items: [] },
-				},
-				harness.session.modelRuntime,
-			);
+			// Simulate the Browser global environment around the exact native child-session path.
+			vi.stubGlobal("Buffer", undefined);
+			let result: Awaited<ReturnType<typeof runSubagent>> | undefined;
+			try {
+				result = await runSubagent(
+					{
+						messages: [{ role: "user", content: [{ type: "text", text: "task" }], timestamp: 0 }],
+						model: harness.session.model!,
+						thinkingLevel: "medium",
+						effectiveTools: [],
+						profile: { schemaVersion: 1, id: "test", items: [] },
+					},
+					harness.session.modelRuntime,
+				);
+			} finally {
+				vi.unstubAllGlobals();
+			}
 
-			assert.equal(result.status, "completed");
+			assert.ok(result);
+			assert.equal(result.status, "completed", `run error: ${result.error ?? "none"}`);
 			assert.ok(result.text.includes("Task completed successfully"));
 			assert.equal(result.rawText, "Task completed successfully. ".repeat(100));
 		} finally {
@@ -759,6 +766,71 @@ describe("Subagent", () => {
 				false,
 				`session must not contain custom_message entries, got ${JSON.stringify(entryTypes)}`,
 			);
+		} finally {
+			harness.cleanup();
+		}
+	});
+	it("native subagent tool forwards only host-whitelisted prompt slots", async () => {
+		const slot = {
+			name: "host-subagent-context",
+			description: "Host-owned context for delegated sessions.",
+			render: () => "CHILD-SLOT-CHECK",
+		};
+		const scope = createAgentSessionScope({
+			rejectSessionReplacement: true,
+			subagentPromptSlots: [slot],
+		});
+		const preset = {
+			filePath: "inline:host-slot",
+			source: "inline:host-slot",
+			diagnostics: [],
+			preset: {
+				schemaVersion: 1,
+				id: "host-slot",
+				name: "Host Slot",
+				delegatable: true,
+				items: [
+					{ kind: "block", id: "role", enabled: true, role: "system", content: "You are a test child." },
+					{ kind: "slot", id: "context", slot: "host-subagent-context", role: "system" },
+					{ kind: "block", id: "task", enabled: true, role: "user", content: "Use the host context." },
+				],
+			},
+		};
+		const harness = await createHarness({ scope, inlinePresets: [preset] });
+		let childSawSlot = false;
+		let childSawUnknownSlot = false;
+		try {
+			harness.session.reloadPresets();
+			assert.equal(harness.session.promptRegistryScope?.getCustomSlot("host-subagent-context"), slot);
+			assert.equal(
+				harness.session.getAllPresets().find((loaded) => loaded.preset.id === "host-slot")?.preset.delegatable,
+				true,
+			);
+			harness.faux.setResponses([
+				(context) => {
+					const messages = JSON.stringify(context.messages);
+					childSawSlot = messages.includes("CHILD-SLOT-CHECK");
+					childSawUnknownSlot = messages.includes("[unknown slot: host-subagent-context]");
+					return fauxAssistantMessage("child completed");
+				},
+			]);
+
+			const tool = createSubagentToolDefinition(harness.session);
+			const result = await tool.execute(
+				"host-slot-call",
+				{ profileId: "host-slot", task: "Use the inherited host context." },
+				undefined,
+				undefined,
+				{} as unknown as ExtensionContext,
+			);
+			const text = result.content[0];
+			assert.ok(typeof text === "object" && "text" in text && !text.text.includes("[failed]"), text);
+			assert.equal(
+				childSawSlot,
+				true,
+				`the delegated prompt must render the host-whitelisted slot; result=${JSON.stringify(text)}`,
+			);
+			assert.equal(childSawUnknownSlot, false, "the child must not receive an unresolved host slot");
 		} finally {
 			harness.cleanup();
 		}

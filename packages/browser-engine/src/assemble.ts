@@ -41,12 +41,14 @@ import {
 	type LoadedPromptPresetSource,
 	loadPromptPresets,
 } from "../../coding-agent/src/core/prompt-preset/loader.ts";
-import type { HistoryHostDataProvider } from "../../coding-agent/src/core/prompt-preset/types.ts";
+import type { HistoryHostDataProvider, SlotDefinition } from "../../coding-agent/src/core/prompt-preset/types.ts";
 import { DefaultResourceLoader } from "../../coding-agent/src/core/resource-loader.ts";
 import type { RuntimeCredentials } from "../../coding-agent/src/core/runtime-credentials.ts";
 import type { CreateAgentSessionOptions } from "../../coding-agent/src/core/sdk.ts";
 import { createAgentSession } from "../../coding-agent/src/core/sdk.ts";
 import type { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
+import type { RuntimeContextSlot } from "../../coding-agent/src/core/session-scope.ts";
+import { createAgentSessionScope } from "../../coding-agent/src/core/session-scope.ts";
 import type { Settings } from "../../coding-agent/src/core/settings-manager.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
@@ -165,6 +167,12 @@ export interface CreatePiHarnessOptions {
 	// ── 资源装载缝（18 号模块 A；契约 §3.2/§3.4；与上方 ui?/opening? 字段段相邻不相交）──
 	/** 内联 prompt preset（打包通道）。并入扫描集：同 ID 内联胜出 + warn；经 normalizePreset 重入复验。 */
 	readonly presets?: readonly LoadedPromptPresetSource[];
+	/** Session-scoped prompt slots, registered before runtime compilation and inherited by native subagents. */
+	readonly promptSlots?: readonly SlotDefinition[];
+	/** Nonpersistent runtime provider context slots; only explicitly opted-in slots reach subagents. */
+	readonly runtimeContextSlots?: readonly RuntimeContextSlot[];
+	/** Disable native threshold and overflow auto-compaction; manual compact remains available. */
+	readonly disableAutoCompaction?: boolean;
 	/** 内联 opening preset（打包通道）。同 ID 内联胜出；由内建 opening 工厂消费（缺省装配归 B）。 */
 	readonly openings?: readonly OpeningPresetSource[];
 	/** 内联 state schema（打包通道；契约 §3.2 C2 裁决定名——`schemas` 保留为显式 ID 列表）。 */
@@ -500,6 +508,14 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	});
 	await resourceLoader.reload();
 
+	const promptScope =
+		options.promptSlots?.length || options.runtimeContextSlots
+			? createAgentSessionScope({
+					subagentPromptSlots: options.promptSlots,
+					runtimeContextSlots: options.runtimeContextSlots,
+				})
+			: undefined;
+
 	// ---- S8: session 构造与就绪（createAgentSession 内部 await _buildRuntimePromise） ----
 	const sessionOptions: CreateAgentSessionOptions = {
 		cwd,
@@ -508,6 +524,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		stores,
 		capabilities,
 		modelRuntime,
+		scope: promptScope,
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,
 		settingsManager,
@@ -517,6 +534,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		inlinePresets: options.presets,
 		inlineSchemas: options.inlineSchemas,
 		historyHostData: options.historyHostData,
+		disableAutoCompaction: options.disableAutoCompaction,
 	};
 	if (llmAssembly.kind === "gateway") {
 		sessionOptions.requestGateway = llmAssembly.gateway;
@@ -544,7 +562,10 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 			(createBrowserSqliteDatabaseFactory() as unknown as CreateAgentSessionOptions["sqliteFactory"]);
 	}
 
-	const { session, extensionsResult } = await createAgentSession(sessionOptions);
+	const { session, extensionsResult } = await createAgentSession(sessionOptions).catch((error) => {
+		promptScope?.dispose();
+		throw error;
+	});
 	// ---- S8.5: 扩展绑定（E4/E2；C3 裁决：恒执行一次，无「不绑定」分支） ----
 	// session_start 是 node 不变的生命周期事件，唯一发射点在 bindExtensions——缺省装配
 	// （noOp UIContext + mode "rpc"）也让宿主工厂扩展的生命周期事件激活。时序与 node 三模式
@@ -587,6 +608,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 			// S9：settings 写队列 flush → storage flush（Impl-B 公式）→ env 清理；逐层 best-effort 不抛。
 			try {
 				session.dispose();
+				promptScope?.dispose();
 			} catch {}
 			try {
 				await settingsManager.flush();

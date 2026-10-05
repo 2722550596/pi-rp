@@ -20,11 +20,54 @@ afterEach(() => {
 	while (scopes.length) scopes.pop()!.dispose();
 });
 
-function createScope(options?: { rejectSessionReplacement?: boolean }): AgentSessionScope {
+function createScope(options?: Parameters<typeof createAgentSessionScope>[0]): AgentSessionScope {
 	const scope = createAgentSessionScope(options);
 	scopes.push(scope);
 	return scope;
 }
+
+it("memoizes runtime context per scope and inherits only explicitly whitelisted slots", async () => {
+	let inheritedRenders = 0;
+	let privateRenders = 0;
+	const inheritedRuntimeSlot = {
+		id: "shared-runtime",
+		render: async () => {
+			inheritedRenders++;
+			return "shared runtime context";
+		},
+		inheritToSubagents: true,
+	};
+	const privateRuntimeSlot = {
+		id: "private-runtime",
+		render: () => {
+			privateRenders++;
+			return "private runtime context";
+		},
+	};
+	const parent = createScope({
+		rejectSessionReplacement: true,
+		runtimeContextSlots: [inheritedRuntimeSlot, privateRuntimeSlot],
+	});
+
+	expect(await parent.getRuntimeContext()).toBe("shared runtime context\n\nprivate runtime context");
+	expect(await parent.getRuntimeContext()).toBe("shared runtime context\n\nprivate runtime context");
+	expect(inheritedRenders).toBe(1);
+	expect(privateRenders).toBe(1);
+
+	parent.replaceRuntimeContextSlots([{ slotId: "shared-runtime", content: "reviewed shared context" }]);
+	expect(await parent.getRuntimeContext()).toBe("reviewed shared context\n\nprivate runtime context");
+	expect(inheritedRenders).toBe(1);
+	const child = parent.createSubagentScope();
+	scopes.push(child);
+	expect(await child.getRuntimeContext()).toBe("shared runtime context");
+	expect(inheritedRenders).toBe(2);
+	expect(privateRenders).toBe(1);
+	child.invalidateRuntimeContext();
+	expect(await child.getRuntimeContext()).toBe("shared runtime context");
+	expect(inheritedRenders).toBe(3);
+	parent.dispose();
+	expect(() => parent.getRuntimeContext()).toThrow("AgentSession scope has been disposed");
+});
 
 function makeRuntime(scope: AgentSessionScope): PromptRuntime {
 	return {

@@ -39,6 +39,28 @@ describe("auto-activate preset selection", () => {
 		};
 	}
 
+	it("keeps inline delegatable presets on the created session for native subagents", async () => {
+		const { session } = await createAgentSession({
+			...baseOptions(),
+			inlinePresets: [
+				{
+					filePath: "inline:child",
+					source: "inline:child",
+					diagnostics: [],
+					preset: {
+						schemaVersion: 1,
+						id: "child",
+						name: "Child",
+						delegatable: true,
+						items: [],
+					},
+				},
+			],
+		});
+		expect(session.getAllPresets().map((preset) => preset.preset.id)).toContain("child");
+		expect(session.getAllPresets().find((preset) => preset.preset.id === "child")?.preset.delegatable).toBe(true);
+		session.dispose();
+	});
 	it("activates a preset that explicitly opts in with autoActivate: true", async () => {
 		writeFileSync(
 			join(tempDir, ".pi", "prompt-presets", "writer.json"),

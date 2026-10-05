@@ -43,7 +43,7 @@ import {
 	SessionManager,
 	type StrictChangeEntry,
 } from "./session-manager.ts";
-import type { AgentSessionScope } from "./session-scope.ts";
+import { type AgentSessionScope, createAgentSessionScope, type RuntimeContextSlot } from "./session-scope.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import {
@@ -181,6 +181,10 @@ export interface CreateAgentSessionOptions {
 	strict?: boolean;
 	/** Host-owned isolation scope; dispose it after disposing the returned session. */
 	scope?: AgentSessionScope;
+	/** Nonpersistent provider-request context slots, initialized once per session and after compact. */
+	runtimeContextSlots?: readonly RuntimeContextSlot[];
+	/** Disable threshold and overflow auto-compaction for this session; manual compact remains enabled. */
+	disableAutoCompaction?: boolean;
 	/** Mount the cross-process shared state store (default: true). Pass false for in-memory subagents. */
 	attachStateStore?: boolean;
 }
@@ -213,6 +217,7 @@ export type {
 	ToolDefinition,
 } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
+export type { RuntimeContextSlot } from "./session-scope.ts";
 export type { Skill } from "./skills.ts";
 export type { Tool } from "./tools/index.ts";
 
@@ -438,6 +443,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		priority: 2,
 		label: "main",
 	};
+	const sessionScope =
+		options.scope ??
+		(options.runtimeContextSlots
+			? createAgentSessionScope({ runtimeContextSlots: options.runtimeContextSlots })
+			: undefined);
+	if (options.scope && options.runtimeContextSlots) {
+		sessionScope?.addRuntimeContextSlots(options.runtimeContextSlots);
+	}
+	const ownsSessionScope = !options.scope && sessionScope !== undefined;
 
 	agent = new Agent({
 		initialState: {
@@ -586,8 +600,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		configDir: options.configDir,
 		stores: options.stores,
 		historyHostData: options.historyHostData,
+		inlinePresets: options.inlinePresets,
 		inlineSchemas: options.inlineSchemas,
-		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,
 		modelRuntime,
@@ -598,8 +612,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 		attachStateStore: options.attachStateStore,
-		scope: options.scope,
+		scope: sessionScope,
 		requestIdentity: sessionRequestIdentity,
+		disableAutoCompaction: options.disableAutoCompaction,
+		ownsScope: ownsSessionScope,
 	});
 	// Wait for the async construction work (schema/validator loading,
 	// extension runner wiring) before exposing the session.

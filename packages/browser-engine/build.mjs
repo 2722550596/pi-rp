@@ -32,7 +32,7 @@ const WORKSPACE_SRC_PREFIXES = [
 	["@earendil-works/pi-client/", "packages/client/src/"],
 	["@earendil-works/pi-client", "packages/client/src/index.ts"],
 	["@earendil-works/pi-memory/", "packages/memory/src/"],
-	["@earendil-works/pi-memory", "packages/memory/src/index.ts"],
+	["@earendil-works/pi-memory", "packages/memory/src/browser.ts"],
 	["@earendil-works/pi-protocol/", "packages/protocol/src/"],
 	["@earendil-works/pi-session-protocol/", "packages/session-protocol/src/"],
 	["@earendil-works/pi-session-protocol", "packages/session-protocol/src/index.ts"],
@@ -134,6 +134,23 @@ export function piTuiStubPlugin() {
 					return undefined;
 				}
 				return { path: interactiveStub };
+			});
+		},
+	};
+}
+
+/** The Node Photon backend is intentionally unavailable in Browser; preserve its null capability. */
+export function browserPhotonStubPlugin() {
+	const photonStub = join(packageRoot, "src/stub/photon.ts");
+	return {
+		name: "browser-photon-stub",
+		setup(build) {
+			build.onResolve({ filter: /^\.\/photon\.ts$/ }, (args) => {
+				const importer = args.importer.replaceAll("\\", "/");
+				if (!/\/packages\/coding-agent\/src\/utils\/(?:image-convert|image-resize-core|clipboard-image)\.ts$/.test(importer)) {
+					return undefined;
+				}
+				return { path: photonStub };
 			});
 		},
 	};
@@ -288,7 +305,14 @@ export function browserHarnessEsbuildOptions(entryPoint, options = {}) {
 			js:
 				"globalThis.__piBrowserProcess ??= { env: {}, platform: 'browser', versions: {}, argv: [], pid: 0, cwd: () => '/', execPath: '/pi', nextTick: (fn) => queueMicrotask(fn) };",
 		},
-		plugins: [piTuiStubPlugin(), rawContentPlugin(), nodeShimPlugin(), browserCatalogDataPlugin(), workspaceSrcPlugin()],
+		plugins: [
+			piTuiStubPlugin(),
+			browserPhotonStubPlugin(),
+			rawContentPlugin(),
+			nodeShimPlugin(),
+			browserCatalogDataPlugin(),
+			workspaceSrcPlugin(),
+		],
 	};
 }
 

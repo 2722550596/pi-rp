@@ -9,18 +9,21 @@
 
 /// <reference path="./deps.d.ts" />
 
-export type { ExecutionEnv, FileSystem, Shell } from "@earendil-works/pi-agent-core";
+export type { ExecutionEnv, FileSystem, ObjectStore, Shell } from "@earendil-works/pi-agent-core";
 export { InMemorySessionRepo, streamProxy } from "@earendil-works/pi-agent-core";
 export {
 	BROWSER_AGENT_DIR,
 	createBrowserHarnessEnv,
 	createHostedHarnessEnv,
+	createOpfsObjectStore,
+	OpfsFileSystem,
 	OpfsStateLocks,
 	OpfsStorageBackend,
 	opfsStatePaths,
 } from "@earendil-works/pi-agent-core/web";
 export type { AssistantMessage, Model, StreamFunction, ThinkingLevel } from "@earendil-works/pi-ai";
 export type { ByteTransportFactory } from "@earendil-works/pi-client";
+export { JsonTree } from "@earendil-works/pi-coding-agent/objects";
 export {
 	EXECUTOR_PROTOCOL_VERSION,
 	MAX_EXECUTOR_INBOUND_CHUNK_BYTES,
@@ -31,6 +34,7 @@ export { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 export type {
 	AgentSessionEvent,
 	CustomTypePolicy,
+	RuntimeContextSlot,
 	SessionCompactResult,
 	SlotDefinition,
 } from "../../coding-agent/src/index.ts";

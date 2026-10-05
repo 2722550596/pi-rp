@@ -109,3 +109,32 @@ it("awaits custom tools, forwards progress, appends policy-aware messages, and r
 		harness.cleanup();
 	}
 });
+it("preserves custom-tool terminate so submit-style tools close the tool loop", async () => {
+	const extensionFactory = createBrowserCustomToolFactory(
+		[
+			{
+				definition: {
+					name: "finish_tool",
+					label: "Finish",
+					description: "Finish the current turn.",
+					parameters: Type.Object({}),
+				},
+				handler() {
+					return { content: [{ type: "text", text: "finished" }], terminate: true };
+				},
+			},
+		],
+		[],
+		"finish-session",
+	);
+	const harness = await createHarnessWithExtensions({
+		responses: [{ toolCalls: [{ id: "finish-call", name: "finish_tool", args: {} }] }],
+		extensionFactories: [extensionFactory],
+	});
+	try {
+		await harness.session.prompt("start");
+		expect(harness.faux.callCount).toBe(1);
+	} finally {
+		harness.cleanup();
+	}
+});

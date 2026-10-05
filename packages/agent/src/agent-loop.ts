@@ -264,6 +264,22 @@ async function runLoop(
 	let currentContext = initialContext;
 	let config = initialConfig;
 	let lastCompletedTurn: PrepareNextTurnContext | undefined;
+	if (config.prepareInitialTurn) {
+		const initialSnapshot = await config.prepareInitialTurn({ context: currentContext });
+		if (initialSnapshot) {
+			currentContext = initialSnapshot.context ?? currentContext;
+			config = {
+				...config,
+				model: initialSnapshot.model ?? config.model,
+				reasoning:
+					initialSnapshot.thinkingLevel === undefined
+						? config.reasoning
+						: initialSnapshot.thinkingLevel === "off"
+							? undefined
+							: initialSnapshot.thinkingLevel,
+			};
+		}
+	}
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 

@@ -2,6 +2,14 @@ import type { Provider } from "@earendil-works/pi-ai";
 import type { ProviderConfig } from "./extensions/types.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { PromptRegistryScope } from "./prompt-preset/registry-scope.ts";
+import type { SlotDefinition } from "./prompt-preset/types.ts";
+
+/** Nonpersistent provider-request context, rendered once per AgentSession scope. */
+export interface RuntimeContextSlot {
+	readonly id: string;
+	render(): string | Promise<string>;
+	readonly inheritToSubagents?: boolean;
+}
 
 type ProviderRegistration =
 	| { kind: "config"; extensionPath: string; id: string; config: ProviderConfig }
@@ -224,22 +232,105 @@ function coordinatorFor(runtime: ModelRuntime): ProviderRegistrationCoordinator 
  * Raw `pi-ai/compat` registry calls and arbitrary extension module/process globals are not intercepted.
  * Host callers must use curated trusted extensions and dispose the scope after the AgentSession, including failed construction.
  */
+export interface AgentSessionScopeOptions {
+	readonly rejectSessionReplacement?: boolean;
+	/** Host-owned prompt slots explicitly safe and required in delegated subagent sessions. */
+	readonly subagentPromptSlots?: readonly SlotDefinition[];
+	/** Runtime-only provider context; child scopes receive explicit inheritToSubagents entries only. */
+	readonly runtimeContextSlots?: readonly RuntimeContextSlot[];
+}
+
 export class AgentSessionScope {
 	readonly promptRegistry = new PromptRegistryScope();
 	private readonly id = Symbol("AgentSessionScope");
 	private readonly rejectReplacement: boolean;
+	private readonly subagentPromptSlots: readonly SlotDefinition[];
 	private runtime?: ModelRuntime;
+	private readonly runtimeSlots: RuntimeContextSlot[];
+	private runtimeContextContents = new Map<string, string>();
+	private runtimeContextGeneration = 0;
+	private runtimeContextPromise?: Promise<string>;
 	private activeProviders = new Map<string, ProviderRegistration>();
 	private stagedProviders?: Map<string, ProviderRegistration>;
 	private stagedProviderError?: AgentSessionScopeError;
 	private disposed = false;
 
-	constructor(options: { rejectSessionReplacement?: boolean } = {}) {
+	constructor(options: AgentSessionScopeOptions = {}) {
 		this.rejectReplacement = options.rejectSessionReplacement ?? false;
+		this.subagentPromptSlots = options.subagentPromptSlots ?? [];
+		this.runtimeSlots = [...(options.runtimeContextSlots ?? [])];
+		for (const slot of this.subagentPromptSlots) this.promptRegistry.registerSlot(slot);
+	}
+
+	getRuntimeContext(): Promise<string> {
+		this.assertActive();
+		if (!this.runtimeContextPromise) {
+			const generation = this.runtimeContextGeneration;
+			this.runtimeContextPromise = Promise.all(
+				this.runtimeSlots.map(async (slot) => [slot.id, await slot.render()] as const),
+			).then((rendered) => {
+				if (generation === this.runtimeContextGeneration) {
+					for (const [id, content] of rendered) this.runtimeContextContents.set(id, content);
+				}
+				return this.renderRuntimeContext();
+			});
+		}
+		return this.runtimeContextPromise;
+	}
+
+	invalidateRuntimeContext(): void {
+		this.runtimeContextGeneration++;
+		this.runtimeContextContents.clear();
+		this.runtimeContextPromise = undefined;
+	}
+	addRuntimeContextSlots(slots: readonly RuntimeContextSlot[]): void {
+		this.assertActive();
+		const existingIds = new Set(this.runtimeSlots.map((slot) => slot.id));
+		let changed = false;
+		for (const slot of slots) {
+			if (existingIds.has(slot.id)) continue;
+			existingIds.add(slot.id);
+			this.runtimeSlots.push(slot);
+			changed = true;
+		}
+		if (changed) this.invalidateRuntimeContext();
+	}
+
+	/** Apply pre-rendered compact replacements without re-running slot renderers. */
+	replaceRuntimeContextSlots(replacements: readonly { readonly slotId: string; readonly content: string }[]): void {
+		const runtimeSlotIds = new Set(this.runtimeSlots.map((slot) => slot.id));
+		const nextContents = new Map(this.runtimeContextContents);
+		let replaced = false;
+		for (const replacement of replacements) {
+			if (!runtimeSlotIds.has(replacement.slotId)) continue;
+			nextContents.set(replacement.slotId, replacement.content);
+			replaced = true;
+		}
+		if (!replaced) return;
+		this.runtimeContextGeneration++;
+		this.runtimeContextContents = nextContents;
+		this.runtimeContextPromise = Promise.resolve(this.renderRuntimeContext());
+	}
+
+	private renderRuntimeContext(): string {
+		return this.runtimeSlots
+			.map((slot) => this.runtimeContextContents.get(slot.id) ?? "")
+			.filter((part) => part.length > 0)
+			.join("\n\n");
 	}
 
 	get rejectSessionReplacement(): boolean {
 		return this.rejectReplacement;
+	}
+
+	/** Create an isolated child scope with only host-whitelisted prompt/runtime slots. */
+	createSubagentScope(): AgentSessionScope {
+		this.assertActive();
+		return createAgentSessionScope({
+			rejectSessionReplacement: true,
+			subagentPromptSlots: this.subagentPromptSlots,
+			runtimeContextSlots: this.runtimeSlots.filter((slot) => slot.inheritToSubagents === true),
+		});
 	}
 
 	bindModelRuntime(runtime: ModelRuntime): void {
@@ -264,6 +355,7 @@ export class AgentSessionScope {
 		this.assertActive();
 		if (this.stagedProviders) throw new Error("AgentSession scope update already in progress");
 		this.promptRegistry.beginUpdate();
+		for (const slot of this.subagentPromptSlots) this.promptRegistry.registerSlot(slot);
 		this.stagedProviders = new Map();
 		this.stagedProviderError = undefined;
 		let finished = false;
@@ -322,6 +414,8 @@ export class AgentSessionScope {
 		if (this.runtime) this.providerCoordinator().reconcile(this.id, this.activeProviders, new Map());
 		this.activeProviders.clear();
 		this.promptRegistry.dispose();
+		this.invalidateRuntimeContext();
+		this.runtimeSlots.length = 0;
 		this.disposed = true;
 	}
 
@@ -365,6 +459,6 @@ export class AgentSessionScope {
 	}
 }
 
-export function createAgentSessionScope(options: { rejectSessionReplacement?: boolean } = {}): AgentSessionScope {
+export function createAgentSessionScope(options: AgentSessionScopeOptions = {}): AgentSessionScope {
 	return new AgentSessionScope(options);
 }

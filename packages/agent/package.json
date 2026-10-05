@@ -19,6 +19,10 @@
 			"types": "./dist/web.d.ts",
 			"import": "./dist/web.js"
 		},
+		"./truncate": {
+			"types": "./dist/harness/utils/truncate.d.ts",
+			"import": "./dist/harness/utils/truncate.js"
+		},
 		"./session/testing": {
 			"types": "./dist/harness/session/testing/index.d.ts",
 			"import": "./dist/harness/session/testing/index.js"

@@ -16,6 +16,10 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
+		"./objects": {
+			"types": "./dist/core/objects/tree/index.d.ts",
+			"import": "./dist/core/objects/tree/index.js"
+		},
 		"./rpc-entry": {
 			"import": "./dist/rpc-entry.js"
 		},

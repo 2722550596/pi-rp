@@ -4,13 +4,11 @@
  * 独立脚本，不修改上游 scripts/check-browser-smoke.mjs 任何字节（逐字节同调保障）。
  * 构建配置单一事实源 = packages/browser-engine/build.mjs（§5.2 + §5.4 pi-tui stub 策略）。
  *
- * Wave 1 状态语义（装配主体在 Wave 3 落地）：
- * - PASS    断言通过（对当前源码树已生效的守护）。
- * - PENDING 15-F §5.5/§11.1 已记账、归后续波次的归化项（文件级 node: 渗透待 B/C/E 开缝、
- *           纯核拆分未落树、bundle 因记账内模块构建失败）。全部 PENDING 清零后本脚本自动收紧。
- * - FAIL    账外违规，含 packages/browser-engine 自身 src 的任何 node: 渗透 —— 立即失败。
+ * Browser D acceptance is strict: every entry must build without Node-only inputs and all assertions pass.
+ * - PASS    断言通过（源码输入、禁入包及 browser runtime stub 均通过检查）。
+ * - FAIL    任一 Node leakage、构建错误或禁入输入。
  *
- * 退出码：0 = 无 FAIL（允许 PENDING）；1 = 存在 FAIL。
+ * 退出码：0 = 全部断言通过；1 = 存在 FAIL。
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -47,9 +45,7 @@ const FORBIDDEN_NODE_PACKAGES = [
 ];
 
 /**
- * A2 文件级 node: 黑名单（StoreB 定稿口径：黑名单按「文件」判据 = 该文件是否仍在模块顶层
- * import node: 内建）。这些文件在归化落地后应进入 browser bundle 且顶层 node: import 消失；
- * 当前波次出现命中 = PENDING（记账内），browser-engine 自身 src 命中 = FAIL。
+ * Browser D 引入的 coding-agent 文件必须无顶层 Node builtin；任何命中均 FAIL。
  */
 const NODE_FREE_WATCH = [
 	`${codingAgentSrc}/core/session-manager.ts`,
@@ -83,30 +79,6 @@ const PURE_CORE_WHITELIST = [
 	`${codingAgentSrc}/core/prompt-preset/slot-registry.ts`,
 ];
 
-/**
- * A1 构建失败分类（Wave 1 语义）：
- * - browser-engine 自身 / 黑名单文件（FORBIDDEN_BUNDLE_INPUTS）/ 完全未知路径 = FAIL；
- * - coding-agent src（黑名单外，B 存储面收编 / C 纯核拆分 / E 默认实现开缝的记账区）、
- *   memory 包（node:sqlite 工厂化归 D）、node_modules 级联（photon/cross-spawn 等随上游
- *   slit 消失）= PENDING。
- * 全部 PENDING 清零后，此分类只对 FAIL 生效。
- */
-function classifyBuildError(error) {
-	const text = error.text ?? "";
-	const notes = (error.notes ?? []).map((note) => note.text ?? "").join("\n");
-	const rawFile = error.location?.file ?? "";
-	const rel = rawFile ? relative(repoRoot, resolve(rawFile)).replaceAll("\\", "/") : "";
-	if (rel.startsWith("packages/browser-engine/")) return "fail";
-	const violationHit = [
-		...FORBIDDEN_BUNDLE_INPUTS,
-		...FORBIDDEN_NODE_PACKAGES.map((packageName) => `node_modules/${packageName}`),
-	].some((marker) => rel.includes(marker) || text.includes(marker) || notes.includes(marker));
-	if (violationHit && !rel.startsWith("node_modules/")) return "fail";
-	if (rel.startsWith(`${codingAgentSrc}/`)) return "pending";
-	if (rel.startsWith("packages/memory/src")) return "pending";
-	if (rel.startsWith("node_modules/")) return "pending";
-	return "fail";
-}
 
 // A3（15-F §11.1 / §6.1 直连集）：mistral 为裸 fetch 无 SDK，入集待 §13-5 扩展项。
 const AI_SDK_ALLOWLIST = ["@anthropic-ai/sdk", "openai", "@google/genai", "@mistralai/mistralai"];
@@ -143,7 +115,6 @@ const ENTRIES = [
 // ---------------------------------------------------------------------------
 
 let passCount = 0;
-const pending = [];
 const failures = [];
 
 function pass(message) {
@@ -151,10 +122,6 @@ function pass(message) {
 	console.log(`  PASS     ${message}`);
 }
 
-function markPending(message) {
-	pending.push(message);
-	console.log(`  PENDING  ${message}`);
-}
 
 function fail(message) {
 	failures.push(message);
@@ -233,11 +200,11 @@ function topLevelNodeImports(source) {
 }
 
 function runSourceLevelAssertions() {
-	section("A2 source · 文件级 node: 黑名单（归化记账内 = PENDING）");
+	section("A2 source · Browser 所需模块必须无顶层 Node imports");
 	for (const file of NODE_FREE_WATCH) {
 		const absolute = join(repoRoot, file);
 		if (!existsSync(absolute)) {
-			markPending(`${file} 尚未落树（等待对应模块归化/拆分）`);
+			fail(`${file} 未落树，Browser harness 导入面不完整`);
 			continue;
 		}
 		const hits = topLevelNodeImports(readFileSync(absolute, "utf8"));
@@ -246,14 +213,14 @@ function runSourceLevelAssertions() {
 			continue;
 		}
 		const evidence = hits.map((hit) => `:${hit.line} ${hit.specifier}`).join(", ");
-		markPending(`${file} 顶层 node: import 待归化开缝（15-F §5.5）：${evidence}`);
+		fail(`${file} 顶层 Node import: ${evidence}`);
 	}
 
 	section("A2 source · 扩展纯核白名单（12-C §11 T2 同型）");
 	for (const file of PURE_CORE_WHITELIST) {
 		const absolute = join(repoRoot, file);
 		if (!existsSync(absolute)) {
-			markPending(`${file} 尚未落树（等待 12-C 拆分）`);
+			fail(`${file} 纯核模块缺失`);
 			continue;
 		}
 		const hits = topLevelNodeImports(readFileSync(absolute, "utf8"));
@@ -261,7 +228,7 @@ function runSourceLevelAssertions() {
 			pass(`${file} 纯核无顶层 node: import`);
 		} else {
 			const evidence = hits.map((hit) => `:${hit.line} ${hit.specifier}`).join(", ");
-			markPending(`${file} 顶层 node: import 待拆分收编：${evidence}`);
+			fail(`${file} 纯核存在顶层 Node import: ${evidence}`);
 		}
 	}
 
@@ -401,9 +368,9 @@ function assertProviderSelection(entry, metafile) {
 		return;
 	}
 
-	// product entry：llm 装配（Wave 3）前无 SDK 属预期；出现后按直连集白名单收紧。
+	// Product entry 必须携带至少一个受支持的 LLM SDK；遗漏即是未完成的 Browser 装配。
 	if (sdkPackages.length === 0) {
-		markPending(`${entry.id}: provider 未入包（等待 Wave 3 llm.ts 三态装配）`);
+		fail(`${entry.id}: provider SDK 未入包`);
 	} else {
 		const outside = sdkPackages.filter((packageName) => !AI_SDK_ALLOWLIST.includes(packageName));
 		if (outside.length > 0) fail(`${entry.id}: 白名单外 SDK 入包：${outside.join(", ")}`);
@@ -435,21 +402,11 @@ async function runBundleAssertions() {
 		const outcome = await buildEntry(entry);
 		if (!outcome.ok) {
 			const errors = outcome.error.errors ?? [{ text: String(outcome.error) }];
-			const pendingErrors = errors.filter((error) => classifyBuildError(error) === "pending");
-			if (pendingErrors.length === errors.length) {
-				const files = [...new Set(pendingErrors.map((error) => error.location?.file).filter(Boolean))]
-					.slice(0, 6)
-					.map((file) => relative(repoRoot, resolve(file)));
-				markPending(`${entry.id}: 构建未过 —— 记账内归化模块（Wave 2/3）: ${files.join(", ") || "(见上)"}`);
-				for (const error of pendingErrors.slice(0, 4)) {
-					const location = error.location ? `${relative(repoRoot, resolve(error.location.file))}:${error.location.line}` : "(no location)";
-					console.log(`           · ${location} ${error.text.split("\n")[0]}`);
-				}
-			} else {
-				for (const error of errors) {
-					const location = error.location ? `${relative(repoRoot, resolve(error.location.file))}:${error.location.line}` : "(no location)";
-					fail(`${entry.id}: 账外构建错误 ${location} ${error.text.split("\n")[0]}`);
-				}
+			for (const error of errors) {
+				const location = error.location
+					? `${relative(repoRoot, resolve(error.location.file))}:${error.location.line}`
+					: "(no location)";
+				fail(`${entry.id}: Browser 构建失败 ${location} ${error.text.split("\n")[0]}`);
 			}
 			continue;
 		}
@@ -571,10 +528,7 @@ runStubCoverageAssertions();
 await runBundleAssertions();
 await runResourceSmokeAssertions();
 
-console.log(`\nsummary: ${passCount} pass, ${pending.length} pending, ${failures.length} fail`);
-if (pending.length > 0) {
-	console.log("PENDING = 15-F §5.5/§11.1 记账内归化项（Wave 2/3 落地后自动转 PASS/收紧）");
-}
+console.log(`\nsummary: ${passCount} pass, ${failures.length} fail`);
 if (failures.length > 0) {
 	console.log("FAIL = 账外违规，禁止合入；逐条修复后重跑。");
 	process.exit(1);

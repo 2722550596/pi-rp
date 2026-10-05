@@ -28,7 +28,7 @@ export interface BrowserCustomTool {
 		params: unknown,
 		context: BrowserToolHandlerContext,
 		onUpdate?: (progress: unknown) => void,
-	) => MaybePromise<{ content: readonly unknown[]; details?: unknown }>;
+	) => MaybePromise<{ content: readonly unknown[]; details?: unknown; terminate?: boolean }>;
 }
 
 export interface BrowserCustomTypePolicy {
@@ -133,7 +133,11 @@ export function createBrowserCustomToolFactory(
 						handlerContext,
 						onUpdate ? (progress) => onUpdate(progress as AgentToolResult<unknown>) : undefined,
 					);
-					return { content: [...result.content], details: result.details } as AgentToolResult<unknown>;
+					return {
+						content: [...result.content],
+						details: result.details,
+						terminate: result.terminate,
+					} as AgentToolResult<unknown>;
 				},
 			});
 		}

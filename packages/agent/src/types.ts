@@ -148,6 +148,9 @@ export interface AgentLoopTurnUpdate {
 }
 
 export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
+export interface PrepareInitialTurnContext {
+	context: AgentContext;
+}
 
 /** Availability verdict for a tool name that was not found in the current tool snapshot. */
 export type ToolAvailability = { kind: "available" } | { kind: "deferred"; guidance: string };
@@ -259,6 +262,11 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	prepareNextTurn?: (
 		context: PrepareNextTurnContext,
+	) => AgentLoopTurnUpdate | undefined | Promise<AgentLoopTurnUpdate | undefined>;
+
+	/** Called once before the first provider request of each run/continue loop. */
+	prepareInitialTurn?: (
+		context: PrepareInitialTurnContext,
 	) => AgentLoopTurnUpdate | undefined | Promise<AgentLoopTurnUpdate | undefined>;
 
 	/**

@@ -20,7 +20,9 @@ import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-sessi
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
+import type { LoadedPromptPresetSource } from "../../src/core/prompt-preset/types.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import type { AgentSessionScope } from "../../src/core/session-scope.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
 import type { InlineExtension, ResourceLoader } from "../../src/index.ts";
@@ -71,8 +73,9 @@ export interface HarnessOptions {
 	excludedToolNames?: string[];
 	resourceLoader?: ResourceLoader;
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
-	withConfiguredAuth?: boolean;
-	modelsJson?: Record<string, unknown>;
+	inlinePresets?: LoadedPromptPresetSource[];
+	scope?: AgentSessionScope;
+	disableAutoCompaction?: boolean;
 }
 
 export interface Harness {
@@ -198,7 +201,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		initialActiveToolNames: options.initialActiveToolNames,
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
-		extensionRunnerRef,
+		scope: options.scope,
+		inlinePresets: options.inlinePresets,
+		disableAutoCompaction: options.disableAutoCompaction,
 	});
 	// AgentSession wires the extension runner asynchronously; wait for it
 	// so harness consumers (extension api handles, session events) never
@@ -228,6 +233,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		tempDir,
 		cleanup() {
 			session.dispose();
+			options.scope?.dispose();
 			fauxProvider.unregister();
 			if (previousAgentDir === undefined) {
 				delete process.env[ENV_AGENT_DIR];

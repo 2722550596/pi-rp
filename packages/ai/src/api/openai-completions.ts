@@ -667,11 +667,25 @@ function createClient(
 		Object.assign(headers, optionsHeaders);
 	}
 
+	// openai SDK 每请求附带 x-stainless-* 遥测头；浏览器里它们迫使 CORS 预检，而
+	// 兼容网关通常不放行这些头 → TypeError: Failed to fetch。浏览器环境剥离之
+	//（服务端 undici 无 CORS 语义，不受影响）。
+	const sdkFetch: typeof globalThis.fetch =
+		"window" in globalThis
+			? (input, init) => {
+					const merged = new Headers(init?.headers);
+					for (const key of [...merged.keys()]) {
+						if (key.toLowerCase().startsWith("x-stainless-")) merged.delete(key);
+					}
+					return (fetch ?? globalThis.fetch.bind(globalThis))(input, { ...init, headers: merged });
+				}
+			: (fetch ?? globalThis.fetch.bind(globalThis));
+
 	return new OpenAI({
 		apiKey,
 		baseURL: model.baseUrl,
 		dangerouslyAllowBrowser: true,
-		fetch,
+		fetch: sdkFetch,
 		defaultHeaders: headers,
 	});
 }
