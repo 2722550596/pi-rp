@@ -798,6 +798,10 @@ export interface SessionCompactEvent {
 	reason: "manual" | "threshold" | "overflow";
 	/** True when the aborted turn is retried after this compaction (overflow recovery) */
 	willRetry: boolean;
+	/** Abort signal for review work associated with manual compaction. */
+	signal: AbortSignal;
+	/** Reports review failure independently from extension-handler rejection/catching. */
+	reportCompactReviewError(error: unknown): void;
 }
 
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */

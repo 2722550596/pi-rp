@@ -26,28 +26,47 @@ function createScope(options?: Parameters<typeof createAgentSessionScope>[0]): A
 	return scope;
 }
 
-it("inherits only host-whitelisted prompt slots into an isolated subagent scope", () => {
-	const hostSlot = {
-		name: "host-subagent-context",
-		description: "Host-owned context for delegated sessions.",
-		render: () => "host context",
+it("memoizes runtime context per scope and inherits only explicitly whitelisted slots", async () => {
+	let inheritedRenders = 0;
+	let privateRenders = 0;
+	const inheritedRuntimeSlot = {
+		id: "shared-runtime",
+		render: async () => {
+			inheritedRenders++;
+			return "shared runtime context";
+		},
+		inheritToSubagents: true,
 	};
-	const parent = createScope({ rejectSessionReplacement: true, subagentPromptSlots: [hostSlot] });
-	const update = parent.beginUpdate();
-	update.commit();
-	expect(parent.promptRegistry.getCustomSlot("host-subagent-context")).toBe(hostSlot);
-	parent.promptRegistry.registerSlot({
-		name: "private-session-slot",
-		description: "Session-bound data that must not leak into children.",
-		render: () => "private",
+	const privateRuntimeSlot = {
+		id: "private-runtime",
+		render: () => {
+			privateRenders++;
+			return "private runtime context";
+		},
+	};
+	const parent = createScope({
+		rejectSessionReplacement: true,
+		runtimeContextSlots: [inheritedRuntimeSlot, privateRuntimeSlot],
 	});
 
+	expect(await parent.getRuntimeContext()).toBe("shared runtime context\n\nprivate runtime context");
+	expect(await parent.getRuntimeContext()).toBe("shared runtime context\n\nprivate runtime context");
+	expect(inheritedRenders).toBe(1);
+	expect(privateRenders).toBe(1);
+
+	parent.replaceRuntimeContextSlots([{ slotId: "shared-runtime", content: "reviewed shared context" }]);
+	expect(await parent.getRuntimeContext()).toBe("reviewed shared context\n\nprivate runtime context");
+	expect(inheritedRenders).toBe(1);
 	const child = parent.createSubagentScope();
 	scopes.push(child);
-	expect(child).not.toBe(parent);
-	expect(child.rejectSessionReplacement).toBe(true);
-	expect(child.promptRegistry.getCustomSlot("host-subagent-context")).toBe(hostSlot);
-	expect(child.promptRegistry.getCustomSlot("private-session-slot")).toBeUndefined();
+	expect(await child.getRuntimeContext()).toBe("shared runtime context");
+	expect(inheritedRenders).toBe(2);
+	expect(privateRenders).toBe(1);
+	child.invalidateRuntimeContext();
+	expect(await child.getRuntimeContext()).toBe("shared runtime context");
+	expect(inheritedRenders).toBe(3);
+	parent.dispose();
+	expect(() => parent.getRuntimeContext()).toThrow("AgentSession scope has been disposed");
 });
 
 function makeRuntime(scope: AgentSessionScope): PromptRuntime {

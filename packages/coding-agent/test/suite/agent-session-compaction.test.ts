@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
 import { defaultPreset } from "../../src/core/prompt-preset/index.ts";
 import type { PromptPreset } from "../../src/core/prompt-preset/types.ts";
-import { AgentSessionScope } from "../../src/core/session-scope.ts";
+import { AgentSessionScope, createAgentSessionScope } from "../../src/core/session-scope.ts";
 import { createHarness, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
@@ -165,6 +165,126 @@ describe("AgentSession compaction characterization", () => {
 		expect(statsAfter.tokens.cacheWrite).toBe(statsBefore.tokens.cacheWrite + summaryUsage.cacheWrite);
 		expect(statsAfter.cost).toBe(statsBefore.cost + summaryUsage.cost.total);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+	});
+	it("keeps runtime provider context out of compaction summarizer requests", async () => {
+		const scope = createAgentSessionScope({
+			runtimeContextSlots: [{ id: "private", render: () => "runtime marker" }],
+		});
+		const harness = await createHarness({ scope });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		const contexts: Array<{ systemPrompt?: string }> = [];
+		harness.session.agent.streamFunction = (model, context) => {
+			contexts.push(context);
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: {
+						...fauxAssistantMessage("summary"),
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: createUsage(10),
+					},
+				});
+			});
+			return stream;
+		};
+
+		try {
+			await harness.session.compact();
+			expect(contexts).toHaveLength(1);
+			expect(contexts[0]?.systemPrompt ?? "").not.toContain("runtime marker");
+		} finally {
+			scope.dispose();
+		}
+	});
+	it("reports manual compact review failures without discarding the last-good runtime context", async () => {
+		let reviewSignal: AbortSignal | undefined;
+		let renderCount = 0;
+		const scope = createAgentSessionScope({
+			runtimeContextSlots: [
+				{
+					id: "runtime-pool",
+					render: () => {
+						renderCount++;
+						return "last-good context";
+					},
+				},
+			],
+		});
+		const harness = await createHarness({
+			scope,
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact", (event) => {
+						reviewSignal = event.signal;
+						event.reportCompactReviewError(new Error("review failed"));
+						throw new Error("runner-caught handler failure");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		useSummaryStreamFn(harness, "summary");
+
+		try {
+			expect(await scope.getRuntimeContext()).toBe("last-good context");
+			await expect(harness.session.compact()).rejects.toThrow("review failed");
+			expect(reviewSignal).toBeInstanceOf(AbortSignal);
+			expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(true);
+			expect(await scope.getRuntimeContext()).toBe("last-good context");
+			expect(renderCount).toBe(1);
+		} finally {
+			scope.dispose();
+		}
+	});
+	it("uses pre-rendered compact replacement content without rerendering the runtime slot", async () => {
+		let renderCount = 0;
+		const scope = createAgentSessionScope({
+			runtimeContextSlots: [
+				{
+					id: "runtime-pool",
+					render: () => {
+						renderCount++;
+						return "initial runtime content";
+					},
+				},
+			],
+		});
+		const harness = await createHarness({
+			scope,
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact", () => ({
+						replaceContextSlots: [{ slotId: "runtime-pool", content: "reviewed compact content" }],
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		await scope.getRuntimeContext();
+		expect(renderCount).toBe(1);
+		useSummaryStreamFn(harness, "compact turn context");
+		const contexts: Array<{ systemPrompt?: string }> = [];
+		const originalStream = harness.session.agent.streamFunction;
+		harness.session.agent.streamFunction = (model, context, options) => {
+			contexts.push(context);
+			return originalStream(model, context, options);
+		};
+
+		try {
+			await harness.session.compact();
+			await harness.session.prompt("next turn");
+			expect(contexts.at(-1)?.systemPrompt).toContain("reviewed compact content");
+			expect(renderCount).toBe(1);
+		} finally {
+			scope.dispose();
+		}
 	});
 
 	it("allows a queued prompt to start when manual compaction ends", async () => {
@@ -425,6 +545,27 @@ describe("AgentSession compaction characterization", () => {
 		expect(compactionErrors).toContain(
 			"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 		);
+	});
+	it("disables threshold and overflow auto-compaction while preserving manual compact", async () => {
+		const harness = await createHarness({
+			disableAutoCompaction: true,
+			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
+		});
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		const runAutoCompactionSpy = vi.spyOn(sessionInternals, "_runAutoCompaction").mockResolvedValue(false);
+
+		await sessionInternals._checkCompaction(
+			createAssistant(harness, { stopReason: "error", errorMessage: "prompt is too long" }),
+		);
+		await sessionInternals._checkCompaction(createAssistant(harness, { stopReason: "stop", totalTokens: 1_000_000 }));
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
+
+		seedCompactableSession(harness);
+		useSummaryStreamFn(harness, "manual compact still works");
+		await expect(harness.session.compact()).resolves.toMatchObject({
+			summary: expect.stringContaining("manual compact still works"),
+		});
 	});
 
 	it("compacts successful overflow responses without retrying", async () => {

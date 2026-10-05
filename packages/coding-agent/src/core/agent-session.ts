@@ -23,6 +23,7 @@ import {
 	type Agent,
 	type AgentContext,
 	type AgentEvent,
+	type AgentLoopTurnUpdate,
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
@@ -452,6 +453,10 @@ export interface AgentSessionConfig {
 	requestIdentity?: RequestIdentity;
 	/** Optional Host-owned isolation scope. Caller disposes it after the session. */
 	scope?: AgentSessionScope;
+	/** Whether this session created the supplied scope and owns its disposal. */
+	ownsScope?: boolean;
+	/** Disable threshold/overflow auto-compaction without affecting manual compact(). */
+	disableAutoCompaction?: boolean;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -637,6 +642,7 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
+	private _disableAutoCompaction = false;
 	private _overflowRecoveryAttempted = false;
 
 	// Branch summarization state
@@ -751,6 +757,7 @@ export class AgentSession {
 	private _extensionParentContextRequest?: ExtensionBindings["parentContextRequest"];
 	private _extensionOrchestrationRequest?: ExtensionBindings["orchestrationRequest"];
 	private _modelRuntime: ModelRuntime;
+	private _ownsAgentSessionScope = false;
 	private _agentSessionScope?: AgentSessionScope;
 	private _requestGateway?: RequestGateway;
 	private _requestIdentity: RequestIdentity = { sessionId: "?", priority: 2, label: "main" };
@@ -912,6 +919,8 @@ export class AgentSession {
 		this._agentSessionScope?.bindModelRuntime(config.modelRuntime);
 		this._requestGateway = config.requestGateway;
 		this._requestIdentity = config.requestIdentity ?? { sessionId: "?", priority: 2, label: "main" };
+		this._disableAutoCompaction = config.disableAutoCompaction ?? false;
+		this._ownsAgentSessionScope = config.ownsScope ?? false;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
@@ -1095,6 +1104,7 @@ export class AgentSession {
 		const settings = this.settingsManager.getCompactionSettings(model);
 
 		if (
+			this._disableAutoCompaction ||
 			!model ||
 			model.contextWindow <= 0 ||
 			!shouldCompact(estimateContextTokens(context.messages).tokens, model.contextWindow, settings)
@@ -1110,32 +1120,55 @@ export class AgentSession {
 	}
 
 	private _installAgentNextTurnRefresh(): void {
+		const previousPrepareInitialTurnWithContext = this.agent.prepareInitialTurnWithContext;
 		const previousPrepareNextTurnWithContext =
 			this.agent.prepareNextTurnWithContext ??
 			(this.agent.prepareNextTurn
 				? async (_turn: PrepareNextTurnContext, signal?: AbortSignal) => await this.agent.prepareNextTurn?.(signal)
 				: undefined);
-		this.agent.prepareNextTurnWithContext = async (turn, signal) => {
-			// Threshold compaction must run between tool execution and the next provider
-			// request, so an oversized tool result never reaches the provider first.
-			const context = await this._compactBeforeNextAssistantResponse(turn.context);
-			this._flushPendingToolContextMessages(context);
-			const previousSnapshot = await previousPrepareNextTurnWithContext?.({ ...turn, context }, signal);
-			const nextContext = previousSnapshot?.context ?? context;
+		const prepareTurn = async (
+			context: AgentContext,
+			_signal: AbortSignal | undefined,
+			previous:
+				| ((context: AgentContext) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined)
+				| undefined,
+		) => {
+			// Threshold compaction must run before any provider request, including the first one.
+			const preparedContext = await this._compactBeforeNextAssistantResponse(context);
+			this._flushPendingToolContextMessages(preparedContext);
+			const previousSnapshot = await previous?.(preparedContext);
+			const nextContext = previousSnapshot?.context ?? preparedContext;
 
 			const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
 			const sysPrompt = this._systemPromptOverride ?? (hasCustomPrompt ? this._baseSystemPrompt : "");
+			const runtimeContext = await this._agentSessionScope?.getRuntimeContext();
 			return {
 				...previousSnapshot,
 				context: {
 					...nextContext,
-					systemPrompt: sysPrompt,
+					systemPrompt: [sysPrompt, runtimeContext].filter((part) => part && part.length > 0).join("\n\n"),
 					tools: this.agent.state.tools.slice(),
 				},
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
 			};
 		};
+		this.agent.prepareInitialTurnWithContext = async (turn, signal) =>
+			await prepareTurn(
+				turn.context,
+				signal,
+				previousPrepareInitialTurnWithContext
+					? (context) => previousPrepareInitialTurnWithContext({ context }, signal)
+					: undefined,
+			);
+		this.agent.prepareNextTurnWithContext = async (turn, signal) =>
+			await prepareTurn(
+				turn.context,
+				signal,
+				previousPrepareNextTurnWithContext
+					? (context) => previousPrepareNextTurnWithContext({ ...turn, context }, signal)
+					: undefined,
+			);
 	}
 
 	// =========================================================================
@@ -1521,6 +1554,7 @@ export class AgentSession {
 				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 			);
 		}
+		if (this._ownsAgentSessionScope) this._agentSessionScope?.dispose();
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
@@ -4283,20 +4317,27 @@ export class AgentSession {
 			this._syncAgentStateFromSession();
 			const estimatedTokensAfter = estimateMessagesTokens(this.agent.state.messages);
 
-			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
 				| CompactionEntry
 				| undefined;
-
 			if (this._extensionRunner && savedCompactionEntry) {
+				let reviewError: unknown;
 				const compactHookResult = await this._extensionRunner.emit({
 					type: "session_compact",
 					compactionEntry: savedCompactionEntry,
 					fromExtension,
 					reason: "manual",
 					willRetry: false,
+					signal: this._compactionAbortController.signal,
+					reportCompactReviewError(error) {
+						reviewError = error;
+					},
 				});
+				if (reviewError !== undefined) {
+					throw reviewError instanceof Error ? reviewError : new Error(String(reviewError));
+				}
 				if (compactHookResult?.replaceContextSlots) {
+					this._agentSessionScope?.replaceRuntimeContextSlots(compactHookResult.replaceContextSlots);
 					this._agentSessionScope?.promptRegistry?.replaceContextSlots(compactHookResult.replaceContextSlots);
 				}
 			}
@@ -4433,6 +4474,7 @@ export class AgentSession {
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+		if (this._disableAutoCompaction) return false;
 		const settings = this.settingsManager.getCompactionSettings(this.model);
 		if (!settings.enabled) return false;
 
@@ -4667,8 +4709,11 @@ export class AgentSession {
 					fromExtension,
 					reason,
 					willRetry,
+					signal: this._autoCompactionAbortController.signal,
+					reportCompactReviewError: () => {},
 				});
 				if (compactHookResult?.replaceContextSlots) {
+					this._agentSessionScope?.replaceRuntimeContextSlots(compactHookResult.replaceContextSlots);
 					this._agentSessionScope?.promptRegistry?.replaceContextSlots(compactHookResult.replaceContextSlots);
 				}
 			}

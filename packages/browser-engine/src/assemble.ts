@@ -47,6 +47,7 @@ import type { RuntimeCredentials } from "../../coding-agent/src/core/runtime-cre
 import type { CreateAgentSessionOptions } from "../../coding-agent/src/core/sdk.ts";
 import { createAgentSession } from "../../coding-agent/src/core/sdk.ts";
 import type { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
+import type { RuntimeContextSlot } from "../../coding-agent/src/core/session-scope.ts";
 import { createAgentSessionScope } from "../../coding-agent/src/core/session-scope.ts";
 import type { Settings } from "../../coding-agent/src/core/settings-manager.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
@@ -168,6 +169,10 @@ export interface CreatePiHarnessOptions {
 	readonly presets?: readonly LoadedPromptPresetSource[];
 	/** Session-scoped prompt slots, registered before runtime compilation and inherited by native subagents. */
 	readonly promptSlots?: readonly SlotDefinition[];
+	/** Nonpersistent runtime provider context slots; only explicitly opted-in slots reach subagents. */
+	readonly runtimeContextSlots?: readonly RuntimeContextSlot[];
+	/** Disable native threshold and overflow auto-compaction; manual compact remains available. */
+	readonly disableAutoCompaction?: boolean;
 	/** 内联 opening preset（打包通道）。同 ID 内联胜出；由内建 opening 工厂消费（缺省装配归 B）。 */
 	readonly openings?: readonly OpeningPresetSource[];
 	/** 内联 state schema（打包通道；契约 §3.2 C2 裁决定名——`schemas` 保留为显式 ID 列表）。 */
@@ -503,9 +508,13 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	});
 	await resourceLoader.reload();
 
-	const promptScope = options.promptSlots?.length
-		? createAgentSessionScope({ subagentPromptSlots: options.promptSlots })
-		: undefined;
+	const promptScope =
+		options.promptSlots?.length || options.runtimeContextSlots
+			? createAgentSessionScope({
+					subagentPromptSlots: options.promptSlots,
+					runtimeContextSlots: options.runtimeContextSlots,
+				})
+			: undefined;
 
 	// ---- S8: session 构造与就绪（createAgentSession 内部 await _buildRuntimePromise） ----
 	const sessionOptions: CreateAgentSessionOptions = {
@@ -525,6 +534,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		inlinePresets: options.presets,
 		inlineSchemas: options.inlineSchemas,
 		historyHostData: options.historyHostData,
+		disableAutoCompaction: options.disableAutoCompaction,
 	};
 	if (llmAssembly.kind === "gateway") {
 		sessionOptions.requestGateway = llmAssembly.gateway;
@@ -598,6 +608,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 			// S9：settings 写队列 flush → storage flush（Impl-B 公式）→ env 清理；逐层 best-effort 不抛。
 			try {
 				session.dispose();
+				promptScope?.dispose();
 			} catch {}
 			try {
 				await settingsManager.flush();

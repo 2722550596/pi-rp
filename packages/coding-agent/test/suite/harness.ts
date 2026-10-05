@@ -75,7 +75,7 @@ export interface HarnessOptions {
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 	inlinePresets?: LoadedPromptPresetSource[];
 	scope?: AgentSessionScope;
-	modelsJson?: Record<string, unknown>;
+	disableAutoCompaction?: boolean;
 }
 
 export interface Harness {
@@ -203,6 +203,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		excludedToolNames: options.excludedToolNames,
 		scope: options.scope,
 		inlinePresets: options.inlinePresets,
+		disableAutoCompaction: options.disableAutoCompaction,
 	});
 	// AgentSession wires the extension runner asynchronously; wait for it
 	// so harness consumers (extension api handles, session events) never

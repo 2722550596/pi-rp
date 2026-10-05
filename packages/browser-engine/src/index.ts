@@ -34,6 +34,7 @@ export { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 export type {
 	AgentSessionEvent,
 	CustomTypePolicy,
+	RuntimeContextSlot,
 	SessionCompactResult,
 	SlotDefinition,
 } from "../../coding-agent/src/index.ts";

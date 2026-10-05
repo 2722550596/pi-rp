@@ -72,6 +72,10 @@ export interface CreateAgentSessionFromServicesOptions {
 	strict?: boolean;
 	/** Overrides the services' storage seams when provided (tests, in-memory assemblies). */
 	stores?: HarnessStores;
+	/** Nonpersistent provider-request context slots. */
+	runtimeContextSlots?: CreateAgentSessionOptions["runtimeContextSlots"];
+	/** Disable native threshold/overflow compaction while preserving manual compact. */
+	disableAutoCompaction?: boolean;
 }
 
 /**
@@ -235,5 +239,7 @@ export async function createAgentSessionFromServices(
 		preset: options.preset,
 		schemas: options.schemas,
 		strict: options.strict,
+		runtimeContextSlots: options.runtimeContextSlots,
+		disableAutoCompaction: options.disableAutoCompaction,
 	});
 }

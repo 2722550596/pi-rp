@@ -139,30 +139,34 @@ export interface PiHarnessHost {
 
 ## 5. 自定义 prompt slots 与 ephemeral slots
 
-### 5.1 API 提案
+### 5.1 API 与实现
 
 ```ts
-export interface PiHarness {
-  /** per AgentSession PromptRegistryScope 注册 renderer */
-  registerPromptSlot(definition: SlotDefinition): void;
+export interface RuntimeContextSlot {
+  readonly id: string;
+  readonly render: () => string | Promise<string>;
+  readonly inheritToSubagents?: boolean;
 }
 export interface SessionCompactResult {
   readonly replaceContextSlots?: readonly { slotId: string; content: string }[];
 }
 ```
 
-`SlotDefinition` 及 renderer context 沿用 coding-agent 类型，不另造字段。prompt slot 注册、lookup、位置判定、render 均使用同一 AgentSession `PromptRegistryScope`；AgentSession 已有 scope getter，subagent prepare 也传入 parent session prompt scope（`agent-session.ts:867-869`；`subagent/prepare.ts:223-224`）。
+`CreatePiHarnessOptions.runtimeContextSlots` 注册 scope-local、非持久 runtime provider-context slots；`disableAutoCompaction` 为 per-session override，关闭 native threshold/overflow auto compact，保留 manual `AgentSession.compact()`。两项在 Browser public entry 导出，runtime slots-only 配置也会创建并由 harness dispose 自有 `AgentSessionScope`。
+
+`SlotDefinition` 及 preset renderer 沿用 coding-agent 类型；runtime slot 不属于 `PromptRegistryScope` 的 preset compiler item。每 scope 按 ID 缓存 render 内容；首次主 provider-run 的 initial-turn 边界与其后每个 main run 共用初始化/读取路径，`prompt/continue/retry/recovery` 均不漏；跨 top-level run 不重渲染。子 scope 只继承 `inheritToSubagents===true` 的定义。runtime content 只附加到 main Agent provider request context，不改原 context、AgentMessage、SessionEntry、JSONL；即便 compact summarizer 共用 agent stream function，也不得注入 runtime slots。
 
 ### 5.2 Identity slots 与 compact replacement
 
-- preset 可由 `options.presets` inline 输入（`assemble.ts:165-173,398-417`）；当前 browser renderer 对 chat-history 以外 slot 诊断后空渲染（`browser-slot-renderers.ts:35-65`），必须打通 session-scoped renderer dispatch。
-- `writer|screenwriter|char|consultant-instructions`、常驻/勾选设定与 state hint renderer 由 Sefirot 注册；六段顺序、用户可写 block 与 state hint 归编剧由消费方冻结（`06-提示词系统.md:60-80`），pi-rp 不写死这些业务 slot。
-- `sefirot.pool` 是 ephemeral prompt context slot，不是 custom message。新增 `SessionCompactResult.replaceContextSlots` seam：在 awaited `session_compact` hook 成功返回后，AgentSession 完成 history rebuild，再将同名 slot 的 content 替换进内存态 prompt context，必须在下一次 provider request 前生效；同 slotId replacement 不追加 SessionEntry/JSONL。Pool host 在 compact review 与 PoolActivity transaction 成功后生成该数组，按当前 Room/session ancestry 计算快照；失败时不替换旧 slot。这个新 seam 与 Sefirot `02-context池.md:108-114`、`06-提示词系统.md:79` 对齐，当前不是 pi-rp Browser 已有能力。
-- slot definition scope 和 context slot value 均按 session 隔离；不能用 custom message 的 compaction exclusion 代替 slot replacement。
+- preset 可由 `options.presets` inline 输入；普通 `promptSlots` 继续由 `PromptRegistryScope` 处理。runtime slot dispatch 已独立接入 `AgentSessionScope`，不能把它加入六段 preset schema或误用 custom message compaction exclusion 代替。
+- `writer|screenwriter|char|consultant-instructions` 及业务 pool/state renderer 由消费方注册；pi-rp 不写死 Sefirot slot ID。
+- `SessionCompactResult.replaceContextSlots` 是在 awaited `session_compact` hook 成功后、history rebuild后同一个 scope cache的原子替换。提交的 slot content 必须是 host 预渲染文本，Pi不得再调用 renderer/做数据库 IO；handler没有 replacement或经 `reportCompactReviewError` 报告失败时，保留 last-known-good runtime cache。替换只更新内存态；summary、history、JSONL均不追加slot文本。
+- 手动 `session_compact` 的 `SessionCompactEvent` 携带 abort signal 与独立 `reportCompactReviewError(error)`；ExtensionRunner捕获事件 handler throw不能作为错误传播方式。AgentSession在history compact后检查 reporter error，错误经 `compact()`返回给调用方；消费方可把它映射为 coordinator notice。Sefirot禁用native auto compact，因此只需手动事件；通用auto compact默认行为不变。
+- slot definitions 与 content均按 session 隔离；不能用custom message compaction exclusion代替runtime slot replacement。
 
 ### 5.3 错误与验证
 
-内建 slot 冲突、重复 slot definition、缺必需 renderer、错误 scope 或 renderer reject 均给出可定位错误，不静默空渲染。验收包含并发同名 slot 无串扰；compact 后 pool slot 替换、连续 compact 不叠加、不写 journal、下一 provider request 收到新快照。
+缺 scope/renderer reject 在首次provider run前显式失败；duplicate ID与dispose行为可诊断。验收覆盖并发同名slot无串扰、runtime-only Browser harness、初次prompt/continue/retry注入、compact pre-render replacement不重渲染、不写journal、summarizer不含slot、reported failure保持last-good cache、disabled auto compact不影响manual compact。
 
 ## 6. Browser multi-session host
 
@@ -248,18 +252,19 @@ Sefirot 预先编译完整文本：choice/compact-review 用 screenwriter sessio
 1. **工具/policy**：sync/async handlers 返回原生结果及进度；逐类型检验 `display:false` 消息在 live context 的 role 与 summarization compaction policy；消息本体无 compaction 字段；未声明 policy 用默认值并产生可定位诊断。
 2. **ask**：ask 生成 host_question、agent 等待；host answer 成为原 tool result 并恢复同 loop；错误 session/guest/过期 ID 不恢复；abort/dispose 清 pending 并返回明确错误。
 3. **event**：检查消息/工具流顺序，用户 callback 不在 `_emit` 栈中同步执行；listener throw/1024 队列溢出均隔离、不阻断 session；overflow 消费方按 snapshot/journal 恢复。
-4. **slots/compact**：并发 harness 同名 slot 隔离；compact 后 `sefirot.pool` 同 slotId 替换，连续 compact 不叠加、不落 SessionEntry/JSONL，下一 provider request 收到新值。
+4. **slots/compact**：并发 harness 同名 slot 隔离；runtime-only Browser scope；初次及 continue/retry main provider request注入而不持久化；compact 后 pre-render `replaceContextSlots` 同 slotId 原子更新，连续 compact 不叠加、不写 runtime-slot SessionEntry/JSONL，summary不含slot，下一个 provider request收到新值。
 5. **multi-session**：三 session history/tools/events/abort 隔离；重复 ID 冲突；dispose 一个不影响其余；host dispose 后全关闭且不可再 create。
 6. **subagent/side request**：只有原生 `subagent_profiles`/`subagent` 路径；profile/task 错误可见、parent dispose 取消；side request 显式 prompt→文本，不产生 transcript/session entry。
-7. Browser bundle 不引入 Node API；真实 Chromium 验证新路径，不以 Node-only tests 替代。Sefirot 集成另按 `06` 六段顺序、`09` ask/tool 权限、`01` writer delta/abort、`02` pool/subagent/side-request 语义验收。
+7. **compaction policy/error**：per-session `disableAutoCompaction` 同时关闭 threshold/overflow auto compact、仍可 manual compact；post-compact event携带signal，reportCompactReviewError即使handler throw被ExtensionRunner捕获仍使 `compact()`以错误返回且 last-good runtime cache不替换。
+8. Browser bundle 不引入 Node API；真实 Chromium 验证新路径，不以 Node-only tests 替代。Sefirot 集成另按 `06` 六段顺序、`09` ask/tool 权限、`01` writer delta/abort、`02` pool/subagent/side-request 语义验收。
 
 ## 11. 已知冲突
 
-1. `browser-slot-renderers.ts:39-65` 当前除 chat-history 外空渲染，但 Sefirot 六段 preset 依赖自定义 slots（`06-提示词系统.md:62-80`）；必须补 scoped dispatch。
+1. 普通 prompt preset 继续通过 `PromptRegistryScope` 编译；runtime provider slots走AgentSessionScope独立channel。Sefirot六段静态 preset不因runtime `sefirot.pool` 增加第七段。
 2. BrowserExecutor 有私有 transcript subscription，PiHarness 没公开 subscription；新增公开面须避免复制 wire protocol。
 3. Node Host 契约提示模块级 slot/provider registry 有跨会话风险（`plan/multi-session-host/00-共同上下文.md:29-30,80-82`）；本稿将 slot scope 列为硬前置，provider registry 仍需审计。
 4. custom message policy 按 customType 查表、append 不携带 compaction（`messages.ts:36-85`；`extensions/types.ts:1605,1627-1631`）；本稿 per-type policy map 对齐原生行为。
-5. pool slot refresh 和 custom message compaction exclusion 是不同机制；本文明确 `SessionCompactResult.replaceContextSlots` 新增 seam。
+5. pool runtime-slot replacement 与 custom message compaction exclusion 是不同机制；`SessionCompactResult.replaceContextSlots`、manual event signal/error reporter 已实现。
 6. ask 必须维持 pending tool execution 并经 host answer 恢复同一个 loop，不是普通 append/新 prompt（`09-工具面.md:73-80`）。
 7. Subagent wrapper 会与 `09-工具面.md:27-31` 冲突，故明确不公开。
 8. Node PiServer durable session host 与 Browser 单 tab host 拓扑不同；跨 tab/远程 transport/durable catalog 另立设计。
@@ -268,11 +273,11 @@ Sefirot 预先编译完整文本：choice/compact-review 用 screenwriter sessio
 
 1. custom message 安全追加 seam 必须确保 tool handler 内 append 后紧接的 provider request 可见；当前 `sendMessage` 为 void（`extensions/types.ts:1627-1631`），需核实 `triggerTurn:false` 下的具体时序与落账保证。
 2. 事件队列 1024 为契约建议值；真实 Browser writer delta 测量后如需 coalescing/调容，须保留满队列时显式 unsubscribe + recovery 规则，不能同步回调。
-3. `SessionCompactResult.replaceContextSlots` 的 session compact return 类型、slot replace 原子性、history rebuild 失败处理和 await 顺序需 pi-rp 实现设计确认；Sefirot 语义已冻结，pi-rp seam 尚未实现/验证。
-4. multi-session 是否共享 ModelRuntime/RequestGateway 未定；当前 `createPiHarness` 每次创建 ModelRuntime（`assemble.ts:450-456`），共享前需审查 provider reset/credentials 隔离。
+3. `SessionCompactResult.replaceContextSlots` scope-cache replacement、manual `SessionCompactEvent` signal/error reporter、failure last-good semantics已实现并有coding-agent targeted tests；Browser runtime-only option/main-provider injection另有相关回归。
+4. 每个 Browser harness 实例独立创建 `ModelRuntime`（`assemble.ts`）；不要改为跨会话共享。compat registry若改成模块级共享，仍需在之后的provider扩展工作审计隔离。
 5. Browser host 是否跨刷新恢复以及最大并发 session 数由消费方持有/配置；本设计不持久化 host registry。
-6. Subagent preset Browser 全链（`getDelegatablePresets`、scope、tool capability filtering）需真实 bundle 验收；失败不能静默返回空 profile list。
-7. Tool result helper 需对齐 `AgentToolResult` 内容/details；browser package 应 re-export 必要的 ToolDefinition、AgentSessionEvent、SlotDefinition、CustomTypePolicy 类型。
+6. Subagent preset Browser 全链（`getDelegatablePresets`、scope、tool capability filtering）仍需真实 bundle 验收；失败不能静默返回空 profile list。
+7. Browser package 已 re-export `RuntimeContextSlot`、`AgentSessionEvent`、`SessionCompactResult`、`SlotDefinition`、`CustomTypePolicy`；Tool result/ToolDefinition public surface按 custom-tool package 自己的types导出。
 
 ## 13. 需求对照
 
