@@ -172,7 +172,16 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	maxRetryDelayMs?: number;
 }
 
+export type ToolChoice = "auto" | "none" | "required" | { type: "tool"; name: string };
+
 export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
+	/**
+	 * Provider-neutral tool choice policy. Adapters map this onto the provider's
+	 * native vocabulary (`"required"` → Anthropic/Google/Bedrock `"any"`, object
+	 * form → the provider's named-tool shape). APIs without tool choice ignore it.
+	 * Default: omitted (provider default behavior, currently equivalent to auto).
+	 */
+	toolChoice?: ToolChoice;
 	/**
 	 * Optional callback invoked after an HTTP response is received and before
 	 * its body stream is consumed.

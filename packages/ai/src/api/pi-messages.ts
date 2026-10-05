@@ -30,7 +30,6 @@ import { getProviderEnvValue } from "../utils/provider-env.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
-	toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 	/** Ask the backend for debug metadata (e.g. routing response headers). */
 	debug?: boolean;
 }
@@ -371,7 +370,12 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 					reasoning: options?.reasoning,
 					cacheRetention: resolveCacheRetention(options?.cacheRetention, options?.env),
 					sessionId: options?.sessionId,
-					toolChoice: options?.toolChoice,
+					toolChoice:
+						options?.toolChoice === undefined
+							? undefined
+							: typeof options.toolChoice === "string"
+								? options.toolChoice
+								: { type: "function", function: { name: options.toolChoice.name } },
 				},
 			};
 			const nextPayload = await options?.onPayload?.(payload, model);

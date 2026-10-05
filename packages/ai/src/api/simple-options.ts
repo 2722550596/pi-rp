@@ -30,6 +30,7 @@ export function buildBaseOptions(
 			: undefined;
 	return {
 		temperature: options?.temperature,
+		toolChoice: options?.toolChoice,
 		samplingParams,
 		maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
 		signal: options?.signal,

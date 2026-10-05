@@ -36,6 +36,7 @@ import type {
 	RefreshModelsContext,
 	SimpleStreamOptions,
 	TextContent,
+	ToolChoice,
 	ToolResultMessage,
 	Usage,
 } from "@earendil-works/pi-ai";
@@ -1096,6 +1097,12 @@ interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
 	parentToolCallId?: string;
+	/**
+	 * All tool calls in the same assistant message (the whole batch), including
+	 * this one, in assistant source order. Lets handlers reject semantically
+	 * conflicting batches (e.g. a turn-ending submit alongside other tools).
+	 */
+	batchToolCalls?: { id: string; name: string }[];
 }
 
 export interface BashToolCallEvent extends ToolCallEventBase {
@@ -2201,6 +2208,12 @@ export interface CompleteSideRequestOptions {
 	maxTokens?: number;
 	/** Defaults to ctx.thinkingLevel; mapped to options.reasoning when model.reasoning */
 	thinkingLevel?: ThinkingLevel;
+	/**
+	 * Force tool choice on this request (e.g. `"required"` for a tool-only
+	 * planner side request). Passed through to SimpleStreamOptions; adapters
+	 * without tool choice ignore it.
+	 */
+	toolChoice?: ToolChoice;
 	signal?: AbortSignal;
 	/** Default 0 (subagent-tier). Only enforced when the gateway has maxConcurrency configured. */
 	priority?: number;

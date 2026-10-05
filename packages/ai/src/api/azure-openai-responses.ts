@@ -307,6 +307,13 @@ function buildParams(
 		});
 	}
 
+	if (options?.toolChoice !== undefined) {
+		params.tool_choice =
+			typeof options.toolChoice === "string"
+				? options.toolChoice
+				: { type: "function", name: options.toolChoice.name };
+	}
+
 	if (model.reasoning) {
 		if (options?.reasoningEffort || options?.reasoningSummary) {
 			const effort = options?.reasoningEffort

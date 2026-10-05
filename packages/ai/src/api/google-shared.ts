@@ -2,8 +2,23 @@
  * Shared utilities for Google Generative AI and Google Vertex providers.
  */
 
-import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
-import type { Context, ImageContent, Model, StopReason, StreamOptions, TextContent, Tool } from "../types.ts";
+import {
+	type Content,
+	FinishReason,
+	type FunctionCallingConfig,
+	FunctionCallingConfigMode,
+	type Part,
+} from "@google/genai";
+import type {
+	Context,
+	ImageContent,
+	Model,
+	StopReason,
+	StreamOptions,
+	TextContent,
+	Tool,
+	ToolChoice,
+} from "../types.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
@@ -319,6 +334,7 @@ export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 		case "none":
 			return FunctionCallingConfigMode.NONE;
 		case "any":
+		case "required":
 			return FunctionCallingConfigMode.ANY;
 		default:
 			return FunctionCallingConfigMode.AUTO;
@@ -327,17 +343,22 @@ export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 
 export function resolveGoogleFunctionCallingMode(
 	tools: Tool[],
-	toolChoice: string | undefined,
+	toolChoice: ToolChoice | undefined,
 	supportsStrictMode: boolean,
-): FunctionCallingConfigMode | undefined {
+): FunctionCallingConfig | undefined {
 	const useStrictMode = tools.some((tool) => resolveJsonSchemaStrictSampling(tool, supportsStrictMode) === true);
-	if (toolChoice === "none" || toolChoice === "any") {
-		return mapToolChoice(toolChoice);
+	if (toolChoice !== undefined && typeof toolChoice !== "string") {
+		// Named tool: force that one function.
+		return { mode: FunctionCallingConfigMode.ANY, allowedFunctionNames: [toolChoice.name] };
+	}
+	if (toolChoice === "none" || toolChoice === "required") {
+		// An explicit tool choice overrides strict-sampling inference.
+		return { mode: mapToolChoice(toolChoice) };
 	}
 	if (useStrictMode) {
-		return FunctionCallingConfigMode.VALIDATED;
+		return { mode: FunctionCallingConfigMode.VALIDATED };
 	}
-	return toolChoice ? mapToolChoice(toolChoice) : undefined;
+	return toolChoice === "auto" ? { mode: FunctionCallingConfigMode.AUTO } : undefined;
 }
 
 /**

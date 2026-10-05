@@ -318,6 +318,18 @@ export interface PromptPreset {
 	thinkingLevel?: string;
 	/** Number of parent conversation messages to seed as chat history when this preset is delegated. */
 	inheritHistory?: number;
+	/**
+	 * Tool-only agent: drop assistant text/thinking content (loop emits no text
+	 * deltas; finalized messages keep only toolCall blocks). For two-pass
+	 * orchestration where user-visible prose comes from side requests.
+	 */
+	suppressAssistantText?: boolean;
+	/**
+	 * Force tool choice on every LLM request while this preset is active (e.g.
+	 * `"required"` for a tool-only planner preset: the API rejects a turn that
+	 * produces no tool call, instead of relying on prompt discipline).
+	 */
+	toolChoice?: "auto" | "none" | "required" | { type: "tool"; name: string };
 	defaults?: PromptPresetDefaults;
 	tools?: PromptResourcePolicy;
 	skills?: PromptResourcePolicy;

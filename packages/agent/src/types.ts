@@ -203,6 +203,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 
 	/**
+	 * Drop all text/thinking content from assistant responses: text deltas are
+	 * not emitted as message_update events and the finalized assistant message
+	 * keeps only toolCall blocks. For tool-only agents whose user-visible prose
+	 * is produced by side requests.
+	 */
+	suppressAssistantText?: boolean;
+
+	/**
 	 * Optional transform applied to the context before `convertToLlm`.
 	 *
 	 * Use this for operations that work at the AgentMessage level:

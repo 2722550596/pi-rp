@@ -249,12 +249,6 @@ export interface AnthropicOptions extends StreamOptions {
 	 */
 	interleavedThinking?: boolean;
 	/**
-	 * Anthropic tool choice behavior. String values map to Anthropic's built-in
-	 * choices; `{ type: "tool", name }` forces a specific tool.
-	 * Default: omitted (Anthropic default behavior, currently equivalent to auto).
-	 */
-	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
-	/**
 	 * Pre-built Anthropic client instance. When provided, skips internal client
 	 * construction entirely. Use this to inject alternative SDK clients such as
 	 * `AnthropicVertex` that shares the same messaging API.
@@ -1088,7 +1082,7 @@ function buildParams(
 
 	if (options?.toolChoice) {
 		if (typeof options.toolChoice === "string") {
-			params.tool_choice = { type: options.toolChoice };
+			params.tool_choice = { type: options.toolChoice === "required" ? "any" : options.toolChoice };
 		} else {
 			params.tool_choice = options.toolChoice;
 		}
