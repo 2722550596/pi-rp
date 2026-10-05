@@ -143,6 +143,8 @@ export interface VariablesSlotOptions {
 export interface PromptPresetSlotOptions {
 	// Shared: tools, tool-guidelines, skills, project-context, variables, state
 	format?: PromptPresetSlotFormat;
+	/** IDs consumed by application-defined prompt slots. */
+	ids?: string[];
 
 	// tools slot
 	onlyWithSnippets?: boolean;

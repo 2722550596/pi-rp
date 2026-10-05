@@ -106,6 +106,7 @@ export async function createPiHarnessWithTools(
 			eventUnsubscribers.clear();
 			params.askBroker?.dispose("pi-harness: session disposed");
 			await harness.dispose();
+			harness.session.sessionScope?.dispose();
 		},
 	};
 }

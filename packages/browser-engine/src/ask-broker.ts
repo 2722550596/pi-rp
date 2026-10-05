@@ -18,18 +18,12 @@ type PendingAsk = {
 	onAbort?: () => void;
 };
 
-let brokerGeneration = 0;
-
 export function createAskBroker(sessionId: string, onQuestion: (event: HostQuestionRequested) => void): AskBroker {
-	const generation = ++brokerGeneration;
-	let nextQuestionId = 0;
 	let disposed = false;
 	const pending = new Map<string, PendingAsk>();
 	return {
 		ask(question, signal) {
-			if (disposed) return Promise.reject(new Error("pi-harness: ask broker is disposed"));
-			if (signal?.aborted) return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
-			const questionId = `${sessionId}:question:${generation}:${++nextQuestionId}`;
+			const questionId = `${sessionId}:question:${globalThis.crypto.randomUUID()}`;
 			const { promise, resolve, reject } = Promise.withResolvers<string>();
 			const onAbort = () => {
 				pending.delete(questionId);
