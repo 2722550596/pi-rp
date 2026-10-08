@@ -5,6 +5,7 @@ import type {
 	SessionMetadata,
 	SessionPhase,
 	SessionSnapshot,
+	SessionTreeNodeProjection,
 	ThinkingLevel,
 	TranscriptProgress,
 } from "@earendil-works/pi-protocol";
@@ -47,6 +48,12 @@ export interface PiSessionRuntime {
 	abort(): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;
 	setThinking(thinkingLevel: ThinkingLevel): Promise<void>;
+	/** Branch to the last rerollable turn and fire-and-forget the regeneration run. False = busy or no branch point. */
+	reroll(): Promise<boolean>;
+	/** Edit a user/custom message entry in place without triggering a run. Throws PiServerError("invalid_request") on invalid targets. */
+	editMessage(entryId: string, text: string): Promise<void>;
+	getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }>;
+	navigateTree(targetId: string): Promise<{ cancelled: boolean; editorText?: string }>;
 	subscribe(listener: (event: PiSessionRuntimeEvent) => void): () => void;
 	dispose(): Promise<void>;
 }

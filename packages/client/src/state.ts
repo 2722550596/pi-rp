@@ -75,7 +75,7 @@ export class ClientState {
 	}
 
 	applyResult(result: CommandResult): void {
-		if (result.command === "list") return;
+		if (result.command === "list" || result.command === "list_models" || result.command === "get_tree") return;
 		if (result.command === "detach") {
 			this.#attachedSessionIds.delete(result.sessionId);
 			const snapshot = this.#sessionSnapshots.get(result.sessionId);

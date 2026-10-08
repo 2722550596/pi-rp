@@ -123,6 +123,13 @@ export const UserTranscriptItemSchema = StrictObject({
 	content: Type.Array(UserContentSchema),
 	timestamp: TimestampSchema,
 });
+export const CustomTranscriptItemSchema = StrictObject({
+	id: IdSchema,
+	role: Type.Literal("custom"),
+	customType: Type.String({ minLength: 1 }),
+	content: Type.Array(UserContentSchema),
+	timestamp: TimestampSchema,
+});
 const AssistantTranscriptItemProperties = {
 	id: IdSchema,
 	role: Type.Literal("assistant"),
@@ -192,10 +199,12 @@ export const ToolTranscriptItemSchema = Type.Union([
 ]);
 export const TranscriptItemSchema = Type.Union([
 	UserTranscriptItemSchema,
+	CustomTranscriptItemSchema,
 	AssistantTranscriptItemSchema,
 	ToolTranscriptItemSchema,
 ]);
 export type UserTranscriptItem = Static<typeof UserTranscriptItemSchema>;
+export type CustomTranscriptItem = Static<typeof CustomTranscriptItemSchema>;
 export type AssistantTranscriptItem = Static<typeof AssistantTranscriptItemSchema>;
 export type ToolTranscriptItem = Static<typeof ToolTranscriptItemSchema>;
 export type TranscriptItem = Static<typeof TranscriptItemSchema>;
@@ -229,6 +238,54 @@ export const TranscriptProgressSchema = Type.Union([
 	}),
 ]);
 export type TranscriptProgress = Static<typeof TranscriptProgressSchema>;
+
+export type SessionTreeNodeKind = "user" | "assistant" | "tool" | "custom" | "compaction" | "branch_summary" | "other";
+
+/** Remote-safe projection of a session tree entry: identity, kind, and a host-generated summary. */
+export interface SessionTreeNodeProjection {
+	id: string;
+	kind: SessionTreeNodeKind;
+	/** Present only when kind is "custom". */
+	customType?: string;
+	label?: string;
+	summary: string;
+	timestamp: number;
+	children: SessionTreeNodeProjection[];
+}
+
+const SessionTreeNodeProjectionProperties = {
+	id: IdSchema,
+	label: Type.Optional(Type.String()),
+	summary: Type.String(),
+	timestamp: TimestampSchema,
+	children: Type.Array(Type.Ref("SessionTreeNodeProjection")),
+} as const;
+const SessionTreeNodeProjectionRecursiveSchema = Type.Cyclic(
+	{
+		SessionTreeNodeProjection: Type.Union([
+			StrictObject({
+				...SessionTreeNodeProjectionProperties,
+				kind: Type.Literal("custom"),
+				customType: Type.String({ minLength: 1 }),
+			}),
+			StrictObject({
+				...SessionTreeNodeProjectionProperties,
+				kind: Type.Union([
+					Type.Literal("user"),
+					Type.Literal("assistant"),
+					Type.Literal("tool"),
+					Type.Literal("compaction"),
+					Type.Literal("branch_summary"),
+					Type.Literal("other"),
+				]),
+			}),
+		]),
+	},
+	"SessionTreeNodeProjection",
+);
+export const SessionTreeNodeProjectionSchema = Type.Unsafe<SessionTreeNodeProjection>(
+	SessionTreeNodeProjectionRecursiveSchema,
+);
 
 export const SessionMetadataSchema = StrictObject({
 	id: IdSchema,
@@ -289,6 +346,7 @@ const PromptPayloadProperties = {
 } as const;
 
 export const ListCommandSchema = StrictObject({ command: Type.Literal("list") });
+export const ListModelsCommandSchema = StrictObject({ command: Type.Literal("list_models") });
 export const CreateCommandSchema = StrictObject({
 	command: Type.Literal("create"),
 	cwd: Type.Optional(Type.String({ minLength: 1 })),
@@ -311,8 +369,22 @@ export const SetThinkingCommandSchema = StrictObject({
 	sessionId: IdSchema,
 	thinkingLevel: ThinkingLevelSchema,
 });
+export const RerollCommandSchema = StrictObject({ command: Type.Literal("reroll"), sessionId: IdSchema });
+export const EditMessageCommandSchema = StrictObject({
+	command: Type.Literal("edit_message"),
+	sessionId: IdSchema,
+	entryId: IdSchema,
+	text: Type.String({ minLength: 1 }),
+});
+export const GetTreeCommandSchema = StrictObject({ command: Type.Literal("get_tree"), sessionId: IdSchema });
+export const NavigateTreeCommandSchema = StrictObject({
+	command: Type.Literal("navigate_tree"),
+	sessionId: IdSchema,
+	targetId: IdSchema,
+});
 export const CommandSchema = Type.Union([
 	ListCommandSchema,
+	ListModelsCommandSchema,
 	CreateCommandSchema,
 	AttachCommandSchema,
 	DetachCommandSchema,
@@ -321,6 +393,10 @@ export const CommandSchema = Type.Union([
 	AbortCommandSchema,
 	SetModelCommandSchema,
 	SetThinkingCommandSchema,
+	RerollCommandSchema,
+	EditMessageCommandSchema,
+	GetTreeCommandSchema,
+	NavigateTreeCommandSchema,
 ]);
 export type Command = Static<typeof CommandSchema>;
 export type CommandName = Command["command"];
@@ -358,13 +434,38 @@ export const ListResultSchema = StrictObject({
 	command: Type.Literal("list"),
 	sessions: Type.Array(SessionMetadataSchema),
 });
+export const ListModelsResultSchema = StrictObject({
+	command: Type.Literal("list_models"),
+	models: Type.Array(ModelMetadataSchema),
+});
 export const DetachResultSchema = StrictObject({
 	command: Type.Literal("detach"),
 	sessionId: IdSchema,
 });
+export const RerollResultSchema = StrictObject({
+	command: Type.Literal("reroll"),
+	ok: Type.Boolean(),
+	session: SessionSnapshotSchema,
+});
+export const EditMessageResultSchema = StrictObject({
+	command: Type.Literal("edit_message"),
+	session: SessionSnapshotSchema,
+});
+export const GetTreeResultSchema = StrictObject({
+	command: Type.Literal("get_tree"),
+	tree: Type.Array(SessionTreeNodeProjectionSchema),
+	leafId: Type.String(),
+});
+export const NavigateTreeResultSchema = StrictObject({
+	command: Type.Literal("navigate_tree"),
+	cancelled: Type.Boolean(),
+	editorText: Type.Optional(Type.String()),
+	session: SessionSnapshotSchema,
+});
 export const CommandResultSchema = Type.Union([
 	ListResultSchema,
 	CreateResultSchema,
+	ListModelsResultSchema,
 	AttachResultSchema,
 	DetachResultSchema,
 	PromptResultSchema,
@@ -372,6 +473,10 @@ export const CommandResultSchema = Type.Union([
 	AbortResultSchema,
 	SetModelResultSchema,
 	SetThinkingResultSchema,
+	RerollResultSchema,
+	EditMessageResultSchema,
+	GetTreeResultSchema,
+	NavigateTreeResultSchema,
 ]);
 export type CommandResult = Static<typeof CommandResultSchema>;
 

@@ -18,6 +18,10 @@ export function truncateToWidth(text: string, _maxWidth: number): string {
 	return text;
 }
 
+export function visibleWidth(text: string): number {
+	return text.length;
+}
+
 export function getCapabilities(): Record<string, unknown> {
 	return {};
 }

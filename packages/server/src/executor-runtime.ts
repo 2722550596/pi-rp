@@ -472,6 +472,8 @@ export function createExecutorSessionBridge(options: ExecutorSessionBridgeOption
 				throw new PiServerError("session_locked", "Executor runtime is no longer available");
 			}
 		};
+		const unsupported = (operation: string): PiServerError =>
+			new PiServerError("invalid_request", `${operation} is not supported by executor runtime`);
 		const snapshot = (): SessionSnapshot => {
 			assertCurrent();
 			if (!bootstrap || !bootstrapped) throw new PiServerError("session_locked", "Executor snapshot is unavailable");
@@ -532,6 +534,10 @@ export function createExecutorSessionBridge(options: ExecutorSessionBridgeOption
 			abort: () => command({ command: "abort" }, true),
 			setModel: (model) => command({ command: "set_model", model }),
 			setThinking: (thinkingLevel) => command({ command: "set_thinking", thinkingLevel }),
+			reroll: () => Promise.reject(unsupported("reroll")),
+			editMessage: () => Promise.reject(unsupported("edit_message")),
+			getTree: () => Promise.reject(unsupported("get_tree")),
+			navigateTree: () => Promise.reject(unsupported("navigate_tree")),
 			subscribe(listener) {
 				assertCurrent();
 				listeners.add(listener);

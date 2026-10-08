@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { dirname, relative, resolve } from "node:path";
-import type { Api, AssistantMessage, Model, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import {
 	type ModelMetadata,
 	parseServerMessage,
 	type SessionMetadata,
 	type SessionSnapshot,
+	type SessionTreeNodeKind,
+	type SessionTreeNodeProjection,
 	type ThinkingLevel,
 	type ToolTranscriptItem,
 	type TranscriptItem,
@@ -29,6 +31,7 @@ import {
 import {
 	summaryToUserMessage,
 	toProtocolAssistantMessage,
+	toProtocolCustomMessage,
 	toProtocolJsonValue,
 	toProtocolToolResultMessage,
 	toProtocolUserMessage,
@@ -37,7 +40,7 @@ import type { AgentSession, AgentSessionEvent } from "../core/agent-session.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { assertValidRequestGatewayConfig, RequestGateway, type RequestGatewayConfig } from "../core/request-gateway.ts";
 import { type CreateAgentSessionOptions, createAgentSession } from "../core/sdk.ts";
-import type { SessionManager } from "../core/session-manager.ts";
+import type { SessionManager, SessionTreeNode } from "../core/session-manager.ts";
 import { createAgentSessionScope } from "../core/session-scope.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import {
@@ -365,7 +368,7 @@ export async function createCodingAgentPiServer(
 	}
 }
 
-class CodingAgentRuntime implements PiSessionRuntime {
+export class CodingAgentRuntime implements PiSessionRuntime {
 	private readonly id: string;
 	private readonly metadata: SessionMetadata;
 	private readonly session: AgentSession;
@@ -421,6 +424,20 @@ class CodingAgentRuntime implements PiSessionRuntime {
 					if (!call) throw new TypeError("Tool result has no preceding assistant tool call");
 					transcript.push(toProtocolToolResultMessage(message, { id: entry.id, call }));
 				}
+			} else if (entry.type === "custom_message") {
+				// display:false stays invisible to remote clients, matching TUI semantics.
+				if (entry.display) {
+					transcript.push(
+						toProtocolCustomMessage(
+							{ content: entry.content ?? [] },
+							{
+								id: entry.id,
+								customType: entry.customType,
+								timestamp: parseTimestamp(entry.timestamp),
+							},
+						),
+					);
+				}
 			} else if (entry.type === "compaction" || entry.type === "branch_summary") {
 				transcript.push(
 					summaryToUserMessage({
@@ -473,6 +490,37 @@ class CodingAgentRuntime implements PiSessionRuntime {
 	}
 	async setThinking(level: ThinkingLevel) {
 		this.session.setThinkingLevel(level, false);
+	}
+	/** Branch to the last rerollable turn, then fire-and-forget the regeneration run (07 review ruling 1). */
+	async reroll(): Promise<boolean> {
+		const ok = await this.session.reroll();
+		if (ok) {
+			this.revision += 1;
+			void this.session.startRerollRun().catch(() => undefined);
+		}
+		return ok;
+	}
+	async editMessage(entryId: string, text: string): Promise<void> {
+		if (!this.session.editMessage(entryId, text)) {
+			throw new PiServerError("invalid_request", `Entry is not editable: ${entryId}`);
+		}
+		this.revision += 1;
+	}
+	async getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }> {
+		const manager = this.session.sessionManager;
+		return {
+			tree: manager.getTree().map((node) => projectTreeNode(node)),
+			leafId: manager.getLeafId() ?? "",
+		};
+	}
+	async navigateTree(targetId: string): Promise<{ cancelled: boolean; editorText?: string }> {
+		const result = await this.session.navigateTree(targetId, { summarize: false });
+		const cancelled = result.cancelled ?? false;
+		if (!cancelled) this.revision += 1;
+		return {
+			cancelled,
+			...(result.editorText !== undefined ? { editorText: result.editorText } : {}),
+		};
 	}
 	subscribe(listener: (event: PiSessionRuntimeEvent) => void) {
 		this.listeners.add(listener);
@@ -592,7 +640,9 @@ class CodingAgentRuntime implements PiSessionRuntime {
 			this.finishedToolCalls.clear();
 		}
 		if (event.type === "entry_appended") {
-			this.revision = this.session.sessionManager.getEntries().length;
+			// Monotonic counter (07 review ruling 8): never assign entry counts directly, so
+			// in-place edits and branch moves cannot share a revision with an older snapshot.
+			this.revision += 1;
 			this.publishSnapshot();
 			return;
 		}
@@ -673,12 +723,94 @@ function parseTimestamp(timestamp: string): number {
 	return value;
 }
 
+function normalizeSummaryText(text: string): string {
+	return text.replace(/[\n\t]+/g, " ").trim();
+}
+
+function truncateSummary(text: string, max: number): string {
+	const normalized = normalizeSummaryText(text);
+	return normalized.length > max ? `${normalized.slice(0, max)}…` : normalized;
+}
+
+function textOfMessageContent(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } => {
+			if (typeof part !== "object" || part === null) return false;
+			const candidate = part as { type?: unknown; text?: unknown };
+			return candidate.type === "text" && typeof candidate.text === "string";
+		})
+		.map((part) => part.text)
+		.join(" ");
+}
+
+const TREE_SUMMARY_MAX_LENGTH = 200;
+
+/**
+ * Remote-safe tree projection (07 C-protocol-tree): identity, kind, label, and a
+ * plain-text summary per node. Summary semantics mirror the TUI tree selector's
+ * plain-text rules (200-char extraction, whitespace normalization); keeping them
+ * duplicated here is an accepted maintenance risk until a shared helper lands.
+ */
+function projectTreeNode(node: SessionTreeNode): SessionTreeNodeProjection {
+	const entry = node.entry;
+	let kind: SessionTreeNodeKind;
+	let customType: string | undefined;
+	let summary: string;
+	if (entry.type === "message") {
+		const role = entry.message.role;
+		if (role === "user") {
+			kind = "user";
+			summary = truncateSummary(
+				textOfMessageContent((entry.message as UserMessage).content),
+				TREE_SUMMARY_MAX_LENGTH,
+			);
+		} else if (role === "assistant") {
+			kind = "assistant";
+			summary = truncateSummary(
+				textOfMessageContent((entry.message as AssistantMessage).content),
+				TREE_SUMMARY_MAX_LENGTH,
+			);
+		} else {
+			kind = "tool";
+			const toolResult = entry.message as ToolResultMessage;
+			summary = truncateSummary(
+				`${toolResult.toolName}: ${textOfMessageContent(toolResult.content)}`,
+				TREE_SUMMARY_MAX_LENGTH,
+			);
+		}
+	} else if (entry.type === "custom_message") {
+		kind = "custom";
+		customType = entry.customType;
+		summary = truncateSummary(
+			`[${entry.customType}]: ${textOfMessageContent(entry.content ?? [])}`,
+			TREE_SUMMARY_MAX_LENGTH,
+		);
+	} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+		kind = entry.type;
+		summary = truncateSummary(entry.summary ?? "", TREE_SUMMARY_MAX_LENGTH);
+	} else {
+		kind = "other";
+		summary = entry.type.replace(/_/g, " ");
+	}
+	return {
+		id: entry.id,
+		kind,
+		...(customType !== undefined ? { customType } : {}),
+		...(node.label !== undefined ? { label: node.label } : {}),
+		summary: summary.length > 0 ? summary : "(empty)",
+		timestamp: parseTimestamp(entry.timestamp),
+		children: node.children.map((child) => projectTreeNode(child)),
+	};
+}
+
 function availableModel(runtime: ModelRuntime, ref: { provider: string; id: string }): Model<Api> | undefined {
 	return runtime
 		.getAvailableSnapshot()
 		.find((candidate) => candidate.provider === ref.provider && candidate.id === ref.id);
 }
-function modelsForRuntime(runtime: ModelRuntime): ModelMetadata[] {
+export function modelsForRuntime(runtime: ModelRuntime): ModelMetadata[] {
 	return runtime
 		.getAvailableSnapshot()
 		.map((model) => toProtocolModelMetadata(model, runtime.hasConfiguredAuth(model.provider)));

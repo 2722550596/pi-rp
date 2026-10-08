@@ -59,6 +59,8 @@ export class LiveSessionManager {
 		switch (command.command) {
 			case "list":
 				return { command: "list" as const, sessions: await this.listMetadata() };
+			case "list_models":
+				return { command: "list_models" as const, models: await this.options.service.listModels() };
 			case "create": {
 				const id = randomUUID();
 				const options: CreateSessionOptions = {
@@ -147,7 +149,81 @@ export class LiveSessionManager {
 				);
 				return { command: "set_thinking" as const, session };
 			}
+			case "reroll": {
+				const live = this.requireAttached(connection, command.sessionId);
+				let ok = false;
+				const session = await this.runOperation(connection, live, async () => {
+					ok = await live.runtime.reroll();
+				});
+				return { command: "reroll" as const, ok, session };
+			}
+			case "edit_message": {
+				const live = this.requireAttached(connection, command.sessionId);
+				const session = await this.runOperation(connection, live, () =>
+					live.runtime.editMessage(command.entryId, command.text),
+				);
+				return { command: "edit_message" as const, session };
+			}
+			case "get_tree": {
+				const live = this.requireAttached(connection, command.sessionId);
+				const { tree, leafId } = await live.runtime.getTree();
+				return { command: "get_tree" as const, tree, leafId };
+			}
+			case "navigate_tree": {
+				const live = this.requireAttached(connection, command.sessionId);
+				let outcome: { cancelled: boolean; editorText?: string } = { cancelled: true };
+				const session = await this.runOperation(connection, live, async () => {
+					outcome = await live.runtime.navigateTree(command.targetId);
+				});
+				return {
+					command: "navigate_tree" as const,
+					cancelled: outcome.cancelled,
+					...(outcome.editorText !== undefined ? { editorText: outcome.editorText } : {}),
+					session,
+				};
+			}
 		}
+	}
+
+	async remove(id: string): Promise<void> {
+		const opening = this.openingSessions.get(id);
+		if (opening) {
+			try {
+				await opening;
+			} catch {
+				return;
+			}
+		}
+		const live = this.liveSessions.get(id);
+		if (!live) return;
+		if (live.disposing) {
+			await live.disposing;
+			return;
+		}
+		const connections = [...live.connections];
+		const event: EventEnvelope = { type: "event", event: { type: "session_removed", sessionId: id } };
+		await Promise.all(
+			connections.map(async (connection) => {
+				await this.options.sendMessage(connection, event);
+				connection.sessionIds.delete(id);
+				live.connections.delete(connection);
+			}),
+		);
+		live.unsubscribe();
+		while (live.operationCount > 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		try {
+			await live.runtime.dispose();
+		} finally {
+			if (this.liveSessions.get(id) === live) this.liveSessions.delete(id);
+			this.options.broadcastServerSnapshot();
+		}
+	}
+
+	participantCount(id: string): number {
+		const live = this.liveSessions.get(id);
+		return live
+			? [...live.connections].filter((connection) => !connection.disconnected && connection.stage === "ready").length
+			: 0;
 	}
 
 	async disconnect(connection: ConnectionState): Promise<void> {

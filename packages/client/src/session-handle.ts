@@ -4,6 +4,7 @@ import type {
 	ResultForCommand,
 	ServerEvent,
 	SessionSnapshot,
+	SessionTreeNodeProjection,
 	ThinkingLevel,
 } from "@earendil-works/pi-protocol";
 import type { Unsubscribe } from "./types.ts";
@@ -30,6 +31,10 @@ export interface SessionLease extends AsyncDisposable {
 	abort(): Promise<SessionSnapshot>;
 	setModel(model: ModelRef): Promise<SessionSnapshot>;
 	setThinking(thinkingLevel: ThinkingLevel): Promise<SessionSnapshot>;
+	reroll(): Promise<{ ok: boolean; session: SessionSnapshot }>;
+	editMessage(entryId: string, text: string): Promise<SessionSnapshot>;
+	getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }>;
+	navigateTree(targetId: string): Promise<{ cancelled: boolean; editorText?: string; session: SessionSnapshot }>;
 }
 
 export type PiSessionHandle = SessionLease;
@@ -103,6 +108,33 @@ export class SessionHandle implements SessionLease {
 
 	async setThinking(thinkingLevel: ThinkingLevel): Promise<SessionSnapshot> {
 		return (await this.#request({ command: "set_thinking", sessionId: this.id, thinkingLevel })).session;
+	}
+
+	async reroll(): Promise<{ ok: boolean; session: SessionSnapshot }> {
+		const result = await this.#request({ command: "reroll", sessionId: this.id });
+		return { ok: result.ok, session: result.session };
+	}
+
+	async editMessage(entryId: string, text: string): Promise<SessionSnapshot> {
+		return (await this.#request({ command: "edit_message", sessionId: this.id, entryId, text })).session;
+	}
+
+	async getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }> {
+		const result = await this.#request({ command: "get_tree", sessionId: this.id });
+		return { tree: result.tree, leafId: result.leafId };
+	}
+
+	async navigateTree(targetId: string): Promise<{
+		cancelled: boolean;
+		editorText?: string;
+		session: SessionSnapshot;
+	}> {
+		const result = await this.#request({ command: "navigate_tree", sessionId: this.id, targetId });
+		return {
+			cancelled: result.cancelled,
+			...(result.editorText !== undefined ? { editorText: result.editorText } : {}),
+			session: result.session,
+		};
 	}
 
 	#request<const TCommand extends SessionCommand>(command: TCommand): Promise<ResultForCommand<TCommand>> {

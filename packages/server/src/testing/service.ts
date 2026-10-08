@@ -4,6 +4,8 @@ import type {
 	SessionMetadata,
 	SessionPhase,
 	SessionSnapshot,
+	SessionTreeNodeKind,
+	SessionTreeNodeProjection,
 	ThinkingLevel,
 	TranscriptProgress,
 } from "@earendil-works/pi-protocol";
@@ -145,6 +147,71 @@ export class TestSessionRuntime implements PiSessionRuntime {
 	async setThinking(thinkingLevel: ThinkingLevel): Promise<void> {
 		if (this.getPhase() !== "idle") throw new PiServerError("busy", "Session is busy");
 		this.update({ thinkingLevel });
+	}
+
+	async reroll(): Promise<boolean> {
+		if (this.getPhase() !== "idle") return false;
+		const transcript = this.stored.snapshot.transcript;
+		for (let i = transcript.length - 1; i >= 0; i--) {
+			if (transcript[i]!.role === "assistant") {
+				this.update({ transcript: transcript.slice(0, i) });
+				return true;
+			}
+		}
+		return false;
+	}
+
+	async editMessage(entryId: string, text: string): Promise<void> {
+		const item = this.stored.snapshot.transcript.find((entry) => entry.id === entryId);
+		if (!item || (item.role !== "user" && item.role !== "custom")) {
+			throw new PiServerError("invalid_request", `Entry is not editable: ${entryId}`);
+		}
+		this.update({
+			transcript: this.stored.snapshot.transcript.map((entry) =>
+				entry.id === entryId ? { ...entry, content: [{ type: "text" as const, text }] } : entry,
+			),
+		});
+	}
+
+	async getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }> {
+		const transcript = this.stored.snapshot.transcript;
+		if (transcript.length === 0) return { tree: [], leafId: "" };
+		const kindOf = (item: (typeof transcript)[number]): SessionTreeNodeKind =>
+			item.role === "user" || item.role === "assistant" || item.role === "custom" ? item.role : "tool";
+		const textOf = (item: (typeof transcript)[number]): string =>
+			item.role === "user" || item.role === "custom"
+				? item.content
+						.filter((block) => block.type === "text")
+						.map((block) => (block.type === "text" ? block.text : ""))
+						.join("\n")
+				: item.role;
+		// Linear chain: each node is the only child of its predecessor.
+		const chain: SessionTreeNodeProjection[] = transcript.map((item) => ({
+			id: item.id,
+			kind: kindOf(item),
+			...(item.role === "custom" ? { customType: item.customType } : {}),
+			summary: textOf(item),
+			timestamp: item.timestamp,
+			children: [],
+		}));
+		for (let i = 0; i < chain.length - 1; i++) chain[i]!.children = [chain[i + 1]!];
+		return { tree: [chain[0]!], leafId: chain[chain.length - 1]!.id };
+	}
+
+	async navigateTree(targetId: string): Promise<{ cancelled: boolean; editorText?: string }> {
+		const transcript = this.stored.snapshot.transcript;
+		const index = transcript.findIndex((entry) => entry.id === targetId);
+		if (index === -1) return { cancelled: true };
+		this.update({ transcript: transcript.slice(0, index + 1) });
+		const target = transcript[index]!;
+		const editorText =
+			target.role === "user"
+				? target.content
+						.filter((block) => block.type === "text")
+						.map((block) => (block.type === "text" ? block.text : ""))
+						.join("\n")
+				: undefined;
+		return { cancelled: false, ...(editorText !== undefined ? { editorText } : {}) };
 	}
 
 	subscribe(listener: (event: PiSessionRuntimeEvent) => void): () => void {

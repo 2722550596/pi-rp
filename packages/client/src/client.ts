@@ -3,12 +3,15 @@ import {
 	type CommandResult,
 	type EventEnvelope,
 	encodeClientMessage,
+	type ModelMetadata,
 	ProtocolValidationError,
 	type ResponseEnvelope,
 	type ResultForCommand,
 	type ServerEvent,
 	type ServerSnapshot,
 	type SessionMetadata,
+	type SessionSnapshot,
+	type SessionTreeNodeProjection,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
 import {
@@ -136,6 +139,36 @@ export class PiClient {
 
 	async listSessions(): Promise<readonly SessionMetadata[]> {
 		return (await this.#request({ command: "list" })).sessions;
+	}
+
+	async listModels(): Promise<readonly ModelMetadata[]> {
+		return (await this.#request({ command: "list_models" })).models;
+	}
+
+	async reroll(sessionId: string): Promise<{ ok: boolean; session: SessionSnapshot }> {
+		const result = await this.#request({ command: "reroll", sessionId });
+		return { ok: result.ok, session: result.session };
+	}
+
+	async editMessage(sessionId: string, entryId: string, text: string): Promise<SessionSnapshot> {
+		return (await this.#request({ command: "edit_message", sessionId, entryId, text })).session;
+	}
+
+	async getTree(sessionId: string): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }> {
+		const result = await this.#request({ command: "get_tree", sessionId });
+		return { tree: result.tree, leafId: result.leafId };
+	}
+
+	async navigateTree(
+		sessionId: string,
+		targetId: string,
+	): Promise<{ cancelled: boolean; editorText?: string; session: SessionSnapshot }> {
+		const result = await this.#request({ command: "navigate_tree", sessionId, targetId });
+		return {
+			cancelled: result.cancelled,
+			...(result.editorText !== undefined ? { editorText: result.editorText } : {}),
+			session: result.session,
+		};
 	}
 
 	async createSession(options: CreateSessionOptions = {}): Promise<PiSessionHandle> {

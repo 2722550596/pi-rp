@@ -1,6 +1,14 @@
-import type { AssistantMessage, ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	ImageContent,
+	TextContent,
+	ToolCall,
+	ToolResultMessage,
+	UserMessage,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantTranscriptItem,
+	CustomTranscriptItem,
 	JsonValue,
 	ToolTranscriptItem,
 	Usage,
@@ -110,6 +118,31 @@ export function toProtocolUserMessage(message: UserMessage, options: UserTranscr
 		role: "user",
 		content,
 		timestamp: timestamp(message.timestamp),
+	};
+}
+export interface CustomTranscriptOptions {
+	id: string;
+	customType: string;
+	timestamp: number;
+}
+export function toProtocolCustomMessage(
+	message: { content: string | readonly (TextContent | ImageContent)[] },
+	options: CustomTranscriptOptions,
+): CustomTranscriptItem {
+	const content: CustomTranscriptItem["content"] =
+		typeof message.content === "string"
+			? [{ type: "text", text: message.content }]
+			: message.content.map((part) =>
+					part.type === "text"
+						? { type: "text", text: part.text }
+						: { type: "image", data: part.data, mimeType: part.mimeType },
+				);
+	return {
+		id: identifier(options.id, "Transcript item id"),
+		role: "custom",
+		customType: identifier(options.customType, "Custom type"),
+		content,
+		timestamp: timestamp(options.timestamp),
 	};
 }
 export function toProtocolAssistantMessage(
