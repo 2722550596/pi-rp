@@ -1,6 +1,7 @@
 # 阶段三：Protocol / Bridge / Client 设计
 
 > 本文仅设计，不修改 `src/`。以 `07-stage3-transcript-actions.md` 的 C-* 为冻结契约，并继承 `01-共同上下文.md`、`05-web-frontend-v2.md` 与 `06-web-frontend.md`。现状事实均标仓库相对路径和行号；推断写 `[推断]`，未知单列。
+> **阶段四修订**：本文 §3.2/§3.3/§4 中递归树投影与 `{tree,leafId}` 返回形状已由 `10-flat-tree-export-layout.md` 的扁平 `{entries,leafId}` 契约取代；其余命令、快照与错误语义仍有效。
 
 ## 1. 需求对照
 

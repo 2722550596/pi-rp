@@ -1,6 +1,7 @@
 # Web 前端升级（阶段三）：tree 选择器、reroll、编辑消息、customType
 
 > 本文件是 remote-web-control 第三阶段的需求与契约文档。第一、二阶段（`00`–`06`）仍然有效，本阶段在其上增量修订。阶段二交付记录见 `06-web-frontend.md` §"实现差异与验收记录"。
+> **阶段四修订**：本文件的递归 `SessionTreeNodeProjection.children[]` 与 drawer 布局已由 `10-flat-tree-export-layout.md` 取代；阶段三的 custom/reroll/edit/navigate 行为仍有效。
 
 ## 用户原话（2026-10-09，逐字）
 

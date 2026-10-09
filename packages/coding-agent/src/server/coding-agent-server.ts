@@ -6,8 +6,8 @@ import {
 	parseServerMessage,
 	type SessionMetadata,
 	type SessionSnapshot,
+	type SessionTreeEntryProjection,
 	type SessionTreeNodeKind,
-	type SessionTreeNodeProjection,
 	type ThinkingLevel,
 	type ToolTranscriptItem,
 	type TranscriptItem,
@@ -40,7 +40,7 @@ import type { AgentSession, AgentSessionEvent } from "../core/agent-session.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { assertValidRequestGatewayConfig, RequestGateway, type RequestGatewayConfig } from "../core/request-gateway.ts";
 import { type CreateAgentSessionOptions, createAgentSession } from "../core/sdk.ts";
-import type { SessionManager, SessionTreeNode } from "../core/session-manager.ts";
+import type { SessionEntry, SessionManager } from "../core/session-manager.ts";
 import { createAgentSessionScope } from "../core/session-scope.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import {
@@ -506,10 +506,10 @@ export class CodingAgentRuntime implements PiSessionRuntime {
 		}
 		this.revision += 1;
 	}
-	async getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }> {
+	async getTree(): Promise<{ entries: SessionTreeEntryProjection[]; leafId: string }> {
 		const manager = this.session.sessionManager;
 		return {
-			tree: manager.getTree().map((node) => projectTreeNode(node)),
+			entries: manager.getEntries().map((entry) => projectTreeEntry(entry, manager.getLabel(entry.id))),
 			leafId: manager.getLeafId() ?? "",
 		};
 	}
@@ -748,13 +748,10 @@ function textOfMessageContent(content: unknown): string {
 const TREE_SUMMARY_MAX_LENGTH = 200;
 
 /**
- * Remote-safe tree projection (07 C-protocol-tree): identity, kind, label, and a
- * plain-text summary per node. Summary semantics mirror the TUI tree selector's
- * plain-text rules (200-char extraction, whitespace normalization); keeping them
- * duplicated here is an accepted maintenance risk until a shared helper lands.
+ * Remote-safe flat tree projection (10-flat-tree-export-layout): identity,
+ * parent link, kind, label, and a plain-text summary per entry.
  */
-function projectTreeNode(node: SessionTreeNode): SessionTreeNodeProjection {
-	const entry = node.entry;
+function projectTreeEntry(entry: SessionEntry, label: string | undefined): SessionTreeEntryProjection {
 	let kind: SessionTreeNodeKind;
 	let customType: string | undefined;
 	let summary: string;
@@ -783,10 +780,7 @@ function projectTreeNode(node: SessionTreeNode): SessionTreeNodeProjection {
 	} else if (entry.type === "custom_message") {
 		kind = "custom";
 		customType = entry.customType;
-		summary = truncateSummary(
-			`[${entry.customType}]: ${textOfMessageContent(entry.content ?? [])}`,
-			TREE_SUMMARY_MAX_LENGTH,
-		);
+		summary = truncateSummary(textOfMessageContent(entry.content ?? []), TREE_SUMMARY_MAX_LENGTH);
 	} else if (entry.type === "compaction" || entry.type === "branch_summary") {
 		kind = entry.type;
 		summary = truncateSummary(entry.summary ?? "", TREE_SUMMARY_MAX_LENGTH);
@@ -796,12 +790,12 @@ function projectTreeNode(node: SessionTreeNode): SessionTreeNodeProjection {
 	}
 	return {
 		id: entry.id,
+		parentId: entry.parentId,
 		kind,
 		...(customType !== undefined ? { customType } : {}),
-		...(node.label !== undefined ? { label: node.label } : {}),
+		...(label !== undefined ? { label } : {}),
 		summary: summary.length > 0 ? summary : "(empty)",
 		timestamp: parseTimestamp(entry.timestamp),
-		children: node.children.map((child) => projectTreeNode(child)),
 	};
 }
 

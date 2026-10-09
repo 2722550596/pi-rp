@@ -166,8 +166,8 @@ export class LiveSessionManager {
 			}
 			case "get_tree": {
 				const live = this.requireAttached(connection, command.sessionId);
-				const { tree, leafId } = await live.runtime.getTree();
-				return { command: "get_tree" as const, tree, leafId };
+				const { entries, leafId } = await live.runtime.getTree();
+				return { command: "get_tree" as const, entries, leafId };
 			}
 			case "navigate_tree": {
 				const live = this.requireAttached(connection, command.sessionId);

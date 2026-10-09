@@ -10,21 +10,44 @@
 	<script defer src="./app.js"></script>
 </head>
 <body>
-	<main id="app" aria-live="polite">
-		<header>
-			<strong>Remote session</strong>
-			<button id="model-trigger" type="button" aria-expanded="false" aria-haspopup="dialog">模型</button>
-			<button id="tree-trigger" type="button" aria-expanded="false" aria-haspopup="dialog">树</button>
-			<span id="connection-status">Starting…</span>
-		</header>
-		<div id="error" role="alert" hidden></div>
-		<section id="transcript" aria-label="Session transcript"></section>
-		<section id="queue" aria-label="Queued messages"></section>
-		<footer id="composer">
-			<textarea id="prompt" rows="2" aria-label="Message" placeholder="Message" enterkeyhint="send"></textarea>
-			<button id="send" type="button">Send</button>
-			<button id="abort" type="button" hidden>Abort</button>
-		</footer>
-	</main>
+	<div id="sidebar-overlay" hidden></div>
+	<div id="shell">
+		<aside id="tree-sidebar" aria-label="Session tree">
+			<div class="tree-sidebar-header">
+				<div class="tree-sidebar-title">
+					<strong>会话树</strong>
+					<button id="tree-refresh" class="compact-button" type="button">刷新</button>
+					<button id="tree-close" class="compact-button tree-mobile-close" type="button" aria-label="关闭会话树">关闭</button>
+				</div>
+				<input id="tree-search" type="search" placeholder="搜索会话…" autocomplete="off" aria-label="搜索会话树">
+				<div id="tree-filters" class="tree-filters" aria-label="会话树过滤器">
+					<button type="button" class="tree-filter active" data-filter="default">默认</button>
+					<button type="button" class="tree-filter" data-filter="no-tools">无工具</button>
+					<button type="button" class="tree-filter" data-filter="user-only">用户</button>
+					<button type="button" class="tree-filter" data-filter="labeled-only">标签</button>
+					<button type="button" class="tree-filter" data-filter="all">全部</button>
+				</div>
+			</div>
+			<div id="tree-list" class="tree-list"></div>
+			<div id="tree-status" class="tree-status" aria-live="polite"></div>
+		</aside>
+		<div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整会话树宽度"></div>
+		<main id="app" aria-live="polite">
+			<header>
+				<button id="tree-trigger" type="button" aria-expanded="false" aria-controls="tree-sidebar">树</button>
+				<strong>Remote session</strong>
+				<button id="model-trigger" type="button" aria-expanded="false" aria-haspopup="dialog">模型</button>
+				<span id="connection-status">Starting…</span>
+			</header>
+			<div id="error" role="alert" hidden></div>
+			<section id="transcript" aria-label="Session transcript"></section>
+			<section id="queue" aria-label="Queued messages"></section>
+			<footer id="composer">
+				<textarea id="prompt" rows="2" aria-label="Message" placeholder="Message" enterkeyhint="send"></textarea>
+				<button id="send" type="button">Send</button>
+				<button id="abort" type="button" hidden>Abort</button>
+			</footer>
+		</main>
+	</div>
 </body>
 </html>

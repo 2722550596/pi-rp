@@ -5,7 +5,7 @@ import type {
 	SessionMetadata,
 	SessionPhase,
 	SessionSnapshot,
-	SessionTreeNodeProjection,
+	SessionTreeEntryProjection,
 	ThinkingLevel,
 	TranscriptProgress,
 } from "@earendil-works/pi-protocol";
@@ -52,7 +52,7 @@ export interface PiSessionRuntime {
 	reroll(): Promise<boolean>;
 	/** Edit a user/custom message entry in place without triggering a run. Throws PiServerError("invalid_request") on invalid targets. */
 	editMessage(entryId: string, text: string): Promise<void>;
-	getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }>;
+	getTree(): Promise<{ entries: SessionTreeEntryProjection[]; leafId: string }>;
 	navigateTree(targetId: string): Promise<{ cancelled: boolean; editorText?: string }>;
 	subscribe(listener: (event: PiSessionRuntimeEvent) => void): () => void;
 	dispose(): Promise<void>;

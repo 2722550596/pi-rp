@@ -332,6 +332,30 @@ describe("validated framed protocol APIs", () => {
 		expect(parseServerMessage(decodeCbor(serverFrames[0]!))).toEqual(serverHello);
 	});
 
+	test("encodes deep session trees as flat entries without consuming CBOR nesting depth", () => {
+		const entries = Array.from({ length: 500 }, (_, index) => ({
+			id: `entry-${index}`,
+			parentId: index === 0 ? null : `entry-${index - 1}`,
+			kind: "user" as const,
+			summary: `entry ${index}`,
+			timestamp: index,
+		}));
+		const message = {
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: {
+				command: "get_tree",
+				entries,
+				leafId: entries.at(-1)!.id,
+			},
+		} as unknown as ServerMessage;
+
+		const decoder = new ServerMessageDecoder();
+		expect(decoder.push(encodeServerMessage(message))).toEqual([message]);
+		decoder.end();
+	});
+
 	test("enforces an outbound frame limit before returning encoded bytes", () => {
 		expect(() => encodeClientMessage(clientHello, { maxFrameLength: 8 })).toThrow(ProtocolValidationError);
 		expect(() => encodeServerMessage(serverHello, { maxFrameLength: 8 })).toThrow(ProtocolValidationError);

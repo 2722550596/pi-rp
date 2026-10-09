@@ -241,50 +241,44 @@ export type TranscriptProgress = Static<typeof TranscriptProgressSchema>;
 
 export type SessionTreeNodeKind = "user" | "assistant" | "tool" | "custom" | "compaction" | "branch_summary" | "other";
 
-/** Remote-safe projection of a session tree entry: identity, kind, and a host-generated summary. */
-export interface SessionTreeNodeProjection {
+/** Remote-safe flat projection of one session entry. Parent links reconstruct the tree client-side. */
+export interface SessionTreeEntryProjection {
 	id: string;
+	parentId: string | null;
 	kind: SessionTreeNodeKind;
 	/** Present only when kind is "custom". */
 	customType?: string;
 	label?: string;
 	summary: string;
 	timestamp: number;
-	children: SessionTreeNodeProjection[];
 }
 
-const SessionTreeNodeProjectionProperties = {
+const SessionTreeEntryProjectionProperties = {
 	id: IdSchema,
+	parentId: Type.Union([IdSchema, Type.Null()]),
 	label: Type.Optional(Type.String()),
 	summary: Type.String(),
 	timestamp: TimestampSchema,
-	children: Type.Array(Type.Ref("SessionTreeNodeProjection")),
 } as const;
-const SessionTreeNodeProjectionRecursiveSchema = Type.Cyclic(
-	{
-		SessionTreeNodeProjection: Type.Union([
-			StrictObject({
-				...SessionTreeNodeProjectionProperties,
-				kind: Type.Literal("custom"),
-				customType: Type.String({ minLength: 1 }),
-			}),
-			StrictObject({
-				...SessionTreeNodeProjectionProperties,
-				kind: Type.Union([
-					Type.Literal("user"),
-					Type.Literal("assistant"),
-					Type.Literal("tool"),
-					Type.Literal("compaction"),
-					Type.Literal("branch_summary"),
-					Type.Literal("other"),
-				]),
-			}),
-		]),
-	},
-	"SessionTreeNodeProjection",
-);
-export const SessionTreeNodeProjectionSchema = Type.Unsafe<SessionTreeNodeProjection>(
-	SessionTreeNodeProjectionRecursiveSchema,
+export const SessionTreeEntryProjectionSchema = Type.Unsafe<SessionTreeEntryProjection>(
+	Type.Union([
+		StrictObject({
+			...SessionTreeEntryProjectionProperties,
+			kind: Type.Literal("custom"),
+			customType: Type.String({ minLength: 1 }),
+		}),
+		StrictObject({
+			...SessionTreeEntryProjectionProperties,
+			kind: Type.Union([
+				Type.Literal("user"),
+				Type.Literal("assistant"),
+				Type.Literal("tool"),
+				Type.Literal("compaction"),
+				Type.Literal("branch_summary"),
+				Type.Literal("other"),
+			]),
+		}),
+	]),
 );
 
 export const SessionMetadataSchema = StrictObject({
@@ -453,7 +447,7 @@ export const EditMessageResultSchema = StrictObject({
 });
 export const GetTreeResultSchema = StrictObject({
 	command: Type.Literal("get_tree"),
-	tree: Type.Array(SessionTreeNodeProjectionSchema),
+	entries: Type.Array(SessionTreeEntryProjectionSchema),
 	leafId: Type.String(),
 });
 export const NavigateTreeResultSchema = StrictObject({

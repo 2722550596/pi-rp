@@ -1,6 +1,7 @@
 # 阶段三：Web 前端 transcript 操作与树视图设计
 
 > 本文只设计 `packages/coding-agent/web/remote/` 前端，不修改源码。阶段三行为以 `07-stage3-transcript-actions.md` C-* 为冻结契约；本文不得替代或修改协议/宿主契约。现状依据阶段二源码逐段核实，新增文件/代码落点为计划而非现状。
+> **阶段四修订**：本文的递归 `children[]` 消费与桌面 drawer 形态已由 `10-flat-tree-export-layout.md` 取代；前端改为本地组树、桌面常驻可调宽侧栏、移动滑出侧栏。编辑/reroll 行为仍有效。
 
 ## 1. 需求对照
 

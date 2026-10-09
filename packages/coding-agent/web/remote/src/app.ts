@@ -95,7 +95,7 @@ export class RemoteApp {
 			onEdit: (item) => this.#edit.open(item),
 			onEditorText: (value) => { this.#input.value = value; this.#autoSize(); },
 			onError: (error) => this.#showError(error),
-		}, treeTrigger, document.getElementById("app") ?? document.body);
+		}, treeTrigger);
 		window.addEventListener("online", () => {
 			if (this.#state !== "terminal") void this.#recover();
 		});
@@ -192,6 +192,7 @@ export class RemoteApp {
 			this.#state = "attached";
 			this.#retry = 0;
 			this.#setControls();
+			if (this.#tree?.isOpen()) void this.#tree.refresh();
 		} catch (error) {
 			if (generation === this.#generation) {
 				this.#showError(error);

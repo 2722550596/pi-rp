@@ -11,7 +11,7 @@ import {
 	type ServerSnapshot,
 	type SessionMetadata,
 	type SessionSnapshot,
-	type SessionTreeNodeProjection,
+	type SessionTreeEntryProjection,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
 import {
@@ -154,9 +154,9 @@ export class PiClient {
 		return (await this.#request({ command: "edit_message", sessionId, entryId, text })).session;
 	}
 
-	async getTree(sessionId: string): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }> {
+	async getTree(sessionId: string): Promise<{ entries: SessionTreeEntryProjection[]; leafId: string }> {
 		const result = await this.#request({ command: "get_tree", sessionId });
-		return { tree: result.tree, leafId: result.leafId };
+		return { entries: result.entries, leafId: result.leafId };
 	}
 
 	async navigateTree(

@@ -4,8 +4,8 @@ import type {
 	SessionMetadata,
 	SessionPhase,
 	SessionSnapshot,
+	SessionTreeEntryProjection,
 	SessionTreeNodeKind,
-	SessionTreeNodeProjection,
 	ThinkingLevel,
 	TranscriptProgress,
 } from "@earendil-works/pi-protocol";
@@ -173,9 +173,9 @@ export class TestSessionRuntime implements PiSessionRuntime {
 		});
 	}
 
-	async getTree(): Promise<{ tree: SessionTreeNodeProjection[]; leafId: string }> {
+	async getTree(): Promise<{ entries: SessionTreeEntryProjection[]; leafId: string }> {
 		const transcript = this.stored.snapshot.transcript;
-		if (transcript.length === 0) return { tree: [], leafId: "" };
+		if (transcript.length === 0) return { entries: [], leafId: "" };
 		const kindOf = (item: (typeof transcript)[number]): SessionTreeNodeKind =>
 			item.role === "user" || item.role === "assistant" || item.role === "custom" ? item.role : "tool";
 		const textOf = (item: (typeof transcript)[number]): string =>
@@ -185,17 +185,15 @@ export class TestSessionRuntime implements PiSessionRuntime {
 						.map((block) => (block.type === "text" ? block.text : ""))
 						.join("\n")
 				: item.role;
-		// Linear chain: each node is the only child of its predecessor.
-		const chain: SessionTreeNodeProjection[] = transcript.map((item) => ({
+		const entries: SessionTreeEntryProjection[] = transcript.map((item, index) => ({
 			id: item.id,
+			parentId: index === 0 ? null : transcript[index - 1]!.id,
 			kind: kindOf(item),
 			...(item.role === "custom" ? { customType: item.customType } : {}),
 			summary: textOf(item),
 			timestamp: item.timestamp,
-			children: [],
 		}));
-		for (let i = 0; i < chain.length - 1; i++) chain[i]!.children = [chain[i + 1]!];
-		return { tree: [chain[0]!], leafId: chain[chain.length - 1]!.id };
+		return { entries, leafId: entries.at(-1)!.id };
 	}
 
 	async navigateTree(targetId: string): Promise<{ cancelled: boolean; editorText?: string }> {
