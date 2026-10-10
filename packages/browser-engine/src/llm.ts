@@ -100,16 +100,16 @@ export function streamFnGateway(
 }
 
 /**
- * 三态分派（15-F §6.1 规则 4）。返回值：
- * - `{ kind: "gateway", gateway }`：显式 requestGateway 注入 createAgentSession；
- * - `{ kind: "default" }`：byok 无 headers（sdk 缺省 gateway，凭据已注入）。
- * 皆空 = 组装错误（assemble.ts 落错）。
+ * 三态分派（15-F §6.1 规则 4）。无模型时允许离线 session；已配置模型但无接入仍报错。
  */
-export function resolveLlmAssembly(
+export async function resolveLlmAssembly(
 	modelRuntime: ModelRuntime,
 	config: RequestGatewayConfig | undefined,
 	llm: PiHarnessLlmOptions | undefined,
-): { kind: "gateway"; gateway: RequestGateway } | { kind: "default" } {
+	model: Model<any> | undefined,
+): Promise<
+	{ kind: "gateway"; gateway: RequestGateway } | { kind: "default" } | { kind: "unavailable"; reason: string }
+> {
 	// 三态互斥：streamFn > proxyUrl > byok。
 	if (llm?.streamFn) {
 		return { kind: "gateway", gateway: streamFnGateway(modelRuntime, config, llm.streamFn) };
@@ -118,31 +118,37 @@ export function resolveLlmAssembly(
 		return { kind: "gateway", gateway: proxyStreamGateway(modelRuntime, config, llm.proxyUrl, llm.authToken) };
 	}
 	if (llm?.byok && llm.byok.length > 0) {
-		const wrapped = byokGateway(modelRuntime, config, llm.byok);
+		const wrapped = await byokGateway(modelRuntime, config, llm.byok, llm.fetch);
 		return wrapped ? { kind: "gateway", gateway: wrapped } : { kind: "default" };
+	}
+	if (!model) {
+		return { kind: "unavailable", reason: "pi-harness: generation unavailable (no model or LLM access configured)" };
 	}
 	throw new Error("pi-harness: no LLM access configured (streamFn | proxyUrl | byok)");
 }
 
 /** BYOK + headers 的 gateway 包装（headers 注入 provider 分派）。 */
-function byokGateway(
+async function byokGateway(
 	modelRuntime: ModelRuntime,
 	config: RequestGatewayConfig | undefined,
 	byok: PiHarnessLlmOptions["byok"],
-): RequestGateway | undefined {
+	fetchImpl?: typeof globalThis.fetch,
+): Promise<RequestGateway | undefined> {
 	const headersByProvider = new Map<string, ProviderHeaders>();
 	for (const entry of byok ?? []) {
-		void modelRuntime.setRuntimeApiKey(entry.provider, entry.apiKey);
+		await modelRuntime.setRuntimeApiKey(entry.provider, entry.apiKey);
 		if (entry.headers && Object.keys(entry.headers).length > 0) {
 			headersByProvider.set(entry.provider, { ...entry.headers });
 		}
 	}
-	if (headersByProvider.size === 0) return undefined;
+	if (headersByProvider.size === 0 && !fetchImpl) return undefined;
 	return new DelegatingRequestGateway(modelRuntime, config, (model, context, options, _identity, _signal) => {
 		const providerHeaders = headersByProvider.get(model.provider);
-		const merged: ModelsSimpleStreamOptionsLike = providerHeaders
-			? { ...(options ?? {}), headers: { ...providerHeaders, ...(options?.headers ?? {}) } }
-			: (options ?? {});
+		const merged: ModelsSimpleStreamOptionsLike = {
+			...(options ?? {}),
+			...(fetchImpl ? { fetch: fetchImpl } : {}),
+			...(providerHeaders ? { headers: { ...providerHeaders, ...(options?.headers ?? {}) } } : {}),
+		};
 		return modelRuntime.streamSimple(model, context, merged as Parameters<typeof modelRuntime.streamSimple>[2]);
 	});
 }

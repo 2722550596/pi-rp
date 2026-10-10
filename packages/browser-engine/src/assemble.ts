@@ -12,7 +12,7 @@
  * S4 模型运行时装配（credentials/stores 缝；modelsPath: null——浏览器无磁盘 catalog）
  * S5 工具协商禁用（capabilities → negotiatedAbsentToolNames + bash 互补开关，sdk 已接）
  * S6 扩展打包通道（extensionFactories + NullPackageManager；磁盘通道经 build alias 剔除）
- * S7 LLM 三态（streamFn > proxyUrl > byok，皆空组装错误——见 ./llm.ts）
+ * S7 LLM 三态（streamFn > proxyUrl > byok；缺少模型时离线可用，否则缺配置报错——见 ./llm.ts）
  * S8 session 构造与就绪（await _buildRuntimePromise 后才暴露 PiHarness）
  * S8.5 扩展绑定（E4/E2：恒执行一次 bindExtensions，ui/opening 只决定绑入内容——C3 裁决）
  * S9 dispose（settings flush → storage flush → env cleanup，逐层 best-effort 不抛）
@@ -80,8 +80,8 @@ import type { ExtensionFactory, LoadExtensionsResult, Skill, ToolName } from "./
 import type { HarnessStores, StateStores } from "./state-stores.ts";
 
 /**
- * LLM 接入三态（15-F §4 S7 / 契约 §8 拍板）：`streamFn` > `proxyUrl` > `byok` 互斥；
- * 皆空 = 组装期错误 `pi-harness: no LLM access configured`。
+ * LLM 接入三态（15-F §4 S7 / 契约 §8 拍板）：`streamFn` > `proxyUrl` > `byok` 互斥。
+ * 缺省接入只允许无模型离线 session；配置模型但缺少 LLM 接入仍是组装错误。
  */
 export interface PiHarnessLlmOptions {
 	/** BYOK 直连（默认态）。key 注入 ModelRuntime 的 credentials 缝（runtime 级，不落盘）。 */
@@ -135,7 +135,8 @@ export interface CreatePiHarnessOptions {
 	readonly cwd: string;
 	/** 项目配置目录名（相对 cwd；如 `.pi` 或 `world`）；缺省 = `.pi`。Browser/hosted resource loaders 使用同一解析结果。 */
 	readonly configDir?: string;
-	readonly model: Model<any>;
+	/** Omit to open an offline session for history, editing, and persistence only. */
+	readonly model?: Model<any>;
 	readonly thinkingLevel?: ThinkingLevel;
 	readonly preset?: string;
 	readonly schemas?: string[];
@@ -472,9 +473,14 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		settingsManager.applyOverlay(options.settings);
 	}
 
-	// ---- S7: LLM 三态分派（streamFn > proxyUrl > byok；byok key 注入 credentials 缝） ----
-	const llmAssembly = await resolveLlmAssembly(modelRuntime, settingsManager.getRequestGatewayConfig(), options.llm);
-	if (options.llm?.streamFn) {
+	// ---- S7: LLM 三态分派；无模型、无接入时保留真实离线 session ----
+	const llmAssembly = await resolveLlmAssembly(
+		modelRuntime,
+		settingsManager.getRequestGatewayConfig(),
+		options.llm,
+		options.model,
+	);
+	if (options.llm?.streamFn && options.model) {
 		// streamFn 自管态：传输凭据由 streamFn 自己持有。此处登记 runtime 级标记凭据，
 		// 仅解锁 prompt 前置的 hasConfiguredAuth 模型可用性门；标记 key 永不进入网络面
 		// （gateway.streamSimple 已被 DelegatingRequestGateway 整体改写为调用 streamFn）。
@@ -583,6 +589,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		session,
 		extensionsResult,
 		async prompt(text: string) {
+			if (llmAssembly.kind === "unavailable") throw new Error(llmAssembly.reason);
 			const { promise, resolve, reject } = Promise.withResolvers<AssistantMessage>();
 			let unsubscribe: (() => void) | undefined;
 			try {

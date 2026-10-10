@@ -23,6 +23,8 @@ export const repoRoot = resolve(packageRoot, "../..");
  * 未映射的裸包名回落 node_modules（dist），若出现在 metafile 即为映射缺口信号。
  */
 const WORKSPACE_SRC_PREFIXES = [
+	["@earendil-works/pi-agent-core/truncate", "packages/agent/src/harness/utils/truncate.ts"],
+	["@earendil-works/pi-coding-agent/objects", "packages/coding-agent/src/core/objects/tree/index.ts"],
 	["@earendil-works/pi-agent-core/", "packages/agent/src/"],
 	["@earendil-works/pi-agent-core", "packages/agent/src/index.ts"],
 	["@earendil-works/pi-ai/", "packages/ai/src/"],

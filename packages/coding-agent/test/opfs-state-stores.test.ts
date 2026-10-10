@@ -75,6 +75,139 @@ describe("SessionManager over OPFS storage", () => {
 		expect(second.existsSync(manager.getSessionFile()!)).toBe(true);
 	});
 
+	it("keeps a new conversation-free session unpersisted when flushed", async () => {
+		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
+		const { storage } = await createOpfsStores(root);
+		const sessionDir = getDefaultSessionDir("/workspace/default", "/state/agent", storage);
+		const manager = SessionManager.create("/workspace/default", sessionDir, undefined, storage);
+		manager.appendModelChange("test", "model");
+		manager.appendThinkingLevelChange("medium");
+		manager.appendPresetChange("default");
+		const sessionFile = manager.getSessionFile()!;
+
+		manager.flush();
+		await storage.flush();
+
+		expect(storage.existsSync(sessionFile)).toBe(false);
+	});
+
+	it("flushes and restores a custom-message-only session", async () => {
+		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
+		const { storage } = await createOpfsStores(root);
+		const sessionDir = getDefaultSessionDir("/workspace/default", "/state/agent", storage);
+		const manager = SessionManager.create("/workspace/default", sessionDir, undefined, storage);
+		const openingId = manager.appendCustomMessageEntry("side-chat", "Opening snapshot", true, { source: "initial" });
+		const sessionFile = manager.getSessionFile()!;
+
+		manager.flush();
+		await storage.flush();
+
+		const rehydrated = await OpfsStorageBackend.create(root);
+		const reopened = SessionManager.open(sessionFile, undefined, undefined, rehydrated);
+		expect(reopened.getBranch().map((entry) => entry.id)).toEqual([openingId]);
+		expect(reopened.getEntry(openingId)).toMatchObject({
+			type: "custom_message",
+			customType: "side-chat",
+			content: "Opening snapshot",
+			details: { source: "initial" },
+		});
+	});
+
+	it("flushes user-only conversations and appends later pre-assistant messages exactly once", async () => {
+		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
+		const { storage } = await createOpfsStores(root);
+		const sessionDir = getDefaultSessionDir("/workspace/default", "/state/agent", storage);
+		const manager = SessionManager.create("/workspace/default", sessionDir, undefined, storage);
+		const sessionFile = manager.getSessionFile()!;
+		const firstUser = manager.appendMessage({ role: "user", content: "first", timestamp: 1 } as never);
+
+		manager.flush();
+		await storage.flush();
+
+		const firstRehydrated = await OpfsStorageBackend.create(root);
+		const firstRestore = SessionManager.open(sessionFile, undefined, undefined, firstRehydrated);
+		expect(firstRestore.getBranch().map((entry) => entry.id)).toEqual([firstUser]);
+		expect(firstRestore.getEntry(firstUser)).toMatchObject({
+			type: "message",
+			message: { role: "user", content: "first" },
+		});
+
+		const secondUser = manager.appendMessage({ role: "user", content: "second", timestamp: 2 } as never);
+		const customId = manager.appendCustomMessageEntry("side-chat", "Queued context", false);
+		const thirdUser = manager.appendMessage({ role: "user", content: "third", timestamp: 3 } as never);
+		const assistant = manager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "first response" }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			stopReason: "stop",
+			timestamp: 4,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0,
+				},
+			},
+		} as never);
+		manager.flush();
+		await storage.flush();
+
+		const finalStorage = await OpfsStorageBackend.create(root);
+		const reopened = SessionManager.open(sessionFile, undefined, undefined, finalStorage);
+		const expectedIds = [firstUser, secondUser, customId, thirdUser, assistant];
+		expect(reopened.getEntries().map((entry) => entry.id)).toEqual(expectedIds);
+		expect(reopened.getBranch().map((entry) => entry.id)).toEqual(expectedIds);
+	});
+
+	it("persists edits before the first assistant without recreating or duplicating the session", async () => {
+		const userMsg = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
+		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
+		const { storage } = await createOpfsStores(root);
+		const sessionDir = getDefaultSessionDir("/workspace/default", "/state/agent", storage);
+		const manager = SessionManager.create("/workspace/default", sessionDir, undefined, storage);
+		const initial = manager.appendMessage(userMsg("original"));
+		const left = manager.appendMessage(userMsg("left"));
+		manager.branch(initial);
+		const right = manager.appendMessage(userMsg("right"));
+		expect(manager.updateMessageContent(initial, "edited")).toBe(true);
+		const reply = manager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "first response" }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			stopReason: "stop",
+			timestamp: 2,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		});
+		await storage.flush();
+
+		const rehydrated = await OpfsStorageBackend.create(root);
+		const reopened = SessionManager.open(manager.getSessionFile()!, undefined, undefined, rehydrated);
+		expect(reopened.getSessionId()).toBe(manager.getSessionId());
+		expect(reopened.getEntries().map((entry) => entry.id)).toEqual([initial, left, right, reply]);
+		expect(reopened.getLeafId()).toBe(reply);
+		expect(reopened.getChildren(initial).map((entry) => entry.id)).toEqual([left, right]);
+		const edited = reopened.getEntry(initial);
+		expect(edited?.type === "message" && edited.message.content).toEqual([{ type: "text", text: "edited" }]);
+	});
+
 	it("forks through the seam without touching node:fs", async () => {
 		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
 		const { storage } = await createOpfsStores(root);

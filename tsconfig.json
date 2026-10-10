@@ -14,6 +14,7 @@
 			"@earendil-works/pi-ai/dist/*": ["./packages/ai/src/*"],
 			"@earendil-works/pi-agent-core": ["./packages/agent/src/index.ts"],
 			"@earendil-works/pi-agent-core/node": ["./packages/agent/src/node.ts"],
+			"@earendil-works/pi-agent-core/truncate": ["./packages/agent/src/harness/utils/truncate.ts"],
 			"@earendil-works/pi-agent-core/session/testing": [
 				"./packages/agent/src/harness/session/testing/index.ts"
 			],
@@ -31,6 +32,7 @@
    "./packages/browser-engine/src/*"
   ],
 			"@earendil-works/pi-coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
+			"@earendil-works/pi-coding-agent/objects": ["./packages/coding-agent/src/core/objects/tree/index.ts"],
 			"@earendil-works/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
 			"@earendil-works/pi-protocol": ["./packages/protocol/src/index.ts"],
 			"@earendil-works/pi-protocol/*": ["./packages/protocol/src/*"],

@@ -36,6 +36,14 @@ export default defineConfig({
 				find: /^@earendil-works\/pi-agent-core\/node$/,
 				replacement: workspaceSourcePaths.agentNode,
 			},
+			{
+				find: /^@earendil-works\/pi-agent-core\/truncate$/,
+				replacement: fileURLToPath(new URL("./packages/agent/src/harness/utils/truncate.ts", import.meta.url)),
+			},
+			{
+				find: /^@earendil-works\/pi-coding-agent\/objects$/,
+				replacement: fileURLToPath(new URL("./packages/coding-agent/src/core/objects/tree/index.ts", import.meta.url)),
+			},
 			{ find: /^@earendil-works\/pi-tui$/, replacement: workspaceSourcePaths.tuiIndex },
 		],
 	},

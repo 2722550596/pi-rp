@@ -3602,7 +3602,10 @@ export class AgentSession {
 				await this.agent.continue();
 			}
 		} finally {
-			this._isAgentRunActive = false;
+			this._systemPromptOverride = undefined;
+			this._flushPendingBashMessages();
+			this._flushPendingCustomMessages();
+			await this._emitAgentSettled();
 		}
 	}
 

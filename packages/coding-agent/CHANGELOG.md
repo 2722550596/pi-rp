@@ -9,11 +9,17 @@
 
 ### Added
 
+- Added public `SessionManager.flush()` for persisting user-only or custom-message-only transcripts before the first assistant response. Fresh sessions with no conversation messages remain unpersisted, and later entries continue appending without replaying or duplicating the flushed snapshot.
+
 - Remote web console stage 3 — transcript actions and tree navigation: the wire protocol gains a `custom` transcript item (extension custom messages with `display:true` now reach the web client as `[customType]`-labeled cards rendered through the markdown/image pipeline; `display:false` stays bridge-filtered) plus four session commands — `reroll`, `edit_message`, `get_tree`, and `navigate_tree`. `get_tree` uses a flat parent-linked projection (`entries: [{id,parentId,kind,customType?,label?,summary,timestamp}]`) so session depth does not become protocol nesting depth. `PiSessionRuntime`, `PiClient`, and `PiSessionHandle` expose all four. The web client adds edit/reroll actions, a shared edit layer, and an export/share-inspired tree UI: persistent resizable desktop sidebar, mobile slide-out drawer, search, filters, active-path prioritization, leaf highlighting, and iterative client-side tree construction.
 
 ### Fixed
 
+- Fixed editing a persisted session before its first assistant response causing the next response to fail with `EEXIST`; rewriting now records that the file has already been flushed, preserving both branches and edited content after reload.
+
 - Fixed remote `get_tree` failing at 32 nested session entries with `Unable to encode server protocol message: CBOR nesting depth exceeds configured limit of 64`; the protocol now carries flat parent-linked entries, retaining the CBOR depth limit for untrusted input. A 500-entry wire roundtrip and a 10,000-entry iterative browser tree model guard the fix.
+
+- Fixed aborted and wait-for-idle completion paths to emit `agent_settled`, so consumers cannot remain in a running state after cancellation.
 
 - Restored `/settings` to the built-in slash-command discovery list; adding `/remote` had accidentally replaced its autocomplete entry even though the settings command implementation remained registered.
 

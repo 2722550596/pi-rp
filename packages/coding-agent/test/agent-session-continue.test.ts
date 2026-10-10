@@ -121,6 +121,26 @@ describe("AgentSession continueSession", () => {
 		return seenContexts[0].messages as AssistantMessage[];
 	}
 
+	it("settles idle and abort waiters during a native continuation", async () => {
+		const s = await createSession();
+		s.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "continue this turn" }], timestamp: Date.now() },
+		];
+		const waiters: Promise<void>[] = [];
+		let settled = 0;
+		const unsubscribe = s.subscribe((event) => {
+			if (event.type === "agent_start") waiters.push(s.waitForIdle());
+			if (event.type === "message_start" && event.message.role === "assistant") waiters.push(s.abort());
+			if (event.type === "agent_settled") settled++;
+		});
+		await s.startRerollRun();
+		await Promise.all(waiters);
+		unsubscribe();
+		expect(waiters.length).toBe(2);
+		expect(s.isIdle).toBe(true);
+		expect(settled).toBe(1);
+	});
+
 	it("continues from a trailing toolResult without injecting Continue.", async () => {
 		const s = await createSession();
 		// Simulate the post-abort mid-turn state: assistant(toolCall) → toolResult,

@@ -988,6 +988,17 @@ export class SessionManager {
 		if (!this.persist || !this.sessionFile) return;
 		const whole = this.fileEntries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
 		this.storage.writeTextFileSync(this.sessionFile, whole, { flag: "w" });
+		this.flushed = true;
+	}
+
+	/**
+	 * Persist the current transcript even before its first assistant response.
+	 * A freshly created session without conversation messages stays unpersisted.
+	 */
+	flush(): void {
+		if (!this.persist || !this.sessionFile || this.flushed) return;
+		if (!this.fileEntries.some((entry) => entry.type === "message" || entry.type === "custom_message")) return;
+		this._rewriteFile();
 	}
 
 	isPersisted(): boolean {

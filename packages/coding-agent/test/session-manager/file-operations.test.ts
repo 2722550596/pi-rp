@@ -1,5 +1,15 @@
 import { constants as bufferConstants } from "buffer";
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "fs";
+import {
+	appendFileSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -372,5 +382,75 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		const sm2 = SessionManager.open(emptyFile, tempDir);
 		expect(sm2.getSessionId()).toBe(sessionId);
 		expect(sm2.getHeader()?.type).toBe("session");
+	});
+});
+
+describe("SessionManager.flush", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `session-flush-test-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("keeps a new conversation-free session unpersisted", () => {
+		const manager = SessionManager.create(tempDir, tempDir);
+		manager.appendModelChange("test", "model");
+		manager.appendThinkingLevelChange("medium");
+		manager.appendPresetChange("default");
+		const sessionFile = manager.getSessionFile()!;
+
+		manager.flush();
+
+		expect(existsSync(sessionFile)).toBe(false);
+	});
+
+	it("persists and restores a custom-message-only transcript", () => {
+		const manager = SessionManager.create(tempDir, tempDir);
+		const customId = manager.appendCustomMessageEntry("side-chat", "Opening snapshot", true);
+		const sessionFile = manager.getSessionFile()!;
+
+		manager.flush();
+
+		const reopened = SessionManager.open(sessionFile, tempDir);
+		expect(reopened.getBranch().map((entry) => entry.id)).toEqual([customId]);
+		expect(reopened.getEntry(customId)).toMatchObject({
+			type: "custom_message",
+			customType: "side-chat",
+			content: "Opening snapshot",
+		});
+	});
+
+	it("persists user-only transcripts and does not lose or duplicate later entries", () => {
+		const manager = SessionManager.create(tempDir, tempDir);
+		const sessionFile = manager.getSessionFile()!;
+		const firstUser = manager.appendMessage({ role: "user", content: "first", timestamp: 1 } as never);
+
+		manager.flush();
+
+		expect(
+			SessionManager.open(sessionFile, tempDir)
+				.getBranch()
+				.map((entry) => entry.id),
+		).toEqual([firstUser]);
+
+		const secondUser = manager.appendMessage({ role: "user", content: "second", timestamp: 2 } as never);
+		const customId = manager.appendCustomMessageEntry("side-chat", "Queued context", false);
+		const thirdUser = manager.appendMessage({ role: "user", content: "third", timestamp: 3 } as never);
+		const assistant = manager.appendMessage({
+			role: "assistant",
+			content: "first response",
+			timestamp: 4,
+		} as never);
+		manager.flush();
+
+		const reopened = SessionManager.open(sessionFile, tempDir);
+		const expectedIds = [firstUser, secondUser, customId, thirdUser, assistant];
+		expect(reopened.getEntries().map((entry) => entry.id)).toEqual(expectedIds);
+		expect(reopened.getBranch().map((entry) => entry.id)).toEqual(expectedIds);
 	});
 });
