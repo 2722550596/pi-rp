@@ -418,6 +418,21 @@ export function getExportTemplateDir(): string {
 	return join(packageDir, srcOrDist, "core", "export-html");
 }
 
+/**
+ * Get path to the remote web client static assets.
+ * - For Bun binary: remote-web/ next to executable
+ * - For Node.js (dist/): dist/server/remote-web/ (built assets take priority;
+ *   a source checkout also has src/ but web/remote holds sources, not build output)
+ * - Fallback for unbuilt checkouts: web/remote/ (usable only after build:remote-web)
+ */
+export function getRemoteWebDir(): string {
+	if (isBunBinary) return join(getPackageDir(), "remote-web");
+	const packageDir = getPackageDir();
+	const distDir = join(packageDir, "dist", "server", "remote-web");
+	if (existsSync(join(distDir, "index.html"))) return distDir;
+	return join(packageDir, "web", "remote");
+}
+
 /** Get path to package.json */
 export function getPackageJsonPath(): string {
 	return join(getPackageDir(), "package.json");

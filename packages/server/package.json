@@ -17,6 +17,10 @@
 		"./unix": {
 			"types": "./dist/transports/unix/index.d.ts",
 			"import": "./dist/transports/unix/index.js"
+		},
+		"./ws": {
+			"types": "./dist/transports/ws/index.d.ts",
+			"import": "./dist/transports/ws/index.js"
 		}
 	},
 	"files": [
@@ -49,9 +53,11 @@
 	"dependencies": {
 		"@earendil-works/pi-ai": "^0.84.2",
 		"@earendil-works/pi-protocol": "^0.84.2",
-		"@earendil-works/pi-session-protocol": "^0.84.2"
+		"@earendil-works/pi-session-protocol": "^0.84.2",
+		"ws": "8.21.0"
 	},
 	"devDependencies": {
+		"@types/ws": "8.18.2",
 		"shx": "0.4.0",
 		"vitest": "4.1.9"
 	}

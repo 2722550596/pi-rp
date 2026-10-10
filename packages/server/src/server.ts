@@ -158,6 +158,14 @@ export class PiServer {
 		};
 	}
 
+	async removeSession(id: string): Promise<void> {
+		await this.sessions.remove(id);
+	}
+
+	sessionParticipantCount(id: string): number {
+		return this.sessions.participantCount(id);
+	}
+
 	async close(): Promise<void> {
 		if (this.closePromise) return this.closePromise;
 		this.closing = true;

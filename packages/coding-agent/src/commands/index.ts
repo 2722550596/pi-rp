@@ -26,9 +26,10 @@ export async function dispatchCommand(
 	args: string[],
 	session: AgentSession,
 	view: CommandView,
+	remoteHost?: CommandContext["remoteHost"],
 ): Promise<boolean> {
 	const entry = getCommandEntry(name);
 	if (!entry) return false;
-	await entry.execute({ args, session, view } satisfies CommandContext);
+	await entry.execute({ args, session, view, remoteHost } satisfies CommandContext);
 	return true;
 }

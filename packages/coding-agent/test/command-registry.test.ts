@@ -4,6 +4,7 @@ import { syncExtensionCommands } from "../src/commands/extension.ts";
 import { dispatchCommand } from "../src/commands/index.ts";
 import type { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import {
+	BUILTIN_SLASH_COMMANDS,
 	clearExtensionCommands,
 	getCommandEntries,
 	isBuiltinCommandName,
@@ -25,6 +26,12 @@ describe("command registry", () => {
 		const dispatched = await dispatchCommand("hotkeys", [], {} as never, { showSelector } as never);
 		expect(dispatched).toBe(true);
 		expect(showSelector).toHaveBeenCalledWith("hotkeys");
+	});
+
+	it("keeps settings and remote discoverable as built-in slash commands", () => {
+		const names = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
+		expect(names.has("settings")).toBe(true);
+		expect(names.has("remote")).toBe(true);
 	});
 
 	it("reports not-dispatched for unknown names (submit handler falls through)", async () => {

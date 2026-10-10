@@ -34,6 +34,13 @@ const DEFAULT_TOOL_SEARCH_SETTINGS: Required<ToolSearchSettings> = {
 	reservedTools: [],
 };
 
+export interface RemoteSettings {
+	host?: string;
+	port?: number;
+}
+
+export const DEFAULT_REMOTE_SETTINGS: Required<RemoteSettings> = { host: "127.0.0.1", port: 0 };
+
 export interface CodemodeSettings {
 	mode?: "on" | "only";
 	inlineBudget?: number;
@@ -143,6 +150,7 @@ export interface Settings {
 	compaction?: CompactionSettings;
 	toolSearch?: ToolSearchSettings;
 	branchSummary?: BranchSummarySettings;
+	remote?: RemoteSettings;
 	codemode?: CodemodeSettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
@@ -368,8 +376,11 @@ export class SettingsManager {
 	private modifiedProjectNestedFields = new Map<keyof Settings, Set<string>>(); // Track project nested field modifications
 	private globalSettingsLoadError: Error | null = null; // Track if global settings file had parse errors
 	private projectSettingsLoadError: Error | null = null; // Track if project settings file had parse errors
+	/** remote keys whose invalid configured value was already reported (report once, not per read). */
+	private remoteInvalidReported = new Set<string>();
 	/** toolSearch keys whose invalid configured value was already reported (report once, not per read). */
 	private toolSearchInvalidReported = new Set<string>();
+
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
 
@@ -1225,6 +1236,64 @@ export class SettingsManager {
 			"global",
 			new Error(
 				`Invalid toolSearch.${key} setting: ${JSON.stringify(value) ?? String(value)}. Falling back to ${fallback}.`,
+			),
+		);
+	}
+
+	getRemoteHost(): string {
+		const value = this.settings.remote?.host;
+		if (value === undefined) return DEFAULT_REMOTE_SETTINGS.host;
+		if (typeof value !== "string" || value.trim().length === 0) {
+			this.reportInvalidRemoteSetting("host", value, JSON.stringify(DEFAULT_REMOTE_SETTINGS.host));
+			return DEFAULT_REMOTE_SETTINGS.host;
+		}
+		return value;
+	}
+
+	getRemotePort(): number {
+		const value = this.settings.remote?.port;
+		if (value === undefined) return DEFAULT_REMOTE_SETTINGS.port;
+		if (!Number.isSafeInteger(value) || value < 0 || value > 65535) {
+			this.reportInvalidRemoteSetting("port", value, String(DEFAULT_REMOTE_SETTINGS.port));
+			return DEFAULT_REMOTE_SETTINGS.port;
+		}
+		return value;
+	}
+
+	getRemoteSettings(): Required<RemoteSettings> {
+		return { host: this.getRemoteHost(), port: this.getRemotePort() };
+	}
+
+	setRemoteHost(host: string): void {
+		if (typeof host !== "string" || host.trim().length === 0) {
+			this.recordError("global", new Error("Rejected remote.host: expected a non-empty string."));
+			return;
+		}
+		this.setRemoteSetting("host", host);
+	}
+
+	setRemotePort(port: number): void {
+		if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
+			this.recordError("global", new Error("Rejected remote.port: expected a safe integer from 0 to 65535."));
+			return;
+		}
+		this.setRemoteSetting("port", port);
+	}
+
+	private setRemoteSetting<K extends keyof RemoteSettings>(key: K, value: RemoteSettings[K]): void {
+		this.globalSettings.remote ??= {};
+		this.globalSettings.remote[key] = value;
+		this.markModified("remote", key);
+		this.save();
+	}
+
+	private reportInvalidRemoteSetting(key: string, value: unknown, fallback: string): void {
+		if (this.remoteInvalidReported.has(key)) return;
+		this.remoteInvalidReported.add(key);
+		this.recordError(
+			"global",
+			new Error(
+				`Invalid remote.${key} setting: ${JSON.stringify(value) ?? String(value)}. Falling back to ${fallback}.`,
 			),
 		);
 	}

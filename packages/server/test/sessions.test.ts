@@ -426,4 +426,65 @@ describe("PiServer Unix integration", () => {
 		const unattached = await client.request({ command: "abort", sessionId: "locked" });
 		expect(unattached).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 	});
+
+	test("removeSession emits session_removed, detaches clients, and is idempotent", async () => {
+		const { server, service } = await startServer();
+		const client = await connect(server);
+		await client.hello();
+		const created = await client.request({ command: "create", name: "shared" });
+		if (!created.ok || created.result.command !== "create") throw new Error("Create failed");
+		const sessionId = created.result.session.id;
+		expect(server.sessionParticipantCount(sessionId)).toBe(1);
+
+		const messageIndex = client.messages.length;
+		await server.removeSession(sessionId);
+		const removed = await client.nextFrom(
+			messageIndex,
+			(message) => message.type === "event" && message.event.type === "session_removed",
+		);
+		if (removed.type !== "event" || removed.event.type !== "session_removed") {
+			throw new Error("Expected session_removed event");
+		}
+		expect(removed.event.sessionId).toBe(sessionId);
+		expect(server.sessionParticipantCount(sessionId)).toBe(0);
+		const prompt = await client.request({ command: "abort", sessionId });
+		expect(prompt).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(service.latestRuntime(sessionId).disposeCount).toBe(1);
+
+		await server.removeSession(sessionId);
+		expect(service.latestRuntime(sessionId).disposeCount).toBe(1);
+		const listed = await client.request({ command: "list" });
+		if (!listed.ok || listed.result.command !== "list") throw new Error("List failed");
+		// Durable storage belongs to the service; removal only clears the live layer.
+		// In the /remote host the service lists only the current session, so a stale
+		// id can never re-enter the list or be re-attached.
+		expect(listed.result.sessions.map((entry) => entry.id)).toContain(sessionId);
+	});
+
+	test("sessionParticipantCount reflects attached connections only", async () => {
+		const { server } = await startServer();
+		const first = await connect(server);
+		const second = await connect(server);
+		await first.hello();
+		await second.hello();
+		const created = await first.request({ command: "create", name: "counted" });
+		if (!created.ok || created.result.command !== "create") throw new Error("Create failed");
+		const sessionId = created.result.session.id;
+		expect(server.sessionParticipantCount(sessionId)).toBe(1);
+		await attach(second, sessionId);
+		expect(server.sessionParticipantCount(sessionId)).toBe(2);
+		await second.request({ command: "detach", sessionId });
+		expect(server.sessionParticipantCount(sessionId)).toBe(1);
+		expect(server.sessionParticipantCount("missing")).toBe(0);
+	});
+
+	test("list_models returns service model metadata without requiring a session", async () => {
+		const { server } = await startServer();
+		const client = await connect(server);
+		await client.hello();
+		const result = await client.request({ command: "list_models" });
+		if (!result.ok || result.result.command !== "list_models") throw new Error("list_models failed");
+		expect(result.result.models.length).toBeGreaterThan(0);
+		expect(result.result.models[0]).toMatchObject({ id: expect.any(String) });
+	});
 });

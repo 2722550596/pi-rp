@@ -194,6 +194,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/export [file]` | Export session to HTML or JSONL file |
 | `/import <file>` | Import and resume a session from a JSONL file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
+| `/remote [start\|lan\|stop\|status]` | Share a browser-remote link to the current session (LAN mode prints QR) |
 | `/reroll` | Regenerate the last assistant reply |
 | `/continue` | Make the agent continue generating |
 | `/preset` | List prompt presets, or activate one: `/preset <id\|none>` (`none` disables) |

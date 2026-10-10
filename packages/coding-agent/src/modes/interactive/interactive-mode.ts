@@ -106,6 +106,7 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
+import { RemoteHostController } from "../../server/remote-host.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -348,6 +349,7 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
+	private remoteHostController: RemoteHostController;
 	private renderer: TuiMainScreen | TuiAltScreen;
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
@@ -495,13 +497,18 @@ export class InteractiveMode {
 		this.runtimeHost = runtimeHost;
 		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
 		this.options = { ...options, tuiMode };
-		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
+		this.remoteHostController = new RemoteHostController({
+			getSession: () => this.runtimeHost.session,
+			getModelRuntime: () => this.runtimeHost.services.modelRuntime,
+			settings: this.settingsManager,
+		});
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession({ renderBeforeBind: true });
 			await this.themeController.applyFromSettings();
+			await this.remoteHostController.rebindSession(this.session, this.runtimeHost.services.modelRuntime);
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
@@ -2947,7 +2954,7 @@ export class InteractiveMode {
 		const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
 		const args = argsString ? argsString.split(/\s+/).filter(Boolean) : [];
 		try {
-			return await dispatchCommand(name, args, this.session, this.commandView);
+			return await dispatchCommand(name, args, this.session, this.commandView, this.remoteHostController);
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 			return true;
@@ -3876,6 +3883,7 @@ export class InteractiveMode {
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
+			await this.remoteHostController.dispose();
 			await this.runtimeHost.dispose();
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
@@ -3892,6 +3900,7 @@ export class InteractiveMode {
 		await this.ui.terminal.drainInput(1000);
 
 		this.stop();
+		await this.remoteHostController.dispose();
 		await this.runtimeHost.dispose();
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
@@ -3952,7 +3961,7 @@ export class InteractiveMode {
 	private registerSignalHandlers(): void {
 		this.unregisterSignalHandlers();
 
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
+		const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 		if (process.platform !== "win32") {
 			signals.push("SIGHUP");
 		}

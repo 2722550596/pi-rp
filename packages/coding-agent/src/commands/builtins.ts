@@ -22,6 +22,7 @@ import { getModelSearchText } from "../modes/interactive/model-search.ts";
 import { getChangelogPath, normalizeChangelogLinks, parseChangelog } from "../utils/changelog.ts";
 import { copyToClipboard } from "../utils/clipboard.ts";
 import { formatTokens } from "../utils/format.ts";
+import { remoteCommand } from "./remote.ts";
 
 /** Extract a path-style argument: a quoted string (spaces allowed) or the first token. */
 export function getPathArg(args: string[]): string | undefined {
@@ -735,6 +736,7 @@ const builtinEntries: Array<{ name: string; entry: CommandEntry }> = [
 		},
 	},
 	{ name: "share", entry: shareCommand },
+	{ name: "remote", entry: remoteCommand },
 	{ name: "copy", entry: copyCommand },
 	{ name: "name", entry: nameCommand },
 	{ name: "session", entry: sessionCommand },
