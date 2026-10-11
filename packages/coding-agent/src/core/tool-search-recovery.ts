@@ -241,7 +241,10 @@ export function computeToolCatalogDelta(
 	return { added, removed };
 }
 
-/** Steering notification text (M4 §3.4 step 4); empty string when there is no delta. */
+/** Custom message type carrying the catalog delta notice into the LLM context (R10). */
+export const TOOL_CATALOG_DELTA_CUSTOM_TYPE = "tool_search_catalog_delta";
+
+/** Notification text (M4 §3.4 step 4); empty string when there is no delta. */
 export function formatToolCatalogDeltaMessage(delta: ToolCatalogDelta): string {
 	const lines: string[] = [];
 	if (delta.added.length > 0) lines.push(`Tools added: ${delta.added.join(", ")}`);

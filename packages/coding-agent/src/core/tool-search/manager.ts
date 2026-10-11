@@ -319,8 +319,8 @@ export class ToolSearchManager {
 	}
 
 	/**
-	 * One-shot baseline update (D5): used for resume initialization with the
-	 * restored catalog, and immediately after a catalog delta is enqueued.
+	 * One-shot baseline update (D5): seeded with the catalog the first provider
+	 * request carries, and updated whenever a catalog delta is announced.
 	 */
 	markCatalogAdvertised(names: readonly string[]): void {
 		this.advertisedCatalog = dedupeNames(names);

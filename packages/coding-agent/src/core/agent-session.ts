@@ -236,6 +236,7 @@ import {
 	formatToolCatalogDeltaMessage,
 	mergeToolSearchCompactionDetails,
 	scanBranchForToolSearchDiscovery,
+	TOOL_CATALOG_DELTA_CUSTOM_TYPE,
 	TOOL_SEARCH_TOOL_NAME,
 	type ToolSearchCategory,
 	type ToolSearchManagerContract,
@@ -829,8 +830,10 @@ export class AgentSession {
 	private _toolSearchRestored = false;
 	/** D11: restore failed or was aborted — session continues with tool search deactivated. */
 	private _toolSearchActivationBlocked = false;
-	/** D5: false until the first post-restore sync has seeded the advertised baseline. */
+	/** D5: false until the first provider request after restore/replay has seeded the advertised baseline. */
 	private _toolSearchBaselineSeeded = false;
+	/** Whether the last sync left a catalog to track for delta notices (folding active or searchable tools present). */
+	private _toolSearchCatalogTracked = false;
 	/** R9 category rows for the current searchable set, consumed by _rebuildSystemPrompt. */
 	private _toolSearchCategories: readonly ToolSearchCategory[] | undefined;
 	/** Observable diagnostics channel (D1/D11/D18); also surfaced via console.warn. */
@@ -1139,6 +1142,7 @@ export class AgentSession {
 			// Threshold compaction must run before any provider request, including the first one.
 			const preparedContext = await this._compactBeforeNextAssistantResponse(context);
 			this._flushPendingToolContextMessages(preparedContext);
+			this._announceToolCatalogDelta(preparedContext);
 			const previousSnapshot = await previous?.(preparedContext);
 			const nextContext = previousSnapshot?.context ?? preparedContext;
 
@@ -1801,9 +1805,9 @@ export class AgentSession {
 	 * refresh, preset/policy change, model switch, MCP connect/disconnect
 	 * (via extension refreshTools), extension hot reload, resume restore —
 	 * routes through here. Internals: recompute on the manager, apply the
-	 * active set, then compare the searchable catalog against the manager's
-	 * advertised baseline and enqueue a steering delta (R10); the baseline is
-	 * updated immediately after enqueueing (D5, one-shot semantics).
+	 * active set, refresh the category section. Catalog change notices are
+	 * not emitted here: triggers fire once per registered tool, so the delta
+	 * is computed once per provider request in _announceToolCatalogDelta.
 	 *
 	 * @param requestedActiveNames raw active-set request from the trigger
 	 *   (post allow/deny, pre-folding). Omitted on triggers that only change
@@ -1825,7 +1829,7 @@ export class AgentSession {
 		// Refresh the R9 category rows before the prompt rebuild below.
 		this._toolSearchCategories = buildToolSearchCategories(manager.getSearchableTools());
 		this._applyToolSearchActiveSet(result.activated);
-		this._queueToolCatalogDelta(manager, result.activated || manager.getSearchableTools().length > 0);
+		this._toolSearchCatalogTracked = result.activated || manager.getSearchableTools().length > 0;
 	}
 
 	/** Build the manager input (catalog view + activation judgment) and recompute. */
@@ -1946,43 +1950,45 @@ export class AgentSession {
 	}
 
 	/**
-	 * R10/D5 catalog delta notification: diff the current searchable catalog
-	 * against the manager's advertised baseline, enqueue a steering message
-	 * when non-empty, then update the baseline immediately (one-shot).
+	 * R10/D5 catalog delta notification, run before every provider request:
+	 * diff the current searchable catalog against the manager's advertised
+	 * baseline and append one context-only custom message when non-empty, then
+	 * update the baseline (one-shot).
 	 *
-	 * The first sync after restore seeds the baseline from the post-restore
-	 * searchable catalog (D5 / M4 §3.2 step 3) instead of enqueueing a delta —
-	 * the model already knows the restored catalog, and only a fresh recompute
-	 * knows the true searchable set (activation, reserved/allow eager). When
-	 * tool search is not activated there is no searchable catalog to advertise,
-	 * so the baseline is reset silently (R10 notifications live only during
-	 * activation).
+	 * Running per request (not per sync) keeps the notice off the user input
+	 * queue and merges a burst of late registrations (MCP connect registers
+	 * tools one at a time) into a single message.
+	 *
+	 * The first request after restore/replay seeds the baseline silently: the
+	 * system prompt's R9 category section already lists the current catalog,
+	 * so a fresh session has nothing to announce. When tool search is not
+	 * activated there is no searchable catalog to advertise, so the baseline
+	 * is reset silently (R10 notifications live only during activation).
 	 */
-	private _queueToolCatalogDelta(manager: ToolSearchManagerContract, activated: boolean): void {
+	private _announceToolCatalogDelta(context: AgentContext): void {
+		const manager = this._toolSearchManager;
+		if (!manager || !this._toolSearchRestored) return;
 		const current = manager.getSearchableTools().map((entry) => entry.name);
-		if (!this._toolSearchBaselineSeeded) {
+		if (!this._toolSearchBaselineSeeded || !this._toolSearchCatalogTracked) {
 			this._toolSearchBaselineSeeded = true;
-			manager.markCatalogAdvertised(current);
-			return;
-		}
-		if (!activated) {
 			manager.markCatalogAdvertised(current);
 			return;
 		}
 		const delta = computeToolCatalogDelta(current, manager.lastAdvertisedCatalog(), (name) =>
 			manager.hasDiscovered(name),
 		);
-		const message = formatToolCatalogDeltaMessage(delta);
-		if (message.length > 0) {
-			// Preferred steering channel (R10): model-visible, takes effect next
-			// turn; when idle the queued steer is delivered with the next run.
-			void this._queueSteer(message).catch((error: unknown) => {
-				this._recordToolSearchDiagnostic(
-					`Failed to queue tool catalog delta notification: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			});
-		}
 		manager.markCatalogAdvertised(current);
+		const text = formatToolCatalogDeltaMessage(delta);
+		if (text.length === 0) return;
+		const message: CustomMessage = {
+			role: "custom",
+			customType: TOOL_CATALOG_DELTA_CUSTOM_TYPE,
+			content: [{ type: "text", text }],
+			display: false,
+			timestamp: Date.now(),
+		};
+		this._appendCustomMessage(message);
+		context.messages.push(message);
 	}
 
 	/**
@@ -2069,10 +2075,9 @@ export class AgentSession {
 				const scan = scanBranchForToolSearchDiscovery(this.sessionManager.getBranch());
 				const restoredNames = collectRestoredToolNames(scan);
 				if (restoredNames.length > 0) manager.restore(restoredNames);
-				// D5 baseline seeding happens in the first syncToolSearchState()
-				// below (see _queueToolCatalogDelta): only after a recompute is
-				// the true searchable catalog (activation, reserved/allow eager)
-				// known.
+				// D5 baseline seeding happens at the first provider request
+				// (see _announceToolCatalogDelta): only then is the catalog the
+				// model actually sees known.
 			}
 		} catch (error) {
 			this._toolSearchActivationBlocked = true;
@@ -2110,13 +2115,12 @@ export class AgentSession {
 				`Tool search re-recovery after branch switch failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		// reset() cleared the advertised baseline (D22); re-seed it from the
-		// post-replay searchable catalog so same-branch replays (compaction
-		// appends, message edits) stay silent instead of announcing the whole
-		// catalog as a false "Tools added" delta — which would enqueue a
-		// steering message and spawn an extra provider round. After a real
-		// branch switch the model still learns the current catalog through the
-		// R9 category section and the tool_search guidance.
+		// reset() cleared the advertised baseline (D22); re-seed it at the next
+		// provider request so same-branch replays (compaction appends, message
+		// edits) stay silent instead of announcing the whole catalog as a false
+		// "Tools added" delta. After a real branch switch the model still learns
+		// the current catalog through the R9 category section and the
+		// tool_search guidance.
 		this._toolSearchBaselineSeeded = false;
 		this.syncToolSearchState();
 	}

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentContext } from "@earendil-works/pi-agent-core";
 import { getModel, type Message } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -197,19 +197,20 @@ type SessionHooks = {
 	_buildToolSearchCompactionDetails(existingDetails: unknown): unknown;
 };
 
-type CatalogQueueHooks = {
-	_currentUserInputId: string | undefined;
-	_inputIdByMessage: WeakMap<AgentMessage, string>;
-	_toolSearchBaselineSeeded: boolean;
-	_queueToolCatalogDelta(manager: ToolSearchManagerContract, activated: boolean): void;
-	_handleAgentEvent(event: AgentEvent): Promise<void>;
+type CatalogDeltaHooks = {
+	_announceToolCatalogDelta(context: AgentContext): void;
 };
 
-type SteeringQueueHooks = {
-	steeringQueue: {
-		drain(): AgentMessage[];
-	};
-};
+/** Run the per-request catalog notice hook and return the notice texts it appended. */
+function announceCatalogDelta(session: AgentSession): string[] {
+	const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+	(session as unknown as CatalogDeltaHooks)._announceToolCatalogDelta(context);
+	return context.messages.flatMap((message) =>
+		message.role === "custom" && Array.isArray(message.content)
+			? message.content.flatMap((part) => (part.type === "text" ? [part.text] : []))
+			: [],
+	);
+}
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -295,7 +296,7 @@ describe("tool-search session wiring", () => {
 		session.dispose();
 	});
 
-	it("resume seeds the advertised baseline with the restored catalog so the first sync stays silent (D5)", async () => {
+	it("resume seeds the advertised baseline at the first request so the restored catalog is not announced (D5)", async () => {
 		const manager = new ToolSearchManager();
 		const session = await buildSession({
 			toolSearchManager: manager,
@@ -306,6 +307,7 @@ describe("tool-search session wiring", () => {
 			},
 		});
 
+		expect(announceCatalogDelta(session)).toEqual([]);
 		// Baseline = post-restore searchable catalog (direct-folded − restored):
 		// ext_alpha is known to the model, ext_beta is still searchable. Engine
 		// synthetic <memory> tools are foldable too (D23 follow-up), so the
@@ -315,40 +317,8 @@ describe("tool-search session wiring", () => {
 		expect(baseline).toContain("ext_beta");
 		expect(baseline).not.toContain("ext_alpha");
 		session.syncToolSearchState();
+		expect(announceCatalogDelta(session)).toEqual([]);
 		expect(session.getSteeringMessages()).toEqual([]);
-		session.dispose();
-	});
-	it("removes a direct catalog steer by queue identity without consuming same-text user input", async () => {
-		const manager = new FakeToolSearchManager();
-		manager.searchable = [searchable("new_tool")];
-		const session = await buildSession({ toolSearchManager: manager, mode: "on" });
-		const internals = session as unknown as CatalogQueueHooks;
-		const agentQueues = session.agent as unknown as SteeringQueueHooks;
-		internals._toolSearchBaselineSeeded = true;
-		manager.markCatalogAdvertised([]);
-
-		const acceptedMessage: AgentMessage = {
-			role: "user",
-			content: [{ type: "text", text: "accepted user input" }],
-			timestamp: 1,
-		};
-		internals._inputIdByMessage.set(acceptedMessage, "accepted-input-id");
-		await internals._handleAgentEvent({ type: "message_start", message: acceptedMessage });
-		expect(internals._currentUserInputId).toBe("accepted-input-id");
-
-		internals._queueToolCatalogDelta(manager, true);
-		const catalogText = session.getSteeringMessages()[0];
-		if (catalogText === undefined) throw new Error("catalog delta did not enter the steering queue");
-		expect(catalogText).toBe("Tools added: new_tool");
-		await session.steer(catalogText);
-		expect(session.getSteeringMessages()).toEqual([catalogText, catalogText]);
-
-		const catalogMessage = agentQueues.steeringQueue.drain()[0];
-		if (!catalogMessage) throw new Error("catalog steer was not queued");
-		await internals._handleAgentEvent({ type: "message_start", message: catalogMessage });
-
-		expect(session.getSteeringMessages()).toEqual([catalogText]);
-		expect(internals._currentUserInputId).toBe("accepted-input-id");
 		session.dispose();
 	});
 
@@ -465,7 +435,7 @@ describe("tool-search session wiring", () => {
 		session.dispose();
 	});
 
-	it("catalog delta (D4/D5): announced once, deduped after baseline update, discovery removals suppressed", async () => {
+	it("catalog delta (D4/D5): announced once per request, deduped after baseline update, discovery removals suppressed", async () => {
 		const fake = new FakeToolSearchManager();
 		fake.searchable = [searchable("ext_gamma"), searchable("ext_delta")];
 		const session = await buildSession({
@@ -473,24 +443,25 @@ describe("tool-search session wiring", () => {
 			mode: "on",
 			customTools: [directTool("ext_gamma"), directTool("ext_delta")],
 		});
-		// Restore initialized the baseline with the current searchable catalog.
+		// The first request seeds the baseline with the current searchable catalog.
+		expect(announceCatalogDelta(session)).toEqual([]);
 		expect(fake.advertised).toEqual(["ext_gamma", "ext_delta"]);
 
 		session.syncToolSearchState();
-		expect(session.getSteeringMessages()).toEqual([]);
-		session.syncToolSearchState();
-		expect(session.getSteeringMessages()).toEqual([]); // dedup: same state, no re-announce
+		expect(announceCatalogDelta(session)).toEqual([]); // dedup: same state, no re-announce
 
 		fake.searchable.push(searchable("ext_eta"));
 		session.syncToolSearchState();
-		expect(session.getSteeringMessages()).toEqual(["Tools added: ext_eta"]);
+		expect(session.getSteeringMessages()).toEqual([]);
+		expect(announceCatalogDelta(session)).toEqual(["Tools added: ext_eta"]);
+		expect(announceCatalogDelta(session)).toEqual([]); // one-shot
 
 		// A searchable tool vanishing is announced; a name that merely became
 		// discovered is loaded, not "removed" (M4 §3.4 step 3).
 		fake.discovered.add("ext_gamma");
 		fake.searchable = [searchable("ext_delta")];
 		session.syncToolSearchState();
-		expect(session.getSteeringMessages().at(-1)).toBe("Tools removed: ext_eta");
+		expect(announceCatalogDelta(session)).toEqual(["Tools removed: ext_eta"]);
 		session.dispose();
 	});
 
@@ -694,7 +665,7 @@ describe("tool-search session wiring", () => {
 		expect(renderWith(undefined)).not.toContain("tool_search");
 	});
 
-	it("mode=off keeps the legacy path: no tool_search, no folding, no notifications", async () => {
+	it("mode=off keeps the legacy path: no tool_search, no folding", async () => {
 		const session = await buildSession({
 			mode: "off",
 			customTools: [directTool("ext_alpha")],
@@ -702,7 +673,6 @@ describe("tool-search session wiring", () => {
 		const activeNames = session.agent.state.tools.map((tool) => tool.name);
 		expect(activeNames).toContain("ext_alpha");
 		expect(activeNames).not.toContain(TOOL_SEARCH_TOOL_NAME);
-		expect(session.getSteeringMessages()).toEqual([]);
 		// Undefined/[] both mean "render nothing" (zero overhead).
 		expect(session.systemPromptOptions.toolSearchCategories ?? []).toEqual([]);
 		session.dispose();
