@@ -782,10 +782,18 @@ function buildParams(
 			}
 		}
 	} else if (compat.thinkingFormat === "qwen-chat-template" && model.reasoning) {
-		(params as any).chat_template_kwargs = {
+		const chatTemplateKwargs: Record<string, unknown> = {
 			enable_thinking: !!options?.reasoningEffort,
 			preserve_thinking: true,
 		};
+		if (options?.reasoningEffort) {
+			const effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
+			if (typeof effort === "string") {
+				chatTemplateKwargs.reasoning_effort = effort;
+			}
+		}
+		const qwenParams = params as typeof params & { chat_template_kwargs?: Record<string, unknown> };
+		qwenParams.chat_template_kwargs = chatTemplateKwargs;
 	} else if (compat.thinkingFormat === "chat-template" && model.reasoning) {
 		const chatTemplateKwargs = buildChatTemplateValues(model, options, compat.chatTemplateKwargs);
 		if (chatTemplateKwargs) {
