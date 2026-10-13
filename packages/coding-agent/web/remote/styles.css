@@ -176,6 +176,7 @@ textarea:focus { border-color: var(--accent); }
 .panel-close { min-height: 28px; padding: 2px 9px; color: var(--muted); background: transparent; }
 .panel-section { margin: 9px 0 4px; color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 .panel-models, .panel-thinking { display: flex; flex-direction: column; gap: 5px; }
+.panel-search { width: 100%; min-height: 32px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--text); }
 .panel-option { display: flex; min-height: 34px; align-items: baseline; justify-content: flex-start; gap: 8px; padding: 6px 9px; border-color: var(--line); background: var(--panel-2); text-align: start; }
 .panel-option.selected { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
 .panel-option .panel-sub { flex: 1; color: var(--muted); font-size: 10px; text-align: end; }

@@ -40,6 +40,7 @@ export class ModelPanel {
 	#open = false;
 	#busy = false;
 	#models: readonly ModelMetadata[] | undefined;
+	#modelQuery = "";
 
 	constructor(services: ModelPanelServices, trigger: HTMLButtonElement, mount: HTMLElement) {
 		this.#services = services;
@@ -66,6 +67,16 @@ export class ModelPanel {
 		modelHeading.className = "panel-section";
 		text(modelHeading, "模型");
 		this.#sheet.appendChild(modelHeading);
+		const search = document.createElement("input");
+		search.type = "search";
+		search.className = "panel-search";
+		search.placeholder = "搜索模型（名称 / provider / id）";
+		search.setAttribute("aria-label", "搜索模型");
+		search.addEventListener("input", () => {
+			this.#modelQuery = search.value.trim().toLowerCase();
+			this.#refresh();
+		});
+		this.#sheet.appendChild(search);
 		this.#modelList = document.createElement("div");
 		this.#modelList.className = "panel-models";
 		this.#sheet.appendChild(this.#modelList);
@@ -177,7 +188,15 @@ export class ModelPanel {
 			text(notice, `当前模型 ${current.provider}/${current.id} 未认证或不在列表中`);
 			this.#modelList.appendChild(notice);
 		}
-		for (const model of this.#models) {
+		const query = this.#modelQuery;
+		const visible = query
+			? this.#models.filter((model) => `${model.name ?? ""} ${model.provider} ${model.id}`.toLowerCase().includes(query))
+			: this.#models;
+		if (visible.length === 0) {
+			text(this.#modelList, "无匹配模型");
+			return;
+		}
+		for (const model of visible) {
 			const row = document.createElement("button");
 			row.type = "button";
 			row.className = `panel-option${model.provider === current.provider && model.id === current.id ? " selected" : ""}`;

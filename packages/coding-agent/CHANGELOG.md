@@ -13,6 +13,8 @@
 
 - Remote web console stage 3 — transcript actions and tree navigation: the wire protocol gains a `custom` transcript item (extension custom messages with `display:true` now reach the web client as `[customType]`-labeled cards rendered through the markdown/image pipeline; `display:false` stays bridge-filtered) plus four session commands — `reroll`, `edit_message`, `get_tree`, and `navigate_tree`. `get_tree` uses a flat parent-linked projection (`entries: [{id,parentId,kind,customType?,label?,summary,timestamp}]`) so session depth does not become protocol nesting depth. `PiSessionRuntime`, `PiClient`, and `PiSessionHandle` expose all four. The web client adds edit/reroll actions, a shared edit layer, and an export/share-inspired tree UI: persistent resizable desktop sidebar, mobile slide-out drawer, search, filters, active-path prioritization, leaf highlighting, and iterative client-side tree construction.
 
+- Added a search box to the remote web console model panel that filters the model list by name, provider, or ID (case-insensitive), with a no-match message when nothing matches.
+
 ### Fixed
 
 - Fixed editing a persisted session before its first assistant response causing the next response to fail with `EEXIST`; rewriting now records that the file has already been flushed, preserving both branches and edited content after reload.
