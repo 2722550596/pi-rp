@@ -158,7 +158,7 @@ function modelFromJson(
 		input: (definition.input ?? ["text"]) as ("text" | "image")[],
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: definition.contextWindow ?? 128000,
-		maxTokens: definition.maxTokens ?? 16384,
+		maxTokens: definition.maxTokens ?? 65536,
 		samplingParams: definition.samplingParams,
 		headers: undefined,
 		compat: mergeCompat(providerConfig.compat, definition.compat),
