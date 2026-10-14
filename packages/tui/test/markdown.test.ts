@@ -1713,5 +1713,32 @@ bar`,
 			assert.ok(!joined.includes("**"), `raw ** must not leak, got: ${joined}`);
 			assert.ok(joined.includes("\x1b[1m"), "expected bold ANSI in output");
 		});
+
+		it("renders bold when the opening ** follows CJK text and precedes CJK quotes", () => {
+			const markdown = new Markdown("前文**“一句引用的话”**后文", 0, 0, defaultMarkdownTheme);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(!joined.includes("**"), `raw ** must not leak, got: ${joined}`);
+			assert.ok(joined.includes("\x1b[1m"), "expected bold ANSI in output");
+			assert.ok(stripAnsi(joined).includes("前文“一句引用的话”后文"));
+		});
+
+		it("renders bold when the opening ** follows CJK text and precedes a CJK parenthesis", () => {
+			const markdown = new Markdown("前文**（括号）**后文", 0, 0, defaultMarkdownTheme);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(!joined.includes("**"), `raw ** must not leak, got: ${joined}`);
+			assert.ok(joined.includes("\x1b[1m"), "expected bold ANSI in output");
+			assert.ok(stripAnsi(joined).includes("前文（括号）后文"));
+		});
+
+		it("keeps ASCII intraword ** literal", () => {
+			const markdown = new Markdown('foo**"bar"**baz', 0, 0, defaultMarkdownTheme);
+			const lines = markdown.render(80);
+
+			assert.ok(stripAnsi(lines.join("\n")).includes('foo**"bar"**baz'));
+		});
 	});
 });

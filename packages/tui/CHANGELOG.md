@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed `**bold**` emphasis being left as raw asterisks when the closing delimiter follows punctuation and is followed directly by CJK text (e.g. `**加粗。**正文`); the emphasis now renders bold.
+- Fixed `*`, `**`, and `__` emphasis being left as raw markers when the opening delimiter follows CJK text and precedes punctuation (e.g. `前文**“引用”**后文`, `前文*（斜体）*后文`, `前文**`代码`**后文`); these now render styled.
 
 ## [0.84.2] - 2026-08-14
 

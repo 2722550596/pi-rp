@@ -20,14 +20,22 @@ const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\
  * that closing delimiter usable without changing ASCII behavior (where branch
  * 2 already handles `word**word`).
  */
-function lenientEmStrongRDelim(defaultRe: RegExp): RegExp | undefined {
+function lenientEmStrongRDelim(defaultRe: RegExp, delimiter: "*" | "_"): RegExp | undefined {
 	const source = defaultRe.source;
 	if (!source.includes("(?=[\\s]|$)")) {
 		return undefined;
 	}
-	const lenientSource = source.replace(/\(\?=\[\\s\]\|\$\)/, "(?!\\*)(?=[\\s]|$|[^\\s\\p{P}\\p{S}])");
+	const runGuard = delimiter === "*" ? "\\*" : "_";
+	const lenientSource = source.replace(/\(\?=\[\\s\]\|\$\)/, `(?!${runGuard})(?=[\\s]|$|[^\\s\\p{P}\\p{S}])`);
 	return new RegExp(lenientSource, defaultRe.flags);
 }
+
+/**
+ * marked only lets a punctuation-leading `**`/`*`/`__` open when the previous
+ * character is whitespace or punctuation. CJK text has no spaces, so
+ * `前文**“引用”**后文` stays raw. Treat a CJK previous character as a boundary.
+ */
+const CJK_CHAR_REGEX = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
 class StrictStrikethroughTokenizer extends Tokenizer {
 	override del(src: string): Tokens.Del | undefined {
@@ -47,17 +55,20 @@ class StrictStrikethroughTokenizer extends Tokenizer {
 
 	override emStrong(src: string, maskedSrc: string, prevChar = ""): Tokens.Em | Tokens.Strong | undefined {
 		const inline = this.rules.inline;
-		const original = inline.emStrongRDelimAst;
-		const lenient = lenientEmStrongRDelim(original);
+		const delimiter = src[0] === "_" ? "_" : "*";
+		const key = delimiter === "_" ? "emStrongRDelimUnd" : "emStrongRDelimAst";
+		const original = inline[key];
+		const lenient = lenientEmStrongRDelim(original, delimiter);
+		const boundaryChar = CJK_CHAR_REGEX.test(prevChar) ? "" : prevChar;
 		if (lenient) {
-			inline.emStrongRDelimAst = lenient;
+			inline[key] = lenient;
 			try {
-				return super.emStrong(src, maskedSrc, prevChar);
+				return super.emStrong(src, maskedSrc, boundaryChar);
 			} finally {
-				inline.emStrongRDelimAst = original;
+				inline[key] = original;
 			}
 		}
-		return super.emStrong(src, maskedSrc, prevChar);
+		return super.emStrong(src, maskedSrc, boundaryChar);
 	}
 }
 
