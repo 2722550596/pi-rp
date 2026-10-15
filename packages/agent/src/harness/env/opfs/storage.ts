@@ -354,6 +354,31 @@ export class OpfsStorageBackend implements StorageBackend {
 		});
 	}
 
+	rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void {
+		const absolute = normalizeVirtualPath(path, "/");
+		if (absolute === "/") throw errnoError("EPERM", `operation not permitted, rm '${path}'`);
+		const recursive = options?.recursive ?? false;
+		const force = options?.force ?? false;
+		const prefix = `${absolute}/`;
+		// A hydrated scope's ancestors are not mirrored themselves, so mirrored descendants also mark a directory.
+		const isDirectory =
+			this.dirs.has(absolute) ||
+			[...this.dirs].some((dir) => dir.startsWith(prefix)) ||
+			[...this.files.keys()].some((key) => key.startsWith(prefix));
+		if (this.files.has(absolute)) {
+			this.files.delete(absolute);
+		} else if (isDirectory) {
+			if (!recursive) throw errnoError("EISDIR", `path is a directory, rm '${path}'`);
+			for (const key of [...this.files.keys()]) if (key.startsWith(prefix)) this.files.delete(key);
+			for (const dir of [...this.dirs]) if (dir === absolute || dir.startsWith(prefix)) this.dirs.delete(dir);
+		} else if (!force) {
+			throw errnoError("ENOENT", `no such file or directory, rm '${path}'`);
+		}
+		// Mirror state was validated above; OPFS may also hold entries outside the hydrated scopes, so the
+		// write-through removal is always forced and follows the caller's recursion choice.
+		this.enqueue(() => this.asyncFs.remove(absolute, { recursive, force: true }));
+	}
+
 	canonicalizeSync(path: string): string {
 		// OPFS has no symlinks: canonical == lexical normalization, and like the node implementation the input is
 		// returned unchanged when nothing exists to canonicalize.

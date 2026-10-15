@@ -75,6 +75,12 @@ export interface StorageBackend {
 	 * flows need it.
 	 */
 	chmodSync?(path: string, mode: number): void;
+	/**
+	 * Remove a file or directory (`node:fs` `rmSync` semantics): non-empty directories need `recursive`, a missing
+	 * target throws ENOENT unless `force`. OPFS profile: the target is also removed from OPFS outside the hydrated
+	 * scopes, so `force` deletes a subtree the mirror never loaded. Optional: only embedder cleanup flows need it.
+	 */
+	rmSync?(path: string, options?: { recursive?: boolean; force?: boolean }): void;
 }
 
 /**

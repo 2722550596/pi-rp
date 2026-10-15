@@ -138,6 +138,34 @@ describe("OpfsStorageBackend", () => {
 		expect(errnoOf(() => backend.renameSync("/state/agent/ghost", "/state/agent/here"))).toBe("ENOENT");
 	});
 
+	it("removes mirrored and unhydrated subtrees with node rm error parity", async () => {
+		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
+		const seed = new OpfsFileSystem(root, "/");
+		await seed.writeFile("/workspace/save/.pi/sessions/s.jsonl", "{}\n");
+		await seed.writeFile("/workspace/save/.noctable/operations/op.json", "{}");
+		await seed.writeFile("/workspace/save/.noctable/cache/blob.bin", "unhydrated");
+		const backend = await OpfsStorageBackend.create(root, {
+			hydrateScopes: ["/workspace/save/.pi", "/workspace/save/.noctable/operations"],
+		});
+
+		expect(errnoOf(() => backend.rmSync("/workspace/save/.pi"))).toBe("EISDIR");
+		expect(errnoOf(() => backend.rmSync("/workspace/save/missing"))).toBe("ENOENT");
+		expect(errnoOf(() => backend.rmSync("/"))).toBe("EPERM");
+		expect(() => backend.rmSync("/workspace/save/missing", { force: true })).not.toThrow();
+
+		backend.rmSync("/workspace/save/.pi", { recursive: true });
+		backend.rmSync("/workspace/save/.noctable", { recursive: true, force: true });
+		expect(backend.existsSync("/workspace/save/.pi/sessions/s.jsonl")).toBe(false);
+		expect(backend.existsSync("/workspace/save/.pi")).toBe(false);
+		expect(backend.existsSync("/workspace/save/.noctable/operations")).toBe(false);
+		await backend.flush();
+
+		expect(await seed.exists("/workspace/save/.pi")).toEqual({ ok: true, value: false });
+		expect(await seed.exists("/workspace/save/.noctable/cache/blob.bin")).toEqual({ ok: true, value: false });
+		const reloaded = await OpfsStorageBackend.create(root, { hydrateScopes: ["/workspace/save/.pi"] });
+		expect(reloaded.existsSync("/workspace/save/.pi")).toBe(false);
+	});
+
 	it("reports revisions and canonical forms without touching the disk", async () => {
 		const root = createMockOpfsRoot(createTempDir(), { withMove: true });
 		const backend = await OpfsStorageBackend.create(root);

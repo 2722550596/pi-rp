@@ -10,6 +10,7 @@ import {
 	readSync as fsReadSync,
 	realpathSync as fsRealpathSync,
 	renameSync as fsRenameSync,
+	rmSync as fsRmSync,
 	statSync as fsStatSync,
 	writeFileSync as fsWriteFileSync,
 } from "node:fs";
@@ -123,6 +124,10 @@ export class NodeStorageBackend implements StorageBackend {
 
 	renameSync(source: string, destination: string): void {
 		fsRenameSync(source, destination);
+	}
+
+	rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void {
+		fsRmSync(path, { recursive: options?.recursive ?? false, force: options?.force ?? false });
 	}
 
 	canonicalizeSync(path: string): string {
