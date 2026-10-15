@@ -87,6 +87,10 @@ export class NodeStorageBackend implements StorageBackend {
 		}
 	}
 
+	readFileBytesSync(path: string): Buffer {
+		return fsReadFileSync(path);
+	}
+
 	writeTextFileSync(path: string, data: string, options?: { flag?: "w" | "wx" }): void {
 		if (options?.flag === "wx") {
 			fsWriteFileSync(path, data, { encoding: "utf-8", flag: "wx" });

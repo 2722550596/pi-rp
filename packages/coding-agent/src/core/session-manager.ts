@@ -685,60 +685,145 @@ function getMessageActivityTime(entry: SessionMessageEntry): number | undefined 
 	return Number.isNaN(t) ? undefined : t;
 }
 
+interface SessionScanAccumulator {
+	header: SessionHeader | null;
+	messageCount: number;
+	firstMessage: string;
+	allMessages: string[];
+	name: string | undefined;
+	lastActivityTime: number | undefined;
+}
+
+/** Applies one parsed entry to the scan accumulator. Returns false when the file must be rejected. */
+function applySessionEntry(acc: SessionScanAccumulator, entry: FileEntry): boolean {
+	if (!acc.header) {
+		if (entry.type !== "session") return false;
+		acc.header = entry;
+		return true;
+	}
+	if (entry.type === "session_info") {
+		acc.name = entry.name?.trim() || undefined;
+		return true;
+	}
+	if (entry.type !== "message") return true;
+	acc.messageCount++;
+
+	const activityTime = getMessageActivityTime(entry);
+	if (typeof activityTime === "number") {
+		acc.lastActivityTime = Math.max(acc.lastActivityTime ?? 0, activityTime);
+	}
+
+	const message = entry.message;
+	if (!isMessageWithContent(message)) return true;
+	if (message.role !== "user" && message.role !== "assistant") return true;
+
+	const textContent = extractTextContent(message);
+	if (!textContent) return true;
+	acc.allMessages.push(textContent);
+	if (!acc.firstMessage && message.role === "user") {
+		acc.firstMessage = textContent;
+	}
+	return true;
+}
+
+function newSessionScanAccumulator(): SessionScanAccumulator {
+	return {
+		header: null,
+		messageCount: 0,
+		firstMessage: "",
+		allMessages: [],
+		name: undefined,
+		lastActivityTime: undefined,
+	};
+}
+
+function scanSessionInfoLines(filePath: string, storage: StorageBackend): SessionScanAccumulator | null {
+	const acc = newSessionScanAccumulator();
+	for (const line of storage.readTextLinesSync(filePath)) {
+		const entry = parseSessionEntryLine(line);
+		if (!entry) continue;
+		if (!applySessionEntry(acc, entry)) return null;
+	}
+	return acc;
+}
+
+const SESSION_LINE_PREFIX = '{"type":"session"';
+const SESSION_INFO_LINE_PREFIX = '{"type":"session_info"';
+const MESSAGE_LINE_PREFIX = '{"type":"message"';
+// pi writes entries with `type` first and 8-hex ids, so `message.role` lands inside this window;
+// a probe miss falls back to a full parse, keeping foreign key orders correct.
+const MESSAGE_ROLE_PROBE_BYTES = 256;
+
+/**
+ * Byte-level scan for session listing. Lines whose payload the list UI never reads (tool results
+ * and other non-user/assistant messages) are counted without being decoded or JSON-parsed, which
+ * is what makes listing directories dominated by multi-megabyte tool outputs cheap. Lines that do
+ * not match a pi-written prefix fall back to a full parse so foreign-shaped files keep the exact
+ * semantics of scanSessionInfoLines().
+ */
+function scanSessionInfoBytes(bytes: Uint8Array): SessionScanAccumulator | null {
+	const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const acc = newSessionScanAccumulator();
+	let pos = 0;
+	// readTextLinesSync decodes via TextDecoder, which consumes a leading BOM; match that here.
+	if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) pos = 3;
+	while (pos < buf.length) {
+		const newline = buf.indexOf(0x0a, pos);
+		const lineEnd = newline === -1 ? buf.length : newline;
+		if (lineEnd > pos) {
+			const probe = buf.toString("latin1", pos, Math.min(pos + 24, lineEnd));
+			if (acc.header && probe.startsWith(MESSAGE_LINE_PREFIX)) {
+				const window = buf.toString("latin1", pos, Math.min(pos + MESSAGE_ROLE_PROBE_BYTES, lineEnd));
+				const roleIndex = window.indexOf('"role":"');
+				const role = roleIndex === -1 ? undefined : window.slice(roleIndex + 8, window.indexOf('"', roleIndex + 8));
+				if (role !== undefined && role !== "user" && role !== "assistant") {
+					// Counted but never displayed or searched: no decode, no parse.
+					acc.messageCount++;
+				} else {
+					try {
+						applySessionEntry(acc, JSON.parse(buf.toString("utf8", pos, lineEnd)) as FileEntry);
+					} catch {
+						// Malformed lines are skipped, matching parseSessionEntryLine().
+					}
+				}
+			} else if (acc.header && probe.startsWith(SESSION_INFO_LINE_PREFIX)) {
+				try {
+					applySessionEntry(acc, JSON.parse(buf.toString("utf8", pos, lineEnd)) as FileEntry);
+				} catch {
+					// Malformed lines are skipped.
+				}
+			} else if (!acc.header || !probe.startsWith(SESSION_LINE_PREFIX)) {
+				// Pre-header lines decide file rejection; unknown shapes may still be valid entries.
+				try {
+					if (!applySessionEntry(acc, JSON.parse(buf.toString("utf8", pos, lineEnd)) as FileEntry)) {
+						return null;
+					}
+				} catch {
+					// Malformed lines are skipped.
+				}
+			}
+		}
+		if (newline === -1) break;
+		pos = newline + 1;
+	}
+	return acc;
+}
+
 async function buildSessionInfo(filePath: string, storage: StorageBackend): Promise<SessionInfo | null> {
 	try {
 		const stats = storage.statSync(filePath);
-		let header: SessionHeader | null = null;
-		let messageCount = 0;
-		let firstMessage = "";
-		const allMessages: string[] = [];
-		let name: string | undefined;
-		let lastActivityTime: number | undefined;
-
-		for (const line of storage.readTextLinesSync(filePath)) {
-			const entry = parseSessionEntryLine(line);
-			if (!entry) continue;
-
-			if (!header) {
-				if (entry.type !== "session") return null;
-				header = entry;
-				continue;
-			}
-
-			// Extract session name (use latest, including explicit clears)
-			if (entry.type === "session_info") {
-				name = entry.name?.trim() || undefined;
-			}
-
-			if (entry.type !== "message") continue;
-			messageCount++;
-
-			const activityTime = getMessageActivityTime(entry);
-			if (typeof activityTime === "number") {
-				lastActivityTime = Math.max(lastActivityTime ?? 0, activityTime);
-			}
-
-			const message = entry.message;
-			if (!isMessageWithContent(message)) continue;
-			if (message.role !== "user" && message.role !== "assistant") continue;
-
-			const textContent = extractTextContent(message);
-			if (!textContent) continue;
-
-			allMessages.push(textContent);
-			if (!firstMessage && message.role === "user") {
-				firstMessage = textContent;
-			}
-		}
-
-		if (!header) return null;
+		const acc = storage.readFileBytesSync
+			? scanSessionInfoBytes(storage.readFileBytesSync(filePath))
+			: scanSessionInfoLines(filePath, storage);
+		if (!acc || !acc.header) return null;
+		const header = acc.header;
 
 		const cwd = typeof header.cwd === "string" ? header.cwd : "";
 		const parentSessionPath = header.parentSession;
 		const headerTime = typeof header.timestamp === "string" ? new Date(header.timestamp).getTime() : NaN;
 		const modified =
-			typeof lastActivityTime === "number" && lastActivityTime > 0
-				? new Date(lastActivityTime)
+			typeof acc.lastActivityTime === "number" && acc.lastActivityTime > 0
+				? new Date(acc.lastActivityTime)
 				: !Number.isNaN(headerTime)
 					? new Date(headerTime)
 					: new Date(stats.mtimeMs);
@@ -747,13 +832,13 @@ async function buildSessionInfo(filePath: string, storage: StorageBackend): Prom
 			path: filePath,
 			id: header.id,
 			cwd,
-			name,
+			name: acc.name,
 			parentSessionPath,
 			created: new Date(header.timestamp),
 			modified,
-			messageCount,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText: allMessages.join(" "),
+			messageCount: acc.messageCount,
+			firstMessage: acc.firstMessage || "(no messages)",
+			allMessagesText: acc.allMessages.join(" "),
 		};
 	} catch {
 		return null;

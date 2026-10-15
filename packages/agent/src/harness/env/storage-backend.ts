@@ -34,6 +34,12 @@ export interface StorageBackend {
 	 */
 	readTextLinesSync(path: string, maxLines?: number): string[];
 	/**
+	 * Read the whole file as raw bytes. Optional fast path for scans that decode only selected lines
+	 * (session listing over files dominated by tool-result payloads). Consumers MUST fall back to
+	 * readTextLinesSync when this member is absent.
+	 */
+	readFileBytesSync?(path: string): Uint8Array;
+	/**
 	 * Write UTF-8 text. `flag: "wx"` is create-exclusive (the `openSync(path, "wx")` semantics): it fails when the
 	 * target exists. `flag: "w"` truncates or creates.
 	 */

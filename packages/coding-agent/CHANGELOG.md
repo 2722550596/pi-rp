@@ -27,6 +27,8 @@
 
 - Fixed tool-search catalog change notices ("Tools added: …") entering the user steering queue: every post-bind `registerTool()` (e.g. MCP servers connecting) queued its own message, so new sessions showed a pile of queued input and the default one-at-a-time steering mode attached one notice to each later turn. The delta is now computed once per provider request, merged into a single context-only custom message (`tool_search_catalog_delta`, `display: false`), and skipped entirely for the first request after session start, resume, or branch replay because the system prompt already lists the current catalog.
 
+- Fixed `/resume` freezing the TUI for seconds in projects with large session files: session listing now scans JSONL bytes directly and counts tool-result lines without decoding or JSON-parsing them (only user/assistant text, names, and headers are decoded), falling back to the previous line-based parse for storage backends without raw-byte reads or for lines not matching pi's entry prefixes. A 147 MB project session directory lists in ~0.15s instead of ~1.3s.
+
 ### Added
 
 - Web client: tool-result entries now render as collapsed `<details>` blocks with a one-line preview summary (first 90 chars + total length); expanded bodies truncate text parts at 4,000 characters with an explicit "show all" toggle, images render inline, error results auto-expand, and the copy button always copies the full text.

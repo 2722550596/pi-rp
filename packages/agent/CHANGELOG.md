@@ -6,6 +6,10 @@
 
 - Changed `prepareNextTurn` and `prepareNextTurnWithContext` to run only after `shouldStopAfterTurn` and queued-message checks determine that the agent loop will start another assistant turn. They no longer run after final or terminating turns; move end-of-run work to `agent_end` handling ([#6879](https://github.com/earendil-works/pi/issues/6879)).
 
+### Added
+
+- Optional `StorageBackend.readFileBytesSync` for whole-file raw-byte reads, used by the coding-agent session-list fast scan; backends without it keep the `readTextLinesSync` path.
+
 ### Fixed
 
 - `estimateTokens` now weights CJK text at ~0.75 tokens per char instead of chars/4, so harness compaction cut points no longer land near the start of CJK-heavy sessions, and `prepareCompaction` returns `undefined` when the cut leaves no prior history to summarize and the turn prefix is smaller than the keep budget.
