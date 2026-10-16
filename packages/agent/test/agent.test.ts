@@ -982,4 +982,77 @@ describe("Agent", () => {
 			}
 		});
 	});
+
+	describe("abort with queued messages", () => {
+		const user = (text: string): AgentMessage => ({ role: "user", content: text, timestamp: Date.now() });
+		const userTexts = (messages: readonly AgentMessage[]) =>
+			messages.flatMap((message) =>
+				message.role === "user" && typeof message.content === "string" ? [message.content] : [],
+			);
+
+		// The abort lands after the model's first response, with a steering and a follow-up message
+		// queued at that moment. Work that finishes after the abort must not take them from the queues.
+		it.each(["tool execution", "turn preparation", "turn end"] as const)(
+			"keeps queued messages for the next run when aborted during %s",
+			async (abortPoint) => {
+				const tool: AgentTool = {
+					name: "lookup",
+					label: "Lookup",
+					description: "Looks something up",
+					parameters: Type.Object({}),
+					async execute() {
+						if (abortPoint === "tool execution") queueAndAbort();
+						return { content: [{ type: "text", text: "found" }], details: {} };
+					},
+				};
+				let calls = 0;
+				const agent = new Agent({
+					initialState: { tools: [tool] },
+					prepareNextTurn: () => {
+						if (abortPoint === "turn preparation") queueAndAbort();
+						return undefined;
+					},
+					streamFn: (_model, _context, options) => {
+						const stream = new MockAssistantStream();
+						const call = calls++;
+						queueMicrotask(() => {
+							if (options?.signal?.aborted) {
+								const error: AssistantMessage = { ...createAssistantMessage(""), stopReason: "aborted" };
+								stream.push({ type: "error", reason: "aborted", error });
+							} else if (call === 0 && abortPoint !== "turn end") {
+								const message = createAssistantToolUseMessage([
+									{ type: "toolCall", id: "call-1", name: "lookup", arguments: {} },
+								]);
+								stream.push({ type: "done", reason: "toolUse", message });
+							} else {
+								stream.push({ type: "done", reason: "stop", message: createAssistantMessage("answer") });
+							}
+						});
+						return stream;
+					},
+				});
+				let fired = false;
+				const queueAndAbort = () => {
+					if (fired) return;
+					fired = true;
+					agent.steer(user("steer"));
+					agent.followUp(user("follow-up"));
+					agent.abort();
+				};
+				agent.subscribe((event) => {
+					if (event.type === "turn_end" && abortPoint === "turn end") queueAndAbort();
+				});
+
+				await agent.prompt(user("question"));
+
+				expect(userTexts(agent.state.messages)).toEqual(["question"]);
+				expect(agent.hasQueuedMessages()).toBe(true);
+
+				await agent.continue();
+
+				expect(userTexts(agent.state.messages)).toEqual(["question", "steer", "follow-up"]);
+				expect(agent.hasQueuedMessages()).toBe(false);
+			},
+		);
+	});
 });

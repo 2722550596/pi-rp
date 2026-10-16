@@ -31,6 +31,8 @@
 
 - Fixed aborted and wait-for-idle completion paths to emit `agent_settled`, so consumers cannot remain in a running state after cancellation.
 
+- Fixed `abort()` continuing past the aborted run: queued steering or follow-up messages started another turn as soon as the aborted run ended, and steering queued while a tool ran was injected into the aborted run, emitting `steering_injected` for a message no model call answered. An aborted run now ends without auto-retry, compaction continuation, or queue delivery; queued messages stay queued for the next `prompt()`/`continue()` or `clearQueue()`. This applies to RPC `abort` and server-mode cancellation as well.
+
 - Restored `/settings` to the built-in slash-command discovery list; adding `/remote` had accidentally replaced its autocomplete entry even though the settings command implementation remained registered.
 
 - Fixed tool-search catalog change notices ("Tools added: …") entering the user steering queue: every post-bind `registerTool()` (e.g. MCP servers connecting) queued its own message, so new sessions showed a pile of queued input and the default one-at-a-time steering mode attached one notice to each later turn. The delta is now computed once per provider request, merged into a single context-only custom message (`tool_search_catalog_delta`, `display: false`), and skipped entirely for the first request after session start, resume, or branch replay because the system prompt already lists the current catalog.

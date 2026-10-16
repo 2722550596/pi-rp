@@ -12,7 +12,7 @@ import {
 	type AssistantMessageEvent,
 	EventStream,
 	getModel,
-	type ImageContent,
+	type Message,
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
@@ -56,6 +56,15 @@ function createAssistantMessage(text: string): AssistantMessage {
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
+}
+
+function userTexts(messages: readonly Message[]): string[] {
+	return messages.flatMap((message) => {
+		if (message.role !== "user") return [];
+		if (typeof message.content === "string") return [message.content];
+		const text = message.content.filter((part): part is TextContent => part.type === "text").map((part) => part.text);
+		return [text.join("\n")];
+	});
 }
 
 describe("AgentSession concurrent prompt guard", () => {
@@ -189,7 +198,6 @@ describe("AgentSession concurrent prompt guard", () => {
 	it("should queue extension-origin steering messages while streaming", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
-		let sawSteeringMessage = false;
 		let lastInputSource: string | undefined;
 		const queueEvents: Array<{ steering: readonly string[]; followUp: readonly string[] }> = [];
 
@@ -200,30 +208,10 @@ describe("AgentSession concurrent prompt guard", () => {
 				systemPrompt: "Test",
 				tools: [],
 			},
-			streamFn: (_model, context, options) => {
+			streamFn: (_model, _context, options) => {
 				abortSignal = options?.signal;
 				const stream = new MockAssistantStream();
 				queueMicrotask(() => {
-					const userTexts = context.messages
-						.filter((message) => message.role === "user")
-						.map((message) => {
-							if (typeof message.content === "string") {
-								return message.content;
-							}
-							return message.content
-								.filter((part): part is TextContent | ImageContent => typeof part === "object" && part !== null)
-								.filter((part): part is TextContent => part.type === "text")
-								.map((part) => part.text)
-								.join("\n");
-						});
-
-					if (userTexts.includes("Steer from extension")) {
-						sawSteeringMessage = true;
-						stream.push({ type: "start", partial: createAssistantMessage("") });
-						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Steered") });
-						return;
-					}
-
 					stream.push({ type: "start", partial: createAssistantMessage("") });
 					const checkAbort = () => {
 						if (abortSignal?.aborted) {
@@ -290,8 +278,61 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		await session.abort();
 		await firstPrompt.catch(() => {});
+	});
 
-		expect(sawSteeringMessage).toBe(true);
+	it("abort ends the run and keeps queued steering for the next prompt", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const requests: string[][] = [];
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: (_model, context, options) => {
+				const signal = options?.signal;
+				const isFirstRequest = requests.length === 0;
+				requests.push(userTexts(context.messages));
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					if (!isFirstRequest) {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Answer") });
+						return;
+					}
+					// The first response streams until the abort, as a provider request does.
+					const end = () => {
+						const error: AssistantMessage = { ...createAssistantMessage(""), stopReason: "aborted" };
+						stream.push({ type: "error", reason: "aborted", error });
+					};
+					if (signal?.aborted) end();
+					else signal?.addEventListener("abort", end, { once: true });
+				});
+				return stream;
+			},
+		});
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settingsManager: SettingsManager.create(tempDir, tempDir),
+			cwd: tempDir,
+			modelRuntime: getModelRuntime(await createModelRegistry(authStorage, tempDir)),
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const firstPrompt = session.prompt("First message");
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
+		await session.steer("Steer while streaming");
+		await session.abort();
+		await firstPrompt.catch(() => {});
+
+		// No turn was started for the queued message, which stays queued.
+		expect(requests).toEqual([["First message"]]);
+		expect(session.getSteeringMessages()).toEqual(["Steer while streaming"]);
+
+		await session.prompt("Next message");
+
+		expect(requests.at(-1)).toContain("Steer while streaming");
+		expect(session.pendingMessageCount).toBe(0);
 	});
 
 	it("should allow prompt() after previous completes", async () => {

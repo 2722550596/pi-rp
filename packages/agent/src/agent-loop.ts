@@ -280,8 +280,13 @@ async function runLoop(
 			};
 		}
 	}
+	// An aborted run takes nothing more from the queues: queued messages stay queued for the
+	// caller to deliver in a later run or clear. A tool batch or turn preparation that finishes
+	// after the abort must not move them into the history of a run that will never answer them.
+	const takeSteering = async () => (signal?.aborted ? [] : (await config.getSteeringMessages?.()) || []);
+	const takeFollowUps = async () => (signal?.aborted ? [] : (await config.getFollowUpMessages?.()) || []);
 	// Check for steering messages at start (user may have typed while waiting)
-	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+	let pendingMessages: AgentMessage[] = await takeSteering();
 	let pendingMessagesAreSteering = true;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
@@ -309,7 +314,7 @@ async function runLoop(
 				// queued while it ran. Only poll again if the earlier poll returned nothing;
 				// otherwise one-at-a-time mode would deliver two messages in this turn.
 				if (pendingMessages.length === 0) {
-					pendingMessages = (await config.getSteeringMessages?.()) || [];
+					pendingMessages = await takeSteering();
 				}
 				await emit({ type: "turn_start" });
 			}
@@ -394,11 +399,11 @@ async function runLoop(
 				return;
 			}
 
-			pendingMessages = (await config.getSteeringMessages?.()) || [];
+			pendingMessages = await takeSteering();
 		}
 
 		// Agent would stop here. Check for follow-up messages.
-		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
+		const followUpMessages = await takeFollowUps();
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;

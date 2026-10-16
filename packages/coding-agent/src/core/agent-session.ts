@@ -623,6 +623,8 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	/** Set when abort() is called during a run; the run then ends without continuing. */
+	private _agentRunAbortRequested = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -1383,6 +1385,7 @@ export class AgentSession {
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
+		if (this._agentRunAbortRequested) return false;
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled || this._retryAttempt >= settings.maxRetries) {
 			return false;
@@ -2938,12 +2941,22 @@ export class AgentSession {
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
+		// An aborted run ends here: no retry, no compaction continuation, and queued steering or
+		// follow-up messages stay queued instead of starting another turn.
+		if (this._agentRunAbortRequested) {
+			this._finishCancelledRetry();
+			return false;
+		}
 		if (!msg) {
 			return false;
 		}
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
+		}
+		if (this._agentRunAbortRequested) {
+			this._finishCancelledRetry();
+			return false;
 		}
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
@@ -2957,15 +2970,15 @@ export class AgentSession {
 		}
 
 		if (await this._checkCompaction(msg)) {
-			return true;
+			return !this._agentRunAbortRequested;
 		}
 
-		const queued = this.agent.hasQueuedMessages();
-		return queued;
+		return !this._agentRunAbortRequested && this.agent.hasQueuedMessages();
 	}
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._isAgentRunActive = true;
+		this._agentRunAbortRequested = false;
 		await this.withReloadDeferred(async () => {
 			try {
 				// D14/M5 §3.10: re-read effective tool-search settings before the
@@ -3681,6 +3694,7 @@ export class AgentSession {
 	 */
 	private async _runAgentContinue(): Promise<void> {
 		this._isAgentRunActive = true;
+		this._agentRunAbortRequested = false;
 		try {
 			await this.agent.continue();
 			while (await this._handlePostAgentRun()) {
@@ -3969,6 +3983,7 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		if (this._isAgentRunActive) this._agentRunAbortRequested = true;
 		this.abortRetry();
 		this.abortCompaction();
 		this.abortBranchSummary();
@@ -6047,6 +6062,14 @@ export class AgentSession {
 	 */
 	abortRetry(): void {
 		this._retryAbortController?.abort();
+	}
+
+	/** End an auto-retry sequence that an abort cut short, so the UI and the retry budget reset. */
+	private _finishCancelledRetry(): void {
+		if (this._retryAttempt === 0) return;
+		const attempt = this._retryAttempt;
+		this._retryAttempt = 0;
+		this._emit({ type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" });
 	}
 
 	/** Whether auto-retry is currently in progress */

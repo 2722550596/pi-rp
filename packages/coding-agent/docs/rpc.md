@@ -125,7 +125,7 @@ See [set_follow_up_mode](#set_follow_up_mode) for controlling how follow-up mess
 
 #### abort
 
-Abort the current agent operation.
+Abort the current agent operation. The aborted run ends without auto-retry, compaction continuation, or delivering queued messages: steering and follow-up messages queued before or during the run stay queued (see `queue_update`) and are delivered by the next run.
 
 ```json
 {"type": "abort"}

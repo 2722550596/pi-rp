@@ -14,6 +14,7 @@
 ### Fixed
 
 - `estimateTokens` now weights CJK text at ~0.75 tokens per char instead of chars/4, so harness compaction cut points no longer land near the start of CJK-heavy sessions, and `prepareCompaction` returns `undefined` when the cut leaves no prior history to summarize and the turn prefix is smaller than the keep budget.
+- Fixed an aborted run taking queued steering and follow-up messages: when `abort()` landed outside the model stream (during tool execution, `prepareNextTurn`, or `turn_end` handling), the loop still drained both queues and appended the messages to the aborted run's context, where no model call answered them. The loop no longer reads the queues once the run's signal is aborted, so the messages stay queued for the next run or `clearQueue()`.
 
 ## [0.84.2] - 2026-08-14
 
