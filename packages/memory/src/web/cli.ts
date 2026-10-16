@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { type ResolvedMemoryClock, resolveMemoryClock } from "../clock.ts";
 import { type MemorySettings, resolveMemoryDbPath } from "../config.ts";
 import { openMemoryStore } from "../index.ts";
 import type { MemoryStore } from "../store.ts";
@@ -36,6 +37,7 @@ const USAGE = `用法：pi-memory-web [选项]
 export interface CliOptions {
 	dbPath: string;
 	dbPathSource: "cli" | "default";
+	clock: ResolvedMemoryClock;
 	port: number;
 	host: string;
 	openBrowser: boolean;
@@ -79,9 +81,13 @@ function parsePort(raw: string | undefined): number {
  * (global settings, overridden by project settings). Read-only, and any failure
  * silently falls back to the engine default while marking the source honestly.
  */
-function readThresholdFromSettings(cwd: string): number | undefined {
+function readMemorySettingsFromFiles(cwd: string): {
+	threshold?: number;
+	clock: { mode?: unknown; timezone?: unknown };
+} {
 	const sources = [path.join(homedir(), ".pi", "agent", "settings.json"), path.join(cwd, ".pi", "settings.json")];
 	let found: number | undefined;
+	const clock: { mode?: unknown; timezone?: unknown } = {};
 	for (const file of sources) {
 		let parsed: { memory?: MemorySettings } | undefined;
 		try {
@@ -95,8 +101,13 @@ function readThresholdFromSettings(cwd: string): number | undefined {
 		const threshold = parsed?.memory?.temp?.threshold;
 		// Project settings are read last, so a valid project value wins.
 		if (typeof threshold === "number" && Number.isInteger(threshold) && threshold > 0) found = threshold;
+		const configured = parsed?.memory?.clock;
+		if (configured && typeof configured === "object") {
+			if (Object.hasOwn(configured, "mode")) clock.mode = configured.mode;
+			if (Object.hasOwn(configured, "timezone")) clock.timezone = configured.timezone;
+		}
 	}
-	return found;
+	return { threshold: found, clock };
 }
 
 export function parseCliArgs(argv: string[]): CliParseResult {
@@ -118,6 +129,8 @@ export function parseCliArgs(argv: string[]): CliParseResult {
 		});
 		if (values.help) return { help: true };
 
+		const settings = readMemorySettingsFromFiles(process.cwd());
+		const clock = resolveMemoryClock(settings.clock);
 		let tempThreshold = DEFAULT_TEMP_THRESHOLD;
 		let tempThresholdSource: CliOptions["tempThresholdSource"] = "default";
 		if (values["temp-threshold"] !== undefined) {
@@ -128,7 +141,7 @@ export function parseCliArgs(argv: string[]): CliParseResult {
 			tempThreshold = value;
 			tempThresholdSource = "cli";
 		} else {
-			const fromSettings = readThresholdFromSettings(process.cwd());
+			const fromSettings = settings.threshold;
 			if (fromSettings !== undefined) {
 				tempThreshold = fromSettings;
 				tempThresholdSource = "settings";
@@ -145,6 +158,7 @@ export function parseCliArgs(argv: string[]): CliParseResult {
 		const roots = (values.roots ?? []).map((root) => path.resolve(root));
 		return {
 			dbPath,
+			clock,
 			dbPathSource: values.db === undefined ? "default" : "cli",
 			port: parsePort(values.port ?? "8788"),
 			host: values.host ?? "127.0.0.1",
@@ -195,6 +209,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 	let store: MemoryStore;
 	try {
 		store = await openMemoryStore(opts.dbPath);
+		store.setClock(opts.clock);
 	} catch (error) {
 		// 必须出声：这条路径原先只 `exit(1)`，用户看到的是一个「什么都没说就退出」
 		// 的进程 —— 库路径写错时无从判断。错误原文（SQLite 的 "unable to open
@@ -207,7 +222,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 	// `routes.ts` reads it off the ctx for the management gate. Constructing two
 	// literals would create two truth sources that can drift apart.
 	const policy: PathPolicy = { roots: opts.roots, allowAnyPath: opts.allowAnyPath };
-	const registry = new StoreRegistry({ policy, onLog: (line) => process.stdout.write(`${line}\n`) });
+	const registry = new StoreRegistry({
+		policy,
+		clock: opts.clock,
+		onLog: (line) => process.stdout.write(`${line}\n`),
+	});
 	// The process db is the only connection open at startup. `:memory:` cannot be
 	// registered (`key()` rejects it) and never comes from the CLI anyway.
 	if (opts.dbPath !== ":memory:") registry.adopt(opts.dbPath, store);

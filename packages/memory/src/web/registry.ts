@@ -30,6 +30,7 @@
  */
 import { type Stats, statSync } from "node:fs";
 import path from "node:path";
+import { type ResolvedMemoryClock, WORLD_CLOCK } from "../clock.ts";
 import { openMemoryStore } from "../index.ts";
 import type { MemoryStore } from "../store.ts";
 import { admitForRegistration, checkPathAllowed, type PathPolicy } from "./db-path-policy.ts";
@@ -80,6 +81,7 @@ export class DbUnavailableError extends Error {
 export interface StoreRegistryOptions {
 	/** Cap on simultaneously open DBs. Default 8. Injectable so tests can shrink it. */
 	limit?: number;
+	clock?: ResolvedMemoryClock;
 	/**
 	 * ⭐ Path policy. REQUIRED, and deliberately not `PathPolicy | null`.
 	 *
@@ -105,6 +107,7 @@ export class StoreRegistry {
 	private readonly limitValue: number;
 	private readonly onLog: (line: string) => void;
 	private readonly policy: PathPolicy;
+	private readonly clock: ResolvedMemoryClock;
 	private closed = false;
 
 	/**
@@ -127,6 +130,7 @@ export class StoreRegistry {
 			);
 		}
 		this.policy = opts.policy;
+		this.clock = opts.clock ?? WORLD_CLOCK;
 		this.limitValue = opts.limit ?? DEFAULT_LIMIT;
 		this.onLog = opts.onLog ?? (() => {});
 	}
@@ -382,6 +386,7 @@ export class StoreRegistry {
 	 */
 	private openInto(p: string): Promise<StoreEntry> {
 		return openMemoryStore(p).then((store) => {
+			store.setClock(this.clock);
 			const entry: StoreEntry = {
 				store,
 				openedAt: new Date().toISOString(),

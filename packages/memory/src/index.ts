@@ -111,7 +111,10 @@ export {
 	type SchemaOpenResult,
 } from "./schema.ts";
 export {
+	createMemoryMacros,
 	createMemorySlots,
+	type MemoryMacroDefinition,
+	type MemoryMacroRenderContext,
 	type MemorySlotDefinition,
 	type MemorySlotsOptions,
 	type RecentSlotOptions,

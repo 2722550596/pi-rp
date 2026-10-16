@@ -24,6 +24,7 @@
  */
 import { type Dirent, readdirSync, type Stats, statSync } from "node:fs";
 import path from "node:path";
+import type { MemoryClockMode } from "../clock.ts";
 import { type MemoryDatabase, openDatabaseReadonly, ReadonlyOpenError } from "../driver.ts";
 import { MIGRATABLE_FROM, SCHEMA_VERSION } from "../schema.ts";
 
@@ -224,10 +225,15 @@ export async function probeMemoryDb(candidate: string): Promise<ProbeOutcome> {
  * it is inside `openDatabaseReadonly`, which covers this entry point and
  * `probeMemoryDb` both. A local guard would only protect one of them.
  */
-export async function readMemoryDbStats(candidate: string, opts?: DiscoveryOptions): Promise<MemoryDbStats | null> {
+export async function readMemoryDbStats(
+	candidate: string,
+	opts?: DiscoveryOptions,
+	mode: MemoryClockMode = "world",
+): Promise<MemoryDbStats | null> {
 	const ttl = ttlOf(opts);
 	const now = clockOf(opts)();
-	const hit = statsCache.get(candidate);
+	const cacheKey = `${mode}:${candidate}`;
+	const hit = statsCache.get(cacheKey);
 	if (hit && ttl > 0 && now - hit.at < ttl) return hit.value;
 
 	let db: MemoryDatabase | null = null;
@@ -237,7 +243,10 @@ export async function readMemoryDbStats(candidate: string, opts?: DiscoveryOptio
 		const stats: MemoryDbStats = {
 			schemaVersion: rowValue(db.prepare("SELECT value FROM memory_kv WHERE key = ?").get("schema_version")) ?? "",
 			nodeCount: rowCount(db.prepare("SELECT COUNT(*) AS c FROM nodes").get()),
-			worldTime: rowValue(db.prepare("SELECT value FROM memory_kv WHERE key = ?").get("world_time")),
+			worldTime:
+				mode === "real"
+					? null
+					: rowValue(db.prepare("SELECT value FROM memory_kv WHERE key = ?").get("world_time")),
 		};
 		value = stats;
 	} catch {
@@ -251,7 +260,7 @@ export async function readMemoryDbStats(candidate: string, opts?: DiscoveryOptio
 			/* already closed */
 		}
 	}
-	statsCache.set(candidate, { value, at: now });
+	statsCache.set(cacheKey, { value, at: now });
 	return value;
 }
 
@@ -262,7 +271,10 @@ export async function readMemoryDbStats(candidate: string, opts?: DiscoveryOptio
  */
 export function invalidateStats(candidate?: string): void {
 	if (candidate === undefined) statsCache.clear();
-	else statsCache.delete(candidate);
+	else {
+		statsCache.delete(`world:${candidate}`);
+		statsCache.delete(`real:${candidate}`);
+	}
 }
 
 function skipSet(opts: DiscoveryOptions | undefined): Set<string> {

@@ -14,6 +14,7 @@ import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
+import { dayNumber } from "../clock.ts";
 import { openMemoryStore } from "../index.ts";
 import { search, toEpochDays } from "../recall.ts";
 import { SCHEMA_VERSION } from "../schema.ts";
@@ -232,7 +233,7 @@ function getMeta(rc: RequestCtx): HandlerResult {
 	const body: MetaDTO = {
 		db_path: rc.ctx.dbPath,
 		schema_version: SCHEMA_VERSION,
-		world_time: store.getWorldTime(),
+		world_time: store.getClock().mode === "real" ? store.nowStamp() : store.getWorldTime(),
 		domains,
 		counts: {
 			nodes: nodes.length,
@@ -351,7 +352,10 @@ async function getSearch(rc: RequestCtx): Promise<HandlerResult> {
 		topK: limit,
 		minScore: 0,
 		keywordMinScore: 0,
-		nowDays: toEpochDays(store.getWorldTime()) ?? 0,
+		nowDays:
+			store.getClock().mode === "real"
+				? (dayNumber(store.referenceNow(), store.getClock()) ?? 0)
+				: (toEpochDays(store.getWorldTime()) ?? 0),
 		domainBlocklist: [],
 		isVisible: vis.isVisible,
 	});
@@ -666,7 +670,7 @@ const GRAPH_LIMIT = { min: 1, max: 500, def: 200 };
 function getGraph(rc: RequestCtx): HandlerResult {
 	const { store } = rc.ctx;
 	const sp = rc.url.searchParams;
-	const worldTime = store.getWorldTime();
+	const worldTime = store.getClock().mode === "real" ? store.nowStamp() : store.getWorldTime();
 
 	// ── Mode 1: domain listing (no domain) ────────────────────────────────
 	const domain = sp.get("domain");
@@ -1002,6 +1006,9 @@ function postAwaken(rc: RequestCtx): HandlerResult {
 }
 
 function postWorldTime(rc: RequestCtx): HandlerResult {
+	if (rc.ctx.store.getClock().mode === "real") {
+		return { status: 200, body: { world_time: rc.ctx.store.nowStamp() } };
+	}
 	const obj = asObject(rc.body);
 	if (!obj) return badRequest("请求体必须是 JSON 对象");
 	const value = strField(obj, "value");
@@ -1080,6 +1087,7 @@ function registryOf(ctx: ServerContext): StoreRegistry {
 	let registry = fallbackRegistries.get(ctx);
 	if (!registry) {
 		registry = new StoreRegistry({
+			clock: ctx.store.getClock(),
 			// The registry's `policy` is required (fail-closed). Bare tests have no
 			// policy to speak of, so fall back to the same default as the CLI.
 			policy: ctx.pathPolicy ?? { roots: [process.cwd()], allowAnyPath: false },
@@ -1249,7 +1257,7 @@ async function getDatabases(rc: RequestCtx): Promise<HandlerResult> {
 					label: record.label,
 					registered: record.registered,
 					nodeCount: open.store.listNodes().length,
-					worldTime: open.store.getWorldTime(),
+					worldTime: open.store.getClock().mode === "real" ? null : open.store.getWorldTime(),
 					// A connection we hold reads as reachable; an external delete
 					// surfaces on the next real request as invalid_db. Listing must
 					// not manufacture a failure the user would blame on the page.
@@ -1259,14 +1267,14 @@ async function getDatabases(rc: RequestCtx): Promise<HandlerResult> {
 			// Unopened: a read-only probe via the discovery layer. Registered dbs
 			// that lie outside the roots land here too — registration does not
 			// exempt them from being counted.
-			const stats = await readMemoryDbStats(record.path);
+			const stats = await readMemoryDbStats(record.path, undefined, ctx.store.getClock().mode);
 			if (stats) {
 				return toDatabaseDTO({
 					path: record.path,
 					label: record.label,
 					registered: record.registered,
 					nodeCount: stats.nodeCount,
-					worldTime: stats.worldTime,
+					worldTime: ctx.store.getClock().mode === "real" ? null : stats.worldTime,
 					error: null,
 				});
 			}
@@ -1285,6 +1293,10 @@ async function getDatabases(rc: RequestCtx): Promise<HandlerResult> {
 			});
 		}),
 	);
+	if (ctx.store.getClock().mode === "real") {
+		const now = ctx.store.nowStamp();
+		for (const database of databases) database.world_time = now;
+	}
 	databases.sort(compareDatabases);
 
 	const body: DatabasesDTO = {
@@ -1321,7 +1333,7 @@ async function postDatabasesOpen(rc: RequestCtx): Promise<HandlerResult> {
 		body: openedBody({
 			path: allowed.path,
 			nodeCount: entry.store.listNodes().length,
-			worldTime: entry.store.getWorldTime(),
+			worldTime: entry.store.getClock().mode === "real" ? entry.store.nowStamp() : entry.store.getWorldTime(),
 			created: false,
 			alreadyRegistered,
 		}),
@@ -1376,6 +1388,7 @@ async function postDatabasesCreate(rc: RequestCtx): Promise<HandlerResult> {
 	let store: MemoryStore | null = null;
 	try {
 		store = await openMemoryStore(target);
+		store.setClock(rc.ctx.store.getClock());
 	} catch (error) {
 		// Best-effort cleanup: only remove a file that is still the 0-byte
 		// placeholder, and never let cleanup failures mask the original error.
@@ -1406,7 +1419,7 @@ async function postDatabasesCreate(rc: RequestCtx): Promise<HandlerResult> {
 		body: openedBody({
 			path: target,
 			nodeCount: entry.store.listNodes().length,
-			worldTime: entry.store.getWorldTime(),
+			worldTime: entry.store.getClock().mode === "real" ? entry.store.nowStamp() : entry.store.getWorldTime(),
 			created: true,
 			alreadyRegistered: false,
 		}),

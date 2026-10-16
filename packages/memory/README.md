@@ -45,7 +45,7 @@ pi --memory-db ./world/magnolia/memory.db
 ### 2.3 在 TUI 里看库
 
 ```text
-/memories               # 概览:世界时间、节点数、TEMP 数、领域列表
+/memories               # 概览:当前时钟（world/real）、节点数、TEMP 数、领域列表
 /memories stat          # 同上
 /memories history://scenes/tavern   # 单节点全文 + 子节点
 /memories search 商队   # 关键词搜索
@@ -240,9 +240,9 @@ export interface MemoryModule {
 
 - **`is_stub`**:memorize 自动补占位的父链节点标记为 1(空正文);FTS、召回、视图一律过滤。stub 不为垃圾,它是"等待被 memorize/revise 填实"的占位——带正文写入 stub 即原地转正(`is_stub=0`,不生成垃圾修订)。
 - **uri 约定**:`domain://路径/段`,如 `history://scenes/tavern`、`core://identity/habits`。`TEMP://`(动态区)与 `MEM://`(系统视图)是保留前缀,内容 domain 不得使用。
-- **raw_log 是稳定活动镜像,不裁剪、不物理删除**(v5.1 定论 + v5.5 修订):`(session_id, entry_id)` 唯一 upsert;切换分支把本 session 离枝行置 `active=0`(不删行、不碰他 session),切回旧分支按原 `raw_id` 复活。重放同一条时 `world_ts` 保留首次写入的世界时间、`wall_ts` 由调用方传入的 entry 原始时间戳刷新(调用方始终传原始时间,故等于不变);要控体积只裁 `node_revisions`。
+- **raw_log 是稳定活动镜像,不裁剪、不物理删除**(v5.1 定论 + v5.5 修订):`(session_id, entry_id)` 唯一 upsert;切换分支把本 session 离枝行置 `active=0`(不删行、不碰他 session),切回旧分支按原 `raw_id` 复活。重放同一条时 `world_ts` 保留首次写入的配置时钟时间、`wall_ts` 由调用方传入的 entry 原始时间戳刷新(调用方始终传原始时间,故等于不变);要控体积只裁 `node_revisions`。
 
-## 5. 工具面(12 个)
+## 5. 工具面(world 12 个，real 11 个)
 
 全部工具为 TypeBox 参数,引擎自动填署名(§10)。写入工具挂在会话上,模型按需调用。
 
@@ -258,7 +258,7 @@ export interface MemoryModule {
 | `trigger` | 埋设检索线索 | 增删 glossary 专名;增删自动重建 FTS,专名即可召回正文不含触发词的节点 |
 | `consolidate` | 记忆综合与收敛 | `resolution: group\|merge\|link\|keep`;group 预检后建主题并用 relocateMany 真分组(源根 parent_id = 主题) |
 | `retrace` | 源头回溯 | `raw_id`、`first_raw_id`+`last_raw_id`、`uri`(节点原文区间)或 `query`(活动原文 FTS)取原文日志 |
-| `set_time` | 世界时钟推演 | 绝对或相对位移(`+1d`/`-2h`),写入全局世界钟 |
+| `set_time` | 世界时钟推演 | 仅 world 模式注册；绝对或相对位移(`+1d`/`-2h`)，写入当前库的世界钟 |
 | `awaken` | 意识焦点管理 | `action: list\|set\|add\|remove`;清单存 kv(`awaken_uris`) |
 
 典型链路:
@@ -279,7 +279,7 @@ static 注册进 `SUPPORTED_SLOTS` + `PromptPresetSlot`,全部 `async: true`(异
 
 | slot | 内容 |
 |---|---|
-| `awaken` | 常驻觉知记忆: 首行带 `> 当前世界时间: YYYY-MM-DD`, 每条以 `### uri` 渲染原文正文, 附带发生时间与自然相对时间 `> (发生于: ...，昨天/约 N 天前)`、想起条件 `> 什么时候想起：...`、子节点 snippet 及想起条件 `(${child.disclosure})`。若子节点本身已在 awaken 顶层清单则自动去重跳过 snippet; 记忆块间以 `\n\n---\n\n` 分隔。渲染时按 uri 现值解析, 节点被删/被 relocate 天然对账 |
+| `awaken` | 常驻觉知记忆: world 模式首行带 `> 当前世界时间: <参照时间>`，real 模式省略该行。每条以 `### uri` 渲染原文正文，附带发生时间与自然相对时间 `> (发生于: ...，昨天/约 N 天前)`、想起条件 `> 什么时候想起：...`、子节点 snippet 及入口想起条件。若子节点本身已在 awaken 顶层清单则自动去重跳过 snippet；记忆块间以 `\n\n---\n\n` 分隔。渲染时按 uri 现值解析，节点被删/被 relocate 天然对账 |
 | `recent` | 按 `updated_ts` 倒序的最新记忆：最新 `rawCount` 条（默认 1）渲染完整原文，其后 `snippetCount` 条（默认 4）渲染 snippet |
 | `index` | 所有 domain 根节点 snippet 一览 |
 
@@ -292,6 +292,17 @@ slots:
     options: { rawCount: 3, snippetCount: 5 }
   - name: index
 ```
+
+### 静态记忆快照
+
+包提供 `createMemoryMacros(store, { isVisible })`，返回同步、`static: true` 的 `memory.awaken`、`memory.recent`、`memory.index`。记忆模块通过可选的宿主 `registerMacro` 发布；没有该接口的宿主跳过宏注册。AgentSession 已接入：先收集，完成记忆初始化后发布；有 scope 时进入会话 promptRegistry，无 scope 时进入进程级自定义宏表，同名覆盖。无 scope 的宏表在进程内共享。
+
+写法为 `{{memory.awaken}}`、`{{memory.recent:rawCount=2,snippetCount=4}}`、`{{memory.index}}`。recent 默认全文 1 条、snippet 4 条；未知键忽略、非法整数回默认、负数夹零、重复键后者生效。
+
+非空输出首行是快照时间及检索提示，awaken 正文只有绝对发生时间，不带相对日期和当前世界时间行；recent/index 正文与 slot 相同。空正文不输出首行。宿主的静态纪元内按宏名与参数复用首次展开结果，记忆写入不立即刷新；运行时重建、预设/工具集合/模型变化、压缩完成后的新纪元首次使用时重新渲染。需要逐轮最新内容用 slot，需要主动查最新记忆用 recall/retrieve。完整刷新规则见根目录文档 §17。
+
+首次请求编译等待运行时就绪，记忆宏在此之前完成发布。同步 static rebuild（产出扩展可见的 systemPrompt）与请求编译查同一个注册表，共用同一份纪元快照；有 scope 的会话只查内置宏和自己的 scope，看不到其他会话注册在进程级的 memory.* 宏。rebuild 若早于记忆宏发布，占位符原样保留，结果按 static 缓存键复用，直到纪元或活动工具集合等键变化。详见根目录文档 §17。
+
 
 ## 7. 召回与注入(引擎内建)
 
@@ -331,19 +342,31 @@ slots:
 | `MEM://diagnostic/<domain>` | nodes | 库健康诊断:stale / crowded / placeholder |
 | `MEM://audit[/<event>/<N>]` / `MEM://audit/id/<ID>` | audit_log | 只读审计流；可看最近 N 条、按 event 过滤或按 ID 精确读取，`details` 不截断；读取本身不追加 audit |
 
-## 10. 署名与世界钟(引擎自动填)
+## 10. 署名与记忆时钟(引擎自动填)
 
 写入工具(`memorize`/`revise`/`autoretain`)执行时引擎自动填,模型无需手写:
 
 - `source`:manual(工具)/ auto(autoretain 产物)。
 - `model`:当前模型 id;同款/异款判定 = 模型 id 全等。
-- `anchor_entry_id`:当前 leaf entry id;`world_ts`:写入时世界钟。
+- `anchor_entry_id`:当前 leaf entry id；`world_ts`:world 模式为写入时世界钟，real 模式缺省为带时区偏移的真实时间。
 - 修订 custody 链:内容署写入者,版本署蒸馏者(`node_revisions.editor_source/editor_model`)。
 
-世界钟存 `memory_kv["world_time"]`:
+`memory.clock` 支持两种模式，缺省 `world`：
 
-- `set_time("2026-09-10")` 绝对设置;`set_time("+1d")` 相对推进(±Nsmhdwy)。
-- 写入工具的 `time` 参数:绝对或相对均可,但**相对位移只给本次写入打时间戳,不动全局钟**——全局钟只有 `set_time` 能推进,批量 revise 不会连推 N 次。
+| 模式 | 打点与参照时间 | 工具与显示 |
+|---|---|---|
+| `world` | 世界钟存 `memory_kv["world_time"]`；store 缺省打点可为 null，工具和相对标注按原规则回退墙钟 | 注册 `set_time`；awaken、MEM://wakeup 保留当前世界时间行 |
+| `real` | 当前真实时间按 timezone 输出带偏移 ISO，如 `2026-10-17T04:00:00+08:00`；正常时间路径不读写 world_time | 不注册 `set_time`；awaken、MEM://wakeup 不打印该行；`/memories` 显示真实时钟 |
+
+`timezone` 只在 real 生效，缺省取进程本地时区；非法 mode 回退 world，非法 timezone 回退进程本地时区，均由 stderr 给出一条 `[memory]` warning，不进入 audit。world 忽略 timezone。store 提供 `setClock/getClock/nowStamp/referenceNow`，未配置默认 world；同库共享 store 最后一次 setClock 生效，不应让共库会话使用不同配置。
+
+world 下 `set_time(value="2026-09-10")` 绝对设置，`set_time(value="+1d")` 相对推进。两模式下写入工具的绝对 time 原样保存，相对位移仅给本次写入打点，不改变全局钟；`revise(time: "")` 仍显式清空。节点、raw_log、audit_log 仍使用 `world_ts` 列，real 缺省写真实时间；已有 raw_log 行保留原值，其他墙钟列语义不变。
+
+real 的相对日期及 recency 参照日按配置时区的本地日期计算，包含夏令时；world 保持原日期前缀分天及回退。recency 的节点日期仍取存储前缀；旧 world 数据或显式不同偏移时间不会迁移，跨日可能与 real 新数据有差异。forgotten/diagnostic 沉睡时长始终用真实墙钟。
+
+**独立 web 的配置边界**：按 `~/.pi/agent/settings.json`、`<cwd>/.pi/settings.json` 读取 memory.clock，项目显式字段覆盖全局字段；即使传了 `--temp-threshold` 也读 clock。所有打开/重开/新建库使用同一进程时钟。real 下 meta/graph/databases/open/create/wakeup 的 world_time 返回真实当前时间（列表统一一次取时，包括不可达条目），搜索按本地当前日，POST `/api/world-time` 忽略 value 并返回真实时间，不写世界钟。
+
+`/memories web` 不传宿主 settings。宿主使用自定义 agentDir（如 ludens 的 `data/brain/agent/`）或只在内存配 clock 时，web 无法读取，仍按上述文件取值，缺省 world。web 前端世界时间文案与控件未改，不代表服务端 real 模式仍使用世界钟。
 
 ## 11. autoretain(后台生成,保险机制)
 
@@ -380,6 +403,10 @@ slots:
 {
   "memory": {
     "dbPath": "./world/magnolia/memory.db",          // 项目级或绝对路径
+    "clock": {
+      "mode": "real",                                 // 缺省 "world"；real 不注册 set_time
+      "timezone": "Asia/Shanghai"                      // real 的 IANA 时区；缺省进程本地时区
+    },
     "rawLog": {
       "customTypes": "all-display-true"               // "all-display-true" | "none" | ["type-a", ...]
     },

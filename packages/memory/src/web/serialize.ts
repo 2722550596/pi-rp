@@ -381,7 +381,7 @@ export interface DatabaseDTO {
 	 * ⚠️ `0` is a REAL state (an empty db) — the two MUST NOT be conflated.
 	 */
 	node_count: number | null;
-	/** World clock; `null` on the same terms as `node_count`. */
+	/** World clock (null when unreachable); real mode gives current time, including unreachable entries. */
 	world_time: string | null;
 	/** Human-readable reason when unreachable; `null` when reachable. */
 	error: string | null;

@@ -3,6 +3,7 @@
 > 状态:**已实施**(Phase 0-3 全量落地,实施 commit b0708f1e6,2026-09-10;**v5.5 修复轮落地,2026-09-11,** 见 `memory-system-audit.md` §27)
 > 相关:`plan.md`(功能规划第 6 项)、`plan/multi-agent-infrastructure.md`(多会话 daemon)、`plan/archives/memory-system.md`(v3 档案)、`~/MEMORY.md`(角色侧补充要求)
 > 版本史:v3(2026-09-01,RP 双轨定位)→ v4(2026-09-09,胶水层现状重核)→ **v5(2026-09-09,逐枝设计评审版,本版取代 v4)** → **v5.1(2026-09-10,首消费者回冲修订,本版取代 v5)** → **v5.2(2026-09-10,系统视图 scheme 更名 `system://` → `MEM://`,与 `TEMP://` 同属保留前缀;seed 索引根改为 `index://` 真域根)** → **v5.3(2026-09-11,`priority`/`importance` 双列合并为单列 `importance`)** → **v5.4(2026-09-11,importance 极性反转为"数值越大越重要";delete 语义定案(真删节点 + node_revisions 保留为找回路径);embeddings 向量通道落地;详见 `memory-system-audit.md`)** → **v5.5(2026-09-11,与 v5.4 同日落地:raw_log 改稳定 session 隔离活动镜像(active 标记,删"物理删除");node 增 anchor_session_id / first/last_raw_id / last_accessed_at;autoretain 引擎接通真实 AgentSession(per-task 进度、脱敏、modelRole);FTS/glossary/edges 真实读端(检索候选、专名召回、显式检索一跳扩散);embeddings 隐私默认 off;keyword 注入档 0.12;access tracking(只记主动想起);审计补全 node_id/turn/task;export/import 三类资产;详见 `memory-system-audit.md` §27)**
+> **v5.6（2026-10-16，记忆时钟双模式 + 静态记忆宏）**：时钟、同步快照宏和 AgentSession 宿主装配已接入；有 scope 时注册到会话 promptRegistry，无 scope 时注册到进程级自定义宏表。
 
 ## 0. v5 相对 v4 的根本分歧
 
@@ -70,8 +71,8 @@ memory.db
 │                      task/anchor/details 列)
 ├── autoretain_progress autoretain 逐任务消费进度(session_id,task,entry_id,
 │                      processed_at;PRIMARY KEY 三者,v5.5)
-└── memory_kv          世界钟等配置(记忆包内建世界钟:配置存此,
-                       set_world_time 工具 + clock 读取 API + timeline/recency 用)
+└── memory_kv          世界钟等配置(world 模式的 world_time 由 set_time / 读取 API 使用;
+                       real 模式的时间路径不读写 world_time，见 §17)
 ```
 
 **明确不存在的表**:`story_events`(取消,纪要=树节点)、`memory_ops`(取消,回滚由 anchor 谓词 + 切换对账接管)、revisions 全局树(取消,由 node_revisions + raw_log 接管)、presets 表(动态区等约定由下游配置承载)。
@@ -80,7 +81,7 @@ memory.db
 
 **定位**:活跃树消息的稳定镜像,是"场景记忆"的原文层。**v5.5 起不再物理删除**——行用 `active` 标记表示是否在活动路径上,`raw_id`/wall/world 时间戳永存。
 
-- 每消息一行:`raw_id`(全库稳定自增主键)、`session_id`(写入 session)、`role`、`text`、`entry_id`(pi 活动树 entry id,回溯指针)、`active`(1=活动路径,0=已切走)、wall 时间戳(entry 原始时间,永不被覆盖)、`world_ts`(写入时世界钟;已存在的行不被覆盖)。
+- 每消息一行:`raw_id`(全库稳定自增主键)、`session_id`(写入 session)、`role`、`text`、`entry_id`(pi 活动树 entry id,回溯指针)、`active`(1=活动路径,0=已切走)、wall 时间戳(entry 原始时间,永不被覆盖)、`world_ts`(world 模式为写入时世界钟，real 模式为带时区偏移的真实时间；已存在的行不被覆盖)。
 - **写入**:turn_end 单遍批量 append 本回合新增(默认收叙事 user / assistant;custom message 收编 = settings 三态开关 `memory.rawLog.customTypes`,默认 all-display-true)。`(session_id, entry_id)` 唯一,重放幂等。
 - **切换即对账(syncRawBranch)**:reroll / 切分支 / 回滚后,把本 session 活动分支完整 upsert 一遍,并把本 session 不在活动路径的行置 `active=0`。**绝不触碰其他 session 的行**——多 session 共库时 A 的 reroll 不隐藏 B 的原文(v5.5 修复 #1)。切回旧分支时旧行按原 `raw_id`/时间戳复活。
 - **检索**:FTS5(查询回表过滤 `active=1`)+ 按 id/区间取回工具(见 §10 工具面)。无向量。
@@ -195,6 +196,8 @@ memory.db
 
 **一套工具服务角色与作家**，不因内容域割裂。摒弃机械去后缀，采用“高阶认知动词 + 语义无冲突”命名；全面吸收 `batch_*` 批处理与冗余工具，将原系统 16–18 个工具槽位精简收敛为 **12 个顶级工具**（v5.5 定名：recall / retrieve / memorize / revise / forget / relocate / associate / trigger / consolidate / retrace / set_time / awaken）。
 
+`world` 模式注册上述 12 个工具；`real` 模式不注册 `set_time`，其余 11 个不变。
+
 ### 对照表
 
 | 旧名 | 推荐新名 | 说明 |
@@ -209,7 +212,7 @@ memory.db
 | `tag_memory` | **`trigger`** | 埋设检索线索：增删触发词汇(`glossary_keywords`);增删自动重建该节点 FTS,专名即可检索正文不含触发词的节点|
 | `merge_memories` / `organize_memory` | **`consolidate`** | 记忆综合与结构收敛：统一多源提炼；`resolution` = `group`/`merge`/`link`/`keep`。**group 真分组**:先预检(源末段重名/目标占用/目标在源子树/源互为祖先),再建主题节点、`relocateMany` 把每个源根移到 `target_uri/<源末段>`,移动后源根 parent_id = 主题 node_id;冲突时不建主题、不移动任何源|
 | `boot_memory` | **`awaken`** | 意识焦点管理：管理角色醒来自动载入的常驻/工作记忆清单（`add`/`set`/`remove`/`list`）|
-| `set_world_time` | **`set_time`** | 世界时钟推演：设置或按相对位移（如 `+1d`）推进世界观时间轴；单动词与全体系保持绝对对齐|
+| `set_world_time` | **`set_time`** | 仅 world 模式注册：设置或按相对位移（如 `+1d`）推进世界观时间轴 |
 | `archive_history` | **(废除)** | 场景历史日志归档属于运行时快照/审计流水，不占角色主记忆认知工具位|
 | `recent_memories` | **(废除)** | 职责完全被 `recall(uri="MEM://recent/10")` 覆盖，不再独立占用顶级工具位|
 | (新增) | **`retrace`** | 源头回溯：按 ID、起止区间、**URI(节点 first/last_raw_id + anchor_session_id 区间)** 或 **query(raw FTS 活动行)** 提取底层历史原文日志，与认知层面的记忆节点解耦 |
@@ -220,7 +223,7 @@ memory.db
 
 | slot | 内容 | 取代 |
 |---|---|---|
-| **awaken** | 常驻觉知记忆：醒来时预加载的 URI 原文 + 子节点 snippet（+世界时间行） | 旧 boot（彻底去除系统启动味与 state 化） |
+| **awaken** | 常驻觉知记忆：醒来时预加载的 URI 原文 + 子节点 snippet；world 模式附当前世界时间行，real 模式省略该行 | 旧 boot（彻底去除系统启动味与 state 化） |
 | **recent** | 按 updated_ts 拉最新记忆;原文 / snippet 各自数量可配(options) | 旧 history + state(两 slot 职能合并) |
 | **index** | 所有 domain 根节点 snippet 视图 | 新增(现 MEM://index/<domain> 的全局化) |
 
@@ -230,9 +233,18 @@ memory.db
 
 静态注册进 `SUPPORTED_SLOTS` + `PromptPresetSlot`(沿 v4);slot 定义声明 `async: true`(异步编译路径已由扩展验证)。
 
+### 静态记忆宏
+
+`createMemoryMacros(store, opts)` 提供三个同步、`static: true` 的宏：`{{memory.awaken}}`、`{{memory.recent}}`、`{{memory.index}}`。它们与对应 slot 共用可见性过滤和正文渲染。记忆模块在 slots 注册后、`registerSession` 返回前，通过可选的 `host.registerMacro` 发布；旧宿主没有此方法时安静跳过。宿主按名称覆盖注册以保持幂等。
+
+`{{memory.recent:rawCount=2,snippetCount=4}}` 控制全文与 snippet 数量，默认分别为 1、4。参数按逗号分隔，只认这两个键；未知键忽略，非法整数按键回默认，负数夹到 0，重复键后者生效。
+
+非空快照第一行为 `> 快照时间: <参照时间>（此后新写入的记忆不在这份快照里，需要时用 recall 或 retrieve 查）`。awaken 快照保留发生时间的绝对值，省略相对日期和当前世界时间行；recent/index 正文与 slot 相同。空正文返回空串，不输出快照行。宏渲染本身不缓存，静态纪元由宿主提供；刷新时机见 §17。
+
+
 ## 12. 包结构与 API
 
-- **两层 API**:`createMemoryModule`(session 绑定,注册工具/slot/钩子/注入,RP 场景直接用)+ `MemoryStore`(纯库层:graph/search/kv,无 pi 依赖,worldlines 类外部消费者直接以 TS 依赖引用)。另留 autoretain 任务注册接口。
+- **两层 API**:`createMemoryModule`(session 绑定,注册工具/slot/可选静态宏/钩子/注入,RP 场景直接用)+ `MemoryStore`(纯库层:graph/search/kv,无 pi 依赖,worldlines 类外部消费者直接以 TS 依赖引用)。另留 autoretain 任务注册接口。
 - SQLite 驱动:**node:sqlite 为主**(`DatabaseSync`,与 session 存储同族,pi-rp 主链路是 node,Bun 只用于编译二进制);包内只留一个 `openDatabase()` 内部函数,若 bun 编译产物中 node:sqlite 不可用再局部加后备,不预付双驱动成本。
 - 向量:仅树节点;**只做 API 模式**(siliconflow bge-large-zh-v1.5,`mode: off` 纯 FTS 降级);`embeddings/` = API 客户端(零依赖 fetch)+ 向量缓存表读写。
 - CJK 分词:**`@node-rs/jieba`**。零依赖不是目标本身,分词质量优先;引入原生依赖的代价(install 体积、平台二进制)接受。接口仍抽象,极端场景可换。
@@ -269,7 +281,7 @@ memory.db
 12. 召回:调参版整体迁移(0.55/0.3/0.15 等);注入只出树节点;黑名单默认 maintenance 类,TEMP 不进;RRF 只在工具查询场景(→2026-09-22 升格为注入向量通道的融合方式,§9.1)。v5.5:keyword 注入档独立 `keywordMinScore`(默认 0.12)且要求真实命中;候选集走 FTS;稳定同分次键。
 13. slot:awaken / recent / index 三个,静态注册,async:true。
 14. 工具:一套统一、去后缀、归并(**12 个**:recall / retrieve / memorize / revise / forget / relocate / associate / trigger / consolidate / retrace / set_time / awaken);browse→recall、forget→delete 语义收敛、archive_history 废除、新增 raw(retrace)。
-15. 世界钟内建记忆包(配置 memory_kv + 工具 + 读取 API)。
+15. 记忆时钟有 world/real 两种模式，缺省 world 保持原行为；real 使用真实时间及配置时区，不注册 set_time。时钟挂在 store，配置与边界见 §17。
 16. 包 API 两层:MemoryStore 纯库 + createMemoryModule;autoretain 任务注册接口。
 17. 驱动:node:sqlite 为主,编译场景留后备口;向量仅节点、仅 API、可 off。
 18. Phase:0 schema → 1 工具/slot/路由 → 2 召回/注入/回滚/署名 → 3 autoretain/TEMP/读端。
@@ -289,6 +301,7 @@ memory.db
 32. **keyword 注入档(v5.5)**:`memory.recall.keywordMinScore` 默认 0.12、要求 kw>0;vector 模式仍 minScore 0.35。显式 retrieve 两种模式 minScore:0,但 keyword 模式同样要求真实命中。
 33. **preset memory 声明 + 生命周期(v5.5)**:`PromptPreset.memory.dbPath` 接入解析链(`PI_MEMORY_DB > settings.memory.dbPath > activePreset.memory.dbPath > <cwd>/.pi/memory.db`);`_setupMemoryModule` 每次 reload 先 dispose 旧 module 再按当前配置重建;preset 切换解析路径变化时 `requestReload()` 干净重绑;`/memories` 只用 AgentSession 已解析路径(`ctx.getMemoryDbPath()`)。
 34. **想起条件入口化(v5.6)**:disclosure 的权威位置从「节点」迁到「入口」(`aliases.disclosure`);生效口径由唯一函数 `effectiveDisclosure(uri)` 定义(`nodes.uri` 优先,别名次之,`??` 继承节点级);`edges.disclosure` 是**关联条件**(pi-rp 扩展,**非** nocturne 对应物),不进回退链;检索按节点级匹配,UI 列表页标注「节点级」、详情页升级为入口级。
+35. **静态记忆快照**：三个同步 memory.* 宏按静态纪元复用；记忆写入不触发刷新。需要逐轮内容时使用 slot，需要最新记忆时用 recall/retrieve；见 §17。
 
 ## 15. 本轮评审补充决策(2026-09-09,ask 批次)
 
@@ -318,3 +331,50 @@ memory.db
 | raw_log 无限增长导致库体积缓慢膨胀 | 接受(§4 增长与留存:收益白赚、成本极低);若实测异常增加,先查 node_revisions 与 embeddings 缓存,不裁 raw_log |
 | DB 文件损坏/丢失 | 真源在 session jsonl;raw_log 可由 jsonl 重建;树/修订/kv 经 export()/import() 快照恢复;文档写明恢复流程 |
 | 审计留痕成本 | append-only 单行,不参与查询/注入/回滚语义;默认开可关;暴露即接口,不透出存储细节 |
+
+## 17. 记忆时钟与静态快照（v5.6）
+
+### 配置与两种模式
+
+```json
+{
+  "memory": {
+    "clock": { "mode": "real", "timezone": "Asia/Shanghai" }
+  }
+}
+```
+
+`memory.clock.mode` 缺省为 `world`，`timezone` 只在 `real` 模式生效，缺省取进程本地时区。非法 mode 回退 world；非法 timezone 回退进程本地时区；通过 stderr 输出一条带 `[memory]` 前缀的 warning，不进入 audit_log，不增加 warning 返回通道。
+
+| 行为 | world（默认） | real |
+|---|---|---|
+| 写入打点 `store.nowStamp()` | 当前世界钟，可为 null | 当前真实时间，带当地偏移，如 `2026-10-17T04:00:00+08:00` |
+| 参照时间 `store.referenceNow()` | 世界钟；未设时回退墙钟 UTC ISO | 当前真实时间，按配置时区呈现 |
+| `set_time` | 注册，读写 `memory_kv["world_time"]` | 不注册；正常时间路径不读写该键 |
+| awaken / MEM://wakeup | 保留当前世界时间行及原有回退 | 省略当前世界时间行，仍按真实时间做相对标注 |
+| `/memories` 概览 | 世界时间 | 真实时钟 |
+
+时钟由 `createMemoryModule` 解析后通过 `store.setClock` 设置；独立消费者也可使用 `setClock/getClock/nowStamp/referenceNow`。未配钟的 store 默认 world。节点、raw_log、audit_log 的列名仍为 `world_ts`，real 下缺省写带偏移的真实时间；`created_at`、`updated_ts`、raw_log 的 `wall_ts`、audit_log 的 `ts` 语义不变。已有 raw_log 行不重打点。显式绝对 `time` 原样保存，相对位移只影响本次写入；`revise(time: "")` 仍显式清空为 NULL。
+
+### 分天与兼容边界
+
+相对日期和 recency 的“现在”在 real 模式按 timezone 的本地日期换算日序数；偏移按该瞬间计算，包含夏令时。world 继续按原日期前缀计算，不改变既有回退行为；web 搜索在世界钟未设时仍以日序数 0 为参照。recency 的节点日期仍取存储时间的日期前缀，新 real 打点此前缀就是本地日期；旧 world 数据或显式不同偏移时间不会迁移，混用可能在跨日边界产生差异。forgotten/diagnostic 的沉睡时长仍按真实墙钟计算，与故事钟无关。
+
+同一个 DB 的共享 store 只有一个时钟，最后一次 `setClock` 生效；多个会话给同库配置不同模式或时区属于误用。切换模式不迁移历史时间戳。
+
+### 独立 web 进程
+
+web CLI 按 `~/.pi/agent/settings.json`、`<cwd>/.pi/settings.json` 顺序读取 TEMP 阈值与 `memory.clock`；项目 clock 的显式字段逐个覆盖全局字段。即使使用 `--temp-threshold`，也会读取时钟配置。进程库、registry 延迟打开及 LRU 重开、新建库临时连接和重新注册连接都配同一个进程时钟。
+
+real 下 meta、graph、databases、open/create、wakeup 的 `world_time` 字段给出带偏移的真实当前时间；列表收尾只取一次时间，统一用于已开、未开及不可达条目，不可达状态仍由 reachable/error/node_count 表达。未打开库的 real 统计不读世界钟，缓存按模式分区。搜索使用本地当前日，POST `/api/world-time` 忽略 value 并返回真实当前时间，不设置世界钟。world 分支保留既有值和校验。
+
+`/memories web` 只传库路径和端口，不携带宿主内存中的 settings。宿主使用自定义 agentDir（如 ludens 的 `data/brain/agent/`）或只在内存配置 real 时钟时，web 读不到该配置，仍按上述两个文件取值，缺省 world；不能保证与宿主一致。web 前端的世界时间标签和设置控件未随服务端改动。
+
+### 静态记忆宏的刷新时机
+
+支持静态纪元的宿主在同一纪元内，按宏名与调用参数复用第一次同步渲染的结果，空串也会缓存。会话运行时就绪或重建（包括 reload）、活动预设变化、活动工具集合变化、模型 provider/id 变化、压缩完成都会开启新纪元；下一次需要展开该宏时才重新读取记忆和参照时间。
+
+普通记忆写入、时间流逝、切分支本身不会刷新快照。宏只呈现生成时可见的记忆；需要当下内容时用 recall/retrieve，需要逐轮重新渲染时用对应 slot。AgentSession 先收集宏，完成 onLeafChange 初始化后才发布；有 scope 时进入会话 promptRegistry，无 scope 时进入进程级自定义宏表，同名覆盖。无 scope 的宏表是进程共享的，不具备会话隔离。
+
+首次请求的预设编译等待运行时就绪，届时记忆宏已发布。同步 `_rebuildSystemPrompt` 与请求编译查同一个注册表（有 scope 用会话 scope，无 scope 用进程级宏表），共用同一份纪元快照，所以扩展可见的 systemPrompt 与实际请求取到同一份记忆快照；有 scope 的会话不会读到其他会话注册在进程级的 memory.* 宏。已知边界：rebuild 若早于记忆宏发布，`{{memory.*}}` 占位符原样保留，该结果按 static 缓存键复用，直到纪元、活动工具集合等键变化后重新编译；首次初始化前不要把它当作会话记忆宏已就绪的入口。
+

@@ -18,6 +18,7 @@
  * The entry point takes EXPLICIT structured parameters (`name` / `domain` / `limit`).
  * It MUST NOT accept or parse a `MEM://` URI (contract §16.8 / P17).
  */
+import { dayNumber } from "../clock.ts";
 import { formatRelativeWorldTime, toEpochDays } from "../recall.ts";
 import type { MemoryNode, MemoryStore, VisibilityPredicate } from "../store.ts";
 import { getAwakenUris } from "../tools.ts";
@@ -356,7 +357,8 @@ export function buildWakeupView(
 	isShadowed: (nodeId: string) => boolean,
 ): ViewDTO {
 	// 真实时钟回退：与 renderWakeupView 保持一致（parity）。
-	const worldTime = store.getWorldTime() ?? new Date().toISOString();
+	const worldTime =
+		store.getClock().mode === "real" ? store.referenceNow() : (store.getWorldTime() ?? new Date().toISOString());
 	// Both sets start from the RAW list (§2.6 ①/③): an alias in the list makes
 	// the `fullUris.has(child.uri)` test miss, and `render*` replays that miss.
 	const fullUris = new Set<string>(awakenUris);
@@ -401,7 +403,10 @@ export function buildWakeupView(
 			importance: node.importance,
 			shadowed: isShadowed(node.node_id),
 			world_ts: node.world_ts,
-			world_ts_relative: formatRelativeWorldTime(node.world_ts, worldTime),
+			world_ts_relative:
+				store.getClock().mode === "real"
+					? formatRelativeWorldTime(node.world_ts, worldTime, (t) => dayNumber(t, store.getClock()))
+					: formatRelativeWorldTime(node.world_ts, worldTime),
 			disclosure: store.effectiveDisclosure(node.uri),
 			content: node.content,
 			children,

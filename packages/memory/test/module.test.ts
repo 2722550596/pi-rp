@@ -11,7 +11,10 @@ import {
 	rebuildInjectedFromEntries,
 	shouldCaptureCustomType,
 } from "../src/module.ts";
+import type { RecalledItem, RecallMode } from "../src/recall.ts";
+import * as recall from "../src/recall.ts";
 import { createSchema } from "../src/schema.ts";
+import type { MemoryMacroDefinition } from "../src/slots.ts";
 import type { MemoryNode } from "../src/store.ts";
 import { MemoryStore } from "../src/store.ts";
 import { DEFAULT_TIDY_SYSTEM_PROMPT } from "../src/tidy-prompts.ts";
@@ -123,6 +126,164 @@ function nodeByUri(uri: string): MemoryNode {
 function t(role: string, text: string, entryId: string, extra: Partial<MemoryTurnMessage> = {}): MemoryTurnMessage {
 	return { role, text, entryId, timestamp: `2026-09-10T00:00:0${entryId.slice(-1)}Z`, ...extra };
 }
+
+describe("steering memory injection", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("returns one rp-memories result with the same shape as prompt recall", async () => {
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		const h = createHostMock();
+		const module = createMemoryModule(store, HYBRID);
+		module.registerSession(h.host);
+		const prompt = "伊莱在酒馆遇到了谁？";
+		const expected = await fireBeforeAgentStart(h.hooks, prompt);
+		const result = await module.onSteeringMessages([{ role: "user", content: prompt }]);
+		expect(result).toEqual(expected);
+		expect(result?.message).toMatchObject({
+			customType: "rp-memories",
+			display: false,
+			details: { ids: ["history://tavern"] },
+		});
+		expect(result?.message.content).toContain("history://tavern");
+	});
+
+	it.each(["prompt", "steering"] as const)(
+		"deduplicates across paths after %s injection is persisted",
+		async (firstPath) => {
+			store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉" });
+			const snapshot: MemoryBranchSnapshot = { entryIds: [], entries: [] };
+			const h = createHostMock(snapshot);
+			const module = createMemoryModule(store, HYBRID);
+			module.registerSession(h.host);
+			const prompt = "伊莱在酒馆遇到了谁";
+			const batch = [{ role: "user", content: prompt }];
+			const first =
+				firstPath === "prompt"
+					? await fireBeforeAgentStart(h.hooks, prompt)
+					: await module.onSteeringMessages(batch);
+			expect(first?.message).toBeDefined();
+			snapshot.entries.push({ type: "custom_message", ...first?.message });
+			const second =
+				firstPath === "prompt"
+					? await module.onSteeringMessages(batch)
+					: await fireBeforeAgentStart(h.hooks, prompt);
+			expect(second).toBeUndefined();
+		},
+	);
+
+	it.each([
+		[{ role: "custom", content: "酒馆" }],
+		[{ role: "user", content: " /help" }],
+		[{ role: "user", content: " \\command" }],
+		[{ role: "user", content: "   " }],
+		[{ role: "user", content: [{ type: "image", data: "image", mimeType: "image/png" }] }],
+	])("skips batches without eligible user text: %j", async (message) => {
+		const search = vi.spyOn(recall, "search");
+		const module = createMemoryModule(store, OFFLINE);
+		module.registerSession(createHostMock().host);
+		expect(await module.onSteeringMessages([message])).toBeUndefined();
+		expect(search).not.toHaveBeenCalled();
+	});
+
+	it("merges eligible user text in queue order and recalls once with prior context", async () => {
+		const search = vi.spyOn(recall, "search").mockResolvedValue({ items: [], mode: "keyword" });
+		const module = createMemoryModule(store, OFFLINE);
+		module.registerSession(
+			createHostMock({ entries: [{ type: "message", message: { role: "assistant", content: "old context" } }] })
+				.host,
+		);
+		expect(
+			await module.onSteeringMessages([
+				{ role: "user", content: " first " },
+				{ role: "custom", content: "ignore" },
+				{ role: "user", content: "/skip" },
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: " second " },
+						{ type: "image", data: "ignore", mimeType: "image/png" },
+					],
+				},
+			]),
+		).toBeUndefined();
+		expect(search).toHaveBeenCalledTimes(1);
+		expect(search.mock.calls[0][2].queries).toEqual(["first\nsecond", "Prior context:\nassistant: old context"]);
+	});
+
+	it("warns once and returns undefined when steering recall fails", async () => {
+		vi.spyOn(recall, "search").mockRejectedValue(new Error("search unavailable"));
+		const warning = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const module = createMemoryModule(store, OFFLINE);
+		module.registerSession(createHostMock().host);
+		expect(await module.onSteeringMessages([{ role: "user", content: "酒馆" }])).toBeUndefined();
+		expect(warning).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps prompt recall failures silent", async () => {
+		vi.spyOn(recall, "search").mockRejectedValue(new Error("search unavailable"));
+		const warning = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const consoleWarning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const module = createMemoryModule(store, OFFLINE);
+		const h = createHostMock();
+		module.registerSession(h.host);
+		expect(await fireBeforeAgentStart(h.hooks, "酒馆")).toBeUndefined();
+		expect(warning).not.toHaveBeenCalled();
+		expect(consoleWarning).not.toHaveBeenCalled();
+	});
+
+	it("returns undefined without a session snapshot", async () => {
+		const search = vi.spyOn(recall, "search");
+		const module = createMemoryModule(store, OFFLINE);
+		expect(await module.onSteeringMessages([{ role: "user", content: "酒馆" }])).toBeUndefined();
+		expect(search).not.toHaveBeenCalled();
+	});
+
+	it.each(["prompt", "steering"] as const)(
+		"aborts in-flight %s recall on dispose but can still inject keyword fallback",
+		async (path) => {
+			const fallback = Promise.withResolvers<{ items: RecalledItem[]; mode: RecallMode }>();
+			let signal: AbortSignal | undefined;
+			vi.spyOn(recall, "search").mockImplementation((_store, _client, _options, recallSignal) => {
+				signal = recallSignal;
+				return fallback.promise;
+			});
+			const module = createMemoryModule(store, OFFLINE);
+			const h = createHostMock();
+			module.registerSession(h.host);
+			const pending =
+				path === "prompt"
+					? fireBeforeAgentStart(h.hooks, "酒馆")
+					: module.onSteeringMessages([{ role: "user", content: "酒馆" }]);
+			expect(signal?.aborted).toBe(false);
+			module.dispose();
+			expect(signal?.aborted).toBe(true);
+			fallback.resolve({
+				mode: "keyword",
+				items: [
+					{
+						node_id: "fallback",
+						uri: "history://tavern",
+						disclosure: null,
+						summary: "酒馆",
+						excerpt: "酒馆",
+						content: "酒馆",
+						score: 1,
+						kw: 1,
+						vec: 0,
+						bm25: 1,
+					},
+				],
+			});
+			const result = await pending;
+			expect(result?.message).toMatchObject({
+				customType: "rp-memories",
+				details: { ids: ["history://tavern"], mode: "keyword" },
+			});
+		},
+	);
+});
 
 // ── Injection breaker (§9.1) ─────────────────────────────────────────────────
 
@@ -704,6 +865,29 @@ describe("onLeafChange", () => {
 // ── raw_log write-through (§4/§15.3) ────────────────────────────────────────
 
 describe("onTurnEnd", () => {
+	it("stamps real raw_log writes on turn end and branch reconciliation without the world clock", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-10-16T20:00:00Z"));
+		const module = createMemoryModule(store, {
+			settings: { embeddings: { mode: "off" }, clock: { mode: "real", timezone: "Asia/Shanghai" } },
+		});
+		const h = createHostMock({}, [t("user", "真实时间", "u1")]);
+		module.registerSession(h.host);
+		const get = vi.spyOn(store, "getWorldTime").mockImplementation(() => {
+			throw new Error("world read");
+		});
+		try {
+			await module.onTurnEnd();
+			expect(store.listRaw(1)[0].world_ts).toBe("2026-10-17T04:00:00+08:00");
+			await module.onLeafChange();
+			expect(store.listRaw(1)[0].world_ts).toBe("2026-10-17T04:00:00+08:00");
+			expect(get).not.toHaveBeenCalled();
+		} finally {
+			get.mockRestore();
+			module.dispose();
+			vi.useRealTimers();
+		}
+	});
 	it("appends this turn's messages to raw_log with original timestamps and world_ts", async () => {
 		store.setWorldTime("2026-06-01T00:00:00.000Z");
 		const module = createMemoryModule(store, OFFLINE);
@@ -769,6 +953,49 @@ describe("onTurnEnd", () => {
 // ── registerSession surface ─────────────────────────────────────────────────
 
 describe("registerSession", () => {
+	it("publishes synchronous macros before registration returns and replaces names idempotently", () => {
+		store.put({ uri: "core://focus", content: "同步快照正文" });
+		store.setKv("awaken_uris", JSON.stringify(["core://focus"]));
+		const module = createMemoryModule(store, OFFLINE);
+		const h = createHostMock();
+		const macros = new Map<string, MemoryMacroDefinition>();
+		h.host.registerMacro = (macro) => {
+			macros.set(macro.name, macro);
+		};
+		module.registerSession(h.host);
+		module.registerSession(h.host);
+		expect([...macros.keys()]).toEqual(["memory.awaken", "memory.recent", "memory.index"]);
+		for (const macro of macros.values()) {
+			expect(macro.static).toBe(true);
+			expect(macro.render({ runtime: undefined, variables: {} })).toContain("同步快照正文");
+		}
+		module.dispose();
+	});
+
+	it("keeps macro visibility synchronized with branch changes", async () => {
+		store.put({
+			uri: "history://auto",
+			content: "分支自动记忆",
+			source: "auto",
+			anchor_entry_id: "e1",
+			anchor_session_id: "session-1",
+		});
+		const module = createMemoryModule(store, OFFLINE);
+		const snapshot: MemoryBranchSnapshot = { entryIds: ["e1"], entries: [] };
+		const h = createHostMock(snapshot);
+		const macros = new Map<string, MemoryMacroDefinition>();
+		h.host.registerMacro = (macro) => {
+			macros.set(macro.name, macro);
+		};
+		module.registerSession(h.host);
+		await module.onLeafChange();
+		const macro = macros.get("memory.recent")!;
+		expect(macro.render({ runtime: undefined, variables: {} })).toContain("分支自动记忆");
+		snapshot.entryIds = [];
+		await module.onLeafChange();
+		expect(macro.render({ runtime: undefined, variables: {} })).toBe("");
+		module.dispose();
+	});
 	it("registers 12 tools, 3 slots, the rp-memories policy and the recall hook", async () => {
 		const module = createMemoryModule(store, OFFLINE);
 		const h = createHostMock();

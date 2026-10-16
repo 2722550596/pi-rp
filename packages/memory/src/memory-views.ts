@@ -6,6 +6,7 @@
  * read-only audit view. timeline 数据源 = raw_log 消息级带 world_ts（§15.4）；
  * 纪要节点不入轴。
  */
+import { dayNumber } from "./clock.ts";
 import { formatRelativeWorldTime, toEpochDays } from "./recall.ts";
 import type { MemoryAuditRecord, MemoryNode, MemoryStore } from "./store.ts";
 
@@ -131,9 +132,10 @@ export function renderWakeupView(
 	isVisible: (n: MemoryNode) => boolean = () => true,
 ): string {
 	// 真实时钟回退：钟未设时相对标注按墙钟算。
-	const worldTime = store.getWorldTime() ?? new Date().toISOString();
+	const worldTime =
+		store.getClock().mode === "real" ? store.referenceNow() : (store.getWorldTime() ?? new Date().toISOString());
 	const sections: string[] = [];
-	if (worldTime) {
+	if (store.getClock().mode !== "real" && worldTime) {
 		sections.push(`> 当前世界时间: ${worldTime}`);
 	}
 	const fullUris = new Set<string>(awakenUris);
@@ -143,7 +145,7 @@ export function renderWakeupView(
 		if (!node || node.is_stub || !isVisible(node)) continue;
 		const lines = [`### ${node.uri}`];
 		if (node.world_ts) {
-			const rel = formatRelativeWorldTime(node.world_ts, worldTime);
+			const rel = formatRelativeWorldTime(node.world_ts, worldTime, (t) => dayNumber(t, store.getClock()));
 			lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
 		}
 		const disc = store.effectiveDisclosure(uri);

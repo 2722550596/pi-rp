@@ -1,5 +1,6 @@
+import { dayNumber, formatStamp, type ResolvedMemoryClock, WORLD_CLOCK } from "./clock.ts";
 import type { MemoryDatabase, MemoryStatement } from "./driver.ts";
-import { buildGlossaryTerms, buildPool, rank, toEpochDays } from "./recall.ts";
+import { buildGlossaryTerms, buildPool, rank } from "./recall.ts";
 import {
 	FTS_REBUILD_KEY,
 	FTS_TOKENIZER_KEY,
@@ -235,6 +236,7 @@ const WORLD_TIME_KEY = "world_time";
 
 export class MemoryStore {
 	readonly db: MemoryDatabase;
+	private clock: ResolvedMemoryClock = WORLD_CLOCK;
 	private getStmt: MemoryStatement;
 	private byUriStmt: MemoryStatement;
 	private aliasEntryStmt: MemoryStatement;
@@ -422,7 +424,7 @@ export class MemoryStore {
 				input.first_raw_id ?? null,
 				input.last_raw_id ?? null,
 				now,
-				input.world_ts ?? this.getWorldTime(),
+				input.world_ts ?? this.nowStamp(),
 				now,
 				null,
 				hashContent(input.content),
@@ -1676,6 +1678,24 @@ export class MemoryStore {
 		return value;
 	}
 
+	setClock(clock: ResolvedMemoryClock): void {
+		this.clock = clock;
+	}
+
+	getClock(): ResolvedMemoryClock {
+		return this.clock;
+	}
+
+	nowStamp(): string | null {
+		return this.clock.mode === "real" ? formatStamp(new Date(), this.clock) : this.getWorldTime();
+	}
+
+	referenceNow(): string {
+		return this.clock.mode === "real"
+			? formatStamp(new Date(), this.clock)
+			: (this.getWorldTime() ?? new Date().toISOString());
+	}
+
 	// ── Recall ────────────────────────────────────────────────────────────────
 
 	/**
@@ -1694,7 +1714,7 @@ export class MemoryStore {
 			isVisible: options.isVisible,
 			topK: options.limit ?? 10,
 			minScore: 0,
-			nowDays: toEpochDays(this.getWorldTime() ?? new Date().toISOString()) ?? 0,
+			nowDays: dayNumber(this.referenceNow(), this.clock) ?? 0,
 		};
 		const fts = this.searchNodeFts([query]);
 		if (fts.size === 0) return [];
@@ -1953,7 +1973,7 @@ export class MemoryStore {
 			)
 			.run(
 				new Date().toISOString(),
-				this.getWorldTime(),
+				this.nowStamp(),
 				event,
 				details.node_id ?? null,
 				details.object ?? null,

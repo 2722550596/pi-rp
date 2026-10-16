@@ -239,10 +239,11 @@ export function toEpochDays(ts: string | null): number | null {
 export function formatRelativeWorldTime(
 	targetTs: string | null | undefined,
 	currentTs: string | null | undefined,
+	dayOf: (ts: string) => number | null = toEpochDays,
 ): string {
 	if (!targetTs || !currentTs) return "";
-	const targetDays = toEpochDays(targetTs);
-	const currentDays = toEpochDays(currentTs);
+	const targetDays = dayOf(targetTs);
+	const currentDays = dayOf(currentTs);
 	if (targetDays == null || currentDays == null) return "";
 
 	const diff = targetDays - currentDays;

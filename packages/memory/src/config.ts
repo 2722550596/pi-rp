@@ -23,6 +23,7 @@ export interface AutoTidySettings {
 /** settings.memory.* shape (coding-agent Settings.memory, §15.3). */
 export interface MemorySettings {
 	dbPath?: string;
+	clock?: { mode?: "world" | "real"; timezone?: string };
 	rawLog?: { customTypes?: "all-display-true" | "none" | string[] };
 	autoretain?: {
 		everyNTurns?: number;

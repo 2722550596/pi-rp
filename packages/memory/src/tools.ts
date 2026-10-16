@@ -16,6 +16,7 @@
  *   filter hidden auto nodes via the live visibility predicate.
  */
 import { type Static, type TSchema, Type } from "typebox";
+import { dayNumber, formatStamp } from "./clock.ts";
 import { generateDiffString } from "./diff.ts";
 import type { EmbeddingClient } from "./embeddings.ts";
 import {
@@ -28,7 +29,7 @@ import {
 	renderTimelineView,
 	renderWakeupView,
 } from "./memory-views.ts";
-import { formatRelativeWorldTime, search, toEpochDays } from "./recall.ts";
+import { formatRelativeWorldTime, search } from "./recall.ts";
 import type { MemoryNode, MemoryStore, VisibilityPredicate } from "./store.ts";
 
 /**
@@ -251,21 +252,23 @@ function parseWorldTime(store: MemoryStore, time: string | undefined): string | 
 	if (relative) {
 		const [, sign, amount, unit] = relative;
 		const ms: Record<string, number> = { s: 1e3, m: 6e4, h: 36e5, d: 864e5, w: 6048e5 };
-		const base = Date.parse(store.getWorldTime() ?? new Date().toISOString());
+		const base = Date.parse(store.referenceNow());
 		if (!Number.isFinite(base) || !unit || !ms[unit]) return time;
 		const delta = Number(amount) * ms[unit];
-		return new Date(sign === "+" ? base + delta : base - delta).toISOString();
+		const date = new Date(sign === "+" ? base + delta : base - delta);
+		return store.getClock().mode === "real" ? formatStamp(date, store.getClock()) : date.toISOString();
 	}
 	return time;
 }
 
-/** Resolve the temporal value a write should stamp: explicit time > world clock. */
+/** Resolve this write's timestamp: explicit time > configured clock and its fallback. */
 function stampWorldTs(store: MemoryStore, time: string | undefined): string | null {
 	if (time !== undefined && time !== "") {
 		const parsed = parseWorldTime(store, time);
 		if (parsed !== null) return parsed;
 	}
-	// 真实时钟回退（nocturne enabled=false 语义）：世界钟未设时用墙钟打点。
+	// real uses a zone-offset stamp; unset world retains the wall-clock fallback.
+	if (store.getClock().mode === "real") return store.nowStamp();
 	return store.getWorldTime() ?? new Date().toISOString();
 }
 
@@ -438,10 +441,10 @@ async function executeRecall(
 	}
 
 	const lines: string[] = [`# [${node.uri}]`];
-	// 真实时钟回退：钟未设时相对标注按墙钟算。
-	const currWorldTime = store.getWorldTime() ?? new Date().toISOString();
+	// Relative dates follow the configured clock's reference time and calendar.
+	const currWorldTime = store.referenceNow();
 	if (node.world_ts) {
-		const rel = formatRelativeWorldTime(node.world_ts, currWorldTime);
+		const rel = formatRelativeWorldTime(node.world_ts, currWorldTime, (t) => dayNumber(t, store.getClock()));
 		lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
 	}
 	const nodeDisc = store.effectiveDisclosure(uri);
@@ -559,7 +562,7 @@ async function executeRetrieve(store: MemoryStore, params: Static<typeof retriev
 		// surfaces (§5.9).
 		minScore: 0,
 		keywordMinScore: 0,
-		nowDays: toEpochDays(store.getWorldTime() ?? new Date().toISOString()) ?? 0,
+		nowDays: dayNumber(store.referenceNow(), store.getClock()) ?? 0,
 	});
 
 	// One-hop edge diffusion (§5.5): related nodes append after the direct
@@ -1510,9 +1513,8 @@ async function executeAwaken(store: MemoryStore, params: Static<typeof awakenPar
 // ── registration ───────────────────────────────────────────────────────────
 
 /**
- * Build the 12 memory tools bound to `store`.
- * Phase 2 passes a real MemoryToolContext per session; until then provenance
- * fields stay null and the tools are usable standalone.
+ * Build memory tools bound to `store`: 12 in world mode, 11 in real mode.
+ * A session context supplies provenance; standalone callers may omit it.
  */
 export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {}): MemoryToolDef[] {
 	const defs: Array<
@@ -1619,15 +1621,37 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			run: (p) => executeAwaken(store, p as Static<typeof awakenParams>, ctx),
 		},
 	];
-	return defs.map((d) => ({
-		name: d.name,
-		label: d.label,
-		description: d.description,
-		promptGuidelines: d.promptGuidelines,
-		promptSnippet: d.description.split("\n")[0],
-		parameters: d.parameters,
-		execute: async (_toolCallId: string, params: Record<string, unknown>) => d.run(params),
-	}));
+	if (store.getClock().mode === "real") {
+		const memorize = defs.find((d) => d.name === "memorize")!;
+		memorize.description = memorize.description.replaceAll("世界时间", "真实时间");
+		memorize.parameters = Type.Object({
+			...memorizeParams.properties,
+			time: Type.Optional(
+				Type.String({ description: "真实时间 YYYY-MM-DD 或相对位移如 -1d；缺省用当前真实时间（带时区偏移）" }),
+			),
+		});
+		const time = Type.Optional(Type.String({ description: '修改真实时间；传 "" 清除' }));
+		defs.find((d) => d.name === "revise")!.parameters = Type.Object({
+			...reviseParams.properties,
+			time,
+			batch: Type.Optional(
+				Type.Array(Type.Object({ ...reviseModSchema.properties, time }), {
+					description: "批量模式：每条 {uri, ...修改}",
+				}),
+			),
+		});
+	}
+	return defs
+		.filter((d) => store.getClock().mode !== "real" || d.name !== "set_time")
+		.map((d) => ({
+			name: d.name,
+			label: d.label,
+			description: d.description,
+			promptGuidelines: d.promptGuidelines,
+			promptSnippet: d.description.split("\n")[0],
+			parameters: d.parameters,
+			execute: async (_toolCallId: string, params: Record<string, unknown>) => d.run(params),
+		}));
 }
 
 export { AWAKEN_URIS_KEY, getAwakenUris, setAwakenUris };

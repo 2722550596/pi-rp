@@ -3,9 +3,9 @@
  *
  * createMemoryModule(store, opts) wires the pure MemoryStore onto a coding
  * agent session host:
- * - registerSession(host): 12 tools, 3 prompt slots, rp-memories custom type,
- *   before_agent_start auto-recall injection (function-level port of
- *   ~/.pi/agent/extensions/nocturne-memory-recall.ts 92-114/554-681/700-832).
+ * - registerSession(host): 12 world / 11 real tools, 3 prompt slots, 3 static
+ *   memory macros when registerMacro is supported, custom-message policies,
+ *   and before_agent_start auto-recall injection.
  *   Called once per engine runtime build (every reload gets a fresh host) —
  *   must stay idempotent.
  * - onLeafChange(): rollback coupling (§8: anchor visibility recompute + raw
@@ -16,16 +16,23 @@
  *   original message order (§4/§15.3), then autoretain / TEMP checks. The
  *   engine calls this directly after the turn_end extension emit.
  * - dispose(): aborts in-flight recall/autoretain side work for this module.
+ * - settings.memory.clock configures the store's world/real time sources.
  *
  * packages/memory never imports coding-agent: the host is a minimal
  * structural interface the engine satisfies.
  */
 import { createHash } from "node:crypto";
 import { type AutoretainTask, DEFAULT_AUTORETAIN_TASKS, dueTasks, runAutoretainTask } from "./autoretain.ts";
+import { dayNumber, resolveMemoryClock } from "./clock.ts";
 import type { MemorySettings } from "./config.ts";
 import { EmbeddingClient, resolveEmbeddingsConfig } from "./embeddings.ts";
-import { breakerShouldSkip, type RecalledItem, type RecallMode, search, toEpochDays } from "./recall.ts";
-import { createMemorySlots, type MemorySlotDefinition } from "./slots.ts";
+import { breakerShouldSkip, type RecalledItem, type RecallMode, search } from "./recall.ts";
+import {
+	createMemoryMacros,
+	createMemorySlots,
+	type MemoryMacroDefinition,
+	type MemorySlotDefinition,
+} from "./slots.ts";
 import type { MemoryNode, MemoryStore, RawEntry } from "./store.ts";
 import { checkTempThreshold, countActiveTempNodes, DEFAULT_TEMP_THRESHOLD, RP_NOTIFY_TYPE } from "./temp-notify.ts";
 import {
@@ -92,6 +99,8 @@ export interface MemoryModuleHost {
 	}): void;
 	/** Register a prompt-preset slot (engine bridges MemorySlotDefinition). */
 	registerSlot(definition: MemorySlotDefinition): void;
+	/** Publish static memory snapshots when the host supports prompt macros. */
+	registerMacro?(definition: MemoryMacroDefinition): void;
 	/** Declare the custom-message policy for rp-memories injections. */
 	registerCustomType(
 		customType: string,
@@ -166,6 +175,8 @@ export interface MemoryModule {
 	onLeafChange(): Promise<void>;
 	/** raw_log write-through (§4/§15.3): upsert this turn's messages. */
 	onTurnEnd(): Promise<void>;
+	/** Recall and deduplicate memories for one injected steering batch. */
+	onSteeringMessages(messages: unknown[]): Promise<{ message: Record<string, unknown> } | undefined>;
 	/** Cancel in-flight recall/autoretain work. Call before dropping the module. */
 	dispose(): void;
 }
@@ -303,6 +314,7 @@ export function shouldCaptureCustomType(
 
 export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions = {}): MemoryModule {
 	const settings = opts.settings ?? {};
+	store.setClock(resolveMemoryClock(settings.clock));
 	const recallCfg = settings.recall ?? {};
 	const topK = recallCfg.topK ?? RECALL_TOP_K;
 	const minScore = recallCfg.minScore ?? RECALL_MIN_SCORE;
@@ -533,7 +545,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		const ctrl = new AbortController();
 		recallAbort = ctrl;
 		try {
-			const nowDays = toEpochDays(store.getWorldTime() ?? new Date().toISOString().slice(0, 10)) ?? 0;
+			const nowDays = dayNumber(store.referenceNow(), store.getClock()) ?? 0;
 			// awaken uris already live in the preset slot — never inject them twice
 			// (§9); TEMP is NOT blocklisted (dynamic zone stays recalleable).
 			// With the selector on, search must surface the fused top-8 so the
@@ -562,6 +574,42 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		}
 	}
 
+	function userTextOf(message: unknown): string | undefined {
+		if (!message || typeof message !== "object") return;
+		const { role, content } = message as { role?: unknown; content?: unknown };
+		if (role !== "user") return;
+		const text =
+			typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content
+							.filter((part) => part?.type === "text" && typeof part.text === "string")
+							.map((part) => part.text)
+							.join(" ")
+					: "";
+		const trimmed = text.trim();
+		if (!trimmed || trimmed.startsWith("/") || trimmed.startsWith("\\")) return;
+		return trimmed;
+	}
+
+	async function handleSteeringMessages(
+		messages: unknown[],
+	): Promise<{ message: Record<string, unknown> } | undefined> {
+		const texts = messages.map(userTextOf).filter((text): text is string => text !== undefined);
+		if (texts.length === 0) return;
+		const snapshot = host?.getBranchSnapshot();
+		if (!snapshot) return;
+		const queries = [texts.join("\n")];
+		const prior = collectPriorContext(snapshot.entries);
+		if (prior.length > 0) queries.push(`Prior context:\n${prior.join("\n")}`);
+		try {
+			return await recallInjection(queries, snapshot);
+		} catch (error) {
+			process.stderr.write(`[memory] Steering recall failed: ${String(error)}\n`);
+			return;
+		}
+	}
+
 	/** before_agent_start handler: dual-query recall + dedup + injection. */
 	async function handleBeforeAgentStart(event: unknown): Promise<{ message: Record<string, unknown> } | undefined> {
 		const prompt = (event as { prompt?: unknown } | null)?.prompt;
@@ -569,31 +617,28 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		const trimmed = prompt.trim();
 		// Skip slash-command expansions and empty prompts.
 		if (!trimmed || trimmed.startsWith("/") || trimmed.startsWith("\\")) return;
-
 		const snapshot = host?.getBranchSnapshot();
 		if (!snapshot) return;
-
-		// Rebuild on every prompt: the active path may have changed via /tree,
-		// /resume, /fork or compaction between prompts. This also covers
-		// --resume paths that never fire a leaf change.
-		hiddenAutoNodeIds = recomputeAnchorVisibility(snapshot.entryIds);
-		const injected = rebuildInjectedFromEntries(snapshot.entries);
-
-		// Dual query: [current prompt (retrieval intent), "Prior context:"]
-		// recent message turns (declarative text) — port of 773-802.
 		const queries: string[] = [trimmed];
 		const prior = collectPriorContext(snapshot.entries);
 		if (prior.length > 0) queries.push(`Prior context:\n${prior.join("\n")}`);
-
-		let items: RecalledItem[];
-		let mode: RecallMode;
 		try {
-			({ items, mode } = await recallForQueries(queries));
+			return await recallInjection(queries, snapshot);
 		} catch {
 			// Recall must never break the turn: no memories this prompt.
-			// (Abort mid-flight is the normal supersede path — same outcome.)
 			return;
 		}
+	}
+
+	async function recallInjection(
+		queries: string[],
+		snapshot: MemoryBranchSnapshot,
+	): Promise<{ message: Record<string, unknown> } | undefined> {
+		// Rebuild on every recall: the active path may have changed via /tree,
+		// /resume, /fork or compaction, including paths with no leaf-change event.
+		hiddenAutoNodeIds = recomputeAnchorVisibility(snapshot.entryIds);
+		const injected = rebuildInjectedFromEntries(snapshot.entries);
+		const { items, mode } = await recallForQueries(queries);
 		if (items.length === 0) return;
 
 		// Dedup against previously injected (same content version). The hash
@@ -749,7 +794,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	return {
 		registerSession(newHost: MemoryModuleHost): void {
 			host = newHost;
-			// 1. Tools (12) — provenance (model id / leaf id / session / turn)
+			// 1. Tools (12 world / 11 real) — provenance (model / leaf / session / turn)
 			// is read lazily at execute time via host.getSessionInfo(), so
 			// signatures stay live across turns without re-registering.
 			const toolCtx = {
@@ -785,11 +830,12 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 					execute: async (toolCallId, params) => tool.execute(toolCallId, params),
 				});
 			}
-			// 2. Slots (3). Engine-side static registration (registerSlot(def,
-			// true)) reuses these definitions; via the host they register as
-			// custom slots. Visibility filtering rides the live predicate.
+			// 2. Live slots and optional static snapshot macros share visibility.
 			for (const slot of createMemorySlots(store, { isVisible })) {
 				newHost.registerSlot(slot);
+			}
+			if (newHost.registerMacro) {
+				for (const macro of createMemoryMacros(store, { isVisible })) newHost.registerMacro(macro);
 			}
 			// 3. Custom type policy: LLM-visible, TUI-hidden, compaction-excluded.
 			newHost.registerCustomType(RP_MEMORIES_TYPE, {
@@ -810,6 +856,10 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 			newHost.on("before_agent_start", (event: unknown) => handleBeforeAgentStart(event));
 		},
 
+		onSteeringMessages(messages: unknown[]): Promise<{ message: Record<string, unknown> } | undefined> {
+			return handleSteeringMessages(messages);
+		},
+
 		async onLeafChange(): Promise<void> {
 			try {
 				const snapshot = host?.getBranchSnapshot();
@@ -827,7 +877,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 				const sessionId = host?.getSessionInfo().sessionId;
 				const active = host?.getActiveBranchMessages();
 				if (sessionId && active) {
-					const worldTs = store.getWorldTime();
+					const worldTs = store.nowStamp();
 					store.syncRawBranch(
 						sessionId,
 						active.map((m) => toRawEntry(m, sessionId, worldTs)),
@@ -849,12 +899,12 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		async onTurnEnd(): Promise<void> {
 			try {
 				const messages = host?.getTurnMessages() ?? [];
-				const worldTs = store.getWorldTime();
+				const worldTs = store.nowStamp();
 				const sessionId = host?.getSessionInfo().sessionId;
 				// §15.3 + §22 fix: ONE pass in the original message order —
 				// user/assistant and captured custom messages interleave exactly
 				// as they happened. Each row uses its OWN entry timestamp as the
-				// wall clock (§12 fix); new rows get the current world clock.
+				// wall clock (§12 fix); new rows use the store's configured clock.
 				const rows: RawEntry[] = [];
 				if (sessionId) {
 					for (const m of messages) {
