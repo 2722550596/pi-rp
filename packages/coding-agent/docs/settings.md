@@ -32,6 +32,7 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses |
+| `cacheRetention` | string | - | Prompt cache retention: `"none"`, `"short"`, or `"long"`. Read for each session request; an explicit request value takes priority. When omitted, the provider default applies. Invalid values produce a warning and use the provider default. |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
 
 #### thinkingBudgets

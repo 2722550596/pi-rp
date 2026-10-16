@@ -376,15 +376,20 @@ describe("regression #5943: session_start transient UI", () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
-					// Await the send: sampling activeRun/events before the detached
-					// prompt chain starts is a race this regression guards against.
-					pi.on("session_start", async () => {
-						await pi.sendUserMessage("user from start");
+					// ExtensionAPI.sendUserMessage is fire-and-forget (returns void): the
+					// prompt chain starts on a later tick than this handler, so the test
+					// waits for the reply instead of sampling activeRun right after rebind.
+					pi.on("session_start", () => {
+						pi.sendUserMessage("user from start");
 					});
 				},
 			],
 		});
 		harness.setResponses([fauxAssistantMessage("assistant from start")]);
+		let resolveAssistantEnd = () => {};
+		const assistantEnded = new Promise<void>((resolve) => {
+			resolveAssistantEnd = resolve;
+		});
 
 		try {
 			const context: RebindContext = {
@@ -404,6 +409,9 @@ describe("regression #5943: session_start transient UI", () => {
 							return;
 						}
 						events.push(`${event.type}:${event.message.role}:${getMessageText(event)}`);
+						if (event.type === "message_end" && event.message.role === "assistant") {
+							resolveAssistantEnd();
+						}
 					});
 				},
 				updateAvailableProviderCount: async () => {},
@@ -412,6 +420,7 @@ describe("regression #5943: session_start transient UI", () => {
 			};
 
 			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
+			await assistantEnded;
 			await harness.session.agent.waitForIdle();
 
 			expect(events.slice(0, 3)).toEqual(["render", "subscribe", "bind"]);

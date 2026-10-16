@@ -379,6 +379,8 @@ export interface PromptRuntime {
 	skipMacroExpansion?: boolean;
 	/** Session-owned slot/macro definitions; omitted for legacy process-global behavior. */
 	promptRegistry?: PromptRegistryReader;
+	/** Rendered static macro calls for the current in-memory epoch. */
+	macroSnapshot?: MacroSnapshotTable;
 	/** Session-scoped dynamic history ops, snapshotted at compile start. */
 	historyOps?: readonly HistoryRegisteredOp[];
 	/** Host-owned, namespaced history data providers. */
@@ -421,6 +423,13 @@ export interface CompileMessagesResult {
 	messages: AgentMessage[];
 	sources: CompileMessageSource[];
 	diagnostics: PromptPresetDiagnostic[];
+	/**
+	 * Index of the first compiled message that carries content placed after chat
+	 * history (compiled fresh for every request). Providers with explicit cache
+	 * breakpoints anchor the conversation breakpoint before this message.
+	 * Undefined when nothing follows history.
+	 */
+	volatileFrom?: number;
 }
 
 // =========================================================================
@@ -491,4 +500,10 @@ export interface MacroDefinition {
 	/** If true, expanded once at system-prompt build time and baked into the template.
 	 *  If false (default), the {{macro}} placeholder is preserved and re-expanded each turn. */
 	static?: boolean;
+}
+
+/** Per-epoch cache of rendered static macro calls. */
+export interface MacroSnapshotTable {
+	readonly epochId: number;
+	readonly entries: Map<string, string>;
 }

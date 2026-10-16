@@ -25,6 +25,19 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	it("accepts cache retention values and warns once for an invalid setting", () => {
+		for (const value of ["none", "short", "long"] as const) {
+			expect(SettingsManager.inMemory({ cacheRetention: value }).getCacheRetention()).toBe(value);
+		}
+		expect(SettingsManager.inMemory().getCacheRetention()).toBeUndefined();
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheRetention: "1h" }));
+		const manager = SettingsManager.create(projectDir, agentDir);
+		expect(manager.getCacheRetention()).toBeUndefined();
+		expect(manager.drainErrors()).toHaveLength(1);
+		expect(manager.getCacheRetention()).toBeUndefined();
+		expect(manager.drainErrors()).toEqual([]);
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file

@@ -387,20 +387,37 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	).filter((name) => !excludedToolNameSet?.has(name));
 
 	let agent: Agent;
+	let volatileFrom: number | undefined;
+	let sourceIndices: number[] | undefined;
+	let compiledMessageCount = 0;
+	let mappedMessages: Message[] | undefined;
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		// Resolve per-type custom-message policies from the extension runner (declared
 		// via pi.registerCustomType); defaults apply when no runner or no declaration.
-		const converted = convertToLlm(messages, (customType) =>
-			extensionRunnerRef.current?.getCustomTypePolicy(customType),
+		sourceIndices = volatileFrom === undefined ? undefined : [];
+		const converted = convertToLlm(
+			messages,
+			(customType) => extensionRunnerRef.current?.getCustomTypePolicy(customType),
+			undefined,
+			sourceIndices,
 		);
+		if (
+			sourceIndices &&
+			(sourceIndices.length !== converted.length ||
+				sourceIndices.some((index) => index < 0 || index >= compiledMessageCount))
+		) {
+			volatileFrom = undefined;
+			sourceIndices = undefined;
+		}
+		mappedMessages = converted;
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			return converted;
 		}
 		// Filter out ImageContent from all messages, replacing with text placeholder
-		return converted.map((msg) => {
+		const filtered = converted.map((msg) => {
 			if (msg.role === "user" || msg.role === "toolResult") {
 				const content = msg.content;
 				if (Array.isArray(content)) {
@@ -427,6 +444,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			return msg;
 		});
+		mappedMessages = filtered;
+		return filtered;
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
@@ -464,6 +483,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		streamFn: async (model, context, options) => {
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
+			const cacheRetention = options?.cacheRetention ?? settingsManager.getCacheRetention();
 			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
 			// Use max int32 to effectively disable the timeout.
 			const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
@@ -476,6 +496,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				context,
 				{
 					...options,
+					...(cacheRetention !== undefined ? { cacheRetention } : {}),
+					...(volatileFrom !== undefined && sourceIndices && context.messages === mappedMessages
+						? { volatileFrom, sourceIndices }
+						: {}),
 					timeoutMs,
 					websocketConnectTimeoutMs,
 					maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
@@ -526,6 +550,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			await sessionRef.current?.onToolBatchCompleted(toolResults, context);
 		},
 		transformContext: async (messages) => {
+			volatileFrom = undefined;
+			sourceIndices = undefined;
+			compiledMessageCount = 0;
 			let result: AgentMessage[] = messages;
 			// When a user preset is active, use preset-compiled messages directly.
 			// getPresetInjectMessages() already embeds agent.state.messages at chat-history position,
@@ -534,14 +561,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				if (sessionRef.current.isSealedContext()) {
 					return result;
 				}
-				const presetItems = await sessionRef.current.getPresetInjectMessages();
+				const presetItems = await sessionRef.current.getPresetInjectMessages((compiled) => {
+					volatileFrom = compiled.volatileFrom;
+					compiledMessageCount = compiled.messages.length;
+				});
 				if (presetItems.length > 0) {
 					result = presetItems;
 				}
 			}
 			// Run extensions on the full context (preset + conversation)
 			const runner = extensionRunnerRef.current;
-			result = runner ? await runner.emitContext(result) : result;
+			result = runner
+				? await runner.emitContext(result, () => {
+						volatileFrom = undefined;
+						sourceIndices = undefined;
+					})
+				: result;
 			// Capture final payload for /prompt inspection
 			if (sessionRef.current) {
 				sessionRef.current.lastTransformedMessages = result;

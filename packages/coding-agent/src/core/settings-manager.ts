@@ -1,6 +1,6 @@
 import type { HarnessStores, StateLocks, StorageBackend, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { NodeStateLocks, NodeStorageBackend } from "@earendil-works/pi-agent-core/node";
-import type { Model, Transport } from "@earendil-works/pi-ai";
+import type { CacheRetention, Model, Transport } from "@earendil-works/pi-ai";
 import type { MemorySettings } from "@earendil-works/pi-memory";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
@@ -141,6 +141,7 @@ export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
+	cacheRetention?: CacheRetention;
 	defaultPreset?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	transport?: TransportSetting; // default: "auto"
@@ -380,6 +381,7 @@ export class SettingsManager {
 	private remoteInvalidReported = new Set<string>();
 	/** toolSearch keys whose invalid configured value was already reported (report once, not per read). */
 	private toolSearchInvalidReported = new Set<string>();
+	private cacheRetentionInvalidReported = false;
 
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
@@ -1332,6 +1334,19 @@ export class SettingsManager {
 
 	getHttpIdleTimeoutMs(): number {
 		return parseTimeoutSetting(this.settings.httpIdleTimeoutMs, "httpIdleTimeoutMs") ?? DEFAULT_HTTP_IDLE_TIMEOUT_MS;
+	}
+
+	getCacheRetention(): CacheRetention | undefined {
+		const value = this.settings.cacheRetention;
+		if (value === undefined || value === "none" || value === "short" || value === "long") return value;
+		if (!this.cacheRetentionInvalidReported) {
+			this.cacheRetentionInvalidReported = true;
+			this.recordError(
+				"global",
+				new Error(`Invalid cacheRetention setting: ${JSON.stringify(value)}. Falling back to provider default.`),
+			);
+		}
+		return undefined;
 	}
 
 	setHttpIdleTimeoutMs(timeoutMs: number): void {

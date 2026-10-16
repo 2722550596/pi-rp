@@ -1293,15 +1293,18 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+	async emitContext(messages: AgentMessage[], onMappingInvalidated?: () => void): Promise<AgentMessage[]> {
 		const ctx = this.createContext();
 		let currentMessages = structuredClone(messages);
+		let mappingValid = true;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("context");
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
+				const previous = currentMessages;
+				const references = mappingValid && onMappingInvalidated ? [...currentMessages] : undefined;
 				try {
 					const event: ContextEvent = { type: "context", messages: currentMessages };
 					const handlerResult = await handler(event, ctx);
@@ -1318,6 +1321,15 @@ export class ExtensionRunner {
 						error: message,
 						stack,
 					});
+				}
+				if (
+					references &&
+					(currentMessages !== previous ||
+						references.length !== currentMessages.length ||
+						references.some((message, index) => message !== currentMessages[index]))
+				) {
+					mappingValid = false;
+					onMappingInvalidated?.();
 				}
 			}
 		}

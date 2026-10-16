@@ -150,10 +150,13 @@ export default function memoriesExtension(pi: ExtensionAPI): void {
 			const nodes = store.listNodes();
 			const live = nodes.filter((n) => !n.is_stub);
 			const temp = store.countTempNodes();
-			const worldTime = store.getWorldTime() ?? "(未设定)";
+			const clockLine =
+				store.getClock().mode === "real"
+					? `  真实时钟: ${store.referenceNow()}`
+					: `  世界时间: ${store.getWorldTime() ?? "(未设定)"}`;
 			const lines = [
 				"记忆库概览",
-				`  世界时间: ${worldTime}`,
+				clockLine,
 				`  节点: ${live.length} 条 / 占位 ${nodes.length - live.length} 条`,
 				`  TEMP 暂存: ${temp} 条`,
 				`  领域: ${domains.length ? domains.join(", ") : "(空)"}`,

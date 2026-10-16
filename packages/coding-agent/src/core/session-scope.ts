@@ -2,7 +2,7 @@ import type { Provider } from "@earendil-works/pi-ai";
 import type { ProviderConfig } from "./extensions/types.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { PromptRegistryScope } from "./prompt-preset/registry-scope.ts";
-import type { SlotDefinition } from "./prompt-preset/types.ts";
+import type { MacroSnapshotTable, SlotDefinition } from "./prompt-preset/types.ts";
 
 /** Nonpersistent provider-request context, rendered once per AgentSession scope. */
 export interface RuntimeContextSlot {
@@ -242,6 +242,16 @@ export interface AgentSessionScopeOptions {
 
 export class AgentSessionScope {
 	readonly promptRegistry = new PromptRegistryScope();
+	private _macroSnapshot: MacroSnapshotTable = { epochId: 0, entries: new Map() };
+
+	get macroSnapshot(): MacroSnapshotTable {
+		return this._macroSnapshot;
+	}
+
+	invalidateMacroEpoch(): void {
+		this._macroSnapshot.entries.clear();
+		this._macroSnapshot = { epochId: this._macroSnapshot.epochId + 1, entries: new Map() };
+	}
 	private readonly id = Symbol("AgentSessionScope");
 	private readonly rejectReplacement: boolean;
 	private readonly subagentPromptSlots: readonly SlotDefinition[];
@@ -415,6 +425,7 @@ export class AgentSessionScope {
 		this.activeProviders.clear();
 		this.promptRegistry.dispose();
 		this.invalidateRuntimeContext();
+		this.invalidateMacroEpoch();
 		this.runtimeSlots.length = 0;
 		this.disposed = true;
 	}

@@ -169,6 +169,7 @@ export function compileMessagesSync(preset: PromptPreset, runtime: PromptRuntime
 		sources.push(...historySources);
 	}
 
+	const trackedFrom = result.length;
 	for (const item of afterItems) {
 		const text = renderItemTextSync(item, preset, effectiveRuntime, diagnostics);
 		addSyntheticMessage(result, item, text, sources);
@@ -179,12 +180,13 @@ export function compileMessagesSync(preset: PromptPreset, runtime: PromptRuntime
 	// longer align 1:1 with messages (merged runs collapse to one message but keep N
 	// source entries). No consumer reads sources by index today; if one appears, fix
 	// the alignment here first.
-	result = squashMessages(result);
+	const squashed = squashMessages(result, result.length > trackedFrom ? trackedFrom : undefined);
+	result = squashed.messages;
 
 	// Apply compiled-stage regex to the full message array (outgoing + display effects)
 	result = applyRegexRulesToMessages(preset, result, "compiled", "outgoing", diagnostics);
 
-	return { messages: result, sources, diagnostics };
+	return { messages: result, sources, diagnostics, volatileFrom: squashed.volatileFrom };
 }
 
 /**
@@ -263,6 +265,7 @@ async function compileMessagesAsync(preset: PromptPreset, runtime: PromptRuntime
 		sources.push(...historySources);
 	}
 
+	const trackedFrom = result.length;
 	if (serial) {
 		for (const item of afterItems) {
 			const text = await renderItemTextAsync(item, preset, effectiveRuntime, diagnostics);
@@ -278,10 +281,11 @@ async function compileMessagesAsync(preset: PromptPreset, runtime: PromptRuntime
 	}
 
 	// Same NOTE as the sync path: sources do not squash in lockstep with messages.
-	result = squashMessages(result);
+	const squashed = squashMessages(result, result.length > trackedFrom ? trackedFrom : undefined);
+	result = squashed.messages;
 	result = applyRegexRulesToMessages(preset, result, "compiled", "outgoing", diagnostics);
 
-	return { messages: result, sources, diagnostics };
+	return { messages: result, sources, diagnostics, volatileFrom: squashed.volatileFrom };
 }
 
 /**
@@ -415,28 +419,26 @@ function itemsHaveSideEffectMacros(items: PromptPresetItem[]): boolean {
  * Merge consecutive messages with the same role.
  * e.g. [system, system, user, system, system] → [system(merged), user, system(merged)]
  */
-function squashMessages(messages: AgentMessage[]): AgentMessage[] {
-	if (messages.length < 2) return messages;
-
+function squashMessages(
+	messages: AgentMessage[],
+	trackedFrom?: number,
+): { messages: AgentMessage[]; volatileFrom?: number } {
 	const squashed: AgentMessage[] = [];
 	let last: AgentMessage | undefined;
-	for (const msg of messages) {
+	let volatileFrom: number | undefined;
+	for (let idx = 0; idx < messages.length; idx++) {
+		const msg = messages[idx];
 		if (!("content" in msg) || !msg.content) continue;
-		if (!last) {
-			last = msg;
-			continue;
-		}
-		// Never merge tool results: each toolResult must stay a standalone message
-		// paired 1:1 with its toolCall (matched by toolCallId downstream). Merging
-		// adjacent results collapses their toolCallIds into the first one, so every
-		// subsequent call in a parallel batch replays as orphaned and gets a
-		// synthetic "No result provided" error instead of its real output.
-		if (msg.role === "toolResult" || last.role === "toolResult") {
-			squashed.push(last);
-			last = msg;
-			continue;
-		}
-		if (last.role === msg.role && typeof last.content === "object" && typeof msg.content === "object") {
+		let merged = false;
+		// Tool results must remain paired individually with their tool calls.
+		if (
+			last &&
+			last.role !== "toolResult" &&
+			msg.role !== "toolResult" &&
+			last.role === msg.role &&
+			Array.isArray(last.content) &&
+			Array.isArray(msg.content)
+		) {
 			const lastArr = last.content as Array<{ type: string; text?: string }>;
 			const msgArr = msg.content as Array<{ type: string; text?: string }>;
 			const lastText = lastArr
@@ -448,15 +450,35 @@ function squashMessages(messages: AgentMessage[]): AgentMessage[] {
 				.map((p) => p.text ?? "")
 				.join("\n");
 			if (lastText && msgText) {
-				last = { ...last, content: [{ type: "text" as const, text: `${lastText}\n\n${msgText}` }] } as AgentMessage;
-				continue;
+				let content: Array<{ type: string; text?: string }>;
+				if (lastArr.every((p) => p.type === "text") && msgArr.every((p) => p.type === "text")) {
+					content = [{ type: "text", text: `${lastText}\n\n${msgText}` }];
+				} else {
+					content = [];
+					for (const block of [...lastArr, ...msgArr]) {
+						const previous = content[content.length - 1];
+						if (previous?.type === "text" && block.type === "text") {
+							content[content.length - 1] = {
+								type: "text",
+								text: `${previous.text ?? ""}\n\n${block.text ?? ""}`,
+							};
+						} else content.push(block);
+					}
+				}
+				last = { ...last, content } as AgentMessage;
+				merged = true;
 			}
 		}
-		squashed.push(last);
-		last = msg;
+		if (!merged) {
+			if (last) squashed.push(last);
+			last = msg;
+		}
+		if (volatileFrom === undefined && trackedFrom !== undefined && idx >= trackedFrom) {
+			volatileFrom = squashed.length;
+		}
 	}
 	if (last) squashed.push(last);
-	return squashed;
+	return { messages: squashed, volatileFrom };
 }
 // =========================================================================
 // Helpers

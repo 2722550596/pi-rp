@@ -759,6 +759,38 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("context source mapping", () => {
+		it.each([
+			["return { messages: event.messages.slice(1) };", true],
+			["return { messages: [...event.messages] };", true],
+			["event.messages.reverse();", true],
+			["event.messages[0].content = 'updated';", false],
+		])("detects mapping changes: %s", async (body, invalidated) => {
+			fs.writeFileSync(
+				path.join(extensionsDir, "mapping.ts"),
+				`export default function(pi) { pi.on('context', (event) => { ${body} }); }`,
+			);
+			const loaded = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(
+				loaded.extensions,
+				loaded.runtime,
+				tempDir,
+				sessionManager,
+				modelRegistry,
+				SettingsManager.inMemory(),
+			);
+			const invalidation = vi.fn();
+			await runner.emitContext(
+				[
+					{ role: "user", content: "one", timestamp: 0 },
+					{ role: "user", content: "two", timestamp: 1 },
+				],
+				invalidation,
+			);
+			expect(invalidation).toHaveBeenCalledTimes(invalidated ? 1 : 0);
+		});
+	});
+
 	describe("error handling", () => {
 		it("calls error listeners when handler throws", async () => {
 			const extCode = `

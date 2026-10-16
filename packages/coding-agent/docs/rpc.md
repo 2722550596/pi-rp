@@ -1052,6 +1052,7 @@ Events are streamed to stdout as JSON lines during agent operation. Events do no
 | `tool_execution_update` | Tool execution progress (streaming output) |
 | `tool_execution_end` | Tool completes |
 | `queue_update` | Pending steering/follow-up queue changed |
+| `steering_injected` | A steering batch is committed for injection, before its message events and memory recall |
 | `state_changed` | State mutation pushed to a `watch_state` subscriber (see [watch_state](#watch_state)) |
 | `compaction_start` | Compaction begins |
 | `compaction_end` | Compaction completes |
@@ -1242,6 +1243,27 @@ Emitted whenever the pending steering or follow-up queue changes.
   "followUp": ["After that, summarize the result"]
 }
 ```
+
+### steering_injected
+
+Emitted exactly once for each non-empty steering batch committed for injection, both during an active run and when `continue()` delivers queued steering as a new run's input.
+
+```json
+{
+  "type": "steering_injected",
+  "messages": [
+    {
+      "role": "user",
+      "content": [{"type": "text", "text": "Remember the garden we visited"}],
+      "timestamp": 1770000000000
+    }
+  ]
+}
+```
+
+The payload shape is `{ type: "steering_injected", messages: AgentMessage[] }`. `messages` contains the original batch in queue order, which may include custom messages; filter by `role` when tracking user input. Recalled memories are not part of this payload.
+
+This event precedes memory recall and the batch's `message_start` / `message_end` events, so the conversation context does not yet contain the batch when a session subscriber receives it. After recall completes, the batch enters context first, followed by any `rp-memories` message, before the next model request. Follow-up messages and steering removed by `clearQueue()` do not emit this event. This is a session event and is not mirrored to extensions.
 
 ### compaction_start / compaction_end
 

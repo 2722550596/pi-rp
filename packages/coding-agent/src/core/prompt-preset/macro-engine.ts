@@ -52,7 +52,6 @@ registerMacro(
 		name: "date",
 		description: "Current date (YYYY-MM-DD).",
 		render: (ctx) => formatDate(ctx.runtime.now),
-		static: true,
 	},
 	true,
 );
@@ -62,7 +61,6 @@ registerMacro(
 		name: "time",
 		description: "Current time (HH:MM:SS).",
 		render: (ctx) => formatTime(ctx.runtime.now),
-		static: true,
 	},
 	true,
 );
@@ -82,7 +80,6 @@ registerMacro(
 		name: "lastUserMessage",
 		description: "The user's latest message.",
 		render: (ctx) => ctx.runtime.latestUserMessage ?? "",
-		static: true,
 	},
 	true,
 );
@@ -238,6 +235,16 @@ export function expandMacros(text: string, runtime: PromptRuntime, _options?: Ex
 
 				if (depth === 0) {
 					const rawContent = input.slice(i + 2, j);
+					const rawMatch = rawContent.includes("{{") ? rawContent.match(/^(\w[\w.]*)(?::([\s\S]*))?$/) : null;
+					if (rawMatch?.[2]?.includes("{{") && getMacro(rawMatch[1], runtime.promptRegistry)?.static === true) {
+						result += input.slice(i, j + 2);
+						options.diagnostics?.push({
+							level: "warning",
+							message: `Static macro "{{${rawContent}}}" cannot contain nested macros`,
+						});
+						i = j + 2;
+						continue;
+					}
 					const expandedContent = processText(rawContent);
 
 					if (expandedContent.startsWith("//")) {
@@ -259,7 +266,14 @@ export function expandMacros(text: string, runtime: PromptRuntime, _options?: Ex
 								(options.mode === "dynamic" && !isStatic);
 
 							if (shouldExpand) {
-								result += macro.render({ runtime, variables, params });
+								const snapshot = isStatic ? runtime.macroSnapshot : undefined;
+								if (snapshot?.entries.has(rawContent)) {
+									result += snapshot.entries.get(rawContent)!;
+								} else {
+									const value = macro.render({ runtime, variables, params });
+									snapshot?.entries.set(rawContent, value);
+									result += value;
+								}
 							} else {
 								result += `{{${expandedContent}}}`;
 							}

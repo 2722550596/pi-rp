@@ -65,6 +65,136 @@ function presetWithItems(items: PromptPreset["items"], defaults?: PromptPreset["
 	return { schemaVersion: 1, id: "test", defaults, items };
 }
 
+describe("compiled history cache boundary", () => {
+	const preset = presetWithItems([
+		{ kind: "block", id: "system", content: "SYS" },
+		{ kind: "history", id: "history", ops: [] },
+		{ kind: "block", id: "tail", role: "user", content: "TAIL" },
+	]);
+	it("preserves image order when the tail merges into history", async () => {
+		const image = { type: "image" as const, mimeType: "image/png", data: "AAAA" };
+		const result = await compileMessages(
+			preset,
+			runtime([{ role: "user", content: [{ type: "text", text: "H" }, image], timestamp: 0 }]),
+		);
+		expect("content" in result.messages[1] ? result.messages[1].content : undefined).toEqual([
+			{ type: "text", text: "H" },
+			image,
+			{ type: "text", text: "TAIL" },
+		]);
+		expect(result.volatileFrom).toBe(1);
+	});
+	it("preserves legacy pure-text bytes and calibrates preceding merges", async () => {
+		const result = await compileMessages(preset, runtime([userMessage("U1"), userMessage("U2")]));
+		expect(result.messages.map(messageText)).toEqual(["SYS", "U1\n\nU2\n\nTAIL"]);
+		expect(result.volatileFrom).toBe(1);
+	});
+	it("tracks an independent tail after assistant history", async () => {
+		const result = await compileMessages(preset, runtime([userMessage("H"), assistantMessage("A")]));
+		expect(result.volatileFrom).toBe(3);
+	});
+	it("has no boundary when trailing blocks produce no message", async () => {
+		const empty = {
+			...preset,
+			items: preset.items.map((item) => (item.id === "tail" ? { ...item, content: "" } : item)),
+		};
+		expect((await compileMessages(empty, runtime([userMessage("H")]))).volatileFrom).toBeUndefined();
+	});
+	it("tracks an asynchronously rendered tail", async () => {
+		registerSlot({
+			name: "cache-boundary-async",
+			description: "Async tail",
+			async: true,
+			render: async () => "ASYNC",
+		});
+		const asyncPreset = presetWithItems([
+			{ kind: "history", id: "history", ops: [] },
+			{ kind: "slot", id: "tail", slot: "cache-boundary-async", role: "user" },
+		]);
+		const result = await compileMessages(asyncPreset, runtime([userMessage("H")]));
+		expect(result.messages.map(messageText)).toEqual(["H\n\nASYNC"]);
+		expect(result.volatileFrom).toBe(0);
+	});
+	it("never merges consecutive tool results", async () => {
+		const call = assistantMessage("");
+		if (call.role !== "assistant") throw new Error("Expected assistant fixture");
+		call.content = ["one", "two"].map((id) => ({ type: "toolCall", id, name: "read", arguments: {} }));
+		const results: AgentMessage[] = ["one", "two"].map((id) => ({
+			role: "toolResult",
+			toolCallId: id,
+			toolName: "read",
+			content: [{ type: "text", text: id }],
+			isError: false,
+			timestamp: 0,
+		}));
+		const result = await compileMessages(preset, runtime([call, ...results]));
+		expect(
+			result.messages.filter((message) => message.role === "toolResult").map((message) => message.toolCallId),
+		).toEqual(["one", "two"]);
+	});
+	it("retains legacy separators within and between pure-text messages", async () => {
+		const result = await compileMessages(
+			preset,
+			runtime([
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "A" },
+						{ type: "text", text: "B" },
+					],
+					timestamp: 0,
+				},
+			]),
+		);
+		expect("content" in result.messages[1] ? result.messages[1].content : undefined).toEqual([
+			{ type: "text", text: "A\nB\n\nTAIL" },
+		]);
+	});
+	it("has no boundary without a history slot or without after items", async () => {
+		for (const items of [preset.items.slice(0, 1), preset.items.slice(0, 2)]) {
+			expect(
+				(await compileMessages(presetWithItems(items), runtime([userMessage("H")]))).volatileFrom,
+			).toBeUndefined();
+		}
+	});
+});
+
+describe("built-in macro expansion modes (PE5)", () => {
+	const dynamicText = "{{date}}|{{time}}|{{lastUserMessage}}";
+
+	it("preserves date, time, and lastUserMessage in static mode", () => {
+		const current = runtime([], {
+			now: new Date(2026, 9, 16, 10, 20, 30),
+			latestUserMessage: "first message",
+		});
+		expect(expandMacros(dynamicText, current, { mode: "static" })).toBe(dynamicText);
+	});
+
+	it("renders date, time, and lastUserMessage from each runtime in dynamic mode", () => {
+		const current = runtime([], {
+			now: new Date(2026, 9, 16, 10, 20, 30),
+			latestUserMessage: "first message",
+		});
+		expect(expandMacros(dynamicText, current, { mode: "dynamic" })).toBe("2026-10-16|10:20:30|first message");
+
+		current.now = new Date(2026, 9, 17, 11, 21, 31);
+		current.latestUserMessage = "latest message";
+		expect(expandMacros(dynamicText, current, { mode: "dynamic" })).toBe("2026-10-17|11:21:31|latest message");
+	});
+
+	it.each([
+		["cwd", "/project"],
+		["tools", "read, write"],
+		["selectedTools", "read, write"],
+		["activeModel", ""],
+	])("keeps %s static", (name, expected) => {
+		const current = runtime([], { options: { cwd: "/project", selectedTools: ["read", "write"] } });
+		const text = `before {{${name}}} after`;
+		expect(expandMacros(text, current, { mode: "static" })).toBe(`before ${expected} after`);
+		expect(expandMacros(text, current, { mode: "dynamic" })).toBe(text);
+	});
+});
+
 describe("{{lastUserMessage}} derivation", () => {
 	const lastUserPreset = presetWithItems([
 		{ kind: "block", id: "persona", content: "You are a helpful assistant." },

@@ -234,20 +234,25 @@ export function convertToLlm(
 	messages: AgentMessage[],
 	resolveCustomType?: CustomTypeResolver,
 	forSummarization?: boolean,
+	sourceIndices?: number[],
 ): Message[] {
 	const out: Message[] = [];
 	// Custom-derived user messages while a tool call is pending; flushed after
 	// the tool result so role:"tool" stays adjacent to assistant(tool_calls).
 	let held: Message[] = [];
+	let heldIndices: number[] = [];
 	let pendingToolCall = false;
 
 	const flush = () => {
 		if (held.length > 0) out.push(...held);
+		if (sourceIndices) sourceIndices.push(...heldIndices);
+		heldIndices = [];
 		held = [];
 		pendingToolCall = false;
 	};
 
-	for (const m of messages) {
+	for (let sourceIndex = 0; sourceIndex < messages.length; sourceIndex++) {
+		const m = messages[sourceIndex];
 		let converted: Message | undefined;
 		switch (m.role) {
 			case "bashExecution":
@@ -320,14 +325,18 @@ export function convertToLlm(
 		if (m.role === "assistant") {
 			flush();
 			out.push(converted);
+			sourceIndices?.push(sourceIndex);
 			pendingToolCall = hasToolCallBlocks(m);
 		} else if (m.role === "toolResult") {
 			out.push(converted); // stays adjacent to its assistant(tool_calls)
+			sourceIndices?.push(sourceIndex);
 		} else if (m.role === "custom" && pendingToolCall) {
 			held.push(converted);
+			if (sourceIndices) heldIndices.push(sourceIndex);
 		} else {
 			flush();
 			out.push(converted);
+			sourceIndices?.push(sourceIndex);
 		}
 	}
 	flush();

@@ -123,6 +123,18 @@ describe("createAgentSession stream options", () => {
 		}
 	}
 
+	it.each([
+		[{ cacheRetention: "long" as const }, { cacheRetention: "none" as const }, "none"],
+		[{ cacheRetention: "long" as const }, {}, "long"],
+		[{}, {}, undefined],
+	])("resolves cache retention with request precedence (%j, %j)", async (settings, request, expected) => {
+		const options = await captureStreamOptions("openai-completions", settings, request);
+		if (expected === undefined) expect(options).not.toHaveProperty("cacheRetention");
+		else expect(options?.cacheRetention).toBe(expected);
+		expect(options).not.toHaveProperty("volatileFrom");
+		expect(options).not.toHaveProperty("sourceIndices");
+	});
+
 	it("forwards httpIdleTimeoutMs as timeoutMs for OpenAI Codex", async () => {
 		const options = await captureStreamOptions("openai-codex-responses", { httpIdleTimeoutMs: 1234 });
 

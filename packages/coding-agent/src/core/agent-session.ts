@@ -66,6 +66,7 @@ import {
 	createMemoryModule,
 	MEMORY_TOOL_NAMES,
 	type MemoryBranchSnapshot,
+	type MemoryMacroDefinition,
 	type MemoryModule,
 	type MemoryModuleHost,
 	type MemoryModuleSessionInfo,
@@ -184,7 +185,7 @@ import {
 	type LoadedPromptPresetSource,
 	loadPromptPresets,
 } from "./prompt-preset/loader.ts";
-import { expandMacros } from "./prompt-preset/macro-engine.ts";
+import { expandMacros, registerMacro as registerCustomMacro } from "./prompt-preset/macro-engine.ts";
 import {
 	applyResourcePolicy,
 	hasResourcePolicy,
@@ -195,6 +196,7 @@ import { applyFinalizeRegexRulesToMessage, applyRegexRulesToMessages } from "./p
 import type { PromptRegistryScope } from "./prompt-preset/registry-scope.ts";
 import { registerSlot } from "./prompt-preset/slot-registry.ts";
 import { isChatHistoryPosition } from "./prompt-preset/slot-renderers.ts";
+import type { CompileMessagesResult, MacroSnapshotTable } from "./prompt-preset/types.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { RequestGateway, RequestIdentity } from "./request-gateway.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -356,6 +358,7 @@ export type AgentSessionEvent =
 	| { type: "leaf_changed"; newLeafId: string | null; oldLeafId: string | null }
 	| { type: "entry_edited"; entryId: string }
 	| { type: "preset_activated"; presetId: string }
+	| { type: "steering_injected"; messages: AgentMessage[] }
 	| AgentActivityEvent;
 
 /**
@@ -791,6 +794,48 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 
 	private _systemPromptOverride?: string;
+	private _localMacroSnapshot: MacroSnapshotTable = { epochId: 0, entries: new Map() };
+	private _macroRuntimeGeneration = 0;
+	private _macroCompactionId = "";
+	private _lastMacroEpochKey?: {
+		runtimeGeneration: number;
+		preset: PromptPreset;
+		tools: string;
+		model: string;
+		compactionId: string;
+	};
+
+	private _getMacroSnapshot(): MacroSnapshotTable {
+		return this._agentSessionScope?.macroSnapshot ?? this._localMacroSnapshot;
+	}
+
+	private _ensureMacroEpoch(): void {
+		const model = this.model;
+		const key = {
+			runtimeGeneration: this._macroRuntimeGeneration,
+			preset: this._activePreset,
+			tools: JSON.stringify([...this._selectedToolNames].sort()),
+			model: JSON.stringify([model?.provider, model?.id]),
+			compactionId: this._macroCompactionId,
+		};
+		const previous = this._lastMacroEpochKey;
+		if (
+			!previous ||
+			previous.runtimeGeneration !== key.runtimeGeneration ||
+			previous.preset !== key.preset ||
+			previous.tools !== key.tools ||
+			previous.model !== key.model ||
+			previous.compactionId !== key.compactionId
+		) {
+			if (this._agentSessionScope) this._agentSessionScope.invalidateMacroEpoch();
+			else {
+				this._localMacroSnapshot.entries.clear();
+				this._localMacroSnapshot = { epochId: this._localMacroSnapshot.epochId + 1, entries: new Map() };
+			}
+			this._lastMacroEpochKey = key;
+		}
+	}
+
 	/**
 	 * Memo for the preset static system-prompt compile (_rebuildSystemPrompt).
 	 * The static result feeds only extension-visible systemPrompt values (preset
@@ -803,6 +848,7 @@ export class AgentSession {
 	 */
 	private _staticPromptCache?: {
 		preset: PromptPreset;
+		macroEpoch: number;
 		toolNames: string;
 		snippets: string;
 		guidelines: string;
@@ -902,6 +948,7 @@ export class AgentSession {
 	lastTransformedMessages: AgentMessage[] = [];
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
+		this.agent.onSteeringBatch = (messages) => this._handleSteeringBatch(messages);
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
@@ -2394,6 +2441,7 @@ export class AgentSession {
 
 	private _rebuildSystemPrompt(toolNames: string[], toolSearchCategories?: readonly ToolSearchCategory[]): string {
 		this._ensureActivePresetRestored();
+		this._ensureMacroEpoch();
 
 		// Initial state restoration is awaited in _buildRuntimeCore before
 		// prompt construction can expose the runtime.
@@ -2473,6 +2521,7 @@ export class AgentSession {
 		if (
 			cache &&
 			cache.preset === this._activePreset &&
+			cache.macroEpoch === this._getMacroSnapshot().epochId &&
 			cache.toolNames === toolNamesKey &&
 			cache.snippets === snippetsKey &&
 			cache.guidelines === guidelinesKey &&
@@ -2487,7 +2536,12 @@ export class AgentSession {
 			return cache.value;
 		}
 
+		// Same registry as the request path: both share one epoch snapshot, so a
+		// static-path render must never come from another session's process-level
+		// macro (e.g. a scope-less parent's memory.* while this session is scoped).
 		const staticRuntime: PromptRuntime = {
+			macroSnapshot: this._getMacroSnapshot(),
+			promptRegistry: this._agentSessionScope?.promptRegistry,
 			options: this._baseSystemPromptOptions,
 			messages: [],
 			latestUserMessage: undefined,
@@ -2504,6 +2558,7 @@ export class AgentSession {
 		const value = expandMacros(derived.systemPrompt, staticRuntime, { mode: "static" });
 		this._staticPromptCache = {
 			preset: this._activePreset,
+			macroEpoch: this._getMacroSnapshot().epochId,
 			toolNames: toolNamesKey,
 			snippets: snippetsKey,
 			guidelines: guidelinesKey,
@@ -2825,13 +2880,17 @@ export class AgentSession {
 	 * Get compiled preset messages for injection into the LLM context.
 	 * Uses compileMessages() which correctly handles chat-history slot positioning.
 	 * Returns [] when a custom prompt exists (system is in systemPrompt field).
+	 * `onCompiled` receives the full compile result (e.g. `volatileFrom`) before
+	 * the messages are returned; it is not called when a custom prompt short-circuits.
 	 */
-	async getPresetInjectMessages(): Promise<AgentMessage[]> {
+	async getPresetInjectMessages(onCompiled?: (result: CompileMessagesResult) => void): Promise<AgentMessage[]> {
 		await this._ensureRuntimeReady();
 		const hasCustomPrompt = this._resourceLoader.getSystemPrompt() !== undefined;
 		if (hasCustomPrompt) return [];
 		const loadedSkills = this._resourceLoader.getSkills().skills;
+		this._ensureMacroEpoch();
 		const runtime: PromptRuntime = {
+			macroSnapshot: this._getMacroSnapshot(),
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
 			currentTraceStartIndex: this._currentTraceStartIndex,
@@ -2846,7 +2905,9 @@ export class AgentSession {
 			historyOps: this._historyOpRegistry.snapshot(),
 			historyHostData: this._historyHostData,
 		};
-		return (await compileMessages(this._activePreset, runtime)).messages;
+		const compiled = await compileMessages(this._activePreset, runtime);
+		onCompiled?.(compiled);
+		return compiled.messages;
 	}
 	/**
 	 * Re-compile the system prompt from the active preset (for /prompt display).
@@ -2854,7 +2915,9 @@ export class AgentSession {
 	async compileSystemPrompt(): Promise<string> {
 		await this._ensureRuntimeReady();
 		const loadedSkills = this._resourceLoader.getSkills().skills;
+		this._ensureMacroEpoch();
 		const runtime: PromptRuntime = {
+			macroSnapshot: this._getMacroSnapshot(),
 			options: this._baseSystemPromptOptions,
 			messages: this.agent.state.messages,
 			latestUserMessage: undefined,
@@ -3318,6 +3381,27 @@ export class AgentSession {
 		this._queueItemIdByMessage.set(message, queueItemId);
 		if (inputId) this._inputIdByMessage.set(message, inputId);
 		this.agent.steer(message);
+	}
+
+	private async _handleSteeringBatch(messages: AgentMessage[]): Promise<AgentMessage[]> {
+		this._emit({ type: "steering_injected", messages });
+		// The agent hook boundary catches failures and still delivers the batch.
+		const result = await this._memoryModule?.onSteeringMessages(messages);
+		if (!result?.message) return [];
+		const message = result.message as unknown as Pick<
+			CustomMessage,
+			"customType" | "content" | "display" | "details"
+		>;
+		return [
+			{
+				role: "custom",
+				customType: message.customType,
+				content: message.content ?? [],
+				display: message.display,
+				details: message.details,
+				timestamp: Date.now(),
+			},
+		];
 	}
 
 	/**
@@ -4319,7 +4403,7 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(
+			this._macroCompactionId = this.sessionManager.appendCompaction(
 				summary,
 				firstKeptEntryId,
 				tokensBefore,
@@ -4699,7 +4783,7 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(
+			this._macroCompactionId = this.sessionManager.appendCompaction(
 				summary,
 				firstKeptEntryId,
 				tokensBefore,
@@ -5337,6 +5421,7 @@ export class AgentSession {
 		try {
 			await this._buildRuntimeCore(options);
 			update?.commit();
+			this._macroRuntimeGeneration++;
 			if (update) this._refreshCurrentModelFromRegistry();
 			if (update) this._staticPromptCache = undefined;
 		} catch (error) {
@@ -5489,12 +5574,18 @@ export class AgentSession {
 			const store = await getMemoryStoreSingleton(dbPath, this._stores.storage, this._sqliteFactory);
 			module = createMemoryModule(store, { settings: settings.memory });
 			const memorySlots: MemorySlotDefinition[] = [];
-			const host = this._createMemoryModuleHost(store, (slot) => memorySlots.push(slot));
+			const memoryMacros: MemoryMacroDefinition[] = [];
+			const host = this._createMemoryModuleHost(
+				store,
+				(slot) => memorySlots.push(slot),
+				(macro) => memoryMacros.push(macro),
+			);
 			module.registerSession(host);
-			// Backfill before publishing session-bound slot closures.
+			// Backfill before publishing session-bound slot and macro closures.
 			await module.onLeafChange();
 			// Do not publish renderers from a memory module whose initialization failed.
 			for (const slot of memorySlots) this._registerMemorySlot(slot);
+			for (const macro of memoryMacros) this._registerMemoryMacro(macro);
 			this._memoryModule = module;
 			this._memoryDbPath = dbPath;
 		} catch (error) {
@@ -5526,6 +5617,11 @@ export class AgentSession {
 		);
 	}
 
+	/** Use the same scope/global registration policy as extension macros. */
+	private _registerMemoryMacro(macro: MemoryMacroDefinition): void {
+		registerCustomMacro(macro, false, this._agentSessionScope?.promptRegistry);
+	}
+
 	/**
 	 * Build the MemoryModuleHost for the current runtime build. Event handlers
 	 * and tools registered through it are attached to a synthetic Extension owned
@@ -5535,6 +5631,7 @@ export class AgentSession {
 	private _createMemoryModuleHost(
 		store: MemoryStore,
 		registerMemorySlot: (definition: MemorySlotDefinition) => void,
+		registerMemoryMacro: (definition: MemoryMacroDefinition) => void,
 	): MemoryModuleHost {
 		const session = this;
 		const runner = this._extensionRunner;
@@ -5580,6 +5677,9 @@ export class AgentSession {
 			},
 			registerSlot(definition) {
 				registerMemorySlot(definition);
+			},
+			registerMacro(definition) {
+				registerMemoryMacro(definition);
 			},
 			registerCustomType(customType, policy) {
 				runner.getExtensionRuntime().registerCustomType(customType, policy);

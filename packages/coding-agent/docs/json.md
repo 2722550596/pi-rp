@@ -26,6 +26,8 @@ type JsonAgentSessionEvent =
 
 `queue_update` emits the full pending steering and follow-up queues whenever they change. `compaction_start` and `compaction_end` cover both manual and automatic compaction.
 
+`steering_injected` emits once per steering batch, with `{ type: "steering_injected", messages: AgentMessage[] }` in queue order, before memory recall and the batch's `message_start` events; the batch and any recalled memories then enter context before the next model request, including when queued steering is delivered through `continue()`.
+
 Other base events come from
 [`AgentEvent`](https://github.com/earendil-works/pi-mono/blob/main/packages/agent/src/types.ts):
 

@@ -12,9 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createSchema, type MemoryDatabase, MemoryStore, openDatabase } from "@earendil-works/pi-memory";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createToolHtmlRenderer } from "../src/core/export-html/tool-renderer.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
+import { createAgentSessionScope } from "../src/core/session-scope.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -70,6 +71,45 @@ function injectedUris(entries: SessionEntry[]): string[] {
 }
 
 describe("memory module ↔ AgentSession integration", () => {
+	it("publishes synchronous real memory macros into the supplied scope and replaces them on reload", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-memory-real-"));
+		tempDirs.push(tempDir);
+		const scope = createAgentSessionScope();
+		const harness = await createHarness({
+			scope,
+			settings: {
+				memory: { dbPath: join(tempDir, "memory.db"), clock: { mode: "real", timezone: "Asia/Shanghai" } },
+			},
+		});
+		harnesses.push(harness);
+		const names = harness.session.getAllTools().map((tool) => tool.name);
+		expect(names).not.toContain("set_time");
+		for (const name of ["recall", "retrieve", "memorize", "revise", "forget", "awaken"])
+			expect(names).toContain(name);
+		const macro = scope.promptRegistry.getMacro("memory.awaken");
+		expect(macro?.static).toBe(true);
+		expect(typeof macro!.render({ runtime: undefined as never, variables: {} })).toBe("string");
+		await harness.session.reload();
+		expect(scope.promptRegistry.getAllMacros().filter((entry) => entry.name === "memory.awaken")).toHaveLength(1);
+		expect(scope.promptRegistry.getMacro("memory.awaken")).not.toBe(macro);
+	});
+
+	it("keeps memory available without a scope and registers process-level macros", async () => {
+		// A fresh module graph isolates its process registry from other harnesses.
+		vi.resetModules();
+		const { createHarness: createIsolatedHarness } = await import("./suite/harness.ts");
+		const { getMacro } = await import("../src/core/prompt-preset/macro-engine.ts");
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-memory-global-"));
+		tempDirs.push(tempDir);
+		const harness = await createIsolatedHarness({ settings: { memory: { dbPath: join(tempDir, "memory.db") } } });
+		try {
+			expect(harness.session.getAllTools().map((tool) => tool.name)).toContain("memorize");
+			expect(getMacro("memory.awaken")?.static).toBe(true);
+		} finally {
+			harness.cleanup();
+			vi.resetModules();
+		}
+	});
 	it("wires the 12 memory tools and rp-memories policy at runtime build", async () => {
 		const { harness } = await createMemoryHarness();
 		// Tools registered through the synthetic extension appear in the tool registry.

@@ -141,7 +141,7 @@ Items compile into one flat message array, in order. A `history` item expands co
 
 If an enabled `history` item exists, legacy `chat-history` position slots no longer insert history. Existing history-filter options on that slot are retained on the `history` item when migrating a preset.
 
-This message array is sent to the model. System-role messages are extracted by the provider adapter into the API-specific system field where needed; on OpenAI they are passed as-is.
+This message array is sent to the model. System-role messages are extracted by the provider adapter into the API-specific system field: Anthropic and Bedrock merge them into the system prompt, and OpenAI hoists them to the front of the request as well.
 
 History operations use three terms:
 
@@ -416,12 +416,13 @@ In block `content` fields, wrap a macro name in `{{}}` to expand it at compile t
 
 | Macro | Description | Static |
 |---|---|---|
-| `{{date}}` | Current date (YYYY-MM-DD). | yes |
-| `{{time}}` | Current time (HH:MM:SS). | yes |
+| `{{date}}` | Current date (YYYY-MM-DD). Rendered per request. | no |
+| `{{time}}` | Current time (HH:MM:SS). Rendered per request. | no |
 | `{{cwd}}` | Current working directory. | yes |
-| `{{lastUserMessage}}` | The user's most recent message content. | yes |
+| `{{lastUserMessage}}` | The user's most recent message content. Rendered per request. | no |
 | `{{tools}}` / `{{selectedTools}}` | Comma-separated active tool names. | yes |
 | `{{activeModel}}` | Reserved. | yes |
+| `{{memory.awaken}}` / `{{memory.recent}}` / `{{memory.index}}` | Memory snapshots; see [Static Memory Macros](#static-memory-macros). | yes |
 | `{{user}}` | User display name (from `settings.json` `userName`). | no |
 | `{{setvar::key::value}}` | Set a session variable. | no |
 | `{{addvar::key::value}}` | Append text to a session variable. | no |
@@ -429,7 +430,29 @@ In block `content` fields, wrap a macro name in `{{}}` to expand it at compile t
 | `{{trim}}` | Remove surrounding whitespace from adjacent text. | no |
 | `{{//…}}` | Comment — stripped entirely from output. | — |
 
-**Static vs Dynamic**: A `static` macro is expanded once when the preset is compiled. A dynamic macro (default, no `static: true`) is re-expanded each turn. This matters for macros like `{{roll:1d100}}` that should produce a fresh value on every LLM call.
+**Static vs Dynamic**: A `static` macro produces one value per static epoch. Each distinct macro call (name and parameter string) is rendered on first use in the epoch; every later request in that epoch sees the same text. The epoch ends when the session is (re)started (including `/reload`), the active preset changes, the active tool set changes, the model changes, or a compaction completes. Snapshots are kept in memory only. A dynamic macro (no `static: true`) is rendered on every request, for example `{{roll:1d100}}` or `{{date}}`.
+
+**Placement**: Put static content (such as static memory macros) anywhere in the item list; it does not change between turns. Put content that changes every turn (such as `{{date}}`, `{{time}}`, `{{lastUserMessage}}`) after the `history` item. Items after `history` MUST explicitly set `"role": "user"` (or `"assistant"` where appropriate): the default is `system`, and every `system` message is pulled back to the top of the request by `splitSystemMessages` (`packages/ai/src/api/transform-messages.ts`), which defeats the placement. To mark content as system-type, wrap it in an XML tag such as `<system-reminder>` instead of using the `system` role.
+
+**Items after history**: The compiler records the first message containing content after history as the `volatileFrom` boundary. Adapters with explicit conversation cache breakpoints (Anthropic, Bedrock, and the Anthropic-compatible OpenAI Completions format) anchor the breakpoint on the last cacheable block before that boundary, including tool-result blocks where supported. Normal text merging is unchanged: if a tail item merges into the last history message, the boundary points to that merged message and the cached prefix ends before it. Without a boundary, existing provider behavior is unchanged; if no cacheable block precedes it, no conversation breakpoint is added. If an extension replaces or reorders the message array so the boundary cannot be tracked, the request falls back to the existing provider breakpoint behavior. Providers with automatic prefix caching keep their existing behavior.
+
+### Static Memory Macros
+
+When the memory module is enabled, `memory.awaken`, `memory.recent`, and `memory.index` render the same memory content as the matching slots, but as static snapshots: each distinct call renders once per static epoch and every request sees the same text. The epoch ends at the events listed under "Static vs Dynamic" above.
+
+The first line is `> 快照时间: <时间>（此后新写入的记忆不在这份快照里，需要时用 recall 或 retrieve 查）`; the body uses absolute dates only. Slot form (`"kind": "slot"`) still renders on every request, unchanged.
+
+| Macro | Parameters | Description |
+|---|---|---|
+| `{{memory.awaken}}` | none | Full awaken list |
+| `{{memory.recent}}` | `rawCount=N,snippetCount=M`, defaults 1 and 4 | Latest N entries in full, then M snippets |
+| `{{memory.index}}` | none | Snippets of each domain root node |
+
+For example, `{{memory.recent:rawCount=2,snippetCount=4}}` includes the latest two entries in full, followed by four snippets. Parameters are comma-separated `key=value`; unknown keys are ignored and invalid values fall back to the defaults. Macro parameters must not contain nested `{{...}}` macros; a static macro call with nested macros is kept as-is and reported with a warning.
+
+Memory writes do not immediately refresh static macros. The first use in the next epoch (including one started after compaction) reads the current content. Use `recall` or `retrieve` for current memory; slot form reflects current content every request.
+
+Memory macros are registered in the session's prompt registry when a scope is provided, or in the process-wide macro registry for sessions without a scope. Sessions without a scope share that table, so the last registration wins; give each session its own scope when several memory-enabled sessions run in one process. A scoped session only looks up built-in macros and its own scope, never another session's process-wide registrations. The synchronous system-prompt rebuild reads the same registry and shares the epoch snapshot with normal preset requests and `/prompt`, so the extension-visible `systemPrompt` shows the same memory snapshot. A rebuild that runs before the memory module has published its macros keeps literal `{{memory.*}}` placeholders, and that result is reused until a static-prompt cache key (such as the epoch or the active tool set) changes.
 
 ### Variable Macros (SillyTavern-style)
 
