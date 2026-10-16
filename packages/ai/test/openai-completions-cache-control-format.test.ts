@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
+import { streamSimple as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { getModel } from "../src/compat.ts";
 import type { Message, Model } from "../src/types.ts";
 
@@ -73,7 +73,7 @@ vi.mock("openai", () => {
 
 async function capturePayload(
 	model: Model<"openai-completions">,
-	options?: { cacheRetention?: "none" | "short" | "long" },
+	options?: { cacheRetention?: "none" | "short" | "long"; volatileFrom?: number; sourceIndices?: number[] },
 	messages?: Message[],
 ): Promise<CapturedParams> {
 	const timestamp = Date.now();
@@ -125,6 +125,59 @@ function expectAnthropicCacheMarkers(params: CapturedParams): void {
 describe("openai-completions cacheControlFormat", () => {
 	beforeEach(() => {
 		mockState.lastParams = undefined;
+	});
+
+	it.each([3, undefined, 0])("respects compiled boundary %s", async (volatileFrom) => {
+		const model = getModel("openrouter", "anthropic/claude-sonnet-4");
+		const messages: Message[] = [
+			{ role: "user", content: "H", timestamp: 0 },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "A" }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 0,
+			},
+			{ role: "user", content: "U2\n\nTAIL", timestamp: 0 },
+		];
+		const params = await capturePayload(model, { volatileFrom, sourceIndices: [1, 2, 3] }, messages);
+		const marked = params.messages.flatMap((message, index) =>
+			message.role !== "system" &&
+			message.role !== "developer" &&
+			Array.isArray(message.content) &&
+			message.content.some((block) => block.cache_control)
+				? [index]
+				: [],
+		);
+		expect(marked).toEqual(volatileFrom === 0 ? [] : volatileFrom === undefined ? [3] : [2]);
+	});
+
+	it("keeps reordered volatile messages out of the cached prefix", async () => {
+		const model = getModel("openrouter", "anthropic/claude-sonnet-4");
+		const params = await capturePayload(model, { volatileFrom: 2, sourceIndices: [0, 2, 1] }, [
+			{ role: "user", content: "H", timestamp: 0 },
+			{ role: "user", content: "volatile", timestamp: 0 },
+			{ role: "user", content: "held", timestamp: 0 },
+		]);
+		expect(
+			params.messages.flatMap((message, index) =>
+				message.role === "user" &&
+				Array.isArray(message.content) &&
+				message.content.some((block) => block.cache_control)
+					? [index]
+					: [],
+			),
+		).toEqual([1]);
 	});
 
 	it("applies Anthropic-style cache markers when model compat enables them", async () => {

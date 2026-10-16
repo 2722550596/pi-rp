@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `StreamOptions.volatileFrom` and `StreamOptions.sourceIndices` for prompts whose tail is rebuilt every request (for example preset items placed after chat history). `sourceIndices` maps each request message to its compiled-message index, and `volatileFrom` marks the first compiled message of the per-request tail. Anthropic Messages, Bedrock Converse (Claude models), and OpenAI Completions with Anthropic-style `cache_control` anchor the conversation cache breakpoint on the last cacheable block before that tail. A zero boundary places no conversation breakpoint. Without these options, or when the mapping is invalid, the existing last-user-message breakpoint rule applies byte for byte. Neither option is ever serialized into provider payloads.
+
 ### Fixed
 
 - Fixed OpenAI Codex SSE request body typing for Node-only TypeScript builds.

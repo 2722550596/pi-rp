@@ -55,8 +55,8 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	};
 });
 
-import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import type { Context, Message, Model } from "../src/types.ts";
+import { stream as streamBedrock, streamSimple as streamBedrockSimple } from "../src/api/bedrock-converse-stream.ts";
+import type { Context, Message, Model, StreamOptions } from "../src/types.ts";
 
 const baseModel: Model<"bedrock-converse-stream"> = {
 	id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -80,11 +80,12 @@ const novaModel: Model<"bedrock-converse-stream"> = {
 	compat: undefined,
 };
 
-async function capturePayload(context: Context, model = baseModel): Promise<unknown> {
+async function capturePayload(context: Context, model = baseModel, options: StreamOptions = {}): Promise<unknown> {
 	let capturedPayload: unknown;
 	const s = streamBedrock(model, context, {
 		cacheRetention: "none",
 		signal: AbortSignal.abort(),
+		...options,
 		onPayload: (payload) => {
 			capturedPayload = payload;
 			return payload;
@@ -95,6 +96,92 @@ async function capturePayload(context: Context, model = baseModel): Promise<unkn
 	}
 	return capturedPayload;
 }
+
+describe("Bedrock compiled cache boundary", () => {
+	it.each([
+		["U2\n\nTAIL", 3, 1],
+		["TAIL", 3, 1],
+		["TAIL", undefined, 2],
+		["TAIL", 0, -1],
+	])("anchors %s with boundary %s", async (tail, volatileFrom, expected) => {
+		const messages: Message[] = [
+			{ role: "system", content: "SYS", timestamp: 0 },
+			{ role: "user", content: "H", timestamp: 0 },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "A" }],
+				api: baseModel.api,
+				provider: baseModel.provider,
+				model: baseModel.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 0,
+			},
+			{ role: "user", content: tail, timestamp: 0 },
+		];
+		const payload = (await capturePayload({ messages }, baseModel, {
+			cacheRetention: "short",
+			...(volatileFrom !== undefined ? { volatileFrom } : {}),
+		})) as { messages: Array<{ content: Array<{ cachePoint?: unknown }> }> };
+		expect(
+			payload.messages.flatMap((message, index) =>
+				message.content.some((block) => block.cachePoint) ? [index] : [],
+			),
+		).toEqual(expected < 0 ? [] : [expected]);
+	});
+	it("excludes a tool-result group spanning the boundary", async () => {
+		let payload: { messages: Array<{ content: Array<{ cachePoint?: unknown }> }> } | undefined;
+		const call: Message = {
+			role: "assistant",
+			content: ["one", "two"].map((id) => ({ type: "toolCall", id, name: "read", arguments: {} })),
+			api: baseModel.api,
+			provider: baseModel.provider,
+			model: baseModel.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 0,
+		};
+		const results: Message[] = ["one", "two"].map((id) => ({
+			role: "toolResult",
+			toolCallId: id,
+			toolName: "read",
+			content: [{ type: "text", text: id }],
+			isError: false,
+			timestamp: 0,
+		}));
+		await streamBedrockSimple(
+			baseModel,
+			{ messages: [{ role: "user", content: "H", timestamp: 0 }, call, ...results] },
+			{
+				cacheRetention: "short",
+				volatileFrom: 3,
+				onPayload: (value) => {
+					payload = value as typeof payload;
+					throw new Error("captured");
+				},
+			},
+		).result();
+		expect(
+			payload?.messages.flatMap((message, index) =>
+				message.content.some((block) => block.cachePoint) ? [index] : [],
+			),
+		).toEqual([1]);
+	});
+});
 
 describe("Bedrock constrained sampling", () => {
 	it("gates native strict tool use by model capability", async () => {

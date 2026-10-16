@@ -62,7 +62,7 @@ import {
 	clampMaxTokensToContext,
 	clampReasoning,
 } from "./simple-options.ts";
-import { splitSystemMessages, transformMessages } from "./transform-messages.ts";
+import { cacheMessageSources, cacheSafePrefix, splitSystemMessages, transformMessages } from "./transform-messages.ts";
 
 export type BedrockThinkingDisplay = "summarized" | "omitted";
 
@@ -232,6 +232,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			}
 			const cacheRetention = resolveCacheRetention(options.cacheRetention, options.env);
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
+			const sourceIndices = cacheMessageSources(context.messages, options, context.systemPrompt);
 			const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
 				context.messages,
 				context.systemPrompt,
@@ -240,7 +241,14 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 
 			let commandInput = {
 				modelId: model.id,
-				messages: convertMessages(context, model, cacheRetention, options.env),
+				messages: convertMessages(
+					context,
+					model,
+					cacheRetention,
+					options.env,
+					sourceIndices ? options.volatileFrom : undefined,
+					sourceIndices,
+				),
 				system: buildSystemPrompt(context.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
@@ -474,7 +482,12 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
-	const base = buildBaseOptions(model, context, options, undefined);
+	const base = {
+		...buildBaseOptions(model, context, options, undefined),
+		...(options?.volatileFrom !== undefined
+			? { volatileFrom: options.volatileFrom, sourceIndices: options.sourceIndices }
+			: {}),
+	};
 	if (!options?.reasoning) {
 		return stream(model, context, { ...base, reasoning: undefined } satisfies BedrockOptions);
 	}
@@ -845,9 +858,12 @@ function convertMessages(
 	model: Model<"bedrock-converse-stream">,
 	cacheRetention: CacheRetention,
 	env?: ProviderEnv,
+	volatileFrom?: number,
+	sourceIndices?: number[],
 ): Message[] {
 	const result: Message[] = [];
-	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const sources: number[][] = [];
+	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId, sourceIndices);
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
@@ -878,6 +894,7 @@ function convertMessages(
 					role: ConversationRole.USER,
 					content,
 				});
+				sources.push(sourceIndices ? [sourceIndices[i]] : []);
 				break;
 			}
 			case "assistant": {
@@ -945,6 +962,7 @@ function convertMessages(
 					role: ConversationRole.ASSISTANT,
 					content: contentBlocks,
 				});
+				sources.push(sourceIndices ? [sourceIndices[i]] : []);
 				break;
 			}
 			case "toolResult": {
@@ -976,6 +994,7 @@ function convertMessages(
 				}
 
 				// Skip the messages we've already processed
+				sources.push(sourceIndices ? sourceIndices.slice(i, j) : []);
 				i = j - 1;
 
 				result.push({
@@ -989,16 +1008,21 @@ function convertMessages(
 		}
 	}
 
-	// Add cache point to the last user message for supported Claude models when caching is enabled
 	if (cacheRetention !== "none" && supportsPromptCaching(model, env) && result.length > 0) {
-		const lastMessage = result[result.length - 1];
-		if (lastMessage.role === ConversationRole.USER && lastMessage.content) {
-			(lastMessage.content as ContentBlock[]).push({
-				cachePoint: {
-					type: CachePointType.DEFAULT,
-					...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
-				},
-			});
+		const limit = volatileFrom === undefined ? result.length : cacheSafePrefix(sources, volatileFrom);
+		for (let i = limit - 1; i >= 0; i--) {
+			const message = result[i];
+			if (volatileFrom === undefined && (i !== result.length - 1 || message.role !== ConversationRole.USER)) break;
+			if (message.content?.length && (volatileFrom === undefined || sources[i].length > 0)) {
+				(message.content as ContentBlock[]).push({
+					cachePoint: {
+						type: CachePointType.DEFAULT,
+						...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
+					},
+				});
+				break;
+			}
+			if (volatileFrom === undefined) break;
 		}
 	}
 

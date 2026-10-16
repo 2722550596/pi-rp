@@ -54,7 +54,7 @@ import {
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { buildBaseOptions, clampReasoning, MIN_ANSWER_TOKENS } from "./simple-options.ts";
-import { splitSystemMessages, transformMessages } from "./transform-messages.ts";
+import { cacheMessageSources, cacheSafePrefix, splitSystemMessages, transformMessages } from "./transform-messages.ts";
 
 /**
  * Check if conversation messages contain tool calls or tool results.
@@ -148,6 +148,9 @@ export interface OpenAICompletionsOptions extends StreamOptions {
 
 export interface ConvertCompletionsMessagesOptions {
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
+	volatileFrom?: number;
+	sourceIndices?: number[];
+	providerSources?: number[][];
 }
 
 interface OpenAICompatCacheControl {
@@ -620,7 +623,12 @@ export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOpti
 ): AssistantMessageEventStream => {
 	getClientApiKey(model.provider, options?.apiKey, options?.headers);
 
-	const base = buildBaseOptions(model, context, options, options?.apiKey);
+	const base = {
+		...buildBaseOptions(model, context, options, options?.apiKey),
+		...(options?.volatileFrom !== undefined
+			? { volatileFrom: options.volatileFrom, sourceIndices: options.sourceIndices }
+			: {}),
+	};
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
@@ -701,7 +709,14 @@ function buildParams(
 		compat.supportsOpenAIGrammarTools,
 	),
 ) {
-	const messages = convertMessages(model, context, compat, { grammarToolInputProperties });
+	const providerSources: number[][] = [];
+	const sourceIndices = cacheMessageSources(context.messages, options, context.systemPrompt);
+	const messages = convertMessages(model, context, compat, {
+		grammarToolInputProperties,
+		volatileFrom: sourceIndices ? options?.volatileFrom : undefined,
+		sourceIndices: options?.sourceIndices,
+		providerSources,
+	});
 	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
@@ -750,7 +765,13 @@ function buildParams(
 	}
 
 	if (cacheControl) {
-		applyAnthropicCacheControl(messages, params.tools, cacheControl);
+		applyAnthropicCacheControl(
+			messages,
+			params.tools,
+			cacheControl,
+			sourceIndices ? options?.volatileFrom : undefined,
+			providerSources,
+		);
 	}
 
 	if (options?.toolChoice) {
@@ -966,10 +987,12 @@ function applyAnthropicCacheControl(
 	messages: ChatCompletionMessageParam[],
 	tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
 	cacheControl: OpenAICompatCacheControl,
+	volatileFrom?: number,
+	sources?: number[][],
 ): void {
 	addCacheControlToSystemPrompt(messages, cacheControl);
 	addCacheControlToLastTool(tools, cacheControl);
-	addCacheControlToLastConversationMessage(messages, cacheControl);
+	addCacheControlToLastConversationMessage(messages, cacheControl, volatileFrom, sources);
 }
 
 function addCacheControlToSystemPrompt(
@@ -987,8 +1010,12 @@ function addCacheControlToSystemPrompt(
 function addCacheControlToLastConversationMessage(
 	messages: ChatCompletionMessageParam[],
 	cacheControl: OpenAICompatCacheControl,
+	volatileFrom?: number,
+	sources?: number[][],
 ): void {
-	for (let i = messages.length - 1; i >= 0; i--) {
+	const limit = volatileFrom === undefined ? messages.length : cacheSafePrefix(sources!, volatileFrom);
+	for (let i = limit - 1; i >= 0; i--) {
+		if (volatileFrom !== undefined && sources![i].length === 0) continue;
 		const message = messages[i];
 		if (message.role === "user" || message.role === "assistant" || message.role === "tool") {
 			if (addCacheControlToMessage(message, cacheControl)) {
@@ -1100,13 +1127,21 @@ export function convertMessages(
 		return id;
 	};
 
+	const sourceIndices = cacheMessageSources(context.messages, options, context.systemPrompt);
+	const sources = options?.providerSources;
 	const { systemPrompt, messages: cleanedMessages } = splitSystemMessages(context.messages, context.systemPrompt);
-	const transformedMessages = transformMessages(cleanedMessages, model, (id) => normalizeToolCallId(id));
+	const transformedMessages = transformMessages(
+		cleanedMessages,
+		model,
+		(id) => normalizeToolCallId(id),
+		sourceIndices,
+	);
 
 	if (systemPrompt) {
 		const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole;
 		const role = useDeveloperRole ? "developer" : "system";
 		params.push({ role: role, content: sanitizeSurrogates(systemPrompt) });
+		sources?.push([]);
 	}
 
 	let lastRole: string | null = null;
@@ -1120,6 +1155,7 @@ export function convertMessages(
 				role: "assistant",
 				content: "I have processed the tool results.",
 			});
+			sources?.push([]);
 		}
 
 		if (msg.role === "user") {
@@ -1150,6 +1186,7 @@ export function convertMessages(
 					content,
 				});
 			}
+			sources?.push(sourceIndices ? [sourceIndices[i]] : []);
 		} else if (msg.role === "assistant") {
 			// Some providers don't accept null content, use empty string instead
 			const assistantMsg: ChatCompletionAssistantMessageParam = {
@@ -1264,10 +1301,12 @@ export function convertMessages(
 				continue;
 			}
 			params.push(assistantMsg);
+			sources?.push(sourceIndices ? [sourceIndices[i]] : []);
 		} else if (msg.role === "toolResult") {
 			const imageBlocks: Array<{ type: "image_url"; image_url: { url: string } }> = [];
 			const deferredToolNames = new Set<string>();
 			let j = i;
+			const groupStart = i;
 
 			for (; j < transformedMessages.length && transformedMessages[j].role === "toolResult"; j++) {
 				const toolMsg = transformedMessages[j] as ToolResultMessage;
@@ -1292,6 +1331,7 @@ export function convertMessages(
 					(toolResultMsg as any).name = toolMsg.toolName;
 				}
 				params.push(toolResultMsg);
+				sources?.push(sourceIndices ? [sourceIndices[j]] : []);
 
 				if (compat.deferredToolsMode === "kimi") {
 					for (const name of toolMsg.addedToolNames ?? []) {
@@ -1321,6 +1361,7 @@ export function convertMessages(
 						role: "assistant",
 						content: "I have processed the tool results.",
 					});
+					sources?.push([]);
 				}
 
 				params.push({
@@ -1333,6 +1374,7 @@ export function convertMessages(
 						...imageBlocks,
 					],
 				});
+				sources?.push(sourceIndices ? sourceIndices.slice(groupStart, j) : []);
 				lastRole = "user";
 			} else {
 				lastRole = "toolResult";
@@ -1347,6 +1389,7 @@ export function convertMessages(
 					};
 					// Kimi accepts a system message with tools but omits the standard content field.
 					params.push(kimiToolMessage as unknown as ChatCompletionMessageParam);
+					sources?.push(sourceIndices ? sourceIndices.slice(groupStart, j) : []);
 				}
 			}
 			continue;
@@ -1359,6 +1402,7 @@ export function convertMessages(
 							.map((p) => p.text)
 							.join("\n");
 			params.push({ role: "system", content: sanitizeSurrogates(text) });
+			sources?.push(sourceIndices ? [sourceIndices[i]] : []);
 		}
 		lastRole = msg.role;
 	}

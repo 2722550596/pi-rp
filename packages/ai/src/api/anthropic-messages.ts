@@ -41,7 +41,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
-import { splitSystemMessages, transformMessages } from "./transform-messages.ts";
+import { cacheMessageSources, cacheSafePrefix, splitSystemMessages, transformMessages } from "./transform-messages.ts";
 
 /**
  * Resolve cache retention preference.
@@ -814,7 +814,12 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 ): AssistantMessageEventStream => {
 	assertRequestAuth(model.provider, options?.apiKey, options?.headers);
 
-	const base = buildBaseOptions(model, context, options, options?.apiKey);
+	const base = {
+		...buildBaseOptions(model, context, options, options?.apiKey),
+		...(options?.volatileFrom !== undefined
+			? { volatileFrom: options.volatileFrom, sourceIndices: options.sourceIndices }
+			: {}),
+	};
 	if (!options?.reasoning) {
 		return stream(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
 	}
@@ -955,6 +960,7 @@ function buildParams(
 	options?: AnthropicOptions,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
+	const sourceIndices = cacheMessageSources(context.messages, options, context.systemPrompt);
 	const { systemPrompt: mergedSystemPrompt, messages: cleanMessages } = splitSystemMessages(
 		context.messages,
 		context.systemPrompt,
@@ -962,7 +968,7 @@ function buildParams(
 	context = { ...context, systemPrompt: mergedSystemPrompt, messages: cleanMessages };
 
 	const compat = getAnthropicCompat(model);
-	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId, sourceIndices);
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
 	const toolPlacement = splitDeferredTools(
 		{ ...context, messages: transformedMessages },
@@ -985,6 +991,8 @@ function buildParams(
 			compat.allowEmptySignature,
 			deferredToolNames,
 			normalizeToolName,
+			sourceIndices ? options?.volatileFrom : undefined,
+			sourceIndices,
 		),
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
@@ -1138,8 +1146,11 @@ function convertMessages(
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
+	volatileFrom?: number,
+	sourceIndices?: number[],
 ): MessageParam[] {
 	const params: MessageParam[] = [];
+	const sources: number[][] = [];
 	const loadedToolNames = new Set<string>();
 
 	for (let i = 0; i < transformedMessages.length; i++) {
@@ -1152,6 +1163,7 @@ function convertMessages(
 						role: "user",
 						content: sanitizeSurrogates(msg.content),
 					});
+					sources.push(sourceIndices ? [sourceIndices[i]] : []);
 				}
 			} else {
 				const blocks: ContentBlockParam[] = msg.content.map((item) => {
@@ -1182,6 +1194,7 @@ function convertMessages(
 					role: "user",
 					content: filteredBlocks,
 				});
+				sources.push(sourceIndices ? [sourceIndices[i]] : []);
 			}
 		} else if (msg.role === "assistant") {
 			const blocks: ContentBlockParam[] = [];
@@ -1242,6 +1255,7 @@ function convertMessages(
 				role: "assistant",
 				content: blocks,
 			});
+			sources.push(sourceIndices ? [sourceIndices[i]] : []);
 		} else if (msg.role === "toolResult") {
 			// Collect all consecutive toolResult messages, needed for z.ai Anthropic endpoint.
 			const toolResults: ContentBlockParam[] = [];
@@ -1261,6 +1275,7 @@ function convertMessages(
 			}
 
 			// Skip the messages we've already processed.
+			sources.push(sourceIndices ? sourceIndices.slice(i, j) : []);
 			i = j - 1;
 
 			// Displaced reference-bearing results must follow every tool_result block.
@@ -1271,27 +1286,27 @@ function convertMessages(
 		}
 	}
 
-	// Add cache_control to the last user message to cache conversation history
 	if (cacheControl && params.length > 0) {
-		const lastMessage = params[params.length - 1];
-		if (lastMessage.role === "user") {
-			if (Array.isArray(lastMessage.content)) {
-				const lastBlock = lastMessage.content[lastMessage.content.length - 1];
-				if (
-					lastBlock &&
-					(lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
-				) {
-					(lastBlock as any).cache_control = cacheControl;
-				}
-			} else if (typeof lastMessage.content === "string") {
-				lastMessage.content = [
-					{
-						type: "text",
-						text: lastMessage.content,
-						cache_control: cacheControl,
-					},
-				] as any;
+		const limit = volatileFrom === undefined ? params.length : cacheSafePrefix(sources, volatileFrom);
+		for (let i = limit - 1; i >= 0; i--) {
+			const message = params[i];
+			if (volatileFrom === undefined && (i !== params.length - 1 || message.role !== "user")) break;
+			if (volatileFrom !== undefined && sources[i].length === 0) continue;
+			if (typeof message.content === "string") {
+				message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+				break;
 			}
+			let marked = false;
+			for (let j = message.content.length - 1; j >= 0; j--) {
+				const block = message.content[j];
+				if (block.type === "text" || block.type === "image" || block.type === "tool_result") {
+					block.cache_control = cacheControl;
+					marked = true;
+					break;
+				}
+				if (volatileFrom === undefined) break;
+			}
+			if (marked || volatileFrom === undefined) break;
 		}
 	}
 

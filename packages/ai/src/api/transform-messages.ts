@@ -43,6 +43,31 @@ export function splitSystemMessages(
 	};
 }
 
+/** Resolve request-local provenance before system extraction. Invalid mappings disable the boundary. */
+export function cacheMessageSources(
+	messages: Message[],
+	options?: { volatileFrom?: number; sourceIndices?: number[] },
+	systemPrompt?: string,
+): number[] | undefined {
+	if (options?.volatileFrom === undefined || !Number.isInteger(options.volatileFrom) || options.volatileFrom < 0)
+		return undefined;
+	const indices = options.sourceIndices;
+	if (
+		indices &&
+		(indices.length !== messages.length || indices.some((index) => !Number.isInteger(index) || index < 0))
+	)
+		return undefined;
+	return messages.flatMap((message, index) =>
+		!systemPrompt && message.role === "system" ? [] : [indices?.[index] ?? index],
+	);
+}
+
+/** Cache breakpoints cover their entire prefix, including messages reordered by custom policies. */
+export function cacheSafePrefix(sources: number[][], volatileFrom: number): number {
+	const unsafe = sources.findIndex((group) => group.some((index) => index < 0 || index >= volatileFrom));
+	return unsafe < 0 ? sources.length : unsafe;
+}
+
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
 
@@ -99,6 +124,7 @@ export function transformMessages<TApi extends Api>(
 	messages: Message[],
 	model: Model<TApi>,
 	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
+	sourceIndices?: number[],
 ): Message[] {
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
@@ -192,6 +218,7 @@ export function transformMessages<TApi extends Api>(
 	// Second pass: insert synthetic empty tool results for orphaned tool calls
 	// This preserves thinking signatures and satisfies API requirements
 	const result: Message[] = [];
+	const resultIndices: number[] | undefined = sourceIndices ? [] : undefined;
 	let pendingToolCalls: ToolCall[] = [];
 	let existingToolResultIds = new Set<string>();
 	const insertSyntheticToolResults = () => {
@@ -206,6 +233,7 @@ export function transformMessages<TApi extends Api>(
 						isError: true,
 						timestamp: Date.now(),
 					} as ToolResultMessage);
+					resultIndices?.push(-1);
 				}
 			}
 			pendingToolCalls = [];
@@ -238,20 +266,25 @@ export function transformMessages<TApi extends Api>(
 			}
 
 			result.push(msg);
+			resultIndices?.push(sourceIndices![i]);
 		} else if (msg.role === "toolResult") {
 			existingToolResultIds.add(msg.toolCallId);
 			result.push(msg);
+			resultIndices?.push(sourceIndices![i]);
 		} else if (msg.role === "user") {
 			// User message interrupts tool flow - insert synthetic results for orphaned calls
 			insertSyntheticToolResults();
 			result.push(msg);
+			resultIndices?.push(sourceIndices![i]);
 		} else {
 			result.push(msg);
+			resultIndices?.push(sourceIndices![i]);
 		}
 	}
 
 	// If the conversation ends with unresolved tool calls, synthesize results now.
 	insertSyntheticToolResults();
+	if (sourceIndices && resultIndices) sourceIndices.splice(0, sourceIndices.length, ...resultIndices);
 
 	return result;
 }

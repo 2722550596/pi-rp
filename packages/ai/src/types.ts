@@ -207,6 +207,10 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 * Default: "short".
 	 */
 	cacheRetention?: CacheRetention;
+	/** Compiled-message boundary for providers with explicit cache breakpoints. */
+	volatileFrom?: number;
+	/** Maps request messages to compiled-message indices; never serialized into payloads. */
+	sourceIndices?: number[];
 	/**
 	 * Optional session identifier for providers that support session-based caching.
 	 * Providers can use this to enable prompt caching, request routing, or other
