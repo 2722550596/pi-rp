@@ -283,6 +283,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	getSteeringMessages?: () => Promise<AgentMessage[]>;
 
 	/**
+	 * Called once per non-empty steering batch before it enters context.
+	 * Returned messages are appended after the batch, before the next LLM request.
+	 * Contract: must not throw or reject. The loop catches failures as a fallback.
+	 */
+	onSteeringBatch?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
+
+	/**
 	 * Returns follow-up messages to process after the agent would otherwise stop.
 	 *
 	 * Called when the agent has no more tool calls and no steering messages.

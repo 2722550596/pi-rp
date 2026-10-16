@@ -9,6 +9,7 @@
 ### Added
 
 - Optional `StorageBackend.readFileBytesSync` for whole-file raw-byte reads, used by the coding-agent session-list fast scan; backends without it keep the `readTextLinesSync` path.
+- Added `AgentLoopConfig.onSteeringBatch` and `Agent.onSteeringBatch`. The hook runs once for each non-empty steering batch before the batch enters context, on both the mid-run injection path and the `continue()` path that starts from queued steering. Messages it returns are delivered right after the batch, ahead of the next LLM request, which lets hosts attach context such as memory recall to steering. Follow-up messages do not invoke the hook. When the hook throws, the failure is logged with `console.warn` and the batch is delivered unchanged.
 
 ### Fixed
 

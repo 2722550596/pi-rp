@@ -1,9 +1,16 @@
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	getModel,
+	type Message,
+} from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	Agent,
 	type AgentEvent,
+	type AgentMessage,
 	type AgentTool,
 	type AgentToolUpdateCallback,
 	type StreamFn,
@@ -806,5 +813,173 @@ describe("Agent", () => {
 
 		await agent.prompt("hello again");
 		expect(receivedSessionId).toBe("session-def");
+	});
+
+	describe("onSteeringBatch", () => {
+		function createRecordingAgent(options: { assistantTail?: boolean; steeringMode?: "all" | "one-at-a-time" } = {}) {
+			const requests: Message[][] = [];
+			const agent = new Agent({
+				initialState: { messages: options.assistantTail ? [createAssistantMessage("previous")] : [] },
+				steeringMode: options.steeringMode,
+				streamFn: (_model, context) => {
+					requests.push([...context.messages]);
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+					});
+					return stream;
+				},
+			});
+			return { agent, requests };
+		}
+
+		function user(content: string): AgentMessage {
+			return { role: "user", content, timestamp: 1 };
+		}
+
+		it("awaits a mid-run batch before emitting its messages and requesting the next response", async () => {
+			const { agent, requests } = createRecordingAgent();
+			const steering = user("remember the garden");
+			const extra = user("garden memory");
+			const hookStarted = createDeferred();
+			const releaseHook = createDeferred();
+			const delivered: AgentMessage[] = [];
+			let queued = false;
+			agent.subscribe((event) => {
+				if (event.type === "message_end") delivered.push(event.message);
+				if (event.type === "turn_end" && !queued) {
+					queued = true;
+					agent.steer(steering);
+				}
+			});
+			agent.onSteeringBatch = vi.fn(async () => {
+				hookStarted.resolve();
+				await releaseHook.promise;
+				return [extra];
+			});
+			const run = agent.prompt("start");
+			await hookStarted.promise;
+			try {
+				expect(requests).toHaveLength(1);
+				expect(delivered).not.toContainEqual(steering);
+				expect(agent.state.messages).not.toContainEqual(steering);
+			} finally {
+				releaseHook.resolve();
+				await run;
+			}
+			expect(agent.onSteeringBatch).toHaveBeenCalledTimes(1);
+			expect(agent.onSteeringBatch).toHaveBeenCalledWith([steering]);
+			expect(requests[1].slice(-2)).toEqual([steering, extra]);
+			expect(delivered.slice(-3, -1)).toEqual([steering, extra]);
+			expect(agent.state.messages.slice(-3, -1)).toEqual([steering, extra]);
+		});
+
+		it("does not call the hook for an ordinary prompt", async () => {
+			const { agent, requests } = createRecordingAgent();
+			agent.onSteeringBatch = vi.fn(async () => [user("unexpected")]);
+			await agent.prompt("start");
+			expect(agent.onSteeringBatch).not.toHaveBeenCalled();
+			expect(requests[0]).toEqual([
+				expect.objectContaining({ role: "user", content: [{ type: "text", text: "start" }] }),
+			]);
+		});
+
+		it.each([false, true])(
+			"continues injecting steering when the hook fails (assistant tail: %s)",
+			async (assistantTail) => {
+				const { agent, requests } = createRecordingAgent({ assistantTail });
+				const steering = user("steering survives");
+				agent.onSteeringBatch = vi.fn(async () => {
+					throw new Error("recall failed");
+				});
+				const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+				try {
+					agent.steer(steering);
+					await (assistantTail ? agent.continue() : agent.prompt("start"));
+					expect(agent.onSteeringBatch).toHaveBeenCalledTimes(1);
+					expect(agent.onSteeringBatch).toHaveBeenCalledWith([steering]);
+					expect(warn).toHaveBeenCalledTimes(1);
+					expect(requests[0].at(-1)).toEqual(steering);
+					expect(agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "stop" });
+				} finally {
+					warn.mockRestore();
+				}
+			},
+		);
+
+		it("awaits the boundary batch and appends its result to the first continue request", async () => {
+			const { agent, requests } = createRecordingAgent({ assistantTail: true });
+			const steering = user("boundary steering");
+			const extra = user("boundary memory");
+			const hookStarted = createDeferred();
+			const releaseHook = createDeferred();
+			const delivered: AgentMessage[] = [];
+			agent.subscribe((event) => {
+				if (event.type === "message_end") delivered.push(event.message);
+			});
+			agent.onSteeringBatch = vi.fn(async () => {
+				hookStarted.resolve();
+				await releaseHook.promise;
+				return [extra];
+			});
+			agent.steer(steering);
+			const run = agent.continue();
+			await hookStarted.promise;
+			try {
+				expect(requests).toEqual([]);
+				expect(delivered).toEqual([]);
+			} finally {
+				releaseHook.resolve();
+				await run;
+			}
+			expect(agent.onSteeringBatch).toHaveBeenCalledTimes(1);
+			expect(agent.onSteeringBatch).toHaveBeenCalledWith([steering]);
+			expect(requests).toHaveLength(1);
+			expect(requests[0].slice(-2)).toEqual([steering, extra]);
+			expect(delivered.slice(0, 2)).toEqual([steering, extra]);
+		});
+
+		it("does not call the hook when continue has no queued messages", async () => {
+			const { agent, requests } = createRecordingAgent({ assistantTail: true });
+			agent.onSteeringBatch = vi.fn(async () => []);
+			await expect(agent.continue()).rejects.toThrow("Cannot continue from message role: assistant");
+			expect(agent.onSteeringBatch).not.toHaveBeenCalled();
+			expect(requests).toEqual([]);
+		});
+
+		it.each([false, true])(
+			"does not call the hook for follow-up delivery (assistant tail: %s)",
+			async (assistantTail) => {
+				const { agent, requests } = createRecordingAgent({ assistantTail });
+				const followUp = user("follow-up");
+				agent.onSteeringBatch = vi.fn(async () => [user("unexpected")]);
+				agent.followUp(followUp);
+				await (assistantTail ? agent.continue() : agent.prompt("start"));
+				expect(agent.onSteeringBatch).not.toHaveBeenCalled();
+				expect(requests.at(-1)?.at(-1)).toEqual(followUp);
+			},
+		);
+
+		it.each(["all", "one-at-a-time"] as const)("preserves %s steering batch boundaries", async (steeringMode) => {
+			const { agent, requests } = createRecordingAgent({ assistantTail: true, steeringMode });
+			const first = user("first");
+			const second = user("second");
+			const extra = user("memory");
+			agent.onSteeringBatch = vi.fn(async () => [extra]);
+			agent.steer(first);
+			agent.steer(second);
+			await agent.continue();
+			if (steeringMode === "all") {
+				expect(agent.onSteeringBatch).toHaveBeenCalledTimes(1);
+				expect(agent.onSteeringBatch).toHaveBeenCalledWith([first, second]);
+				expect(requests[0].slice(-3)).toEqual([first, second, extra]);
+			} else {
+				expect(agent.onSteeringBatch).toHaveBeenCalledTimes(2);
+				expect(agent.onSteeringBatch).toHaveBeenNthCalledWith(1, [first]);
+				expect(agent.onSteeringBatch).toHaveBeenNthCalledWith(2, [second]);
+				expect(requests[0].slice(-2)).toEqual([first, extra]);
+				expect(requests[1].slice(-2)).toEqual([second, extra]);
+			}
+		});
 	});
 });

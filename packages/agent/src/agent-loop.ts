@@ -282,6 +282,7 @@ async function runLoop(
 	}
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+	let pendingMessagesAreSteering = true;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
@@ -315,13 +316,23 @@ async function runLoop(
 
 			// Process pending messages (inject before next assistant response)
 			if (pendingMessages.length > 0) {
-				for (const message of pendingMessages) {
+				let extras: AgentMessage[] = [];
+				if (pendingMessagesAreSteering) {
+					try {
+						extras = (await config.onSteeringBatch?.(pendingMessages)) ?? [];
+					} catch (error) {
+						const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+						console.warn(`[agent-loop] onSteeringBatch failed: ${detail}`);
+					}
+				}
+				for (const message of [...pendingMessages, ...extras]) {
 					await emit({ type: "message_start", message });
 					await emit({ type: "message_end", message });
 					currentContext.messages.push(message);
 					newMessages.push(message);
 				}
 				pendingMessages = [];
+				pendingMessagesAreSteering = true;
 			}
 
 			// Stream assistant response
@@ -391,6 +402,7 @@ async function runLoop(
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
+			pendingMessagesAreSteering = false;
 			continue;
 		}
 

@@ -198,6 +198,7 @@ export class Agent {
 	private readonly listeners = new Set<(event: AgentEvent, signal: AbortSignal) => Promise<void> | void>();
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
+	public onSteeringBatch?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
 
 	public convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	public transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
@@ -407,9 +408,17 @@ export class Agent {
 		}
 
 		if (lastMessage.role === "assistant") {
-			const queuedSteering = this.steeringQueue.drain();
-			if (queuedSteering.length > 0) {
-				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
+			const batch = this.steeringQueue.drain();
+			if (batch.length > 0) {
+				let prompts = batch;
+				try {
+					const extras = (await this.onSteeringBatch?.(batch)) ?? [];
+					prompts = [...batch, ...extras];
+				} catch (error) {
+					const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+					console.warn(`[agent] onSteeringBatch failed: ${detail}`);
+				}
+				await this.runPromptMessages(prompts, { skipInitialSteeringPoll: true });
 				return;
 			}
 
@@ -524,6 +533,7 @@ export class Agent {
 				}
 				return this.steeringQueue.drain();
 			},
+			onSteeringBatch: this.onSteeringBatch,
 			getFollowUpMessages: async () => this.followUpQueue.drain(),
 		};
 	}
