@@ -234,7 +234,6 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
-// Prompt preset types
 export type {
 	CompileMessageSource,
 	CompileMessagesResult,
@@ -259,6 +258,7 @@ export type {
 	SlotRenderContext,
 	SlotRenderer,
 } from "./core/prompt-preset/index.ts";
+export { getAllSlots, getSlot, registerSlot } from "./core/prompt-preset/index.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage
@@ -316,6 +316,8 @@ export {
 	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.ts";
+// Prompt preset types
+export { AgentSessionScope, createAgentSessionScope } from "./core/session-scope.ts";
 export {
 	type CodemodeSettings,
 	type CompactionModelOverride,
