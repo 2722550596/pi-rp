@@ -45,8 +45,11 @@ function buildTree(entries: readonly SessionTreeEntryProjection[]): TreeNode[] {
 		else roots.push(node);
 	}
 	const stack = [...roots];
+	const visitedNodes = new Set<string>();
 	while (stack.length > 0) {
 		const node = stack.pop()!;
+		if (visitedNodes.has(node.entry.id)) continue;
+		visitedNodes.add(node.entry.id);
 		node.children.sort(byTimeThenInput);
 		stack.push(...node.children);
 	}
@@ -92,8 +95,11 @@ export function flattenSessionTree(
 			gutters: [],
 		});
 	}
+	const visitedWork = new Set<string>();
 	while (work.length > 0) {
 		const current = work.pop()!;
+		if (visitedWork.has(current.node.entry.id)) continue;
+		visitedWork.add(current.node.entry.id);
 		rows.push({
 			entry: current.node.entry,
 			depth: current.depth,

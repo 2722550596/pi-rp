@@ -149,7 +149,7 @@ function renderImage(parent: HTMLElement, mimeType: string, data: string): void 
 	parent.appendChild(img);
 }
 
-function renderContentBlock(parent: HTMLElement, item: TranscriptItem, index: number): HTMLElement {
+function renderContentBlock(item: TranscriptItem, index: number): HTMLElement {
 	const holder = document.createElement("div");
 	holder.className = "content";
 	const part = item.content[index];
@@ -179,7 +179,6 @@ function renderContentBlock(parent: HTMLElement, item: TranscriptItem, index: nu
 		renderToolCall(card, part);
 		holder.appendChild(card);
 	}
-	parent.appendChild(holder);
 	return holder;
 }
 
@@ -356,9 +355,12 @@ export class TranscriptRenderer {
 				`toolCall:${part.toolName}:${part.status}:${JSON.stringify(part.input ?? null).length}`;
 			const existing = cache.blocks.get(index);
 			if (existing && existing.signature === partSignature) continue;
-			if (existing) existing.el.remove();
-			const el = renderContentBlock(cache.content, item, index);
-			cache.content.appendChild(el);
+			const el = renderContentBlock(item, index);
+			if (existing) {
+				existing.el.replaceWith(el);
+			} else {
+				cache.content.appendChild(el);
+			}
 			cache.blocks.set(index, { el, signature: partSignature });
 		}
 		for (const index of [...cache.blocks.keys()]) {

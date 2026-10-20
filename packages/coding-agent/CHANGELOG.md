@@ -39,6 +39,8 @@
 
 - Fixed `/resume` freezing the TUI for seconds in projects with large session files: session listing now scans JSONL bytes directly and counts tool-result lines without decoding or JSON-parsing them (only user/assistant text, names, and headers are decoded), falling back to the previous line-based parse for storage backends without raw-byte reads or for lines not matching pi's entry prefixes. A 147 MB project session directory lists in ~0.15s instead of ~1.3s.
 
+- Fixed `/remote` web client infinite loop and browser `Out of Memory` crash when rendering indented markdown list items: `parseBlocks` now accommodates base indentation for list blocks, correctly attaches indented continuation lines, guarantees loop advance on empty list matches, and guards against cyclic graph references in session tree traversal.
+
 ### Added
 
 - Web client: tool-result entries now render as collapsed `<details>` blocks with a one-line preview summary (first 90 chars + total length); expanded bodies truncate text parts at 4,000 characters with an explicit "show all" toggle, images render inline, error results auto-expand, and the copy button always copies the full text.

@@ -19,7 +19,7 @@ const QUOTE_RE = /^ {0,3}>\s?(.*)$/;
 const UL_RE = /^(\s*)([-*+])\s+(.*)$/;
 const OL_RE = /^(\s*)(\d+)[.)]\s+(.*)$/;
 
-type Block =
+export type Block =
 	| { kind: "code"; language: string | undefined; lines: string[] }
 	| { kind: "heading"; level: number; text: string }
 	| { kind: "hr" }
@@ -27,7 +27,7 @@ type Block =
 	| { kind: "list"; ordered: boolean; items: Array<{ text: string; children: Array<{ ordered: boolean; items: string[] }> }> }
 	| { kind: "paragraph"; lines: string[] };
 
-function parseBlocks(source: string): Block[] {
+export function parseBlocks(source: string): Block[] {
 	const lines = source.split("\n");
 	const blocks: Block[] = [];
 	let i = 0;
@@ -74,6 +74,7 @@ function parseBlocks(source: string): Block[] {
 		const ol = line.match(OL_RE);
 		if (ul || ol) {
 			const ordered = Boolean(ol);
+			const baseIndent = (ol ? ol[1]! : ul![1]!).length;
 			const items: Array<{ text: string; children: Array<{ ordered: boolean; items: string[] }> }> = [];
 			while (i < lines.length) {
 				const raw = lines[i]!;
@@ -81,7 +82,7 @@ function parseBlocks(source: string): Block[] {
 				const mo = raw.match(OL_RE);
 				const entry = ordered ? mo : mu;
 				const other = ordered ? mu : mo;
-				if (entry && entry[1]!.length === 0) {
+				if (entry && entry[1]!.length === baseIndent) {
 					items.push({ text: entry[3]!, children: [] });
 					i++;
 					// collect one nesting level under this item
@@ -89,7 +90,7 @@ function parseBlocks(source: string): Block[] {
 						const cu = lines[i]!.match(UL_RE);
 						const co = lines[i]!.match(OL_RE);
 						const child = cu ?? co;
-						if (child && child[1]!.length >= 2) {
+						if (child && child[1]!.length >= baseIndent + 2) {
 							const childOrdered = Boolean(co);
 							let bucket = items[items.length - 1]!.children.find((c) => c.ordered === childOrdered);
 							if (!bucket) {
@@ -98,18 +99,26 @@ function parseBlocks(source: string): Block[] {
 							}
 							bucket.items.push(child[3]!);
 							i++;
-						} else if (!cu && !co && lines[i]!.trim().length > 0 && items[items.length - 1]!.children.length > 0) {
-							// continuation text of the nested item — keep as plain line in last child
-							const bucket = items[items.length - 1]!.children[items[items.length - 1]!.children.length - 1]!;
-							bucket.items[bucket.items.length - 1] += `\n${lines[i]!.trim()}`;
+						} else if (!cu && !co && lines[i]!.trim().length > 0 && /^\s+/.test(lines[i]!)) {
+							if (items[items.length - 1]!.children.length > 0) {
+								const bucket = items[items.length - 1]!.children[items[items.length - 1]!.children.length - 1]!;
+								bucket.items[bucket.items.length - 1] += `\n${lines[i]!.trim()}`;
+							} else {
+								items[items.length - 1]!.text += `\n${lines[i]!.trim()}`;
+							}
 							i++;
 						} else break;
 					}
-				} else if (other && other[1]!.length === 0) {
+				} else if (other && other[1]!.length === baseIndent) {
 					break; // marker type switch ends the list
 				} else break;
 			}
-			blocks.push({ kind: "list", ordered, items });
+			if (items.length > 0) {
+				blocks.push({ kind: "list", ordered, items });
+			} else {
+				blocks.push({ kind: "paragraph", lines: [line] });
+				i++;
+			}
 			continue;
 		}
 		if (line.trim().length === 0) {
