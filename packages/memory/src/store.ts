@@ -236,6 +236,7 @@ const WORLD_TIME_KEY = "world_time";
 
 export class MemoryStore {
 	readonly db: MemoryDatabase;
+	private closed = false;
 	private clock: ResolvedMemoryClock = WORLD_CLOCK;
 	private getStmt: MemoryStatement;
 	private byUriStmt: MemoryStatement;
@@ -274,6 +275,13 @@ export class MemoryStore {
 		// Heals "structure migrated to v3, FTS content not yet rebuilt" — every
 		// entry point constructs a store, so no caller has to remember this.
 		this._healPendingFtsRebuild();
+	}
+
+	/** Close the underlying SQLite connection. Safe to call more than once. */
+	close(): void {
+		if (this.closed) return;
+		this.closed = true;
+		this.db.close();
 	}
 
 	setDomainBlocklist(domains: string[]): void {

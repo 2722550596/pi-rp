@@ -27,6 +27,7 @@ export {
 	type ParsedSkillBlock,
 	type PromptOptions,
 	parseSkillBlock,
+	releaseMemoryStore,
 	type SessionStats,
 	type SetActivePresetResult,
 } from "./core/agent-session.ts";

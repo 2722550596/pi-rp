@@ -283,15 +283,20 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
  * DB). Session rebuilds (/reload) reuse the open store instead of reopening
  * SQLite per runtime build.
  */
-const memoryStoreSingletons = new Map<string, Promise<MemoryStore>>();
+interface MemoryStoreSingletonEntry {
+	store: Promise<MemoryStore>;
+	refs: number;
+}
+
+const memoryStoreSingletons = new Map<string, MemoryStoreSingletonEntry>();
 
 function getMemoryStoreSingleton(
 	dbPath: string,
 	storage: StorageBackend,
 	sqliteFactory: SqliteDatabaseFactory | undefined,
 ): Promise<MemoryStore> {
-	let store = memoryStoreSingletons.get(dbPath);
-	if (!store) {
+	let entry = memoryStoreSingletons.get(dbPath);
+	if (!entry) {
 		// node:sqlite does not create parent directories — the default path
 		// lives under <cwd>/.pi/, which may not exist on a fresh project.
 		// Routing runs through the storage seam (11-B): node default keeps
@@ -302,15 +307,29 @@ function getMemoryStoreSingleton(
 				storage.mkdirSync(parent, { recursive: true });
 			}
 		}
-		store = openMemoryStore(dbPath, sqliteFactory ? { sqlite: sqliteFactory } : undefined);
-		memoryStoreSingletons.set(dbPath, store);
+		const store = openMemoryStore(dbPath, sqliteFactory ? { sqlite: sqliteFactory } : undefined);
+		entry = { store, refs: 0 };
+		memoryStoreSingletons.set(dbPath, entry);
 		// A failed open must not poison the key: drop it so a later attempt
 		// (e.g. after fixing permissions) can retry.
-		store.catch(() => memoryStoreSingletons.delete(dbPath));
+		store.catch(() => {
+			if (memoryStoreSingletons.get(dbPath) === entry) memoryStoreSingletons.delete(dbPath);
+		});
 	}
-	return store;
+	entry.refs++;
+	return entry.store;
 }
 
+/** Release one session's reference and close/remove the store at zero refs. */
+export async function releaseMemoryStore(dbPath: string): Promise<void> {
+	const entry = memoryStoreSingletons.get(dbPath);
+	if (!entry) return;
+	entry.refs = Math.max(0, entry.refs - 1);
+	if (entry.refs !== 0) return;
+	memoryStoreSingletons.delete(dbPath);
+	const store = await entry.store;
+	store.close();
+}
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
@@ -728,6 +747,10 @@ export class AgentSession {
 	private _memoryModule?: MemoryModule;
 	/** Resolved memory DB path for this session (undefined when init failed). */
 	private _memoryDbPath?: string;
+	private _memoryReleased = false;
+	private _memoryReleasePromise?: Promise<void>;
+	private _memorySetWorldTime?: (worldTimeIso: string) => void;
+	private _memorySetWorldTimeValue?: string;
 	/** Message entry ids already handed to the memory module's raw_log (turn collection). */
 	private _memorySeenEntryIds: Set<string> = new Set();
 	private _loadedSchemaDefs: LoadedSchemaDef[] = [];
@@ -1190,6 +1213,7 @@ export class AgentSession {
 		) => {
 			// Threshold compaction must run before any provider request, including the first one.
 			const preparedContext = await this._compactBeforeNextAssistantResponse(context);
+			if (this._memorySetWorldTimeValue !== undefined) this._memorySetWorldTime?.(this._memorySetWorldTimeValue);
 			this._flushPendingToolContextMessages(preparedContext);
 			this._announceToolCatalogDelta(preparedContext);
 			const previousSnapshot = await previous?.(preparedContext);
@@ -1598,7 +1622,14 @@ export class AgentSession {
 			// use the same DB) — only the module is torn down.
 			this._memoryModule?.dispose();
 			this._memoryModule = undefined;
+			this._memorySetWorldTime = undefined;
+			this._memorySetWorldTimeValue = undefined;
+			const dbPath = this._memoryDbPath;
 			this._memoryDbPath = undefined;
+			if (dbPath && !this._memoryReleased) {
+				this._memoryReleased = true;
+				this._memoryReleasePromise = releaseMemoryStore(dbPath);
+			}
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
 		}
@@ -1658,6 +1689,16 @@ export class AgentSession {
 	 */
 	getMemoryDbPath(): string | undefined {
 		return this._memoryDbPath;
+	}
+	/** Wait until this session's memory SQLite reference has been released. */
+	async waitForMemoryStoreRelease(): Promise<void> {
+		await this._memoryReleasePromise;
+	}
+
+	/** Set the current world-time ISO field used by pi-memory; no-op after release. */
+	setMemoryWorldTime(worldTimeIso: string): void {
+		this._memorySetWorldTimeValue = worldTimeIso;
+		this._memorySetWorldTime?.(worldTimeIso);
 	}
 
 	/** Current retry attempt (0 if not retrying) */
@@ -5581,12 +5622,19 @@ export class AgentSession {
 			this._cwd,
 		);
 		let module: MemoryModule | undefined;
+		let acquiredStore = false;
 		try {
 			// Dispose the previous module (cancels in-flight recall/side work)
 			// before building a fresh one — reloads re-apply current settings.
 			this._memoryModule?.dispose();
 			this._memoryModule = undefined;
+			if (this._memoryDbPath && !this._memoryReleased) {
+				this._memoryReleased = true;
+				await releaseMemoryStore(this._memoryDbPath);
+				this._memoryDbPath = undefined;
+			}
 			const store = await getMemoryStoreSingleton(dbPath, this._stores.storage, this._sqliteFactory);
+			acquiredStore = true;
 			module = createMemoryModule(store, { settings: settings.memory });
 			const memorySlots: MemorySlotDefinition[] = [];
 			const memoryMacros: MemoryMacroDefinition[] = [];
@@ -5602,10 +5650,13 @@ export class AgentSession {
 			for (const slot of memorySlots) this._registerMemorySlot(slot);
 			for (const macro of memoryMacros) this._registerMemoryMacro(macro);
 			this._memoryModule = module;
+			this._memoryReleased = false;
+			this._memorySetWorldTime = (worldTimeIso) => store.setWorldTime(worldTimeIso);
 			this._memoryDbPath = dbPath;
 		} catch (error) {
 			module?.dispose();
 			this._memoryModule?.dispose();
+			if (acquiredStore) await releaseMemoryStore(dbPath);
 			this._memoryModule = undefined;
 			this._memoryDbPath = undefined;
 			const message = error instanceof Error ? error.message : String(error);

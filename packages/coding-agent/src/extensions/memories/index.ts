@@ -27,6 +27,15 @@ import { ensureWebServer } from "./web-launcher.ts";
 // session is actually writing to and never leaks SQLite connections.
 const openStores = new Map<string, Promise<MemoryStore>>();
 
+export async function releaseMemoryStores(): Promise<void> {
+	const entries = [...openStores.entries()];
+	openStores.clear();
+	for (const [, pending] of entries) {
+		const store = await pending.catch(() => null);
+		store?.close();
+	}
+}
+
 /** Open the session's memory store for browsing (null when unavailable). */
 function openStore(ctx: ExtensionCommandContext): Promise<MemoryStore | null> {
 	const dbPath = ctx.getMemoryDbPath?.();
