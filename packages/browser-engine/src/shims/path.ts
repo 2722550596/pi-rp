@@ -55,7 +55,10 @@ function resolve(...parts: string[]): string {
 		resolved = `${part}/${resolved}`;
 		if (isAbsolute(part)) break;
 	}
+	// 拼接时每段都带尾 `/`；Node 的 resolve 结果除根外从不带尾斜杠，这里须剥掉，
+	// 否则 resolve("/s/a.jsonl") 得 "/s/a.jsonl/"，存储后端按键查不到文件。
 	resolved = normalize(resolved.replace(/\/{2,}/g, "/"));
+	if (resolved.length > 1 && resolved.endsWith("/")) resolved = resolved.slice(0, -1);
 	return resolved === "" ? "/" : resolved;
 }
 
