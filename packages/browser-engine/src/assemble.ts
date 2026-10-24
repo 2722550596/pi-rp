@@ -481,6 +481,21 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		options.model,
 	);
 	if (options.llm?.streamFn && options.model) {
+		// 宿主注入的模型其 provider 不在内置表（modelsPath: null）时，checkAuth 对未知 provider
+		// 恒返回 undefined，下面登记的标记凭据进不了 configuredProviders，prompt 前置门必败。
+		// 先把该模型登记为 provider（仅用于元数据与可用性判定；请求仍由 streamFn 全权发送）。
+		// 只登记元数据完整的模型（registerProvider 要求 api / baseUrl / 正的 contextWindow 与 maxTokens）；
+		// 只给 { provider, id } 的宿主保持原行为，装配不因此失败。
+		const { provider, id, name, api, baseUrl, reasoning, input, cost, contextWindow, maxTokens, headers, compat } =
+			options.model;
+		const registrable = Boolean(api && baseUrl && contextWindow > 0 && maxTokens > 0);
+		if (registrable && !modelRuntime.getModel(provider, id)) {
+			modelRuntime.registerProvider(provider, {
+				baseUrl,
+				api,
+				models: [{ id, name, api, baseUrl, reasoning, input, cost, contextWindow, maxTokens, headers, compat }],
+			});
+		}
 		// streamFn 自管态：传输凭据由 streamFn 自己持有。此处登记 runtime 级标记凭据，
 		// 仅解锁 prompt 前置的 hasConfiguredAuth 模型可用性门；标记 key 永不进入网络面
 		// （gateway.streamSimple 已被 DelegatingRequestGateway 整体改写为调用 streamFn）。
