@@ -7,7 +7,7 @@
  * 手法逐条复刻上游 scripts/check-browser-smoke.mjs（不改其任何字节，同调保障）：
  * platform:"browser" + format:"esm" + metafile 禁止输入断言在守护脚本侧执行。
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -316,6 +316,58 @@ export function browserHarnessEsbuildOptions(entryPoint, options = {}) {
 			workspaceSrcPlugin(),
 		],
 	};
+}
+
+/**
+ * React Native / Hermes 剖面（Metro 打包、Hermes 字节码）：在 browser 选项上改三处。
+ * - format cjs + target es2020：Hermes 不认 `import.meta`，产物交给 Metro 当普通 CommonJS 模块。
+ * - `import.meta.url` define 成固定虚拟地址：cjs 下 esbuild 把 import.meta 置空，顶层
+ *   `fileURLToPath(import.meta.url)` 会在加载时直接抛。
+ * - 动态 `import()` 改写（见 rewriteDynamicImportsForHermes，需在产物上跑，由 buildHermesHarness 完成）。
+ * 宿主仍需自备 Hermes 缺的全局（crypto.getRandomValues/randomUUID/subtle.digest、Intl.Segmenter）。
+ */
+export function hermesHarnessEsbuildOptions(entryPoint, options = {}) {
+	const base = browserHarnessEsbuildOptions(entryPoint, options);
+	return {
+		...base,
+		format: "cjs",
+		target: "es2020",
+		define: { ...base.define, "import.meta.url": JSON.stringify(options.importMetaUrl ?? "file:///pi-hermes/index.js") },
+	};
+}
+
+/**
+ * Metro 只接受字面量 `import()`，还会去解析其中的包名（如 @sqlite.org/sqlite-wasm）。bundle 里剩下的
+ * `import()` 都是 Node/浏览器专用路径（photon、sqlite-wasm、扩展加载），在 Hermes 上改为运行时拒绝。
+ * 不碰名为 import 的方法定义（`import(x) {`）与成员调用（`.import(`）。
+ */
+export function rewriteDynamicImportsForHermes(code) {
+	let count = 0;
+	const rewritten = code.replace(/(?<![\w$.])import\((?![^)]*\)\s*\{)/g, () => {
+		count += 1;
+		return "__piHermesImport(";
+	});
+	const prelude =
+		'var __piHermesImport = (s) => Promise.reject(new Error("dynamic import unavailable on Hermes: " + s));\n';
+	return { code: prelude + rewritten, count };
+}
+
+/** 构建 Hermes 产物：hermesHarnessEsbuildOptions + 写盘前的 import() 改写。返回改写处数。 */
+export async function buildHermesHarness(entryPoint, options) {
+	if (!options?.outfile) throw new Error("buildHermesHarness: outfile is required");
+	const result = await build({ ...hermesHarnessEsbuildOptions(entryPoint, options), write: false });
+	let rewrites = 0;
+	for (const file of result.outputFiles) {
+		mkdirSync(dirname(file.path), { recursive: true });
+		if (file.path.endsWith(".js") || file.path.endsWith(".cjs")) {
+			const { code, count } = rewriteDynamicImportsForHermes(file.text);
+			rewrites += count;
+			writeFileSync(file.path, code);
+		} else {
+			writeFileSync(file.path, file.contents);
+		}
+	}
+	return { metafile: result.metafile, rewrites };
 }
 
 /* 直接执行时构建发布产物 dist/index.js（Wave 3 装配落地前产物为骨架包体）。 */
