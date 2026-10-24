@@ -9,7 +9,13 @@ import type {
 	ToolResultMessage,
 	Transport,
 } from "@earendil-works/pi-ai";
-import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
+import {
+	findPendingToolCalls,
+	type PendingToolCalls,
+	runAgentLoop,
+	runAgentLoopContinue,
+	runAgentLoopResume,
+} from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AfterToolCallContext,
@@ -432,6 +438,33 @@ export class Agent {
 		}
 
 		await this.runContinuation();
+	}
+
+	/** Tool calls of the last assistant message still waiting for results (see `resumePendingToolCalls`). */
+	getPendingToolCalls(): PendingToolCalls | undefined {
+		return findPendingToolCalls(this._state.messages);
+	}
+
+	/**
+	 * Settle tool calls left without results (e.g. the process stopped mid-execution) and continue
+	 * the run. Tools with `replay: "safe"` execute again; other pending calls are answered with an
+	 * "interrupted" error result. Returns false, without running, when nothing is pending.
+	 */
+	async resumePendingToolCalls(): Promise<boolean> {
+		if (this.activeRun) {
+			throw new Error("Agent is already processing. Wait for completion before resuming.");
+		}
+		if (!this.getPendingToolCalls()) return false;
+		await this.runWithLifecycle(async (signal) => {
+			await runAgentLoopResume(
+				this.createContextSnapshot(),
+				this.createLoopConfig(),
+				(event) => this.processEvents(event),
+				signal,
+				this.streamFunction,
+			);
+		});
+		return true;
 	}
 
 	private normalizePromptInput(

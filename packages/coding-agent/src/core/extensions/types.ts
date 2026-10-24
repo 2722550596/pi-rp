@@ -17,6 +17,7 @@ import type {
 	Capabilities,
 	ThinkingLevel,
 	ToolExecutionMode,
+	ToolReplayMode,
 } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
@@ -106,7 +107,7 @@ import type {
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions } from "../system-prompt.ts";
-export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
+export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode, ToolReplayMode };
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 
 // ============================================================================
@@ -635,6 +636,13 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 * If omitted, the default execution mode applies.
 	 */
 	executionMode?: ToolExecutionMode;
+
+	/**
+	 * Whether a call interrupted before its result was recorded may run again (same tool call id)
+	 * when the session resumes pending tool calls. "safe" only when re-execution is harmless,
+	 * e.g. the tool dedupes by toolCallId. Default "never": the call gets an "interrupted" error.
+	 */
+	replay?: ToolReplayMode;
 
 	/**
 	 * Capabilities this tool needs to function. Checked at the extension registration boundary against the runtime's

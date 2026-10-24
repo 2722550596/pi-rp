@@ -3733,11 +3733,11 @@ export class AgentSession {
 	 * Sets _isAgentRunActive (for Escape abort), runs the post-agent-run
 	 * loop (auto-retry, compaction, queued messages), and clears the flag.
 	 */
-	private async _runAgentContinue(): Promise<void> {
+	private async _runAgentContinue(start: () => Promise<unknown> = () => this.agent.continue()): Promise<void> {
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
 		try {
-			await this.agent.continue();
+			await start();
 			while (await this._handlePostAgentRun()) {
 				// D14/M5 §3.10: re-read effective tool-search settings before each
 				// continuation so in-process settings changes apply without restart.
@@ -3908,9 +3908,15 @@ export class AgentSession {
 	 * continues natively from there. Otherwise injects an invisible
 	 * "Continue." user message first. The injected message is not persisted.
 	 *
+	 * With `resumePendingToolCalls`, tool calls of the last assistant message that never got a
+	 * result (the process stopped mid-execution) are settled first: tools declaring
+	 * `replay: "safe"` run again, the others get an "interrupted" error result, and the loop
+	 * continues from there. Without it (default) such calls fall through to the provider-level
+	 * "No result provided" placeholder as before.
+	 *
 	 * @returns true if the agent was started
 	 */
-	async continueSession(): Promise<boolean> {
+	async continueSession(options: { resumePendingToolCalls?: boolean } = {}): Promise<boolean> {
 		await this._ensureRuntimeReady();
 		if (!this.isIdle || this.isStreaming) {
 			return false;
@@ -3931,6 +3937,11 @@ export class AgentSession {
 			} else {
 				break;
 			}
+		}
+
+		if (options.resumePendingToolCalls && this.agent.getPendingToolCalls()) {
+			await this._runAgentContinue(() => this.agent.resumePendingToolCalls());
+			return true;
 		}
 
 		// The agent loop natively continues from a user/toolResult-ending

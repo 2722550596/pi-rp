@@ -119,6 +119,63 @@ export async function runAgentLoop(
 	return newMessages;
 }
 
+/** Tool calls of the transcript's last assistant message that have no tool result yet. */
+export interface PendingToolCalls {
+	assistantMessage: AssistantMessage;
+	toolCalls: AgentToolCall[];
+}
+
+/**
+ * Find tool calls left without results at the end of the transcript, e.g. because the process
+ * stopped while they were executing. Only the last assistant message counts, and only when no
+ * user message follows it (a later user message means the batch was already settled).
+ */
+export function findPendingToolCalls(messages: readonly AgentMessage[]): PendingToolCalls | undefined {
+	const answered = new Set<string>();
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message.role === "toolResult") {
+			answered.add(message.toolCallId);
+			continue;
+		}
+		if (message.role === "user") return undefined;
+		if (message.role !== "assistant") continue;
+		if (message.stopReason !== "toolUse") return undefined;
+		const toolCalls = message.content.filter(
+			(content): content is AgentToolCall => content.type === "toolCall" && !answered.has(content.id),
+		);
+		return toolCalls.length > 0 ? { assistantMessage: message, toolCalls } : undefined;
+	}
+	return undefined;
+}
+
+/**
+ * Settle the transcript's pending tool calls, then continue the loop as after any tool batch.
+ * Calls whose tool declares `replay: "safe"` run again through the normal hook path; every other
+ * pending call gets an "interrupted" error result without executing.
+ */
+export async function runAgentLoopResume(
+	context: AgentContext,
+	config: AgentLoopConfig,
+	emit: AgentEventSink,
+	signal: AbortSignal | undefined,
+	streamFn: StreamFn,
+): Promise<AgentMessage[]> {
+	const pending = findPendingToolCalls(context.messages);
+	if (!pending) {
+		throw new Error("Cannot resume: no pending tool calls");
+	}
+
+	const newMessages: AgentMessage[] = [];
+	const currentContext: AgentContext = { ...context };
+
+	await emit({ type: "agent_start" });
+	await emit({ type: "turn_start" });
+
+	await runLoop(currentContext, newMessages, config, signal, emit, streamFn ?? getDefaultStreamFn(), pending);
+	return newMessages;
+}
+
 export interface RunToolCallOptions<TParameters extends TSchema = TSchema> {
 	toolCall: AgentToolCall;
 	assistantMessage: AssistantMessage;
@@ -260,6 +317,7 @@ async function runLoop(
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 	streamFunction: StreamFn,
+	resume?: PendingToolCalls,
 ): Promise<void> {
 	let currentContext = initialContext;
 	let config = initialConfig;
@@ -286,7 +344,8 @@ async function runLoop(
 	const takeSteering = async () => (signal?.aborted ? [] : (await config.getSteeringMessages?.()) || []);
 	const takeFollowUps = async () => (signal?.aborted ? [] : (await config.getFollowUpMessages?.()) || []);
 	// Check for steering messages at start (user may have typed while waiting)
-	let pendingMessages: AgentMessage[] = await takeSteering();
+	// (A resumed batch settles first: steering waits until its tool results are in place.)
+	let pendingMessages: AgentMessage[] = resume ? [] : await takeSteering();
 	let pendingMessagesAreSteering = true;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
@@ -340,9 +399,13 @@ async function runLoop(
 				pendingMessagesAreSteering = true;
 			}
 
-			// Stream assistant response
-			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
-			newMessages.push(message);
+			// Stream assistant response (a resumed batch reuses the recorded assistant message)
+			const resumed = resume;
+			resume = undefined;
+			const message =
+				resumed?.assistantMessage ??
+				(await streamAssistantResponse(currentContext, config, signal, emit, streamFunction));
+			if (!resumed) newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				await emit({ type: "turn_end", message, toolResults: [] });
@@ -359,8 +422,9 @@ async function runLoop(
 				// A "length" stop means the output was cut off by the token limit, so
 				// every tool call in the message may carry truncated arguments. Fail
 				// them all instead of executing potentially borked calls.
-				const executedToolBatch =
-					message.stopReason === "length"
+				const executedToolBatch = resumed
+					? await executePendingToolCalls(currentContext, resumed, config, signal, emit)
+					: message.stopReason === "length"
 						? await failToolCallsFromTruncatedMessage(toolCalls, emit)
 						: await executeToolCalls(currentContext, message, config, signal, emit);
 				toolResults.push(...executedToolBatch.messages);
@@ -570,6 +634,48 @@ async function failToolCallsFromTruncatedMessage(
 }
 
 /**
+ * Settle resumed pending tool calls: replay-safe calls execute again; the others are answered
+ * with an error saying they were interrupted. Interrupted results never terminate the batch.
+ */
+async function executePendingToolCalls(
+	currentContext: AgentContext,
+	pending: PendingToolCalls,
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallBatch> {
+	const isReplayable = (toolCall: AgentToolCall) =>
+		currentContext.tools?.find((tool) => tool.name === toolCall.name)?.replay === "safe";
+	const messages: ToolResultMessage[] = [];
+	const interrupted = pending.toolCalls.filter((toolCall) => !isReplayable(toolCall));
+	for (const toolCall of interrupted) {
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+		const finalized: FinalizedToolCallOutcome = {
+			toolCall,
+			result: createErrorToolResult(
+				`Tool call "${toolCall.name}" was interrupted before its result was recorded and was not re-run. Its effects, if any, are unknown; check the current state before re-issuing it.`,
+			),
+			isError: true,
+		};
+		await emitToolExecutionEnd(finalized, emit);
+		const toolResultMessage = createToolResultMessage(finalized);
+		await emitToolResultMessage(toolResultMessage, emit);
+		messages.push(toolResultMessage);
+	}
+	const replayed = pending.toolCalls.filter(isReplayable);
+	if (replayed.length === 0) {
+		return { messages, terminate: false };
+	}
+	const batch = await executeToolCalls(currentContext, pending.assistantMessage, config, signal, emit, replayed);
+	return { messages: [...messages, ...batch.messages], terminate: interrupted.length === 0 && batch.terminate };
+}
+
+/**
  * Execute tool calls from an assistant message.
  */
 async function executeToolCalls(
@@ -578,8 +684,8 @@ async function executeToolCalls(
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
+	toolCalls: AgentToolCall[] = assistantMessage.content.filter((c) => c.type === "toolCall"),
 ): Promise<ExecutedToolCallBatch> {
-	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
 	const hasSequentialToolCall = toolCalls.some(
 		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
 	);

@@ -480,7 +480,17 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * If omitted, the default execution mode applies.
 	 */
 	executionMode?: ToolExecutionMode;
+	/**
+	 * Whether a call left without a recorded result (the process stopped mid-execution) may be
+	 * executed again, with the same tool call id, when the transcript's pending tool calls are
+	 * resumed (`Agent.resumePendingToolCalls()`).
+	 * - "safe": re-execution is harmless for the same id (e.g. the tool dedupes by toolCallId).
+	 * - "never" (default): the call is answered with an "interrupted" error result instead.
+	 */
+	replay?: ToolReplayMode;
 }
+
+export type ToolReplayMode = "never" | "safe";
 
 /** Context snapshot passed into the low-level agent loop. */
 export interface AgentContext {
