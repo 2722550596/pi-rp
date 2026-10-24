@@ -40,6 +40,8 @@ const WORKSPACE_SRC_PREFIXES = [
 	["@earendil-works/pi-session-protocol", "packages/session-protocol/src/index.ts"],
 	["@earendil-works/pi-telemetry/", "packages/telemetry/src/"],
 	["@earendil-works/pi-telemetry", "packages/telemetry/src/index.ts"],
+	// 下游入口（仓外）按包名 import 本包时也落源码，裁剪插件才能生效（dist 是未裁的整包）。
+	["@earendil-works/pi-browser", "packages/browser-engine/src/index.ts"],
 ];
 
 const isFile = (path) => {
