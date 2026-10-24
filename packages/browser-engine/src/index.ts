@@ -31,6 +31,7 @@ export {
 } from "@earendil-works/pi-protocol";
 export type { SessionRepo } from "../../agent/src/harness/session/types.ts";
 export { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
+export { scanXmlTags, type XmlTagSegment } from "../../coding-agent/src/core/xml-tags.ts";
 export type {
 	AgentSessionEvent,
 	CustomTypePolicy,
