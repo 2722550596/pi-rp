@@ -276,6 +276,38 @@ export function rawContentPlugin() {
 }
 
 /**
+ * 裁剪插件（宿主经 `llm.streamFn` 调模型时用；缺省不启用，浏览器直连构建不受影响）：
+ * - `streamFnOnly`：`ai/src/api/*.lazy.ts` 的动态 import 目标换成 src/stub/provider-api.ts，
+ *   provider SDK 不进包；browser-catalog.ts 换成空目录 src/stub/empty-catalog.ts。
+ * - `exportHtml: false`：export-html 模板资产不内联（src/stub/export-html-assets.ts）。
+ */
+export function trimPlugin({ streamFnOnly = false, exportHtml = true } = {}) {
+	const stubDir = join(packageRoot, "src/stub");
+	// 被整文件替换的 browser-engine 模块 → 替身文件名。
+	const replaced = new Map();
+	if (streamFnOnly) replaced.set("browser-catalog.ts", "empty-catalog.ts");
+	if (!exportHtml) replaced.set("export-html-assets.ts", "export-html-assets.ts");
+	return {
+		name: "pi-harness-trim",
+		setup(build) {
+			if (streamFnOnly) {
+				build.onResolve({ filter: /^\.\/[^/]+\.ts$/ }, (args) => {
+					if (args.kind !== "dynamic-import") return undefined;
+					if (!/[\\/]ai[\\/]src[\\/]api[\\/][^\\/]+\.lazy\.ts$/.test(args.importer)) return undefined;
+					return { path: join(stubDir, "provider-api.ts") };
+				});
+			}
+			if (replaced.size === 0) return;
+			build.onLoad({ filter: /[\\/]browser-engine[\\/]src[\\/][^\\/]+\.ts$/ }, (args) => {
+				const stub = replaced.get(args.path.replaceAll("\\", "/").split("/").pop());
+				if (!stub) return undefined;
+				return { contents: readFileSync(join(stubDir, stub), "utf8"), loader: "ts", resolveDir: stubDir };
+			});
+		},
+	};
+}
+
+/**
  * browser 剖面 bundle 的统一 esbuild 选项（15-F §5.2）。
  * 插件顺序固定：stub 必须先于 workspace 映射，保证 pi-coding-agent/modes/interactive 深导入被 stub 截获；
  * shim 改写先于 workspace 映射的裸包名回落（node 内建永远到不了 node_modules）。
@@ -285,6 +317,7 @@ export function rawContentPlugin() {
  *   （D 定稿 external 动态导入，A4 体积预算：wasm 胶水不进 JS 主包，消费侧自备依赖）。
  * - define/banner：process → 装配期常量 stub（env:{}/platform:"browser"；experimental
  *   开关走具体键 define 优先）。node 构建不受影响（仅 browser 剖面配置）。
+ * - options.streamFnOnly / options.exportHtml：裁剪，见 trimPlugin。缺省不裁。
  */
 export function browserHarnessEsbuildOptions(entryPoint, options = {}) {
 	return {
@@ -308,6 +341,7 @@ export function browserHarnessEsbuildOptions(entryPoint, options = {}) {
 				"globalThis.__piBrowserProcess ??= { env: {}, platform: 'browser', versions: {}, argv: [], pid: 0, cwd: () => '/', execPath: '/pi', nextTick: (fn) => queueMicrotask(fn) };",
 		},
 		plugins: [
+			trimPlugin({ streamFnOnly: options.streamFnOnly, exportHtml: options.exportHtml }),
 			piTuiStubPlugin(),
 			browserPhotonStubPlugin(),
 			rawContentPlugin(),
