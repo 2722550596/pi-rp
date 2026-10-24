@@ -115,8 +115,8 @@ export interface PiHarnessStorageOptions {
 
 /** 工具面（15-F §3.3；browser 缺省 disabled=["bash"]，E7 / 契约 §5 能力→工具总表）。 */
 export interface PiHarnessToolsOptions {
-	/** 白名单语义 → sdk.ts tools。 */
-	readonly enabled?: readonly ToolName[];
+	/** 白名单语义 → sdk.ts tools。自定义工具（createPiHarnessWithTools 的 custom）也要列进来，故放宽到任意名字。 */
+	readonly enabled?: readonly (ToolName | (string & {}))[];
 	/** 黑名单语义 → sdk.ts excludeTools。 */
 	readonly disabled?: readonly ToolName[];
 	/** 每-工具 Operations 注入面（core/tools/index.ts 的 Operations 类型族）。
