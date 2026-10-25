@@ -656,6 +656,8 @@ async function executeRetrieve(store: MemoryStore, params: Static<typeof retriev
 
 // ── memorize ───────────────────────────────────────────────────────────────
 
+const AWAKEN_PARAM_DESC = "放进醒来记忆（常驻工作集：进行中的关系、目标、事件状态）传 true，移出传 false；不传不变";
+
 const memorizeParams = Type.Object({
 	uri: Type.String({ description: "记忆 URI，如 core://identity 或 history://scenes/xxx" }),
 	content: Type.String({ description: "记忆的具体内容" }),
@@ -663,7 +665,25 @@ const memorizeParams = Type.Object({
 	importance: Type.Optional(Type.Number({ description: "重要性 10=最重要，5=普通，0=边角料（数值越大越重要）" })),
 	when: Type.Optional(Type.String({ description: "这条记忆（规范入口）自身的想起条件" })),
 	time: Type.Optional(Type.String({ description: "世界时间 YYYY-MM-DD 或相对位移如 -1d；缺省用当前世界时间" })),
+	awaken: Type.Optional(Type.Boolean({ description: AWAKEN_PARAM_DESC })),
 });
+
+/**
+ * memorize / revise 的 awaken 参数：把节点的规范 URI 放进或移出醒来清单（与 awaken 工具同一份 kv）。
+ * 移出时连同传入的别名地址一起剔除，清单里不管存的是哪个入口都能移掉。
+ */
+function markAwaken(store: MemoryStore, canonicalUri: string, requestedUri: string, on: boolean): boolean {
+	const current = getAwakenUris(store);
+	if (on) {
+		if (current.includes(canonicalUri) || current.includes(requestedUri)) return false;
+		setAwakenUris(store, [...current, canonicalUri]);
+		return true;
+	}
+	const remaining = current.filter((uri) => uri !== canonicalUri && uri !== requestedUri);
+	if (remaining.length === current.length) return false;
+	setAwakenUris(store, remaining);
+	return true;
+}
 
 async function executeMemorize(store: MemoryStore, params: Static<typeof memorizeParams>, ctx: MemoryToolContext) {
 	const existing = store.resolveUri(params.uri);
@@ -687,7 +707,13 @@ async function executeMemorize(store: MemoryStore, params: Static<typeof memoriz
 		anchor_session_id: ctx.sessionId ?? null,
 		world_ts: stampWorldTs(store, params.time),
 	});
-	return withDetails(`已记下：${nodeLine(node)}`, { node_id: node.node_id, uri: node.uri, ok: true });
+	const awakened = params.awaken === true && markAwaken(store, node.uri, params.uri, true);
+	return withDetails(`已记下：${nodeLine(node)}${awakened ? "（已放进醒来记忆）" : ""}`, {
+		node_id: node.node_id,
+		uri: node.uri,
+		ok: true,
+		...(params.awaken === true ? { awaken: true } : {}),
+	});
 }
 
 // ── revise ─────────────────────────────────────────────────────────────────
@@ -708,6 +734,7 @@ const reviseModSchema = Type.Object({
 		}),
 	),
 	time: Type.Optional(Type.String({ description: '修改世界时间；传 "" 清除' })),
+	awaken: Type.Optional(Type.Boolean({ description: AWAKEN_PARAM_DESC })),
 });
 
 const reviseParams = Type.Object({
@@ -735,6 +762,7 @@ const reviseParams = Type.Object({
 		}),
 	),
 	time: Type.Optional(Type.String({ description: '修改世界时间；传 "" 清除' })),
+	awaken: Type.Optional(Type.Boolean({ description: AWAKEN_PARAM_DESC })),
 	batch: Type.Optional(Type.Array(reviseModSchema, { description: "批量模式：每条 {uri, ...修改}" })),
 });
 
@@ -827,6 +855,7 @@ function applyReviseMod(
 		importance?: number;
 		when?: string;
 		time?: string;
+		awaken?: boolean;
 	},
 	ctx: MemoryToolContext,
 ): ReviseModOutcome {
@@ -850,7 +879,13 @@ function applyReviseMod(
 		mod.append !== undefined ||
 		mod.line !== undefined ||
 		mod.line_content !== undefined;
-	if (!touchedBody && mod.importance === undefined && mod.when === undefined && mod.time === undefined) {
+	if (
+		!touchedBody &&
+		mod.importance === undefined &&
+		mod.when === undefined &&
+		mod.time === undefined &&
+		mod.awaken === undefined
+	) {
 		return { ok: false, uri: mod.uri, text: `${mod.uri}：没有指定任何修改` };
 	}
 	const beforeContent = touchedBody ? node.content : undefined;
@@ -859,6 +894,16 @@ function applyReviseMod(
 		const edited = computeRevisedContent(content, mod);
 		if (!edited.ok) return { ok: false, uri: mod.uri, text: `${mod.uri}：${edited.error}` };
 		content = edited.content;
+	}
+	// 醒来清单是全局 kv，不随分支回退（与 awaken 工具一致）；只改它时不写修订。
+	const awakenChanged = mod.awaken !== undefined && markAwaken(store, node.uri, mod.uri, mod.awaken);
+	const awakenNote = awakenChanged ? (mod.awaken ? "（已放进醒来记忆）" : "（已移出醒来记忆）") : "";
+	if (!touchedBody && mod.importance === undefined && mod.when === undefined && mod.time === undefined) {
+		return {
+			ok: true,
+			uri: mod.uri,
+			text: awakenChanged ? `已修订：${mod.uri}${awakenNote}` : `${mod.uri}：醒来记忆没有变化`,
+		};
 	}
 	const worldTs = mod.time === "" ? null : (parseWorldTime(store, mod.time) ?? node.world_ts);
 	const versionBefore = store.currentVersion(node.node_id);
@@ -919,7 +964,7 @@ function applyReviseMod(
 	return {
 		ok: true,
 		uri: mod.uri,
-		text: `已修订：${mod.uri}${note}`,
+		text: `已修订：${mod.uri}${note}${awakenNote}`,
 		beforeContent,
 		beforeDisclosure,
 	};
@@ -940,6 +985,7 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 			params.importance,
 			params.when,
 			params.time,
+			params.awaken,
 		];
 		if (editFields.some((f) => f !== undefined)) return text("history/restore 不接受编辑字段");
 		if (action === "history") {
@@ -1024,6 +1070,7 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 			importance: params.importance,
 			when: params.when,
 			time: params.time,
+			awaken: params.awaken,
 		},
 	];
 	const results = mods.map((m) => applyReviseMod(store, m, ctx));
@@ -1545,7 +1592,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "memorize",
 			label: "memorize",
 			description:
-				"记下一段新记忆。可选 parent_uri 挂到已有父节点（父链缺失自动补占位）；time 打世界时间（Events 类可传，Static 类缺省用当前世界时间）；若目标 URI 是占位节点（stub），会原地转正为真实记忆。来源/模型/回溯锚点由系统自动署名，无需手填。\nwhen（想起条件）写法：预演「未来的什么话头该想起它」，不是内容的复述（复述无检索价值）。两条路线：①上位锚——事实上移一到两级的类别或情境（如吃虾起疹 →「食物过敏」「海鲜上桌」）；②强联想线索——一旦出现几乎必然相关的场景/物件/感官（如「闻到小苍兰」「看到缺口陶盆」）。写一到三条，每条独立可用；「聊到生活时」这类泛泛条件不合格。",
+				"记下一段新记忆。可选 parent_uri 挂到已有父节点（父链缺失自动补占位）；time 打世界时间（Events 类可传，Static 类缺省用当前世界时间）；若目标 URI 是占位节点（stub），会原地转正为真实记忆。来源/模型/回溯锚点由系统自动署名，无需手填。\nwhen（想起条件）写法：预演「未来的什么话头该想起它」，不是内容的复述（复述无检索价值）。两条路线：①上位锚——事实上移一到两级的类别或情境（如吃虾起疹 →「食物过敏」「海鲜上桌」）；②强联想线索——一旦出现几乎必然相关的场景/物件/感官（如「闻到小苍兰」「看到缺口陶盆」）。写一到三条，每条独立可用；「聊到生活时」这类泛泛条件不合格。\nawaken=true 同时放进醒来记忆（醒来自动载入的工作集）。",
 			parameters: memorizeParams,
 			run: (p) => executeMemorize(store, p as Static<typeof memorizeParams>, ctx),
 		},
@@ -1553,7 +1600,7 @@ export function createMemoryTools(store: MemoryStore, ctx: MemoryToolContext = {
 			name: "revise",
 			label: "revise",
 			description:
-				"修订记忆内容或元数据。action=history 查看修订史（不传 uri 时列出可恢复的已删记忆；已删记忆显示完整版本链）；action=restore 从修订史恢复（活节点需指定 version，已删节点缺省恢复最新版）；默认 edit：四种内容编辑四选一（整条重写 content、替换 old_text→new_text 须唯一、追加 append、行编辑 line+line_content），也可只改 importance/when/time（改 when 时，URI 若是别名入口则改该入口专属条件，否则改节点自身条件），批量传 batch。旧内容自动入修订史。",
+				"修订记忆内容或元数据。action=history 查看修订史（不传 uri 时列出可恢复的已删记忆；已删记忆显示完整版本链）；action=restore 从修订史恢复（活节点需指定 version，已删节点缺省恢复最新版）；默认 edit：四种内容编辑四选一（整条重写 content、替换 old_text→new_text 须唯一、追加 append、行编辑 line+line_content），也可只改 importance/when/time/awaken（awaken=true/false 放进/移出醒来记忆；改 when 时，URI 若是别名入口则改该入口专属条件，否则改节点自身条件），批量传 batch。旧内容自动入修订史。",
 			parameters: reviseParams,
 			run: (p) => executeRevise(store, p as Static<typeof reviseParams>, ctx),
 		},

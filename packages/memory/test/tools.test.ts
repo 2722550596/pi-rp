@@ -376,6 +376,46 @@ describe("awaken list/set/add/remove", () => {
 	});
 });
 
+describe("memorize / revise awaken 参数", () => {
+	it("memorize awaken=true 记下即放进醒来清单，重复不加", async () => {
+		const result = await run("memorize", { uri: "core://user/job", content: "他在书店上班", awaken: true });
+		expect(result.text).toContain("已放进醒来记忆");
+		expect(getAwakenUris(store)).toEqual(["core://user/job"]);
+		await run("revise", { uri: "core://user/job", awaken: true });
+		expect(getAwakenUris(store)).toEqual(["core://user/job"]);
+	});
+
+	it("revise 只改 awaken：放进、移出，不写修订；和正文修改一起生效", async () => {
+		await run("memorize", { uri: "core://plan", content: "周六去看展" });
+		const on = await run("revise", { uri: "core://plan", awaken: true });
+		expect(on.text).toContain("已放进醒来记忆");
+		expect(getAwakenUris(store)).toEqual(["core://plan"]);
+		expect(store.listRevisions(store.resolveUri("core://plan")!.node_id)).toHaveLength(0);
+
+		const off = await run("revise", { uri: "core://plan", append: "看完了", awaken: false });
+		expect(off.text).toContain("已移出醒来记忆");
+		expect(getAwakenUris(store)).toEqual([]);
+		expect(store.resolveUri("core://plan")!.content).toBe("周六去看展\n看完了");
+
+		const noop = await run("revise", { uri: "core://plan", awaken: false });
+		expect(noop.text).toContain("醒来记忆没有变化");
+	});
+
+	it("batch 里逐条生效；history/restore 不接受 awaken", async () => {
+		await run("memorize", { uri: "core://a", content: "甲" });
+		await run("memorize", { uri: "core://b", content: "乙" });
+		await run("revise", {
+			batch: [
+				{ uri: "core://a", awaken: true },
+				{ uri: "core://b", awaken: true },
+			],
+		});
+		expect(getAwakenUris(store)).toEqual(["core://a", "core://b"]);
+		const rejected = await run("revise", { action: "history", uri: "core://a", awaken: true });
+		expect(rejected.text).toContain("不接受编辑字段");
+	});
+});
+
 describe("relocate", () => {
 	it("moves node and keeps old uri as alias", async () => {
 		await run("memorize", { uri: "history://scene1", content: "场景" });
