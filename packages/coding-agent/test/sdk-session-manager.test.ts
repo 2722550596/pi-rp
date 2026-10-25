@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createNodeDriverFactory } from "../../memory/src/driver-node.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
@@ -44,6 +45,28 @@ describe("createAgentSession session manager defaults", () => {
 		expect(sessionFile?.startsWith(`${expectedSessionDir}/`)).toBe(true);
 
 		session.dispose();
+	});
+
+	it("forwards an injected sqliteFactory to the memory store", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5");
+		expect(model).toBeTruthy();
+		const node = createNodeDriverFactory();
+		const opened: string[] = [];
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: model!,
+			sessionManager: SessionManager.inMemory(cwd),
+			sqliteFactory: {
+				open(path: string) {
+					opened.push(path);
+					return node.open(path);
+				},
+			},
+		});
+		expect(opened).toEqual([join(cwd, ".pi", "memory.db")]);
+		session.dispose();
+		await session.waitForMemoryStoreRelease();
 	});
 
 	it("keeps an explicit sessionManager override", async () => {

@@ -650,6 +650,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		scope: sessionScope,
 		requestIdentity: sessionRequestIdentity,
 		disableAutoCompaction: options.disableAutoCompaction,
+		sqliteFactory: options.sqliteFactory,
 		ownsScope: ownsSessionScope,
 	});
 	// Wait for the async construction work (schema/validator loading,
