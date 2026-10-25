@@ -314,7 +314,7 @@ slots:
 - **注入选择器(§9.1,opt-in,需 `TYPEAFE_API_KEY`)**:`memory.recall.select: { tau? }` 声明启用——用 TypeSafe Jev 对 fused top-8 逐条判「此刻该想起吗」,`noul ≥ tau`(默认 0.6)才注入(仍受 TOP_K 限制,但候选池放宽到 8)。与断路器的语域判断不同,Jev 判的是弧线关联:elias 基准 target 保持 8/8、同一故事线的多条记忆整线召回(温水线 4 节点全部保留)、重复内容域与无关独白被正确压制。蕴含断路器效果(整页无关=全部低分=零注入);Jev 不可用/无 key 时 fail-open;筛选记 `recall_select` 审计。
 - 通道:`rp-memories` custom message,`context: include / llmRole: user / compaction: exclude / display: false`。`/` 与 `\` 开头 prompt 跳过。
 - **domain 黑名单**:默认 `["maintenance", "history_raw"]`(运维噪音);`TEMP` 不在黑名单——动态区草稿随时可被召回,这正是"保险"在生效。
-- 参数可配:`settings.memory.recall.{topK, minScore, keywordMinScore, blocklist}`。
+- 参数可配:`settings.memory.recall.{auto, topK, minScore, keywordMinScore, blocklist}`;`auto: false` 关掉自动召回(prompt 与 steering 两条路径都不检索、不注入)。
 - **embeddings 隐私默认 off(v5.5)**:未显式 `mode:"api"` 恒不联网(即使 env 有 key);显式 api 才读 env key 外呼(10s 超时、外部 abort 不 latch、响应错误 latch);无向量时自动降级 keyword 注入。
 
 ## 8. 回滚联动
@@ -416,6 +416,7 @@ real 的相对日期及 recency 参照日按配置时区的本地日期计算，
       "models": { "smol": "model-ref", "default": "model-ref" }  // 侧请求模型引用;未配回落 session model
     },
     "recall": {
+      "auto": true,                                   // 自动召回注入；false 整个关掉（不检索），只剩 awaken 与 retrieve/recall
       "topK": 3,
       "minScore": 0.35,                               // vector 注入档
       "keywordMinScore": 0.12,                        // keyword 注入档(v5.5)

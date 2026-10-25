@@ -31,6 +31,12 @@ export interface MemorySettings {
 		models?: { smol?: string; default?: string };
 	};
 	recall?: {
+		/**
+		 * Automatic recall injection (before each prompt and on steering batches).
+		 * Default true; false skips the search entirely — memories then surface
+		 * only through the awaken slot/macro and explicit retrieve/recall.
+		 */
+		auto?: boolean;
 		topK?: number;
 		minScore?: number;
 		/** Keyword-mode injection floor; default 0.12 (§5.9). */

@@ -173,6 +173,19 @@ describe("steering memory injection", () => {
 		},
 	);
 
+	it("recall.auto=false: no search, no injection on prompt or steering", async () => {
+		store.insertNode({ uri: "history://tavern", content: "伊莱在酒馆遇到薇拉，谈及北方的商队" });
+		const search = vi.spyOn(recall, "search");
+		const h = createHostMock();
+		const module = createMemoryModule(store, {
+			settings: { embeddings: { mode: "off" as const }, recall: { auto: false } },
+		});
+		module.registerSession(h.host);
+		expect(await fireBeforeAgentStart(h.hooks, "伊莱在酒馆遇到了谁？")).toBeUndefined();
+		expect(await module.onSteeringMessages([{ role: "user", content: "伊莱在酒馆遇到了谁？" }])).toBeUndefined();
+		expect(search).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		[{ role: "custom", content: "酒馆" }],
 		[{ role: "user", content: " /help" }],

@@ -319,6 +319,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	const topK = recallCfg.topK ?? RECALL_TOP_K;
 	const minScore = recallCfg.minScore ?? RECALL_MIN_SCORE;
 	const keywordMinScore = recallCfg.keywordMinScore ?? RECALL_KEYWORD_MIN_SCORE;
+	const autoRecall = recallCfg.auto !== false;
 	// §9.1 injection breaker — opt-in (an extra provider call per prompt);
 	// tau keeps its benchmarked default unless pinned.
 	const breakerEnabled = recallCfg.breaker !== undefined;
@@ -595,6 +596,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 	async function handleSteeringMessages(
 		messages: unknown[],
 	): Promise<{ message: Record<string, unknown> } | undefined> {
+		if (!autoRecall) return;
 		const texts = messages.map(userTextOf).filter((text): text is string => text !== undefined);
 		if (texts.length === 0) return;
 		const snapshot = host?.getBranchSnapshot();
@@ -616,7 +618,7 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 		if (typeof prompt !== "string") return;
 		const trimmed = prompt.trim();
 		// Skip slash-command expansions and empty prompts.
-		if (!trimmed || trimmed.startsWith("/") || trimmed.startsWith("\\")) return;
+		if (!autoRecall || !trimmed || trimmed.startsWith("/") || trimmed.startsWith("\\")) return;
 		const snapshot = host?.getBranchSnapshot();
 		if (!snapshot) return;
 		const queries: string[] = [trimmed];
