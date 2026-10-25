@@ -529,13 +529,13 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	});
 	await resourceLoader.reload();
 
-	const promptScope =
-		options.promptSlots?.length || options.runtimeContextSlots
-			? createAgentSessionScope({
-					subagentPromptSlots: options.promptSlots,
-					runtimeContextSlots: options.runtimeContextSlots,
-				})
-			: undefined;
+	// 每个 harness 一个提示词作用域：一个进程里常同时开好几个会话（每个角色一个），记忆宏
+	// （memory.awaken 等）和扩展宏要注册在各自的作用域里；落进进程级宏表会互相覆盖，
+	// 还会留下指向已关闭记忆库的旧宏。
+	const promptScope = createAgentSessionScope({
+		subagentPromptSlots: options.promptSlots,
+		runtimeContextSlots: options.runtimeContextSlots,
+	});
 
 	// ---- S8: session 构造与就绪（createAgentSession 内部 await _buildRuntimePromise） ----
 	const sessionOptions: CreateAgentSessionOptions = {
@@ -588,7 +588,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 	}
 
 	const { session, extensionsResult } = await createAgentSession(sessionOptions).catch((error) => {
-		promptScope?.dispose();
+		promptScope.dispose();
 		throw error;
 	});
 	// ---- S8.5: 扩展绑定（E4/E2；C3 裁决：恒执行一次，无「不绑定」分支） ----
@@ -634,7 +634,7 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 			// S9：settings 写队列 flush → storage flush（Impl-B 公式）→ env 清理；逐层 best-effort 不抛。
 			try {
 				session.dispose();
-				promptScope?.dispose();
+				promptScope.dispose();
 			} catch {}
 			try {
 				await settingsManager.flush();
