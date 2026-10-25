@@ -581,6 +581,10 @@ export async function createPiHarness(options: CreatePiHarnessOptions): Promise<
 		sessionOptions.sqliteFactory =
 			(options.storage?.sqliteFactory as CreateAgentSessionOptions["sqliteFactory"]) ??
 			(createBrowserSqliteDatabaseFactory() as unknown as CreateAgentSessionOptions["sqliteFactory"]);
+	} else if (options.storage?.sqliteFactory) {
+		// hosted 剖面（如 React Native）没有 node:sqlite 也没有 OPFS：宿主注入自己的驱动（expo-sqlite 等）。
+		// 不注入时保持原样，记忆走 node 缺省驱动（Node 宿主）或打开失败后降级为无记忆。
+		sessionOptions.sqliteFactory = options.storage.sqliteFactory as CreateAgentSessionOptions["sqliteFactory"];
 	}
 
 	const { session, extensionsResult } = await createAgentSession(sessionOptions).catch((error) => {
