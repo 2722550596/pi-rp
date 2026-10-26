@@ -36,6 +36,15 @@ export interface RecentSlotOptions {
 export interface MemoryRenderOptions {
 	/** Live visibility predicate from the module (hidden auto nodes skipped). */
 	isVisible?: VisibilityPredicate;
+	/** settings.memory.render.relativeTime; false renders neutral plain stamps. Default true. */
+	relativeTime?: boolean;
+}
+
+/** Neutral `YYYY-MM-DD HH:mm` (date only when the stamp has no time); unparseable stamps pass through. */
+export function plainStamp(ts: string): string {
+	const match = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/.exec(ts);
+	if (!match) return ts;
+	return match[2] ? `${match[1]} ${match[2]}` : match[1]!;
 }
 
 export interface MemorySlotsOptions extends MemoryRenderOptions {}
@@ -69,6 +78,7 @@ function fullText(store: MemoryStore, node: { uri: string; content: string }): s
 
 export function renderAwaken(store: MemoryStore, opts: MemoryRenderOptions, form: MemoryRenderForm): string {
 	const uris = getAwakenUris(store);
+	const relative = opts.relativeTime !== false;
 	const worldTime =
 		form === "slot"
 			? store.getClock().mode === "real"
@@ -83,10 +93,11 @@ export function renderAwaken(store: MemoryStore, opts: MemoryRenderOptions, form
 		const lines = [`### ${node.uri}`];
 		if (node.world_ts) {
 			const rel =
-				form === "slot"
+				form === "slot" && relative
 					? formatRelativeWorldTime(node.world_ts, worldTime, (t) => dayNumber(t, store.getClock()))
 					: "";
-			lines.push(rel ? `> (发生于: ${node.world_ts}，${rel})` : `> (发生于: ${node.world_ts})`);
+			const stamp = relative ? node.world_ts : plainStamp(node.world_ts);
+			lines.push(rel ? `> (发生于: ${stamp}，${rel})` : `> (发生于: ${stamp})`);
 		}
 		// Disclosure belongs to the registered entry, including an alias.
 		const disc = store.effectiveDisclosure(uri);
@@ -108,7 +119,7 @@ export function renderAwaken(store: MemoryStore, opts: MemoryRenderOptions, form
 	}
 	if (blocks.length === 0) return "";
 	if (form === "slot" && store.getClock().mode !== "real" && worldTime) {
-		blocks.unshift(`> 当前世界时间: ${worldTime}`);
+		blocks.unshift(`> 当前世界时间: ${relative ? worldTime : plainStamp(worldTime)}`);
 	}
 	return blocks.join("\n\n---\n\n");
 }
@@ -202,7 +213,8 @@ export function createMemoryMacros(store: MemoryStore, opts: MemoryRenderOptions
 		description,
 		static: true,
 		render: ({ params }) => {
-			const header = `> 快照时间: ${store.referenceNow()}（此后新写入的记忆不在这份快照里，需要时用 recall 或 retrieve 查）`;
+			const now = store.referenceNow();
+			const header = `> 快照时间: ${opts.relativeTime === false ? plainStamp(now) : now}（此后新写入的记忆不在这份快照里，需要时用 recall 或 retrieve 查）`;
 			const body = renderBody(params);
 			return body === "" ? "" : `${header}\n${body}`;
 		},

@@ -139,3 +139,33 @@ describe("recent macro parameter parsing", () => {
 		expect(parseRecentMacroParams(params)).toEqual(expected);
 	});
 });
+
+describe("render.relativeTime = false", () => {
+	beforeEach(() => {
+		store.put({ uri: "core://self", content: "我是伊莱。", source: "manual", world_ts: "2023-11-01T07:03:00.000Z" });
+		store.setWorldTime("2023-11-02T21:40:00.000Z");
+		setAwakenUris(store, ["core://self"]);
+	});
+
+	it("renders the awaken slot with neutral plain stamps and no relative day", async () => {
+		const slot = createMemorySlots(store, { relativeTime: false }).find((s) => s.name === "awaken")!;
+		const out = String(await slot.render({ item: {} }));
+		expect(out).toContain("> 当前世界时间: 2023-11-02 21:40");
+		expect(out).toContain("> (发生于: 2023-11-01 07:03)");
+		expect(out).not.toContain("昨天");
+		expect(out).not.toContain("T07:03");
+	});
+
+	it("renders the awaken macro and its header with neutral plain stamps", () => {
+		const out = createMemoryMacros(store, { relativeTime: false })
+			.find((macro) => macro.name === "memory.awaken")!
+			.render({ runtime: undefined, variables: {} });
+		expect(out.split("\n")[0]).toContain("> 快照时间: 2023-11-02 21:40（");
+		expect(out).toContain("> (发生于: 2023-11-01 07:03)");
+	});
+
+	it("keeps relative days in the slot by default", async () => {
+		const slot = createMemorySlots(store).find((s) => s.name === "awaken")!;
+		expect(String(await slot.render({ item: {} }))).toContain("> (发生于: 2023-11-01T07:03:00.000Z，昨天)");
+	});
+});

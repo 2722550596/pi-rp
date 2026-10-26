@@ -432,6 +432,7 @@ real 的相对日期及 recency 参照日按配置时区的本地日期计算，
       }
     },
     "revisions": { "maxVersionsPerNode": 20 },        // 每节点保留修订数上限;缺省无限(不配置即不裁)
+    "render": { "relativeTime": true },               // awaken 槽/memory.* 宏的时间;false → 中性的 YYYY-MM-DD HH:mm,不写今天/昨天(工具输出不受影响)
     "embeddings": { "mode": "off", "model": "bge-large-zh-v1.5", "apiUrl": "..." }  // 隐私默认 off;apiKey 走 env
   }
 }
@@ -439,6 +440,7 @@ real 的相对日期及 recency 参照日按配置时区的本地日期计算，
 
 - `rawLog.customTypes`:三态开关决定 custom message 是否收编进原文日志(默认收 display:true 的);user/assistant 消息恒收。
 - `embeddings`:**默认 `mode:"off"`(隐私优先,v5.5)**——未显式 `"api"` 永不联网,即使 env 有 key;`"api"` 才读 `PI_MEMORY_EMBEDDING_API_KEY`/`NOCTURNE_EMBEDDING_API_KEY` 外呼(10s 超时)。无向量自动降级 keyword 注入。
+- `render.relativeTime`:缺省 true。设 false 时 awaken 槽、`memory.*` 宏(含「当前世界时间」「快照时间」表头)里的时间一律渲染成中性的 `YYYY-MM-DD HH:mm`,不再算今天/昨天/N 天前——宿主的提示词被冻结(静态宏、前缀缓存)而时钟还在走时,相对说法会过期。recall/retrieve 等工具输出照旧。
 - `revisions.maxVersionsPerNode`:正整数或缺省(无限);每次归档后剪掉该节点最旧超额版本,删除前归档也应用同一策略,保证至少保留一版可恢复正文。
 
 ### 13.2 典型角色消费端配置实战 (Role Preset & Settings)

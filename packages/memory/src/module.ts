@@ -833,11 +833,12 @@ export function createMemoryModule(store: MemoryStore, opts: MemoryModuleOptions
 				});
 			}
 			// 2. Live slots and optional static snapshot macros share visibility.
-			for (const slot of createMemorySlots(store, { isVisible })) {
+			const renderOpts = { isVisible, relativeTime: settings.render?.relativeTime !== false };
+			for (const slot of createMemorySlots(store, renderOpts)) {
 				newHost.registerSlot(slot);
 			}
 			if (newHost.registerMacro) {
-				for (const macro of createMemoryMacros(store, { isVisible })) newHost.registerMacro(macro);
+				for (const macro of createMemoryMacros(store, renderOpts)) newHost.registerMacro(macro);
 			}
 			// 3. Custom type policy: LLM-visible, TUI-hidden, compaction-excluded.
 			newHost.registerCustomType(RP_MEMORIES_TYPE, {

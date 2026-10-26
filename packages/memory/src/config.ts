@@ -66,6 +66,14 @@ export interface MemorySettings {
 		select?: { tau?: number };
 	};
 	temp?: { threshold?: number; autoTidy?: AutoTidySettings };
+	/**
+	 * Prompt-side rendering (awaken slot and memory.* macros; tool output is
+	 * unaffected). `relativeTime: false` drops 今天/昨天/N天前 and prints every
+	 * stamp as a neutral `YYYY-MM-DD HH:mm` — for hosts whose rendered prompt is
+	 * frozen (static macros, prefix cache) while the clock keeps moving.
+	 * Default true.
+	 */
+	render?: { relativeTime?: boolean };
 	embeddings?: { mode?: "api" | "off"; model?: string; rerankModel?: string; apiUrl?: string };
 	/** Revision retention (§12 decision 20): max versions kept per node; undefined = unlimited. */
 	revisions?: { maxVersionsPerNode?: number };
