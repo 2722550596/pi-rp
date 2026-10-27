@@ -141,6 +141,19 @@ describe("revise variants", () => {
 		expect(store.resolveUri("history://a")!.content).toBe("第一行\n第二行\n第三行\n第四行");
 	});
 
+	// Hermes (React Native) has no Buffer; revise's diff sizing used Buffer.byteLength and failed on device.
+	it("works without a global Buffer", async () => {
+		const saved = globalThis.Buffer;
+		delete (globalThis as any).Buffer;
+		try {
+			const r = await run("revise", { uri: "history://a", old_text: "第二行", new_text: "改过的第二行" });
+			expect(r.text).toContain("已修订");
+			expect(store.resolveUri("history://a")!.content).toBe("第一行\n改过的第二行\n第三行");
+		} finally {
+			globalThis.Buffer = saved;
+		}
+	});
+
 	it("line edit", async () => {
 		await run("revise", { uri: "history://a", line: 2, line_content: "改过的第二行" });
 		expect(store.resolveUri("history://a")!.content).toBe("第一行\n改过的第二行\n第三行");

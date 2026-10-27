@@ -28,7 +28,7 @@ export interface BrowserCustomTool {
 		params: unknown,
 		context: BrowserToolHandlerContext,
 		onUpdate?: (progress: unknown) => void,
-	) => MaybePromise<{ content: readonly unknown[]; details?: unknown; terminate?: boolean }>;
+	) => MaybePromise<{ content: readonly unknown[]; details?: unknown; terminate?: boolean | "any" }>;
 }
 
 export interface BrowserCustomTypePolicy {

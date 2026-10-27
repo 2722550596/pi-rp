@@ -92,9 +92,11 @@ export interface AfterToolCallResult {
 	usage?: Usage;
 	/**
 	 * Hint that the agent should stop after the current tool batch.
-	 * Early termination only happens when every finalized tool result in the batch sets this to true.
+	 * `true`: early termination only happens when every finalized tool result in the batch sets it.
+	 * `"any"`: this result alone ends the batch, whatever the other results say (an interrupted call
+	 * in the batch still keeps the loop going).
 	 */
-	terminate?: boolean;
+	terminate?: boolean | "any";
 }
 
 /** Context passed to `beforeToolCall`. */
@@ -440,9 +442,11 @@ export interface AgentToolResult<T> {
 	addedToolNames?: string[];
 	/**
 	 * Hint that the agent should stop after the current tool batch.
-	 * Early termination only happens when every finalized tool result in the batch sets this to true.
+	 * `true`: early termination only happens when every finalized tool result in the batch sets it.
+	 * `"any"`: this result alone ends the batch, whatever the other results say (an interrupted call
+	 * in the batch still keeps the loop going).
 	 */
-	terminate?: boolean;
+	terminate?: boolean | "any";
 }
 
 /**

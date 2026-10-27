@@ -1433,6 +1433,65 @@ describe("agentLoop with AgentMessage", () => {
 		]);
 	});
 
+	it('should stop after a tool batch when one tool result sets terminate="any"', async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+					terminate: params.value === "speak" ? "any" : undefined,
+				};
+			},
+		};
+
+		for (const toolExecution of ["parallel", "sequential"] as const) {
+			executed.length = 0;
+			const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+			const config: AgentLoopConfig = { model: createModel(), convertToLlm: identityConverter, toolExecution };
+			let callIndex = 0;
+			const stream = agentLoop([createUserMessage("echo")], context, config, undefined, () => {
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const message =
+						callIndex === 0
+							? createAssistantMessage(
+									[
+										{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "memo" } },
+										{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "speak" } },
+										{ type: "toolCall", id: "tool-3", name: "echo", arguments: { value: "after" } },
+									],
+									"toolUse",
+								)
+							: createAssistantMessage([{ type: "text", text: "extra" }]);
+					mockStream.push({ type: "done", reason: callIndex === 0 ? "toolUse" : "stop", message });
+					callIndex++;
+				});
+				return mockStream;
+			});
+			for await (const _event of stream) {
+				// consume
+			}
+			const messages = await stream.result();
+			expect(callIndex).toBe(1);
+			// The whole batch still runs; only the next model request is skipped.
+			expect(executed).toEqual(["memo", "speak", "after"]);
+			expect(messages.map((message) => message.role)).toEqual([
+				"user",
+				"assistant",
+				"toolResult",
+				"toolResult",
+				"toolResult",
+			]);
+		}
+	});
+
 	it("should allow afterToolCall to mark a tool batch as terminating", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {

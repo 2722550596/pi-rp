@@ -39,6 +39,10 @@ import type { MemoryNode, MemoryStore, VisibilityPredicate } from "./store.ts";
 export const MAX_DIFF_BYTES = 8192;
 export const MAX_DIFF_ITEMS = 50;
 
+// TextEncoder, not Buffer: these tools also run under Hermes (React Native), which has no Buffer.
+const utf8 = new TextEncoder();
+const utf8Bytes = (text: string) => utf8.encode(text).length;
+
 /**
  * Cut a diff to `maxBytes` on a LINE boundary, marking the cut on its own line.
  *
@@ -51,7 +55,7 @@ function cutDiff(diff: string, maxBytes: number): string {
 	const kept: string[] = [];
 	let used = 0;
 	for (const line of lines) {
-		const size = Buffer.byteLength(line, "utf8") + 1;
+		const size = utf8Bytes(line) + 1;
 		if (kept.length > 0 && used + size > maxBytes) break;
 		kept.push(line);
 		used += size;
@@ -1093,7 +1097,7 @@ async function executeRevise(store: MemoryStore, params: Static<typeof revisePar
 		}
 		const { diff, firstChangedLine } = generateDiffString(r.beforeContent, after.content);
 		let shown = diff;
-		if (Buffer.byteLength(diff, "utf8") > MAX_DIFF_BYTES) {
+		if (utf8Bytes(diff) > MAX_DIFF_BYTES) {
 			shown = cutDiff(diff, MAX_DIFF_BYTES);
 			truncated = true;
 		}
