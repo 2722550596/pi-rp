@@ -428,6 +428,16 @@ function squashMessages(
 	let volatileFrom: number | undefined;
 	for (let idx = 0; idx < messages.length; idx++) {
 		const msg = messages[idx];
+		// Summaries carry their text in `summary`, not `content`: pass them through unmerged
+		// (they used to fall into the empty-message skip below and vanish from the request).
+		if (isSummaryMessage(msg)) {
+			if (last) squashed.push(last);
+			last = msg;
+			if (volatileFrom === undefined && trackedFrom !== undefined && idx >= trackedFrom) {
+				volatileFrom = squashed.length;
+			}
+			continue;
+		}
 		if (!("content" in msg) || !msg.content) continue;
 		let merged = false;
 		// Tool results must remain paired individually with their tool calls.

@@ -775,3 +775,37 @@ describe("squash never merges tool results", () => {
 		expect(toolResults.map((m) => (m as { toolCallId: string }).toolCallId)).toEqual(["call_A", "call_B", "call_C"]);
 	});
 });
+
+describe("squash keeps summaries", () => {
+	it("passes compaction and branch summaries through to the compiled history", async () => {
+		// Regression: squashMessages skipped every message without `content`, and summaries
+		// carry their text in `summary`, so a preset with a history item silently dropped the
+		// compaction summary from every request after a compaction.
+		const preset: PromptPreset = {
+			schemaVersion: 1,
+			id: "summaries",
+			name: "summaries",
+			items: [
+				{ kind: "block", id: "system", role: "system", content: "SYS" },
+				{ kind: "history", id: "history", ops: [] },
+			],
+		};
+		const history = [
+			{ role: "compactionSummary", summary: "COMPACTED", tokensBefore: 10, timestamp: 0 },
+			{ role: "branchSummary", summary: "BRANCHED", fromId: "x", timestamp: 0 },
+			userMessage("hi"),
+		] as AgentMessage[];
+		for (const rt of [runtime(history), runtime(history, { historyOps: [] })]) {
+			const result = await compileMessages(preset, rt);
+			expect(result.messages.map((m) => m.role)).toEqual(["system", "compactionSummary", "branchSummary", "user"]);
+			expect((result.messages[1] as { summary?: string }).summary).toBe("COMPACTED");
+		}
+		const legacy: PromptPreset = { ...preset, items: [preset.items[0]] };
+		expect((await compileMessages(legacy, runtime(history))).messages.map((m) => m.role)).toEqual([
+			"system",
+			"compactionSummary",
+			"branchSummary",
+			"user",
+		]);
+	});
+});
