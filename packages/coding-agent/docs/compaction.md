@@ -80,6 +80,10 @@ What the LLM sees:
 
 On repeated compactions, the summarized span starts at the previous compaction's kept boundary (`firstKeptEntryId`), not at the compaction entry itself, falling back to the entry after the previous compaction if that kept entry cannot be found in the path. This preserves messages that survived the earlier compaction by including them in the next summarization pass as well. Pi also recalculates `tokensBefore` from the rebuilt session context before writing the new `CompactionEntry`, so the token count reflects the actual pre-compaction context being replaced.
 
+### Keeping Nothing
+
+`session.compact(customInstructions, { keepRecent: false })` (or `ctx.compact({ keepRecent: false })` from an extension) summarizes everything since the previous compaction's kept boundary and keeps no raw entries, regardless of `keepRecentTokens` / `keepTraces` and of session size. The entry's `firstKeptEntryId` is `KEEP_NOTHING` (`""`), which matches no entry, so the rebuilt context is the summary followed only by what is appended after the compaction; the next compaction falls back to the entry after it. Use it to restart a long session from a clean summary. It returns "Nothing to compact" when nothing was appended since the previous compaction.
+
 ### Split Turns
 
 A "turn" starts with a user message and includes all assistant responses and tool calls until the next user message. Normally, compaction cuts at turn boundaries.
@@ -129,7 +133,7 @@ interface CompactionEntry<T = unknown> {
   parentId: string;
   timestamp: number;
   summary: string;
-  firstKeptEntryId: string;
+  firstKeptEntryId: string;  // "" (KEEP_NOTHING): no raw entries kept
   tokensBefore: number;
   usage?: Usage;       // LLM usage that generated the summary
   fromHook?: boolean;  // true if provided by extension (legacy field name)

@@ -166,6 +166,23 @@ describe("AgentSession compaction characterization", () => {
 		expect(statsAfter.cost).toBe(statsBefore.cost + summaryUsage.cost.total);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
 	});
+	it("keepRecent: false summarizes the whole session and keeps nothing raw", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("answer one"), fauxAssistantMessage("answer two")]);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+		// Default keep budget covers this small session: a normal manual compact has nothing to do.
+		await expect(harness.session.compact()).rejects.toThrow("Nothing to compact");
+
+		useSummaryStreamFn(harness, "everything so far");
+		const result = await harness.session.compact(undefined, { keepRecent: false });
+		expect(result.firstKeptEntryId).toBe("");
+		expect(harness.session.messages.map((m) => m.role)).toEqual(["compactionSummary"]);
+		expect(harness.sessionManager.buildSessionContext().messages.map((m) => m.role)).toEqual(["compactionSummary"]);
+		await expect(harness.session.compact(undefined, { keepRecent: false })).rejects.toThrow("Already compacted");
+	});
+
 	it("keeps runtime provider context out of compaction summarizer requests", async () => {
 		const scope = createAgentSessionScope({
 			runtimeContextSlots: [{ id: "private", render: () => "runtime marker" }],

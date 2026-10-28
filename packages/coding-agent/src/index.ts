@@ -59,6 +59,8 @@ export {
 	 */
 	generateSummaryWithUsage,
 	getLastAssistantUsage,
+	KEEP_NOTHING,
+	type PrepareCompactionOptions,
 	prepareBranchEntries,
 	serializeConversation,
 	shouldCompact,

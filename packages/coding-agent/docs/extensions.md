@@ -1109,6 +1109,8 @@ ctx.compact({
 });
 ```
 
+Pass `keepRecent: false` to summarize the whole session and keep no recent messages (see [compaction](compaction.md#keeping-nothing)).
+
 ### ctx.getSystemPrompt()
 
 Returns Pi's current system prompt string.

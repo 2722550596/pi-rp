@@ -13,6 +13,7 @@ import {
 	estimateTokens,
 	findCutPoint,
 	getLastAssistantUsage,
+	KEEP_NOTHING,
 	prepareCompaction,
 	shouldCompact,
 } from "../src/core/compaction/index.ts";
@@ -548,6 +549,66 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(preparation!.previousSummary).toBe("First summary");
 	});
 });
+describe("prepareCompaction with keepRecent: false", () => {
+	it("summarizes the whole history, small or not, and keeps nothing", () => {
+		const u1 = createMessageEntry(createUserMessage("first"));
+		const a1 = createMessageEntry(createAssistantMessage("first answer"));
+		const u2 = createMessageEntry(createUserMessage("last"));
+		const a2 = createMessageEntry(createAssistantMessage("last answer"));
+		const entries = [u1, a1, u2, a2];
+		expect(prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS)).toBeUndefined();
+
+		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS, { keepRecent: false });
+		expect(preparation?.firstKeptEntryId).toBe(KEEP_NOTHING);
+		expect(preparation?.isSplitTurn).toBe(false);
+		expect(preparation?.turnPrefixMessages).toEqual([]);
+		expect(extractText(preparation!.messagesToSummarize)).toContain("first");
+		expect(extractText(preparation!.messagesToSummarize)).toContain("last answer");
+
+		const compaction = createCompactionEntry("Everything", KEEP_NOTHING);
+		const u3 = createMessageEntry(createUserMessage("after"));
+		const loaded = buildSessionContext([...entries, compaction, u3]);
+		expect(loaded.messages.map((m) => m.role)).toEqual(["compactionSummary", "user"]);
+	});
+
+	it("after a previous compaction, folds its kept entries and everything since into the update", () => {
+		const u1 = createMessageEntry(createUserMessage("summarized"));
+		const u2 = createMessageEntry(createUserMessage("kept by compaction1"));
+		const a2 = createMessageEntry(createAssistantMessage("kept answer"));
+		const compaction1 = createCompactionEntry("First summary", u2.id);
+		const u3 = createMessageEntry(createUserMessage("new"));
+		const a3 = createMessageEntry(createAssistantMessage("new answer"));
+
+		const preparation = prepareCompaction([u1, u2, a2, compaction1, u3, a3], DEFAULT_COMPACTION_SETTINGS, {
+			keepRecent: false,
+		});
+		const text = extractText(preparation!.messagesToSummarize);
+		expect(text).toContain("kept by compaction1");
+		expect(text).toContain("new answer");
+		expect(text).not.toContain("summarized");
+		expect(preparation!.previousSummary).toBe("First summary");
+	});
+
+	it("a keep-nothing compaction is a clean boundary for the next one; nothing new means nothing to compact", () => {
+		const u1 = createMessageEntry(createUserMessage("old"));
+		const a1 = createMessageEntry(createAssistantMessage("old answer"));
+		const compaction1 = createCompactionEntry("First summary", KEEP_NOTHING);
+		expect(
+			prepareCompaction([u1, a1, compaction1], DEFAULT_COMPACTION_SETTINGS, { keepRecent: false }),
+		).toBeUndefined();
+
+		const u2 = createMessageEntry(createUserMessage("new"));
+		const a2 = createMessageEntry(createAssistantMessage("new answer"));
+		const preparation = prepareCompaction([u1, a1, compaction1, u2, a2], DEFAULT_COMPACTION_SETTINGS, {
+			keepRecent: false,
+		});
+		const text = extractText(preparation!.messagesToSummarize);
+		expect(text).toContain("new answer");
+		expect(text).not.toContain("old");
+		expect(preparation!.previousSummary).toBe("First summary");
+	});
+});
+
 describe("prepareCompaction with trace settings", () => {
 	it("prepares physical compaction at a complete trace boundary", () => {
 		const oldUser = createMessageEntry(createUserMessage("old trace"));

@@ -107,6 +107,7 @@ import {
 	estimateContextTokens,
 	estimateTokens,
 	generateBranchSummary,
+	type PrepareCompactionOptions,
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
@@ -4366,8 +4367,9 @@ export class AgentSession {
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
 	 * @param customInstructions Optional instructions for the compaction summary
+	 * @param options.keepRecent false: summarize everything, keep no recent entries
 	 */
-	async compact(customInstructions?: string): Promise<CompactionResult> {
+	async compact(customInstructions?: string, options?: PrepareCompactionOptions): Promise<CompactionResult> {
 		await this._ensureRuntimeReady();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
@@ -4384,7 +4386,7 @@ export class AgentSession {
 
 			const pathEntries = this.sessionManager.getBranch();
 
-			const preparation = prepareCompaction(pathEntries, settings);
+			const preparation = prepareCompaction(pathEntries, settings, options);
 			if (!preparation) {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
@@ -5242,7 +5244,10 @@ export class AgentSession {
 				compact: (options) => {
 					void (async () => {
 						try {
-							const result = await this.compact(options?.customInstructions);
+							const result = await this.compact(
+								options?.customInstructions,
+								options?.keepRecent === undefined ? undefined : { keepRecent: options.keepRecent },
+							);
 							options?.onComplete?.(result);
 						} catch (error) {
 							const err = error instanceof Error ? error : new Error(String(error));

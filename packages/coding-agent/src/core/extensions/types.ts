@@ -317,6 +317,8 @@ export interface ContextUsage {
 
 export interface CompactOptions {
 	customInstructions?: string;
+	/** false: summarize everything and keep no recent entries. */
+	keepRecent?: boolean;
 	onComplete?: (result: CompactionResult) => void;
 	onError?: (error: Error) => void;
 }

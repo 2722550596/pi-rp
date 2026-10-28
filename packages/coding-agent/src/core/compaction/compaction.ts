@@ -770,8 +770,23 @@ export async function generateSummaryWithUsage(
 // Compaction Preparation (for extensions)
 // ============================================================================
 
+/**
+ * `firstKeptEntryId` of a compaction that keeps no raw entries: it matches no entry, so the
+ * context is the summary followed by whatever is appended after the compaction.
+ */
+export const KEEP_NOTHING = "";
+
+export interface PrepareCompactionOptions {
+	/**
+	 * `false` summarizes everything since the previous compaction and keeps no recent entries
+	 * (`firstKeptEntryId` is {@link KEEP_NOTHING}), ignoring `keepRecentTokens` / `keepTraces`.
+	 * Default: keep recent entries per settings.
+	 */
+	keepRecent?: boolean;
+}
+
 export interface CompactionPreparation {
-	/** UUID of first entry to keep */
+	/** UUID of first entry to keep, or {@link KEEP_NOTHING} when nothing is kept */
 	firstKeptEntryId: string;
 	/** Messages that will be summarized and discarded */
 	messagesToSummarize: AgentMessage[];
@@ -791,6 +806,7 @@ export interface CompactionPreparation {
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
+	options?: PrepareCompactionOptions,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -816,20 +832,26 @@ export function prepareCompaction(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-	const cutPoint = findCutPoint(
-		pathEntries,
-		boundaryStart,
-		boundaryEnd,
-		settings.keepRecentTokens ?? DEFAULT_COMPACTION_SETTINGS.keepRecentTokens ?? 20000,
-		settings.keepTraces,
-	);
+	const keepNothing = options?.keepRecent === false;
+	const cutPoint: CutPointResult = keepNothing
+		? { firstKeptEntryIndex: boundaryEnd, turnStartIndex: -1, isSplitTurn: false }
+		: findCutPoint(
+				pathEntries,
+				boundaryStart,
+				boundaryEnd,
+				settings.keepRecentTokens ?? DEFAULT_COMPACTION_SETTINGS.keepRecentTokens ?? 20000,
+				settings.keepTraces,
+			);
 
 	// Get UUID of first kept entry
-	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
-	if (!firstKeptEntry?.id) {
-		return undefined; // Session needs migration
+	let firstKeptEntryId = KEEP_NOTHING;
+	if (!keepNothing) {
+		const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
+		if (!firstKeptEntry?.id) {
+			return undefined; // Session needs migration
+		}
+		firstKeptEntryId = firstKeptEntry.id;
 	}
-	const firstKeptEntryId = firstKeptEntry.id;
 
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
 
@@ -850,6 +872,8 @@ export function prepareCompaction(
 	}
 
 	if (messagesToSummarize.length === 0) {
+		// Nothing new since the previous compaction.
+		if (keepNothing) return undefined;
 		// The cut landed inside the first turn: there is no prior history to
 		// summarize, so the only thing compaction could do is replace the turn
 		// prefix with a summary. If that prefix is smaller than the keep budget,
@@ -1007,7 +1031,7 @@ export async function compact(
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	summary += formatFileOperations(readFiles, modifiedFiles);
 
-	if (!firstKeptEntryId) {
+	if (typeof firstKeptEntryId !== "string") {
 		throw new Error("First kept entry has no UUID - session may need migration");
 	}
 
