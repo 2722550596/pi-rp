@@ -224,6 +224,32 @@ import {
 	sessionEntryToContextMessages,
 } from "./session-manager.ts";
 import type { AgentSessionScope } from "./session-scope.ts";
+
+/** Session custom entry holding a macro epoch's static renders (see AgentSession._persistMacroSnapshot). */
+export const MACRO_SNAPSHOT_CUSTOM_TYPE = "macro_snapshot";
+
+interface MacroSnapshotKey {
+	compaction: string | null;
+	preset: string | null;
+	tools: string[];
+	model: string | null;
+}
+
+interface MacroSnapshotRecord {
+	key: MacroSnapshotKey;
+	entries: Record<string, string>;
+}
+
+/** FNV-1a over UTF-16 code units; runs on Hermes (no node:crypto). Only an identity check, not security. */
+function hashString(text: string): string {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		h ^= text.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	return (h >>> 0).toString(16).padStart(8, "0") + text.length.toString(16);
+}
+
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -831,8 +857,70 @@ export class AgentSession {
 		compactionId: string;
 	};
 
+	/**
+	 * Restoring persisted static-macro renders is only allowed until the first
+	 * request-path compile of this process: startup may cycle through several
+	 * epochs (runtime build bumps the generation), but a later rebuild/reload
+	 * after the session is live must render fresh.
+	 */
+	private _macroRestoreOpen = true;
+	/** JSON of the last snapshot record persisted to (or restored from) the session. */
+	private _macroPersisted?: string;
+
 	private _getMacroSnapshot(): MacroSnapshotTable {
 		return this._agentSessionScope?.macroSnapshot ?? this._localMacroSnapshot;
+	}
+
+	/**
+	 * Durable identity of a macro epoch: what survives a process restart. The
+	 * in-process runtime generation is deliberately absent; the compaction is
+	 * read from the branch (the in-process id starts empty after a restart).
+	 */
+	private _durableMacroEpochKey(): MacroSnapshotKey {
+		const model = this.model;
+		return {
+			compaction: getLatestCompactionEntry(this.sessionManager.getBranch())?.id ?? null,
+			preset: this._activePreset ? hashString(JSON.stringify(this._activePreset)) : null,
+			tools: [...this._selectedToolNames].sort(),
+			model: model ? `${model.provider}/${model.id}` : null,
+		};
+	}
+
+	/**
+	 * A fresh epoch at startup reuses the static renders persisted by the
+	 * previous process for the same durable epoch, so a killed-and-reopened
+	 * app (phones do this all the time) sends the same prefix and keeps its
+	 * provider prompt cache. Compaction, a different preset/tool set/model, or
+	 * a rebuild after the session went live still render fresh.
+	 */
+	private _restoreMacroSnapshot(): void {
+		if (!this._macroRestoreOpen) return;
+		const branch = this.sessionManager.getBranch();
+		let record: MacroSnapshotRecord | undefined;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type === "custom" && entry.customType === MACRO_SNAPSHOT_CUSTOM_TYPE) {
+				record = entry.data as MacroSnapshotRecord;
+				break;
+			}
+		}
+		if (!record || JSON.stringify(record.key) !== JSON.stringify(this._durableMacroEpochKey())) return;
+		const entries = this._getMacroSnapshot().entries;
+		for (const [call, value] of Object.entries(record.entries ?? {}))
+			if (typeof value === "string") entries.set(call, value);
+		this._macroPersisted = JSON.stringify(record);
+	}
+
+	/** Persist this epoch's static renders when they changed, for the next process to restore. */
+	private _persistMacroSnapshot(): void {
+		this._macroRestoreOpen = false;
+		const entries = this._getMacroSnapshot().entries;
+		if (!entries.size) return;
+		const record: MacroSnapshotRecord = { key: this._durableMacroEpochKey(), entries: Object.fromEntries(entries) };
+		const json = JSON.stringify(record);
+		if (json === this._macroPersisted) return;
+		this._macroPersisted = json;
+		this.sessionManager.appendCustomEntry(MACRO_SNAPSHOT_CUSTOM_TYPE, record);
 	}
 
 	private _ensureMacroEpoch(): void {
@@ -859,6 +947,7 @@ export class AgentSession {
 				this._localMacroSnapshot = { epochId: this._localMacroSnapshot.epochId + 1, entries: new Map() };
 			}
 			this._lastMacroEpochKey = key;
+			this._restoreMacroSnapshot();
 		}
 	}
 
@@ -2951,6 +3040,7 @@ export class AgentSession {
 			historyHostData: this._historyHostData,
 		};
 		const compiled = await compileMessages(this._activePreset, runtime);
+		this._persistMacroSnapshot();
 		onCompiled?.(compiled);
 		return compiled.messages;
 	}

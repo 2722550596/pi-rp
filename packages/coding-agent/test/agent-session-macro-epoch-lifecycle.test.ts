@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MACRO_SNAPSHOT_CUSTOM_TYPE } from "../src/core/agent-session.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -119,7 +120,7 @@ describe("macro epochs across session-ready paths", () => {
 		expect(f.render).toHaveBeenCalledTimes(2);
 	});
 
-	it("starts a fresh epoch after restoring with switchSession", async () => {
+	it("reuses the persisted static renders when the saved session is reopened (process restart)", async () => {
 		const f = await fixture(true);
 		f.runtime.session.sessionManager.appendMessage({ role: "user", content: "saved", timestamp: 0 });
 		f.runtime.session.sessionManager.appendMessage(fauxAssistantMessage("saved answer"));
@@ -127,9 +128,46 @@ describe("macro epochs across session-ready paths", () => {
 		expect(await f.output()).toBe("initial");
 		f.setValue("changed");
 		await f.runtime.switchSession(path);
+		expect(await f.output()).toBe("initial");
+		expect(f.render).toHaveBeenCalledTimes(1);
+		const snapshots = f.runtime.session.sessionManager
+			.getBranch()
+			.filter((e) => e.type === "custom" && e.customType === MACRO_SNAPSHOT_CUSTOM_TYPE);
+		expect(snapshots).toHaveLength(1);
+	});
+
+	it("renders fresh after reopening once the branch has a newer compaction", async () => {
+		const f = await fixture(true);
+		const sm = f.runtime.session.sessionManager;
+		const kept = sm.appendMessage({ role: "user", content: "saved", timestamp: 0 });
+		sm.appendMessage(fauxAssistantMessage("saved answer"));
+		const path = f.runtime.session.sessionFile!;
+		expect(await f.output()).toBe("initial");
+		f.setValue("changed");
+		sm.appendCompaction("summary", kept, 10);
+		await f.runtime.switchSession(path);
 		expect(await f.output()).toBe("changed");
+		f.setValue("third");
+		await f.runtime.switchSession(path);
 		expect(await f.output()).toBe("changed");
 		expect(f.render).toHaveBeenCalledTimes(2);
+	});
+
+	it("renders fresh after reopening when the saved snapshot is for a different tool set", async () => {
+		const f = await fixture(true);
+		f.runtime.session.sessionManager.appendMessage({ role: "user", content: "saved", timestamp: 0 });
+		const path = f.runtime.session.sessionFile!;
+		expect(await f.output()).toBe("initial");
+		const branch = f.runtime.session.sessionManager.getBranch();
+		const record = branch.find((e) => e.type === "custom" && e.customType === MACRO_SNAPSHOT_CUSTOM_TYPE);
+		expect(record).toBeDefined();
+		f.runtime.session.sessionManager.appendCustomEntry(MACRO_SNAPSHOT_CUSTOM_TYPE, {
+			...(record as { data: { key: object; entries: object } }).data,
+			key: { ...(record as { data: { key: object } }).data.key, tools: ["other"] },
+		});
+		f.setValue("changed");
+		await f.runtime.switchSession(path);
+		expect(await f.output()).toBe("changed");
 	});
 
 	it.each([
