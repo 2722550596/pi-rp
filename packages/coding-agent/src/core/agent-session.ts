@@ -866,6 +866,14 @@ export class AgentSession {
 	private _macroRestoreOpen = true;
 	/** JSON of the last snapshot record persisted to (or restored from) the session. */
 	private _macroPersisted?: string;
+	/**
+	 * Epoch id and entry count at the last persist/restore. Static renders are
+	 * set once per epoch and never change, so an unchanged pair means nothing
+	 * new to write: the per-request path returns without building the key.
+	 */
+	private _macroPersistedAt?: { epochId: number; size: number };
+	/** Preset content hash, memoized per preset object (the preset holds the full system text). */
+	private _presetHash?: { preset: PromptPreset; hash: string };
 
 	private _getMacroSnapshot(): MacroSnapshotTable {
 		return this._agentSessionScope?.macroSnapshot ?? this._localMacroSnapshot;
@@ -880,10 +888,17 @@ export class AgentSession {
 		const model = this.model;
 		return {
 			compaction: getLatestCompactionEntry(this.sessionManager.getBranch())?.id ?? null,
-			preset: this._activePreset ? hashString(JSON.stringify(this._activePreset)) : null,
+			preset: this._activePresetHash(),
 			tools: [...this._selectedToolNames].sort(),
 			model: model ? `${model.provider}/${model.id}` : null,
 		};
+	}
+
+	private _activePresetHash(): string | null {
+		const preset = this._activePreset;
+		if (!preset) return null;
+		if (this._presetHash?.preset !== preset) this._presetHash = { preset, hash: hashString(JSON.stringify(preset)) };
+		return this._presetHash.hash;
 	}
 
 	/**
@@ -909,13 +924,18 @@ export class AgentSession {
 		for (const [call, value] of Object.entries(record.entries ?? {}))
 			if (typeof value === "string") entries.set(call, value);
 		this._macroPersisted = JSON.stringify(record);
+		this._macroPersistedAt = { epochId: this._getMacroSnapshot().epochId, size: entries.size };
 	}
 
 	/** Persist this epoch's static renders when they changed, for the next process to restore. */
 	private _persistMacroSnapshot(): void {
 		this._macroRestoreOpen = false;
-		const entries = this._getMacroSnapshot().entries;
+		const snapshot = this._getMacroSnapshot();
+		const entries = snapshot.entries;
 		if (!entries.size) return;
+		const at = this._macroPersistedAt;
+		if (at && at.epochId === snapshot.epochId && at.size === entries.size) return;
+		this._macroPersistedAt = { epochId: snapshot.epochId, size: entries.size };
 		const record: MacroSnapshotRecord = { key: this._durableMacroEpochKey(), entries: Object.fromEntries(entries) };
 		const json = JSON.stringify(record);
 		if (json === this._macroPersisted) return;
