@@ -9,9 +9,10 @@
  *   and used by BOTH the FTS write side (reindexNode / _reindexRawFts) and the
  *   FTS query side (searchNodeFts), so indexed rows and MATCH queries never
  *   live in two token spaces. The database records its token space in
- *   `memory_kv.fts_tokenizer` (value "segmenter"); MemoryStore's constructor
- *   migration gate DROPs and fully re-backfills the FTS tables of databases
- *   whose key predates this (or is missing).
+ *   `memory_kv.fts_tokenizer` (`ftsTokenizerSpace()`: "segmenter:" + how this
+ *   runtime cuts a probe); MemoryStore's constructor migration gate DROPs and
+ *   fully re-backfills the FTS tables of databases whose key differs (built by
+ *   another segmenter implementation, e.g. a host polyfill) or is missing.
  * - tokenizeForMatch() — the scoring space: latin words + CJK bigrams, used by
  *   keywordScore() to measure query/doc overlap for candidates the FTS filter
  *   already selected.
@@ -33,7 +34,7 @@ export function tokenizeForMatch(text: string): string[] {
 	return [...tokens];
 }
 
-/** The only `memory_kv.fts_tokenizer` value, past and future (拍板: single value). */
+/** The tokenizer family. The recorded token space adds a probe fingerprint (`ftsTokenizerSpace`). */
 export type MemoryTokenizerSpace = "segmenter";
 
 /**
@@ -80,6 +81,23 @@ export function createMemoryTokenizer(): MemoryTokenizer {
 }
 
 let sharedTokenizer: MemoryTokenizer | undefined;
+
+/**
+ * Probe for `ftsTokenizerSpace`: common dictionary words an ICU word segmenter
+ * keeps whole (父亲 / 穿着 / 外套) and a per-character polyfill splits.
+ */
+const SPACE_PROBE = "父亲穿着旧外套";
+
+/**
+ * The token space this runtime writes and queries, recorded in
+ * `memory_kv.fts_tokenizer`: "segmenter:" + the probe's tokens. Two runtimes
+ * whose segmenters cut differently get different values, so a database moved
+ * between them (a seed built in Node, opened on a phone) is re-tokenized on
+ * open instead of silently missing every word the two cut differently.
+ */
+export function ftsTokenizerSpace(): string {
+	return `segmenter:${tokenizeForSearch(SPACE_PROBE)}`;
+}
 
 /**
  * FTS tokenizer (write side AND query side): segmenter word tokens,

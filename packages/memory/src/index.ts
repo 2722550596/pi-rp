@@ -181,6 +181,7 @@ export {
 } from "./tidy-prompts.ts";
 export {
 	createMemoryTokenizer,
+	ftsTokenizerSpace,
 	type MemoryTokenizer,
 	type MemoryTokenizerSpace,
 	tokenizeForMatch,

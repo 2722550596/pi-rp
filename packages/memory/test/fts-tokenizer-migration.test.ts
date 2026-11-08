@@ -4,16 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type MemoryDatabase, openDatabase } from "../src/driver.ts";
 import { openMemoryStore } from "../src/index.ts";
-import {
-	createSchema,
-	FTS_REBUILD_KEY,
-	FTS_TOKENIZER_KEY,
-	FTS_TOKENIZER_VALUE,
-	SCHEMA_VERSION,
-	SCHEMA_VERSION_KEY,
-} from "../src/schema.ts";
+import { createSchema, FTS_REBUILD_KEY, FTS_TOKENIZER_KEY, SCHEMA_VERSION, SCHEMA_VERSION_KEY } from "../src/schema.ts";
 import { MemoryStore } from "../src/store.ts";
-import { tokenizeForSearch } from "../src/tokenize.ts";
+import { ftsTokenizerSpace, tokenizeForSearch } from "../src/tokenize.ts";
 
 /**
  * Tokenizer-space migration gate (13-D §4 step 5 / 契约 §10 前置纪律).
@@ -73,7 +66,7 @@ describe("fts_tokenizer migration gate", () => {
 		const file = path.join(workdir, "memory.db");
 		const store = await openMemoryStore(file);
 		open.push(store.db);
-		expect(store.getKv(FTS_TOKENIZER_KEY)).toBe(FTS_TOKENIZER_VALUE);
+		expect(store.getKv(FTS_TOKENIZER_KEY)).toBe(ftsTokenizerSpace());
 		expect(store.getKv(SCHEMA_VERSION_KEY)).toBe(SCHEMA_VERSION);
 		expect(store.getKv(FTS_REBUILD_KEY)).toBeNull();
 	});
@@ -88,7 +81,7 @@ describe("fts_tokenizer migration gate", () => {
 		open.push(reopened.db);
 
 		// Key written only after the rebuild (order discipline, 契约 §10).
-		expect(reopened.getKv(FTS_TOKENIZER_KEY)).toBe(FTS_TOKENIZER_VALUE);
+		expect(reopened.getKv(FTS_TOKENIZER_KEY)).toBe(ftsTokenizerSpace());
 		// node_fts content re-tokens from the live nodes — segmenter space.
 		expect(ftsText(reopened.db, legacy.nodeId)).toBe(
 			tokenizeForSearch(`history://scene/雨夜 雨夜的码头，她握着那把黑伞没有说话。`),
@@ -105,7 +98,27 @@ describe("fts_tokenizer migration gate", () => {
 		expect(reopened.getKv(SCHEMA_VERSION_KEY)).toBe(SCHEMA_VERSION);
 	});
 
-	it("does not rebuild when the key already says segmenter", async () => {
+	it("rebuilds a database whose index another segmenter built (seed from Node opened under a polyfill)", async () => {
+		const file = path.join(workdir, "memory.db");
+		const first = await openMemoryStore(file);
+		const node = first.insertNode({ uri: "core://父亲", content: "父亲的旧外套还挂在门后。" });
+		// The index as a per-character polyfill would have cut it, recorded
+		// under that runtime's (different) space value; the bare pre-fingerprint
+		// "segmenter" value is the same case.
+		first.db
+			.prepare("UPDATE node_fts SET text = ? WHERE node_id = ?")
+			.run("父 亲 的 旧 外 套 还 挂 在 门 后", node.node_id);
+		first.setKv(FTS_TOKENIZER_KEY, "segmenter");
+		first.db.close();
+
+		const reopened = await openMemoryStore(file);
+		open.push(reopened.db);
+		expect(reopened.getKv(FTS_TOKENIZER_KEY)).toBe(ftsTokenizerSpace());
+		expect(ftsText(reopened.db, node.node_id)).toContain("外套");
+		expect([...reopened.searchNodeFts(["外套"]).keys()]).toContain(node.node_id);
+	});
+
+	it("does not rebuild when the key already matches this runtime's space", async () => {
 		const file = path.join(workdir, "memory.db");
 		const first = await openMemoryStore(file);
 		open.push(first.db);
@@ -153,7 +166,7 @@ describe("fts_tokenizer migration gate", () => {
 		// Next open retries and succeeds.
 		const reopened = await openMemoryStore(file);
 		open.push(reopened.db);
-		expect(reopened.getKv(FTS_TOKENIZER_KEY)).toBe(FTS_TOKENIZER_VALUE);
+		expect(reopened.getKv(FTS_TOKENIZER_KEY)).toBe(ftsTokenizerSpace());
 		expect([...reopened.searchNodeFts(["黑伞"]).keys()]).toContain(legacy.nodeId);
 	});
 

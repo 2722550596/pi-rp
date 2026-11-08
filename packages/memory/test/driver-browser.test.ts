@@ -3,7 +3,7 @@ import { openDatabase } from "../src/driver.ts";
 import { createBrowserSqliteDatabaseFactory } from "../src/driver-browser.ts";
 import { openMemoryStore } from "../src/index.ts";
 import type { MemoryStore } from "../src/store.ts";
-import { tokenizeForSearch } from "../src/tokenize.ts";
+import { ftsTokenizerSpace, tokenizeForSearch } from "../src/tokenize.ts";
 
 /**
  * Driver contract consistency (13-D §11.3-1): the SAME statement/transaction/
@@ -112,6 +112,6 @@ describe("browser factory through the injection seam", () => {
 		// wasm adapter's capi rowid keeps that path alive.
 		expect(store.searchRawFts("码头")).toEqual([{ raw_id: 1, role: "user", text: "她的黑伞落在了码头" }]);
 		expect([...store.searchNodeFts(["黑伞"]).keys()]).toContain(node.node_id);
-		expect(store.getKv("fts_tokenizer")).toBe("segmenter");
+		expect(store.getKv("fts_tokenizer")).toBe(ftsTokenizerSpace());
 	});
 });

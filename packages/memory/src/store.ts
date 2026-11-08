@@ -4,13 +4,12 @@ import { buildGlossaryTerms, buildPool, rank } from "./recall.ts";
 import {
 	FTS_REBUILD_KEY,
 	FTS_TOKENIZER_KEY,
-	FTS_TOKENIZER_VALUE,
 	NODE_FTS_DDL,
 	RAW_FTS_DDL,
 	SCHEMA_VERSION,
 	SCHEMA_VERSION_KEY,
 } from "./schema.ts";
-import { tokenizeForSearch } from "./tokenize.ts";
+import { ftsTokenizerSpace, tokenizeForSearch } from "./tokenize.ts";
 
 export type NodeSource = "auto" | "manual" | "import";
 
@@ -2112,7 +2111,8 @@ export class MemoryStore {
 			// surface whatever the real problem is.
 			return;
 		}
-		if (stored === FTS_TOKENIZER_VALUE) return;
+		const space = ftsTokenizerSpace();
+		if (stored === space) return;
 		this.db.transaction(() => {
 			this.db.exec("DROP TABLE IF EXISTS node_fts");
 			this.db.exec("DROP TABLE IF EXISTS raw_fts");
@@ -2122,7 +2122,7 @@ export class MemoryStore {
 			this._reindexAllRaw();
 			// Order discipline (契约 §10): the key is written only AFTER the
 			// rebuild succeeded — same transaction, never before.
-			this.setKv(FTS_TOKENIZER_KEY, FTS_TOKENIZER_VALUE);
+			this.setKv(FTS_TOKENIZER_KEY, space);
 			this.db.prepare("DELETE FROM memory_kv WHERE key = ?").run(FTS_REBUILD_KEY);
 		});
 	}

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { MemoryDatabase } from "./driver.ts";
+import { ftsTokenizerSpace } from "./tokenize.ts";
 
 /**
  * Bumped whenever `STATEMENTS` changes shape. v2 → v3 and v3 → v4 are
@@ -25,14 +26,16 @@ export const RAW_FTS_DDL =
 
 /**
  * `memory_kv` key recording which FTS token space the indexes were built in.
- * Value domain: "segmenter" ONLY (2026-09-30 拍板 — jieba/bigram are deleted,
- * no reserved placeholders). Written on fresh-database creation and by
- * MemoryStore's migration gate AFTER a successful tokenizer-space rebuild;
- * a database whose key is missing or different is a pre-Segmenter (jieba-era)
- * index and gets rebuilt on open.
+ * Value: `ftsTokenizerSpace()` — "segmenter:" plus how this runtime's
+ * Intl.Segmenter cuts a fixed probe. Segmenter implementations differ (Node's
+ * ICU dictionary vs a host polyfill that cuts per Han character, or ICU data
+ * updates), so a database built on one runtime and opened on another must be
+ * re-tokenized; the plain "segmenter" alone could not tell them apart.
+ * Written on fresh-database creation and by MemoryStore's migration gate AFTER
+ * a successful rebuild; a database whose key is missing or different gets
+ * rebuilt on open.
  */
 export const FTS_TOKENIZER_KEY = "fts_tokenizer";
-export const FTS_TOKENIZER_VALUE = "segmenter";
 
 /**
  * `memory_kv` marker set by `migrateSchema` and cleared once the FTS content has
@@ -253,7 +256,7 @@ export function createSchema(db: MemoryDatabase): SchemaOpenResult {
 		// an old jieba-space index (契约 §10 前置纪律).
 		db.prepare("INSERT OR REPLACE INTO memory_kv (key, value, updated_at) VALUES (?, ?, ?)").run(
 			FTS_TOKENIZER_KEY,
-			FTS_TOKENIZER_VALUE,
+			ftsTokenizerSpace(),
 			now,
 		);
 	}
