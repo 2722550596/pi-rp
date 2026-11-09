@@ -37,6 +37,7 @@ export type {
 	CustomTypePolicy,
 	RuntimeContextSlot,
 	SessionCompactResult,
+	SessionEntry,
 	SlotDefinition,
 } from "../../coding-agent/src/index.ts";
 export type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../../coding-agent/src/modes/rpc/rpc-types.ts";
