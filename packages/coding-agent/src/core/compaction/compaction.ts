@@ -7,9 +7,9 @@
 
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
-import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage, Context, Model, SimpleStreamOptions, Tool, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { type CustomTypeResolver, convertToLlm } from "../messages.ts";
+import { type CustomTypeResolver, convertToLlm, createCompactionSummaryMessage } from "../messages.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
@@ -130,8 +130,22 @@ function combineUsage(first: Usage, second: Usage): Usage {
 // Types
 // ============================================================================
 
+export type CompactionStrategy = "external" | "in-context";
+
+export interface InContextCompactionOptions {
+	/** Main session system prompt (kept byte-identical for prompt cache prefix hit). */
+	systemPrompt: string;
+	/** Main session tool definitions (kept byte-identical for prompt cache prefix hit). */
+	tools?: Tool[];
+	/** Main session ID so provider cache routing hits the same session. */
+	sessionId?: string;
+	/** Optional cache retention override for the forked request. */
+	cacheRetention?: SimpleStreamOptions["cacheRetention"];
+}
+
 export interface CompactionSettings {
 	enabled: boolean;
+	strategy?: CompactionStrategy;
 	reserveTokens: number;
 	keepRecentTokens?: number;
 	keepTraces?: number;
@@ -640,18 +654,52 @@ export async function completeSummarization(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	preserveSession?: { sessionId?: string; cacheRetention?: SimpleStreamOptions["cacheRetention"] },
 ): Promise<AssistantMessage> {
-	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
-	const requestOptions: SimpleStreamOptions = {
-		...options,
-		cacheRetention: "none",
-		sessionId: uuidv7(),
-	};
+	// External summaries are standalone requests, so isolate routing and avoid cache writes.
+	// In-context forks preserve the main sessionId and cache retention to hit the existing KV prefix.
+	const requestOptions: SimpleStreamOptions = preserveSession
+		? {
+				...options,
+				...(preserveSession.cacheRetention !== undefined ? { cacheRetention: preserveSession.cacheRetention } : {}),
+				...(preserveSession.sessionId !== undefined ? { sessionId: preserveSession.sessionId } : {}),
+			}
+		: {
+				...options,
+				cacheRetention: "none",
+				sessionId: uuidv7(),
+			};
 	const produce = async (): Promise<AssistantMessage> =>
 		streamFn
 			? (await streamFn(model, context, requestOptions)).result()
 			: completeSimple(model, context, requestOptions);
 	return retryAssistantCall(produce, retry, requestOptions.signal, callbacks);
+}
+
+/**
+ * Strip `{conversation}` / `{previous_summary}` template blocks when running in-context fork
+ * compaction, since those messages are already present in the multi-turn prefix.
+ */
+function buildInContextSummarizationInstruction(
+	basePrompt: string,
+	hasPreviousSummary: boolean,
+	systemPromptOverride?: string,
+): string {
+	const cleaned = basePrompt
+		.replace(/<conversation>\s*\{conversation\}\s*<\/conversation>\s*/g, "")
+		.replace(/<previous-summary>\s*\{previous_summary\}\s*<\/previous-summary>\s*/g, "")
+		.replace(/\{conversation\}/g, "")
+		.replace(/\{previous_summary\}/g, "")
+		.trim();
+	const header = hasPreviousSummary
+		? "[Context Compaction] Pause the current task. Do NOT continue the conversation, do NOT call any tools, and do NOT reply to the user. Merge the earlier <summary> in the context with the subsequent conversation above into a single updated summary following the instructions below:"
+		: "[Context Compaction] Pause the current task. Do NOT continue the conversation, do NOT call any tools, and do NOT reply to the user. Summarize the conversation above following the instructions below:";
+	const parts = [header];
+	if (systemPromptOverride?.trim()) {
+		parts.push(systemPromptOverride.trim());
+	}
+	parts.push(cleaned);
+	return parts.join("\n\n");
 }
 
 /**
@@ -714,6 +762,7 @@ export async function generateSummaryWithUsage(
 	overrides?: CompactionPromptOverrides,
 	resolveCustomType?: CustomTypeResolver,
 	summaryMaxTokens?: number,
+	inContext?: InContextCompactionOptions,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = resolveSummaryMaxTokens(model, reserveTokens, 0.8, summaryMaxTokens);
 
@@ -724,37 +773,72 @@ export async function generateSummaryWithUsage(
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	}
 
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	// forSummarization=true: drop compaction:"exclude" types (dynamic injections) from summary input.
-	const llmMessages = convertToLlm(currentMessages, resolveCustomType, true);
-	const conversationText = serializeConversation(llmMessages);
-
-	// Build the prompt with placeholder substitution
-	let promptText = basePrompt.replace(/\{conversation\}/g, conversationText);
-	if (previousSummary) {
-		promptText = promptText.replace(/\{previous_summary\}/g, previousSummary);
-	} else {
-		promptText = promptText.replace(/\{previous_summary\}/g, "");
-	}
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
 	const completionOptions = createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel);
+
+	let context: Context;
+	let preserveSession: { sessionId?: string; cacheRetention?: SimpleStreamOptions["cacheRetention"] } | undefined;
+
+	if (inContext) {
+		const prefixAgentMessages: AgentMessage[] = previousSummary
+			? [createCompactionSummaryMessage(previousSummary, 0, new Date().toISOString()), ...currentMessages]
+			: currentMessages;
+		const llmMessages = convertToLlm(prefixAgentMessages, resolveCustomType, false);
+		const instruction = buildInContextSummarizationInstruction(
+			basePrompt,
+			Boolean(previousSummary),
+			overrides?.systemPrompt,
+		);
+		context = {
+			systemPrompt: inContext.systemPrompt,
+			...(inContext.tools && inContext.tools.length > 0 ? { tools: inContext.tools } : {}),
+			messages: [
+				...llmMessages,
+				{
+					role: "user" as const,
+					content: [{ type: "text" as const, text: instruction }],
+					timestamp: Date.now(),
+				},
+			],
+		};
+		preserveSession = {
+			sessionId: inContext.sessionId,
+			cacheRetention: inContext.cacheRetention,
+		};
+	} else {
+		// Serialize conversation to text so model doesn't try to continue it
+		// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
+		// forSummarization=true: drop compaction:"exclude" types (dynamic injections) from summary input.
+		const llmMessages = convertToLlm(currentMessages, resolveCustomType, true);
+		const conversationText = serializeConversation(llmMessages);
+
+		// Build the prompt with placeholder substitution
+		let promptText = basePrompt.replace(/\{conversation\}/g, conversationText);
+		if (previousSummary) {
+			promptText = promptText.replace(/\{previous_summary\}/g, previousSummary);
+		} else {
+			promptText = promptText.replace(/\{previous_summary\}/g, "");
+		}
+
+		context = {
+			systemPrompt: overrides?.systemPrompt ?? SUMMARIZATION_SYSTEM_PROMPT,
+			messages: [
+				{
+					role: "user" as const,
+					content: [{ type: "text" as const, text: promptText }],
+					timestamp: Date.now(),
+				},
+			],
+		};
+	}
 
 	const response = await completeSummarization(
 		model,
-		{ systemPrompt: overrides?.systemPrompt ?? SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+		context,
 		completionOptions,
 		streamFn,
 		retry,
 		callbacks,
+		preserveSession,
 	);
 	const failure = getSummarizationFailure(response, "Summarization");
 	if (failure) {
@@ -943,6 +1027,7 @@ export async function compact(
 	callbacks?: RetryCallbacks,
 	overrides?: CompactionPromptOverrides,
 	resolveCustomType?: CustomTypeResolver,
+	inContext?: InContextCompactionOptions,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -954,6 +1039,8 @@ export async function compact(
 		fileOps,
 		settings,
 	} = preparation;
+
+	const effectiveInContext = settings.strategy === "in-context" ? inContext : undefined;
 
 	// Generate summaries and merge into one
 	let summary: string;
@@ -980,6 +1067,7 @@ export async function compact(
 				overrides,
 				resolveCustomType,
 				settings.summaryMaxTokens,
+				effectiveInContext,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -1022,6 +1110,7 @@ export async function compact(
 			overrides,
 			resolveCustomType,
 			settings.summaryMaxTokens,
+			effectiveInContext,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;

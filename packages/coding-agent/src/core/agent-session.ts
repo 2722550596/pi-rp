@@ -100,6 +100,7 @@ import {
 	type CompactionPreparation,
 	type CompactionPromptOverrides,
 	type CompactionResult,
+	type CompactionStrategy,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
@@ -107,6 +108,7 @@ import {
 	estimateContextTokens,
 	estimateTokens,
 	generateBranchSummary,
+	type InContextCompactionOptions,
 	type PrepareCompactionOptions,
 	prepareCompaction,
 	shouldCompact,
@@ -4563,6 +4565,7 @@ export class AgentSession {
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
 					this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined,
 					(customType) => this._extensionRunner.getCustomTypePolicy(customType),
+					this._getInContextCompactionOptions("manual", settings.strategy),
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
@@ -4665,6 +4668,20 @@ export class AgentSession {
 	}
 
 	/** Apply the active preset's outgoing regex and stripAssistantThinking to compaction messages. */
+	private _getInContextCompactionOptions(
+		reason: "manual" | "threshold" | "overflow",
+		strategy: CompactionStrategy,
+	): InContextCompactionOptions | undefined {
+		if (strategy !== "in-context" || reason === "overflow") {
+			return undefined;
+		}
+		return {
+			systemPrompt: this.agent.state.systemPrompt,
+			tools: this.agent.state.tools.slice(),
+			sessionId: this.sessionId,
+		};
+	}
+
 	private _applyPresetToCompactionPreparation(preparation: CompactionPreparation): CompactionPreparation {
 		const preset = this._activePreset;
 		if (preset === defaultPreset || preset.id === "pi-default") return preparation;
@@ -4936,6 +4953,7 @@ export class AgentSession {
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
 					this._activePreset.hiddenOverrides?.compaction as CompactionPromptOverrides | undefined,
 					(customType) => this._extensionRunner.getCustomTypePolicy(customType),
+					this._getInContextCompactionOptions("manual", settings.strategy),
 				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;

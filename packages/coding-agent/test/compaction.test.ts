@@ -1,5 +1,5 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, Context, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -762,4 +762,224 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		console.log("Original messages:", loaded.messages.length);
 		console.log("After compaction:", reloaded.messages.length);
 	}, 60000);
+});
+
+describe("in-context fork compaction", () => {
+	function makeFakeStreamFn(captured: Array<{ context: Context; options: SimpleStreamOptions }>): StreamFn {
+		return (model, context, options) => {
+			captured.push({ context, options: options ?? {} });
+			const message: AssistantMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "## Summary\nCompacted." }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 100,
+					output: 20,
+					cacheRead: 80,
+					cacheWrite: 0,
+					totalTokens: 200,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			};
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => message,
+			} as any;
+		};
+	}
+
+	it("preserves main systemPrompt, tools, sessionId, and multi-turn prefix when strategy is in-context", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const captured: Array<{ context: Context; options: SimpleStreamOptions }> = [];
+		const entries: SessionEntry[] = [
+			{
+				type: "message",
+				id: "u1",
+				parentId: null,
+				timestamp: new Date(1).toISOString(),
+				message: { role: "user", content: "Hello world", timestamp: 1 },
+			},
+			{
+				type: "message",
+				id: "a1",
+				parentId: "u1",
+				timestamp: new Date(2).toISOString(),
+				message: createAssistantMessage("Hi there!", 100),
+			},
+			{
+				type: "message",
+				id: "u2",
+				parentId: "a1",
+				timestamp: new Date(3).toISOString(),
+				message: { role: "user", content: "Next turn", timestamp: 3 },
+			},
+			{
+				type: "message",
+				id: "a2",
+				parentId: "u2",
+				timestamp: new Date(4).toISOString(),
+				message: createAssistantMessage("Reply 2", 200),
+			},
+		];
+
+		const settings: CompactionSettings = {
+			enabled: true,
+			strategy: "in-context",
+			reserveTokens: 1000,
+			keepRecentTokens: 1,
+		};
+		const preparation = prepareCompaction(entries, settings, { keepRecent: false });
+		expect(preparation).toBeDefined();
+
+		const tools = [{ name: "speak", description: "Speak", parameters: { type: "object" } as any }];
+		const result = await compact(
+			preparation!,
+			model,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			makeFakeStreamFn(captured),
+			undefined,
+			undefined,
+			undefined,
+			{
+				systemPrompt: "Role-specific instructions",
+				initialPrompt: "<conversation>{conversation}</conversation>\nSummarize.",
+			},
+			undefined,
+			{ systemPrompt: "MAIN SYSTEM PROMPT", tools, sessionId: "main-session-123" },
+		);
+
+		expect(result.summary).toContain("## Summary");
+		expect(captured).toHaveLength(1);
+		const call = captured[0]!;
+		expect(call.context.systemPrompt).toBe("MAIN SYSTEM PROMPT");
+		expect(call.context.tools).toEqual(tools);
+		expect(call.options.sessionId).toBe("main-session-123");
+		expect(call.options.cacheRetention).not.toBe("none");
+		// Multi-turn prefix (4 history messages) + 1 compaction instruction user message
+		expect(call.context.messages).toHaveLength(5);
+		expect(call.context.messages[0]!.role).toBe("user");
+		expect(call.context.messages[1]!.role).toBe("assistant");
+		const lastMsg = call.context.messages[4]!;
+		expect(lastMsg.role).toBe("user");
+		const lastText = (lastMsg.content as Array<{ type: string; text: string }>)[0]!.text;
+		expect(lastText).toContain("Role-specific instructions");
+		expect(lastText).toContain("Summarize.");
+		expect(lastText).not.toContain("{conversation}");
+	});
+
+	it("prepends previousSummary before new turns in incremental in-context compaction", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const captured: Array<{ context: Context; options: SimpleStreamOptions }> = [];
+		const entries: SessionEntry[] = [
+			{
+				type: "compaction",
+				id: "c1",
+				parentId: null,
+				timestamp: new Date(1).toISOString(),
+				summary: "Earlier summary text",
+				firstKeptEntryId: "u1",
+				tokensBefore: 500,
+			},
+			{
+				type: "message",
+				id: "u1",
+				parentId: "c1",
+				timestamp: new Date(2).toISOString(),
+				message: { role: "user", content: "Follow up", timestamp: 2 },
+			},
+			{
+				type: "message",
+				id: "a1",
+				parentId: "u1",
+				timestamp: new Date(3).toISOString(),
+				message: createAssistantMessage("Follow up reply", 300),
+			},
+		];
+
+		const settings: CompactionSettings = {
+			enabled: true,
+			strategy: "in-context",
+			reserveTokens: 1000,
+			keepRecentTokens: 1,
+		};
+		const preparation = prepareCompaction(entries, settings, { keepRecent: false });
+		expect(preparation).toBeDefined();
+
+		await compact(
+			preparation!,
+			model,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			makeFakeStreamFn(captured),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ systemPrompt: "MAIN SYSTEM PROMPT", sessionId: "main-session-123" },
+		);
+
+		expect(captured).toHaveLength(1);
+		const msgs = captured[0]!.context.messages;
+		// Index 0: previous compaction summary, 1-2: new turns, 3: compaction instruction
+		expect(msgs).toHaveLength(4);
+		expect(JSON.stringify(msgs[0])).toContain("Earlier summary text");
+		expect(msgs[1]!.role).toBe("user");
+		expect(msgs[2]!.role).toBe("assistant");
+		expect(msgs[3]!.role).toBe("user");
+	});
+
+	it("falls back to external serialization when inContext options are omitted", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const captured: Array<{ context: Context; options: SimpleStreamOptions }> = [];
+		const entries: SessionEntry[] = [
+			{
+				type: "message",
+				id: "u1",
+				parentId: null,
+				timestamp: new Date(1).toISOString(),
+				message: { role: "user", content: "Hello world", timestamp: 1 },
+			},
+			{
+				type: "message",
+				id: "a1",
+				parentId: "u1",
+				timestamp: new Date(2).toISOString(),
+				message: createAssistantMessage("Hi there!", 100),
+			},
+		];
+
+		const settings: CompactionSettings = {
+			enabled: true,
+			strategy: "in-context",
+			reserveTokens: 1000,
+			keepRecentTokens: 1,
+		};
+		const preparation = prepareCompaction(entries, settings, { keepRecent: false });
+		await compact(
+			preparation!,
+			model,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			makeFakeStreamFn(captured),
+		);
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]!.options.cacheRetention).toBe("none");
+		expect(captured[0]!.context.messages).toHaveLength(1);
+	});
 });

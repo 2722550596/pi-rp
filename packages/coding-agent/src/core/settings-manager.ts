@@ -46,8 +46,11 @@ export interface CodemodeSettings {
 	inlineBudget?: number;
 }
 
+export type CompactionStrategy = "external" | "in-context";
+
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
+	strategy?: CompactionStrategy; // default: "external"
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
 	keepTraces?: number; // mutually exclusive with keepRecentTokens
@@ -1129,8 +1132,14 @@ export class SettingsManager {
 	}
 
 	/** Resolve each token setting through model override, ordinary setting, then built-in default. */
+	getCompactionStrategy(): CompactionStrategy {
+		const value = this.settings.compaction?.strategy;
+		return value === "in-context" ? "in-context" : "external";
+	}
+
 	getCompactionSettings(model?: Pick<Model<string>, "provider" | "id">): {
 		enabled: boolean;
+		strategy: CompactionStrategy;
 		reserveTokens: number;
 		keepRecentTokens?: number;
 		keepTraces?: number;
@@ -1140,6 +1149,7 @@ export class SettingsManager {
 		const keepTraces = this.getCompactionKeepTraces(model);
 		return {
 			enabled: this.getCompactionEnabled(),
+			strategy: this.getCompactionStrategy(),
 			reserveTokens: this.getCompactionReserveTokens(model),
 			...(keepTraces === undefined
 				? { keepRecentTokens: this.getCompactionKeepRecentTokens(model) }
